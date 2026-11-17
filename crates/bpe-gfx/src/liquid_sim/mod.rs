@@ -104,6 +104,13 @@ pub struct LiquidGpu {
     pub c: [f32; 4],
     /// The serial floor, 0, 0, 0.
     pub d: [u32; 4],
+    /// With the balls: push scale (1 / the ball's density to it, 0: it pushes no balls), drag
+    /// (per second, fully under), carry (how much of its own speed it gives a ball), sticks.
+    pub e: [f32; 4],
+    /// The ink balls drop in it (linear rgb) and how much.
+    pub f: [f32; 4],
+    /// Splash size, splashes from (grid units a second), wakes, balls take its colour.
+    pub g: [f32; 4],
 }
 
 impl LiquidGpu {
@@ -122,6 +129,8 @@ pub struct StepGpu {
     pub more: [f32; 4],
     pub words_at: [u32; 4],
     pub ball_grid: [u32; 4],
+    /// What the balls feel: recorded this step (0 or 1), 0, 0, 0.
+    pub feel: [u32; 4],
     pub paint: [[f32; 4]; 8],
     pub back: [[f32; 4]; 8],
     pub liquids: [LiquidGpu; MOST_LIQUIDS],
@@ -139,6 +148,7 @@ impl Default for StepGpu {
             more: [0.0; 4],
             words_at: [0; 4],
             ball_grid: [0; 4],
+            feel: [0; 4],
             paint,
             back,
             liquids: [LiquidGpu::default(); MOST_LIQUIDS],
@@ -235,12 +245,91 @@ pub struct WallNode {
     pub v: [f32; 2],
 }
 
-/// One ball the drops meet, in grid units.
+/// One ball the drops meet, in grid units, and the liquids that meet it (bit `k` for liquid `k`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BallGpu {
     pub x: [f32; 2],
     pub v: [f32; 2],
     pub r: f32,
+    pub mask: u32,
+}
+
+/// Words a ball's feel takes ([`Feel`]).
+pub const FEEL_WORDS: usize = 32;
+/// The points round a ball where the feel looks for liquid.
+pub const RING: u32 = 32;
+/// Fixed-point scales of the feel's sums: the push (momentum, grid units), and the touching mass
+/// and what it is weighted by.
+pub const S_PUSH: f32 = 64.0;
+pub const S_TOUCH: f32 = 256.0;
+
+/// Where each number is in a ball's [`FEEL_WORDS`] words.
+pub mod feel_at {
+    /// The momentum the drops gave it, x and y (fixed point, [`super::S_PUSH`]), scaled by 1 /
+    /// its density to each liquid.
+    pub const PUSH: usize = 0;
+    /// The mass of drops that touched it ([`super::S_TOUCH`]), summed over every contact.
+    pub const TOUCH: usize = 2;
+    /// Their colour (rgb) times their mass.
+    pub const COLOUR: usize = 3;
+    /// Each touching liquid's drag, carry and take, times the touching mass.
+    pub const DRAG: usize = 6;
+    pub const CARRY: usize = 7;
+    pub const TAKE: usize = 11;
+    /// How many of the [`super::RING`] points round it are in the liquid (last step of the
+    /// batch), and the liquid's mean speed there (f32 bits, grid units a second).
+    pub const WET: usize = 8;
+    pub const FLOW: usize = 9;
+    /// Contacts with each liquid (16 words).
+    pub const LIQUIDS: usize = 16;
+}
+
+/// What the balls felt over some liquid steps, on its way back from the card. Every copy of a
+/// world shares one, so whichever asks first waits and all read the same words.
+pub struct Feel {
+    device: wgpu::Device,
+    staging: wgpu::Buffer,
+    index: wgpu::SubmissionIndex,
+    balls: usize,
+    answer: Arc<AtomicU8>,
+    got: std::sync::OnceLock<Vec<i32>>,
+}
+
+impl std::fmt::Debug for Feel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Feel").field("balls", &self.balls).finish()
+    }
+}
+
+impl Feel {
+    /// How many balls it is for.
+    pub fn balls(&self) -> usize {
+        self.balls
+    }
+
+    /// Every ball's [`FEEL_WORDS`] words, waiting for the card when they aren't back yet (all
+    /// zero if the read failed).
+    pub fn wait(&self) -> &[i32] {
+        self.got.get_or_init(|| {
+            let words = self.balls * FEEL_WORDS;
+            let _ =
+                self.device.poll(wgpu::PollType::Wait { submission_index: Some(self.index.clone()), timeout: None });
+            while self.answer.load(Ordering::Acquire) == WAITING {
+                if self.device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
+                    break;
+                }
+            }
+            if self.answer.load(Ordering::Acquire) != MAPPED {
+                return vec![0; words];
+            }
+            let out = match self.staging.slice(..).get_mapped_range() {
+                Ok(view) => bytemuck::cast_slice::<u8, i32>(&view)[..words].to_vec(),
+                Err(_) => vec![0; words],
+            };
+            self.staging.unmap();
+            out
+        })
+    }
 }
 
 /// What one liquid step reads. `step.grid`, `counts`, `words_at`, `ball_grid` and `flags[1..3]`
@@ -251,6 +340,10 @@ pub struct StepIn<'a> {
     /// The walls band, when it changed (or the body asks for it: [`Body::walls_ready`]).
     pub walls: Option<&'a [WallNode]>,
     pub balls: &'a [BallGpu],
+    /// Record what the balls feel ([`Body::send_feel`] sends it back).
+    pub feel: bool,
+    /// Start the feel afresh (the first liquid step since the last [`Body::send_feel`]).
+    pub fresh: bool,
 }
 
 /// The ball grid's cell, in grid units.
@@ -271,7 +364,7 @@ const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
 };
 
 /// The bindings: 0 the step, 1 drops, 2 births, 3 counts, 4 grid, 5 solid, 6 words, 7 flags, 8
-/// sums, 9 items, 10 spare, 11 mixout.
+/// sums, 9 items, 10 spare, 11 mixout, 12 feel.
 fn binding_type(b: u32) -> wgpu::BindingType {
     match b {
         0 => UNIFORM,
@@ -289,7 +382,7 @@ const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_clear_grid", &[0, 4]),
     ("cs_p2g", &[0, 1, 3, 4]),
     ("cs_grid", &[0, 4, 5]),
-    ("cs_g2p", &[0, 1, 3, 4, 5, 6]),
+    ("cs_g2p", &[0, 1, 3, 4, 5, 6, 12]),
     ("cs_scan_cells", &[0, 3]),
     ("cs_scan_drops", &[0, 3]),
     ("cs_bin_clear", &[0, 7]),
@@ -303,6 +396,8 @@ const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_flag", &[0, 1, 3, 7, 10]),
     ("cs_scatter", &[0, 1, 3, 7, 8, 10]),
     ("cs_packed", &[3]),
+    ("cs_feel", &[0, 3, 4, 6, 12]),
+    ("cs_tick", &[3]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -328,6 +423,8 @@ enum E {
     Flag,
     Scatter,
     Packed,
+    Feel,
+    Tick,
 }
 
 /// The card the Liquid things step on: its device, its queue and the compute pipelines.
@@ -475,6 +572,7 @@ struct Scratch {
     items: Grows,
     spare: Grows,
     mixout: Grows,
+    feel: Grows,
 }
 
 const STORE: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_DST);
@@ -505,6 +603,7 @@ impl Scratch {
             items: Grows::new("liquid bins", STORE),
             spare: Grows::new("liquid spare", STORE),
             mixout: Grows::new("liquid mixing", STORE),
+            feel: Grows::new("liquid feel", STORE.union(wgpu::BufferUsages::COPY_SRC)),
         }
     }
 }
@@ -744,8 +843,11 @@ impl Body {
             }
         }
         let wall_count = walls.map_or(0, |w| w.len() as u32);
+        // The balls move on along their speed through the step's substeps.
+        let travel = input.step.time[0].abs() * input.step.grid[2].clamp(1, MOST_SUBSTEPS) as f32;
+        let travel = if travel.is_finite() { travel } else { 0.0 };
         let (balls_at, starts_at, items_at, ball_cols, ball_rows, ball_count) =
-            put_balls(&mut words, input.balls, self.cols, self.rows);
+            put_balls(&mut words, input.balls, self.cols, self.rows, travel);
         if words.is_empty() {
             words.push(0);
         }
@@ -759,6 +861,7 @@ impl Body {
         step.flags[2] = ball_count;
         step.words_at = [walls_at, wall_count, balls_at, starts_at];
         step.ball_grid = [ball_cols, ball_rows, BALL_CELL.to_bits(), items_at];
+        step.feel = [u32::from(input.feel && ball_count > 0), RING, 0, 0];
         queue.write_buffer(&scratch.uniform, 0, bytemuck::bytes_of(&step));
 
         let drop_size = std::mem::size_of::<Drop>() as u64;
@@ -774,7 +877,9 @@ impl Body {
         let items = scratch.items.at_least(device, room * 4);
         let spare = scratch.spare.at_least(device, room * drop_size);
         let mixout = scratch.mixout.at_least(device, room * 32);
-        let buffers: [&wgpu::Buffer; 12] = [
+        let felt = if input.feel { ball_count } else { 0 };
+        let feel = scratch.feel.at_least(device, (felt.max(1) as usize * FEEL_WORDS * 4) as u64);
+        let buffers: [&wgpu::Buffer; 13] = [
             &scratch.uniform,
             &self.drops,
             &births_buffer,
@@ -787,6 +892,7 @@ impl Body {
             &items,
             &spare,
             &mixout,
+            &feel,
         ];
         let group = |e: E| {
             let (_, layout) = gpu.pipeline(e);
@@ -820,11 +926,16 @@ impl Body {
             E::Flag,
             E::Scatter,
             E::Packed,
+            E::Feel,
+            E::Tick,
         ];
         let groups: Vec<wgpu::BindGroup> = all.iter().map(|e| group(*e)).collect();
         let drop_groups = bound.max(1).div_ceil(WORKGROUP);
         let cell_groups = cells.div_ceil(WORKGROUP);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid step") });
+        if input.feel && input.fresh {
+            encoder.clear_buffer(&feel, 0, None);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("liquid step"),
@@ -848,6 +959,10 @@ impl Body {
                 run(E::P2g, drop_groups);
                 run(E::Grid, cell_groups);
                 run(E::G2p, drop_groups);
+                run(E::Tick, 1);
+            }
+            if felt > 0 {
+                run(E::Feel, felt.div_ceil(WORKGROUP));
             }
             if step.flags[0] == 1 {
                 run(E::BinClear, cell_groups);
@@ -935,6 +1050,35 @@ impl Body {
         }
     }
 
+    /// Sends back what `balls` balls felt over the liquid steps since the last one sent (those
+    /// stepped with [`StepIn::feel`], the first of them [`StepIn::fresh`]); `None` with no balls.
+    /// The next step that records starts afresh.
+    pub fn send_feel(&mut self, balls: u32) -> Option<Arc<Feel>> {
+        if balls == 0 {
+            return None;
+        }
+        let device = self.gpu.device.clone();
+        let scratch = self.scratch.as_mut()?;
+        let bytes = balls as u64 * FEEL_WORDS as u64 * 4;
+        let feel = scratch.feel.at_least(&device, bytes);
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("liquid feel read"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid feel") });
+        encoder.copy_buffer_to_buffer(&feel, 0, &staging, 0, bytes);
+        let index = self.gpu.queue.submit([encoder.finish()]);
+        let answer = Arc::new(AtomicU8::new(WAITING));
+        let told = answer.clone();
+        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            told.store(if r.is_ok() { MAPPED } else { FAILED }, Ordering::Release);
+        });
+        let _ = device.poll(wgpu::PollType::Poll);
+        Some(Arc::new(Feel { device, staging, index, balls: balls as usize, answer, got: std::sync::OnceLock::new() }))
+    }
+
     /// Every drop as the card has it once its queued steps are done (waits: tests and tools only).
     pub fn read(&self) -> Vec<Drop> {
         let device = &self.gpu.device;
@@ -970,10 +1114,16 @@ impl Body {
     }
 }
 
-/// Puts the balls (5 words each) and a grid over them (cell [`BALL_CELL`] grid units: each cell's
+/// Puts the balls (6 words each: place, speed, radius, mask) and a grid over them (cell [`BALL_CELL`] grid units: each cell's
 /// start, then one past the last, then the items) into `words`. Gives where the balls, the starts
 /// and the items begin, the grid's columns and rows, and how many balls were put (the finite ones).
-fn put_balls(words: &mut Vec<u32>, balls: &[BallGpu], cols: u32, rows: u32) -> (u32, u32, u32, u32, u32, u32) {
+fn put_balls(
+    words: &mut Vec<u32>,
+    balls: &[BallGpu],
+    cols: u32,
+    rows: u32,
+    travel: f32,
+) -> (u32, u32, u32, u32, u32, u32) {
     let bc = (cols as f32 / BALL_CELL).ceil().max(1.0) as u32;
     let br = (rows as f32 / BALL_CELL).ceil().max(1.0) as u32;
     let balls_at = words.len() as u32;
@@ -981,13 +1131,17 @@ fn put_balls(words: &mut Vec<u32>, balls: &[BallGpu], cols: u32, rows: u32) -> (
     let kept: Vec<&BallGpu> = balls.iter().filter(|b| fine(b)).collect();
     for b in &kept {
         words.extend([b.x[0], b.x[1], b.v[0], b.v[1], b.r].map(f32::to_bits));
+        words.push(b.mask);
     }
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); (bc * br) as usize];
     let cell_of = |x: f32, n: u32| ((x / BALL_CELL).floor().clamp(0.0, (n - 1) as f32)) as u32;
     for (i, b) in kept.iter().enumerate() {
-        let reach = b.r + 1.5;
-        let (c0, c1) = (cell_of(b.x[0] - reach, bc), cell_of(b.x[0] + reach, bc));
-        let (r0, r1) = (cell_of(b.x[1] - reach, br), cell_of(b.x[1] + reach, br));
+        // Contact, sticking (1.5 cells) and wakes (3 cells) reach this far.
+        // From where it starts to where the step's substeps move it.
+        let reach = b.r + 3.5;
+        let to = [b.x[0] + b.v[0] * travel, b.x[1] + b.v[1] * travel];
+        let (c0, c1) = (cell_of(b.x[0].min(to[0]) - reach, bc), cell_of(b.x[0].max(to[0]) + reach, bc));
+        let (r0, r1) = (cell_of(b.x[1].min(to[1]) - reach, br), cell_of(b.x[1].max(to[1]) + reach, br));
         for r in r0..=r1 {
             for c in c0..=c1 {
                 lists[(r * bc + c) as usize].push(i as u32);

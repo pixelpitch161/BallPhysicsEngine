@@ -128,6 +128,7 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "if.health",
             "do.health",
             "when.particles",
+            "when.liquid",
             "do.text"
         ]
     );

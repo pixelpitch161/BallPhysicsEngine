@@ -49,6 +49,11 @@ pub enum EventKind {
     /// where, `normal` the way the particle went and `speed` its strength as a hit speed
     /// (strength × 1500, so the voice's strength reads it back).
     Moment,
+    /// A ball went into a Liquid thing's liquid, came out of it, or splashed into it (liquid part
+    /// 2): `a` the ball (its row), `b` the Liquid thing with 0 (went in), 1 (came out) or 2
+    /// (splashed: first touched it fast) as the item, `point` where the ball was, `normal` its way
+    /// and `speed` its speed.
+    Liquid,
 }
 
 impl EventKind {
@@ -66,6 +71,7 @@ impl EventKind {
             EventKind::Flash => 20,
             EventKind::Note => 21,
             EventKind::Moment => 22,
+            EventKind::Liquid => 23,
         }
     }
 }

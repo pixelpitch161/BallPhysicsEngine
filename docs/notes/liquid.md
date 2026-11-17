@@ -78,3 +78,75 @@ to the card for the next copy (`LiquidCard::spares`), and the host keeps the wal
 (`Host::band`) so a copy puts it on again without working it out. Under Detail the Liquid's
 settings say about how many drops fill 100 × 100 px.
 
+
+## Part 2, as built: how it acts with balls
+
+Plan: `docs/superpowers/plans/liquid/part2.md`.
+
+**What the owner sees.** The Meets card's **With the balls** group: Balls push it, **Pushes balls**
+(on by default), Meets balls (which balls), **Floats or sinks** (By ball weight / Floats / Sinks /
+Bobs) with **Ball weight** (water's Weight is 1, so 0.5 floats half under), **Drag** (more in a
+thicker liquid), **Carries balls**, **Splash size**, **Splashes from** (px/s), **Sticks to balls**,
+**Wakes**, **Balls drop ink** with its **Ink colour**, and **Balls take its colour**. The Liquid's
+Detail group has **Finer export**. The Rules have a When **Liquid** block (Who, Liquid, When it:
+Goes in / Comes out / Splashes / Goes in or out; values speed, size, hits, ball, way).
+
+**Where it steps.** A liquid with Balls push it and Pushes balls on is `in_main`, and its `keeps`
+holds every other Liquid thing in the main world too (they share one body), so the shared liquid is
+never split between worlds. Pushes balls is a plain switch (not keyframed), read from the saved
+card. A When Liquid rule keeps every Liquid thing (they share one host, so naming one keeps them all). The host knows it is in the main world by
+`!world.beside.contains(&id)`; only then does it record and read back. In the main world every
+Liquid setting restarts the physics: Fill and Meets are hashed whole (`steps_own_cards`) and
+`physics_print_extra` adds the Look's stepped mixing and the thing's place among the Liquid things.
+Exporting, a main-world liquid uses the preview Detail unless the first Liquid thing's Finer
+export is on.
+
+**The feel** (`bpe-gfx liquid_sim`: `Feel`, `FEEL_WORDS` = 32 per ball, `feel_at`). Balls are
+uploaded once per world step with a 16-bit mask of the liquids that meet them (6 words each); a
+later liquid step of the same world step sees them moved on along their speed, and inside a liquid
+step each substep moves them on too (`cs_tick` counts substeps in `counts[7]`, `ball_now`). Without
+that, a ball held still for a whole liquid step was hit by the same drops every substep and felt
+many times its push. In `cs_g2p`'s ball loop a contact records −m·Δv (the inelastic change, by
+1 / the ball's density to that liquid) and the touching mass, colour, drag, carry and take, and one
+count per liquid, all fixed-point `i32` atomics. Splash size throws hard-hit drops out harder (over
+1) or lets them slide along the ball less (under 1); Sticks pulls drops within 1.5 cells in (and
+records it); Wakes pull drops behind a moving ball along (not recorded); ink runs a touched drop's
+colour to the Ink colour. `cs_feel` then samples 32 grid points two cells outside each ball (wet
+where the volume is over 0.3; nothing for a ball no drop touched) and their mean grid speed. After
+the batch, `Body::send_feel` copies the words to a map-read; the next world step's first `forces`
+call waits for them (`Feel::wait`, a `OnceLock` shared by every copy of the world, so checkpoints
+and snapshots read the same words).
+
+**What the balls get** (`kit things/liquid/feel.rs::apply`). Δv = push / (π r²) plus drag towards
+Carries × the liquid's speed at rate 3/s × Drag × (1 + 8 × Thickness) × how wet the ring is, over
+the batch's span; held balls keep their speed. The push scale (1 / the ball's density) is capped at 10
+so the fixed-point sums can't overflow, and a liquid that doesn't push balls sends no drag, carry or
+take. When no ball is met any more the balls that were in a liquid get their Leave events at once
+(`feel::all_left`), and taken colours of balls gone from the world are dropped. A light ball floats by the liquid's own pressure (no
+buoyancy formula): in the water test scene Ball weight 0.3 floats at the top and 3.0 sinks, slower
+in a thick liquid. Events: a ball is *in* a liquid once its share of the ring (wet × that liquid's
+share of its contacts) passes 0.35 and *out* under 0.15 (or when no longer met); **Splash** is the
+first touch at Splashes from or faster. They are worked out when the feel is taken and logged by the
+host's next after-step (event kind `Liquid`, tag 23: `b` is the Liquid thing with 0 in, 1 out, 2
+splash). Taken colours (`Host::taken`, rgb and amount by ball) move at 3/s × Take × wetness, and
+`balls::draw::colours_with` mixes them into the ball's base colour, so trails and particles that
+take the ball's colour see it too.
+
+**Playbacks.** The editor's sound thread and its warm-up helper and the aim job name the editor's
+card (the particle job already did); `bpe-cli`'s sound thread names the export's card and the
+export guard. The status line's liquid readout comes from the main playback when the liquid is
+there. Aim test flights (`World::lone`) don't carry the liquid.
+
+**Tests.** `liquid_sim::tests` (a ball held under still water is pushed up and is wet all round; a
+ball out of the water or not in its mask feels nothing; the feel is the same twice),
+`things::liquid::tests_balls` (in the main world and keeping the others; floats and sinks; drag;
+goes in and splashes; Pushes balls off hits as without; seeking; taken colour and ink; a rule
+hears it), `golden_liquid.rs` (a main-world liquid's balls and log match after a seek), and
+`restarts.rs` hashes main-world liquids' `inputs_hash`.
+
+**Known gaps (part 2).** A camera or sound that follows one liquid doesn't pull it into the main
+world (only Pushes balls and a When Liquid rule do). Aim test flights copy the world with its liquid
+card and wait on it, so aiming in a scene with a main-world liquid is slower. The preview and an
+export may use different cards (an export with Finer export off still re-steps the liquid on the
+export's card, so a tiny difference in the card's float order could move balls). With a particle job
+running, a main-world liquid steps twice (once in the physics, once beside it for the particles).

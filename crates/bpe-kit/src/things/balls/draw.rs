@@ -422,6 +422,8 @@ fn colours_with<'a>(
     let (hue_per_hit, turn) = (stack.hue_per_hit(), stack.rainbow() * cx.time as f32);
     let gradient = if seen { stack.group.clone() } else { stack.group_on_body().cloned() };
     let time = cx.time as f32;
+    // The colours its balls took from a liquid (liquid part 2).
+    let taken = crate::things::liquid::taken_colours(cx.world, cx.thing.id);
     move |i| {
         // A fading ball's trails and particles fade with it (the ball itself by its opacity).
         let faded = |mut c: [f32; 4]| {
@@ -443,6 +445,10 @@ fn colours_with<'a>(
         }
         if let Some(g) = &gradient {
             base = mixed(base, group_colour(g, &group.info, &group.ball(bodies, i, time)), g.mix, g.amount);
+        }
+        if let Some(t) = taken.as_ref().and_then(|t| t.get(&(i as u32))) {
+            let a = t[3].clamp(0.0, 1.0);
+            base = [0, 1, 2, 3].map(|c| if c == 3 { base[3] } else { base[c] + (t[c] - base[c]) * a });
         }
         faded(crate::modules::look::layers::gpu::recoloured(base, hue_per_hit, turn, group.hits(bodies, i)))
     }

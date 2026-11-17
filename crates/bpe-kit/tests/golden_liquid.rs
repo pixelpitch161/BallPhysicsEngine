@@ -2,8 +2,9 @@
 //! a second, how many drops have been born (worked out on the processor, exactly) and how many
 //! there are (on the graphics card) are written down. The drops themselves move on the card, whose
 //! arithmetic can differ a little between drivers, so their places are pinned on this machine
-//! only: a seek back and forth, and a second run, must give exactly the same drops. And the balls
-//! must hit exactly as they do without the liquid.
+//! only: a seek back and forth, and a second run, must give exactly the same drops. A liquid that
+//! pushes balls (part 2) moves them, so on this machine a seek must give exactly the same balls and
+//! log too; one that doesn't must leave them hitting exactly as they do without it.
 //!
 //! When a change is meant to change the liquid, run with `BLESS_GOLDEN=1` (once with `--release`
 //! and once without) and say why in the pull request.
@@ -39,10 +40,17 @@ fn every_liquid_scene_keeps_its_liquid() {
             jumpy.seek(t);
         }
         assert_eq!(hash_of(state_of(jumpy.world(), id).unwrap()), last, "{name}: seeking");
-        // And the balls hit exactly as they do without the liquid.
-        let mut alone = Playback::new(&scene, &main_part(&scene, &resolved, &kit.sims), kit.sims.clone());
-        alone.seek(SECONDS as f64);
-        assert_eq!(alone.log().hash(), playback.log().hash(), "{name}: the liquid moved the balls");
+        let main = main_part(&scene, &resolved, &kit.sims);
+        if main.things.contains_key(&id) {
+            // It pushes the balls: they go the same way after a seek.
+            assert_eq!(jumpy.world().bodies, playback.world().bodies, "{name}: the balls after seeking");
+            assert_eq!(jumpy.log().hash(), playback.log().hash(), "{name}: the log after seeking");
+        } else {
+            // The balls hit exactly as they do without the liquid.
+            let mut alone = Playback::new(&scene, &main, kit.sims.clone());
+            alone.seek(SECONDS as f64);
+            assert_eq!(alone.log().hash(), playback.log().hash(), "{name}: the liquid moved the balls");
+        }
     }
     let file = if cfg!(debug_assertions) { "tests/golden-liquid-debug.txt" } else { "tests/golden-liquid.txt" };
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);

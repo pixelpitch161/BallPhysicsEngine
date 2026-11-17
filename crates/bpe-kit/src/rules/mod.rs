@@ -132,6 +132,7 @@ pub fn register(r: &mut Registry) {
     r.add_block(health::HealthIs);
     r.add_block(health::ChangeHealth);
     r.add_block(crate::things::particles::rules::ParticlesWhen);
+    r.add_block(crate::things::liquid::rules::LiquidWhen);
     r.add_block(text::SetText);
 }
 
@@ -174,6 +175,7 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(health::HealthIs);
     s.add_block(health::ChangeHealth);
     s.add_block(crate::things::particles::rules::ParticlesWhen);
+    s.add_block(crate::things::liquid::rules::LiquidWhen);
     s.add_block(text::SetText);
 }
 

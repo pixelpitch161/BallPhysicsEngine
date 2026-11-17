@@ -372,8 +372,12 @@ fn export_with(
         let share = frames as f64 / total as f64 * 0.9 + heard * 0.1;
         ((share * total as f64).floor() as u32).min(total.saturating_sub(1))
     };
+    // The sound's world steps its liquids on the export's card, at the export's Detail.
+    let card = bpe_gfx::swarm::on_this_thread();
     let made = std::thread::scope(|s| -> anyhow::Result<()> {
         let mut job = Some(s.spawn(|| {
+            let _card = bpe_gfx::swarm::use_for_now(card);
+            let _export = bpe_kit::things::liquid::exporting_for_now();
             bpe_sound::render_sound(scene, kit, &sound, seconds, &extras, |done| {
                 sound_at.store(done.to_bits(), Ordering::Relaxed);
                 !cancel.load(Ordering::Relaxed)

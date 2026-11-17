@@ -126,10 +126,13 @@ impl SoundJob {
         let (scene, resolved) = (scene.clone(), resolved.clone());
         let thread_meters = meters.clone();
         let thread_shared = shared.clone();
+        // A liquid that pushes balls steps on the editor's card in the sound's world too.
+        let card = bpe_gfx::swarm::on_this_thread();
         let thread = std::thread::Builder::new()
             .name("ball-studio sound".into())
             .spawn(move || {
                 crate::thread_priority::set_this_thread(crate::thread_priority::Priority::High);
+                bpe_gfx::swarm::use_on_this_thread(card);
                 run(rx, ring, thread_shared, kit, scene, resolved, thread_meters)
             })
             .ok();
@@ -307,9 +310,11 @@ impl Build {
         let target = Arc::new(Mutex::new(None));
         let (tx, done) = channel();
         let (c, t) = (cancel.clone(), target.clone());
-        let spawned = std::thread::Builder::new()
-            .name("ball-studio sound warm-up".into())
-            .spawn(move || build_aside(&scene, &resolved, &kit, &c, &t, &tx));
+        let card = bpe_gfx::swarm::on_this_thread();
+        let spawned = std::thread::Builder::new().name("ball-studio sound warm-up".into()).spawn(move || {
+            bpe_gfx::swarm::use_on_this_thread(card);
+            build_aside(&scene, &resolved, &kit, &c, &t, &tx)
+        });
         if let Err(e) = spawned {
             eprintln!("sound: could not start the warm-up helper: {e}");
         }

@@ -7,16 +7,21 @@
 //! Its own settings are what the liquid is like (**Liquid**: thickness, weight, springiness...,
 //! Detail and the Area); its cards are **Fill** (the Motion slot: fill at the start, Level, and a
 //! list of Pours), **Meets** (the Bounce slot: balls push it, and a list of rules for other liquids)
-//! and **Look**. In part 1 a Liquid thing is decoration: it reads the balls and walls and changes
-//! nothing anything else reads, so it is stepped beside the physics.
+//! and **Look**. A liquid that pushes balls back (part 2: the Meets card's Pushes balls) steps with
+//! the physics, and every other Liquid thing with it; one that doesn't is decoration stepped beside
+//! the physics.
 
 pub mod births;
 pub mod cards;
 pub mod draw;
+pub mod feel;
+pub mod rules;
 pub mod sim;
 pub mod state;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_balls;
 pub mod walls;
 
 use std::cell::Cell;
@@ -24,9 +29,10 @@ use std::cell::Cell;
 use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 
 pub use cards::{
-    ColourFrom, FILL, FillSettings, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, MixesWhen, OTHER,
-    OtherLiquid, POUR, PourLayer, RuleStyle,
+    ColourFrom, FILL, FillSettings, Floats, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, MixesWhen,
+    OTHER, OtherLiquid, POUR, PourLayer, RuleStyle,
 };
+pub use feel::taken_colours;
 pub use state::{LiquidState, hash_of, inputs_hash, state_of};
 
 /// The thing kind's id.
@@ -120,6 +126,10 @@ pub struct LiquidSettings {
     /// How many drops make it in the exported video.
     #[setting(label = "Export detail", group = "Detail")]
     pub export_detail: Detail,
+    /// Export at Export detail even while a liquid pushes balls: they will take different paths
+    /// from the preview (off, such an export uses the preview's Detail, so balls go as tuned).
+    #[setting(label = "Finer export", group = "Detail")]
+    pub finer_export: bool,
     /// How often the liquid moves on (the first Liquid thing's is used for all).
     #[setting(label = "Steps a second", group = "Detail")]
     pub steps: Steps,
@@ -142,6 +152,7 @@ impl Default for LiquidSettings {
             gravity: 1.0,
             detail: Detail::Normal,
             export_detail: Detail::Fine,
+            finer_export: false,
             steps: Steps::Steps240,
             area: AreaFrom::ShotAtTheStart,
             margin: 100.0,

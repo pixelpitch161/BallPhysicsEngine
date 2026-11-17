@@ -55,6 +55,18 @@ pub struct Host {
     pub walls_seen: BTreeMap<ThingId, Wall>,
     /// The band worked out from them, for a copied body to put on again without working it out.
     pub band: Option<Arc<Vec<WallNode>>>,
+    /// In the main world: what the balls felt in the last liquid steps, on its way back, and the
+    /// balls it is for (part 2). Shared by every copy of the world, so all read the same.
+    pub pending: Option<(Arc<bpe_gfx::liquid_sim::Feel>, Arc<super::feel::Felt>)>,
+    /// Which balls are in which liquid (thing, row, liquid number), and which touch it.
+    pub inside: std::collections::BTreeSet<(ThingId, u32, u8)>,
+    pub touching: std::collections::BTreeSet<(ThingId, u32, u8)>,
+    /// The liquids' numbers on the card and their things, as last felt.
+    pub numbers: Vec<(usize, ThingId)>,
+    /// Events worked out from the feel, for the next after-step to log.
+    pub news: Vec<bpe_runtime::Event>,
+    /// The colour each ball has taken from the liquid (linear rgb, and how much).
+    pub taken: Arc<BTreeMap<(ThingId, u32), [f32; 4]>>,
 }
 
 impl Host {
