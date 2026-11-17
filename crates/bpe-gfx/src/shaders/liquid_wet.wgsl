@@ -53,7 +53,8 @@ fn cs_wet(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let half = solid[2u * n + 1u].z;
     // The liquid's side: a filled wall keeps it on its normal's side; a hollow one, the side with
-    // more liquid two cells off the wall, else what the node above knew, else what it knew.
+    // more liquid two cells off the wall, else what it knew (only its own: another node's side is
+    // written in this same pass).
     var side = 1.0;
     if half >= 0.0 {
         let x = i32(n % w.grid.x);
@@ -66,8 +67,6 @@ fn cs_wet(@builtin(global_invocation_id) id: vec3<u32>) {
             side = 1.0;
         } else if behind > ahead {
             side = -1.0;
-        } else if side == 0.0 && n >= w.grid.x {
-            side = wet[3u * cells + n - w.grid.x];
         }
     }
     var face = -FAR;

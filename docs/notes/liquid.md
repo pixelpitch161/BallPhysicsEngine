@@ -206,8 +206,8 @@ grid (`4 × cols × rows` f32: two halves of wetness swapped each liquid step, t
 distance and side; copied by `Clone`, counted in `bytes()`): after each step's last substep a node
 in the walls band with mass (over 0.05) is 1, any other band node keeps `exp(−dt / 6 s)` and moves
 `6 dt` of the way towards 0.97 × the node above, off the band 0. A band node knows which side of a
-hollow wall the liquid is on (more mass two cells along the normal or against it, else the node
-above's side) and its distance from the wall's face on that side; a node past the face (under
+hollow wall the liquid is on (more mass two cells along the normal or against it, else what it
+knew before; never another node's side, which is written in the same pass) and its distance from the wall's face on that side; a node past the face (under
 −0.5 cells) stays dry, since the drops' weights reach across a thin wall, and `fs_wet` shows the
 film only from the face to about 2 cells in (interpolated, so it follows the wall smoothly; at
 first it was drawn by whole cells outside the ring, in steps). It is always worked out (one thread a node), read only by the draw
@@ -231,6 +231,7 @@ lit pool", "Liquid glow"); look shots `liquid-looks`, `liquid-lit`, `liquid-glow
 
 **Known gaps (part 3).** No Shader layers (picture effects) on the Liquid's Look: it is drawn by its
 own pass. Foam doesn't last after a drop slows (that needs per-drop memory). Wet balls need the
-liquid to push balls. The depth march looks straight up the screen, so a liquid under an overhang
+liquid to push balls. The wet grid is the body's, shared by every Liquid thing: Wet walls on one
+liquid shows where any liquid has been, in its own colour. The depth march looks straight up the screen, so a liquid under an overhang
 reads as shallow there. Caustics and bubbles are patterns in the world, not traced from the
 surface or moved by the flow.

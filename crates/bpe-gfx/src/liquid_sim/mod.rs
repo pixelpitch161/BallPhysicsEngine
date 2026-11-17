@@ -691,7 +691,8 @@ pub struct DropsSource {
     pub drops: wgpu::Buffer,
     /// Its first four words are the draw's arguments.
     pub counts: wgpu::Buffer,
-    /// The wet grid (liquid part 3): `2 × cols × rows` floats, the half `wet_half` the newest.
+    /// The wet grid (liquid part 3): `4 × cols × rows` floats (two halves of
+    /// wetness, the half `wet_half` the newest, then each node's face distance and side).
     pub wet: wgpu::Buffer,
     pub grid: (u32, u32),
     pub wet_half: u32,
