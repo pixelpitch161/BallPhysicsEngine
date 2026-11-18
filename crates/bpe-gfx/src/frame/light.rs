@@ -291,6 +291,10 @@ pub struct LightScene {
     /// Glass and light part 4a: shapes that carry light along their outline (light pipes), at most
     /// [`MOST_PIPES`]; [`LightScene::light_pipes`] turns them into strip lights.
     pub pipes: Vec<Pipe>,
+    /// Liquid fixes part B: the surface indices of Liquid things that block light. A liquid never
+    /// shadows its own body (a crest or a hole would throw dark shafts through it); it still
+    /// shadows everything else.
+    pub liquid_surfaces: Vec<u32>,
 }
 
 /// The most things that throw light in a frame (the rest throw none).

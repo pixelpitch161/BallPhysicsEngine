@@ -261,6 +261,45 @@ fn dichroic_entering(q: vec2<f32>, toward: vec2<f32>) -> vec3<f32> {
     return dichroic_through(g, cos_t);
 }
 
+// Liquid fixes part B: the Liquid thing picture pixel `ip` is of (its surface index, one of the
+// range `u.bent.z` to before `u.bent.w`), or -1. A liquid never shadows its own body: a crest, a
+// spike or a hole would throw dark shafts through it.
+fn liquid_at(ip: vec2<i32>) -> i32 {
+    if u.bent.w <= u.bent.z || ip.x < 0 || ip.y < 0 {
+        return -1;
+    }
+    let size = vec2<i32>(textureDimensions(surface));
+    if any(ip >= size) {
+        return -1;
+    }
+    let c = surface_code(textureLoad(surface, ip, 0));
+    return select(-1, i32(c), c >= u.bent.z && c < u.bent.w);
+}
+
+// Out of its own liquid `own` for the ray going `toward` from `p`, in at `t_in`: by the field, at
+// most three texels a step (so a ball in the liquid isn't stepped over), and a texel and a half on.
+// x: where it is out; y: 1 when it met something else that blocks on the way (x is then there,
+// for the march to meet it as it meets any blocker).
+fn walk_out(p: vec2<f32>, toward: vec2<f32>, t_in: f32, own: i32) -> vec2<f32> {
+    let texel = max(u.field.z, 1e-3);
+    var t = t_in;
+    for (var i = 0; i < 256; i++) {
+        let q = p + toward * t;
+        let d = field_at(q);
+        if d >= 0.0 {
+            break;
+        }
+        if t > t_in {
+            let at = pixel_of(q);
+            if pixel_meets(at) && liquid_at(at) != own {
+                return vec2<f32>(t, 1.0);
+            }
+        }
+        t += clamp(-d, texel, 3.0 * texel);
+    }
+    return vec2<f32>(t + 1.5 * texel, 0.0);
+}
+
 // `visibility` for one ray. `across`: one of the rays across the lamp, which stops as soon as it
 // crosses a solid blocker (only whether it did, how clear it stayed and what the see-through ones
 // let through count). A see-through blocker (its pixels blocking less than SOLID) is walked
@@ -279,6 +318,9 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
     var t = 0.0;
     let ip = pixel_of(p);
     var leaves = false;
+    // The liquid the pixel is on (liquid fixes part B): left as a solid blocker is, see-through or
+    // not, and never met again on the way.
+    let own = liquid_at(ip);
     if ip.x >= 0 {
         // On a blocker that covers more than half the pixel (in Flat R is the blocker's opacity
         // and A its cover times that).
@@ -292,9 +334,12 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
         }
         // On glass that bends (part 3): it lights itself as it is (the photons start where the
         // light leaves it).
-        leaves = leaves || bends_at(ip);
+        leaves = leaves || bends_at(ip) || own >= 0;
     }
-    if leaves {
+    // On its own liquid: out of it, unless something else is met in it first (liquid fixes part B).
+    if own >= 0 {
+        t = walk_out(p, toward, 0.0, own).x;
+    } else if leaves {
         // Leave the blocker the pixel is on: a thing doesn't shadow itself.
         for (var i = 0; i < steps; i++) {
             let d = field_at(p + toward * t);
@@ -384,6 +429,14 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
             }
         } else if d < 0.0 && !solid {
             let c = confirm(p, toward, open, t, end);
+            // Its own liquid again (liquid fixes part B): through it as if it weren't there.
+            if own >= 0 && liquid_at(pixel_of(p + toward * select(t, c.y, c.x >= 0.5))) == own {
+                let w = walk_out(p, toward, select(t, c.y, c.x >= 0.5), own);
+                t = w.x;
+                open = t;
+                beside = w.y < 0.5;
+                continue;
+            }
             if c.x < 0.5 && clear_tint(fd.yzw) {
                 // Clear coloured glass, which the picture can't tell (it blocks next to nothing):
                 // walked through like any see-through blocker, its colour taken from the field.

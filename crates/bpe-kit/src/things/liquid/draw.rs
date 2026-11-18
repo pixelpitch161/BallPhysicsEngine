@@ -211,6 +211,10 @@ impl ThingDraw for LiquidDraw {
         let s = surface_of(card);
         scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::SHEET));
         scene.refracts |= s.see_through();
+        // It never shadows its own body (liquid fixes part B).
+        if look.blocks_light {
+            scene.liquid_surfaces.push(index);
+        }
         if look.blocks_light && surface::bends(&s) {
             let Some(host) = host_of(cx.world).and_then(|h| h.host.as_ref()) else { return };
             let l = &host.layout;

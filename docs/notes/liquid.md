@@ -421,3 +421,49 @@ than it needs there. Pours fill √Size times faster than before.
 
 **Tried and dropped: shaking stretched surfaces into spray.** It only roughened the surface. A ball's
 splash crown is a few cells thick, so shaking it doesn't break it into drops.
+
+## Lighting and look, as built (liquid fixes part B)
+
+Plan: `docs/superpowers/plans/liquid/lighting-look.md` (from the 2026-11-17 liquid review).
+
+**What the owner sees.** Lots of liquid under a lamp no longer has dark shafts through it, bright
+columns under splashes or a ladder of rings under holes; ripples sit on the top (and break up the
+waterline's highlight) instead of speckling the whole body; the liquid fills right up to a wall
+instead of stopping short of it with a rounded corner. No setting changed.
+
+**No self shadow** (`shadows.wgsl::march`). `LiquidDraw::light` pushes each Liquid thing that blocks
+light into `LightScene::liquid_surfaces`; the lighting uniform's `bent.z..bent.w` is their surface
+index range (consecutive). A ray starting on one (`liquid_at`) leaves it as a solid blocker (see-
+through too), and when it meets the same liquid again it walks out of it by the field
+(`walk_out`) and carries on. It still shadows everything else and everything else still shadows
+it. Known gap: as with the old leave loop, a ball inside the liquid between a pixel and where the
+ray leaves the liquid doesn't shadow that pixel.
+
+**Depth** (`liquid.wgsl`): for a full look, after the splat, `fs_coarse` takes the field's mean over
+13 × 13 px round each coarse texel (a quarter of the field each way, R16Float) and `fs_depth` marches
+that smooth field up the screen's world up a texel a step (at most 256, to `depth_range()`),
+crossing the level between samples. `full_surface` samples that depth map, and within 24 px of the
+top blends (`smoothstep(12 px, 24 px)`) to the old exact march limited to 24 px (foam's On top,
+film rings, bubbles need the top to the pixel). Thin gaps, spikes and holes under ~8 px, and rows
+of resting drops, don't reach the depth at all.
+
+**Ripples** (`ripple_noise`, `ripple_height`): faded out with depth (`1 − smoothstep(0.5 s, 2 s)`, s
+the ripple size), no longer phase-shifted by the flow (that slid a stream's ripples as a band; flow
+now adds up to 50% strength), and they move the waterline (`fs_surface`, where the edge faces up)
+by their height. For the real lights the height is up to 5× steeper within a ripple size of the top,
+so the top catches small glints.
+
+**Walls** (`liquid_drops.wgsl`): the drops group also binds the body's wet grid (its face distances
+are always kept). A drop whose bilinear face distance is −0.25 to its reach (all four nodes in the
+band, side known) gets its wall's plane (normal from the face distance's slope, accepted at length
+0.5 to 1.5); a second draw (`vs_mirror`) splats its mirror image across that plane, and both are cut
+at the plane, softly over a pixel (`fs_drop`). The field is whole up to the face and nothing shows
+past it. Spilled drops past a face and walls whose side isn't known yet draw as before.
+
+**Tests.** `liquid_look_pictures.rs`: `deep_water_is_even_across_its_body_and_meets_the_wall`,
+`the_liquid_never_shadows_its_own_body`. Look shot `liquid-deep-lit` (clear water at Level 0.7,
+a lamp inside the ring, five balls).
+
+**Seen but not this part's.** In `liquid-deep-lit` at 2.5 s the balls' soft shadows in the air
+near the lamp show faint contour bands (Good quality); air pixels never take the liquid branch, so
+it's the lighting's soft shadows, not the liquid.
