@@ -381,3 +381,43 @@ caller keeps the card and names it with `swarm::use_for_now`. A `SwarmGpu` owns 
 GPU objects of different wgpu instances with `==` (the renderer's `DropsSource.device == *device` check has the same
 blind spot, harmless today because each world draws with the device it stepped on). Regression test:
 `bpe-cli/tests/liquid_export.rs`, which keeps an "editor" card named while it draws a final frame on a second device.
+
+
+## Water feel, as built (liquid fixes part A)
+
+Plan: `docs/superpowers/plans/liquid/water-feel.md` (from the 2026-11-17 liquid review).
+
+**What the owner sees.** A Liquid's How it flows group starts with **Size** (Glass, **Bucket**, Bath,
+Pool): how big the liquid is in real life (the first Liquid thing's is used for all, as Detail, kept in
+`Host::size`: liquids of different sizes sharing a body would fall at different gravities). A smaller liquid falls at more times the scene's gravity
+(Glass 16, Bucket 8, Bath 3, Pool 1; Pool is how liquids moved before), so a ring of water sloshes in
+about a second instead of six. New liquids are thinner and settle less (Thickness 0.02, Surface pull
+0.2, Spray 0.4, Settles 0.1). Single drops and thin streams now draw (spray, drips, a Very fine pour).
+
+**How.** Gravity × `Host::size` is each liquid's gravity factor (`lq.b.z`) and goes into its
+stiffness. The push on balls (`lq.e.x`) is divided by the Size, so a ball still floats
+or sinks by its Ball weight. A pour's speed (and its births a second) is × √Size, so its arc keeps its
+shape on screen. The stiffness's column (`sim.rs::column`) is the liquid's shape's size (its bounds'
+longest side) instead of the whole grid, which keeps Bucket's substeps under `MOST_SUBSTEPS` (64): at
+the cap a Springiness 1 Bucket pour blew apart, so at the cap the stiffness is held at 0.8 of what the
+substeps keep stable (a Glass, Springiness 1 pour then stays whole).
+
+**Holes close** (`cs_g2p`): a drop with liquid nearly all round it (`exposure` under `CLOSE_OPEN`
+0.5) moves `CLOSE_RATE` × the substep (120 cells a second at a slope of 1, a substep at most half its
+share) down the slope of
+the grid's volume (`slopes`, the weights' derivatives). Cracks behind a pour are thinner than a cell,
+so they have no pressure of their own to close them. Tried first and dropped: giving inner drops a
+pull back for J > 1 (the full equation of state). Even at 0.15 of the stiffness it threw the whole
+liquid apart (tensile instability).
+
+**Lone drops** (`liquid_drops.wgsl`): a drop whose volume round it (1 / `j`, float 12) is under
+0.45 has its splat lifted (full at 0.25) so its peak is 1.6 × the Edge level and it draws as a small
+droplet. Field and colour weights are lifted together, so colours don't change.
+
+**Known gaps.** The push on balls is divided by the Size as a whole, so a ball crashing into Glass
+water also feels 1/16 of the impact (drag still slows it): buoyancy and impact can't be told apart
+in a drop's contact. Liquid that spills out of its shape into a taller free area gets less stiffness
+than it needs there. Pours fill √Size times faster than before.
+
+**Tried and dropped: shaking stretched surfaces into spray.** It only roughened the surface. A ball's
+splash crown is a few cells thick, so shaking it doesn't break it into drops.

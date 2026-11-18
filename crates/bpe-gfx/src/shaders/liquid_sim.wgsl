@@ -32,7 +32,8 @@ struct Liquid {
     a: vec4<f32>,
     // viscosity (cells²/s), weight, gravity ×, balls push it (0 or 1)
     b: vec4<f32>,
-    // mix style, 0, 0, cut line (cells: drops above it go; -1e30 none)
+    // mix style, how far a drop inside moves into an emptier place a substep (cells, at a
+    // slope of 1), the openness it stops moving by, cut line (cells: drops above it go; -1e30 none)
     c: vec4<f32>,
     // serial floor (drops born before it go), 0, 0, 0
     d: vec4<u32>,
@@ -302,6 +303,11 @@ fn weights(fx: vec2<f32>) -> array<vec2<f32>, 3> {
     );
 }
 
+// The weights' slopes along each way.
+fn slopes(fx: vec2<f32>) -> array<vec2<f32>, 3> {
+    return array<vec2<f32>, 3>(fx - 1.5, -2.0 * (fx - 1.0), fx - 0.5);
+}
+
 // Where the drop's 3 × 3 nodes start (kept inside the grid).
 fn base_of(x: vec2<f32>) -> vec2<i32> {
     let b = vec2<i32>(floor(x - 0.5));
@@ -450,9 +456,11 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let base = base_of(p.x);
     let fx = p.x - vec2<f32>(base);
     var w = weights(fx);
+    let dw = slopes(fx);
     var v = vec2<f32>(0.0);
     var c = vec4<f32>(0.0);
     var vd = 0.0;
+    var slope = vec2<f32>(0.0);
     for (var a = 0; a < 3; a = a + 1) {
         for (var b = 0; b < 3; b = b + 1) {
             let wt = w[a].x * w[b].y;
@@ -461,11 +469,29 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             let gv = vec2<f32>(bitcast<f32>(atomicLoad(&grid[4u * n + 1u])), bitcast<f32>(atomicLoad(&grid[4u * n + 2u])));
             v = v + wt * gv;
             c = c + 4.0 * wt * vec4<f32>(gv.x * dpos.x, gv.x * dpos.y, gv.y * dpos.x, gv.y * dpos.y);
-            vd = vd + wt * f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
+            let nv = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
+            vd = vd + wt * nv;
+            slope = slope + vec2<f32>(dw[a].x * w[b].y, w[a].x * dw[b].y) * nv;
         }
     }
     p.j = 1.0 / max(vd, 0.05);
     let open = exposure(vd);
+    // Inside the liquid, a drop moves a little towards where there is less liquid round it, so
+    // holes and cracks left by a pour or a ball close up (a hole thinner than a cell has no
+    // pressure of its own to close it). Not at the open surface, where that would spread it, nor
+    // in ice.
+    if lq.c.y > 0.0 && (p.kind & FROZEN) == 0u {
+        let inner = 1.0 - smoothstep(0.0, max(lq.c.z, 1e-3), open);
+        var shift = -lq.c.y * inner * slope;
+        let most = 0.5 * lq.c.y;
+        let len = length(shift);
+        if len > most {
+            shift = shift * (most / len);
+        }
+        if finite2(shift) {
+            p.x = p.x + shift;
+        }
+    }
     // Heat: lost at the surface, gained near heat.
     var heat = p.spare.x;
     heat = heat - lq.i.x * open * heat * dt;

@@ -145,7 +145,8 @@ pub struct LiquidGpu {
     pub a: [f32; 4],
     /// Viscosity (cells² a second), weight, gravity ×, balls push it (0 or 1).
     pub b: [f32; 4],
-    /// Mix style, 0, 0, the cut line (grid y: drops above it go; -1e30 none).
+    /// Mix style, how far a drop inside moves into an emptier place a substep (cells, at a slope
+    /// of 1; 0 never), the openness it stops by, the cut line (grid y: drops above it go; -1e30 none).
     pub c: [f32; 4],
     /// The serial floor, the newest serial (drops a reaction makes take it), 0, 0.
     pub d: [u32; 4],

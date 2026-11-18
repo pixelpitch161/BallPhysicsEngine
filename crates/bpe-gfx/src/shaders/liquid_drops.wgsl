@@ -38,7 +38,7 @@ struct Style {
 };
 
 // Numbers a drop takes in the card's buffer (liquid_sim.wgsl's `Drop`): x at 0, v at 2, colour at
-// 8, kind at 13, serial at 14, kick at 15.
+// 8, j at 12, kind at 13, serial at 14, kick at 15.
 const DROP_FLOATS: u32 = 24u;
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -65,6 +65,9 @@ struct DropOut {
     @location(1) colour: vec3<f32>,
     // Liquid part 3: its foam (0 to 1), speed (world units a second / 1000) and kick.
     @location(2) more: vec3<f32>,
+    // How much stronger its splat is: a drop with little liquid round it would never reach the
+    // Edge level on its own, so it is lifted to draw as a small droplet.
+    @location(3) boost: f32,
 };
 
 @vertex
@@ -92,6 +95,13 @@ fn vs_drop(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
         foam = clamp(smoothstep(least, 2.0 * least, speed) + st.m.z * kick, 0.0, 1.0);
     }
     out.more = vec3<f32>(foam, min(speed, 1e5) / 1000.0, kick);
+    // Alone (the volume round it, 1 / j, low: spray, a thin stream), it reaches the level by
+    // itself: its peak is 1.6 times the level (st.a.x), so it draws as a droplet about half its
+    // reach across. Inside the liquid (about 1) and at its surface (about 0.5) nothing changes.
+    let j = drops[at + 12u];
+    let vd = select(1.0, 1.0 / max(j, 1e-3), j == j && j > 0.0);
+    let alone = 1.0 - smoothstep(0.25, 0.45, vd);
+    out.boost = mix(1.0, max(1.6 * st.a.x, 1.0), alone);
     // Another liquid's drop: nowhere.
     let kind = bitcast<u32>(drops[at + 13u]) & 255u;
     if st.f.z >= 0.0 && kind != u32(st.f.z + 0.5) {
@@ -112,10 +122,10 @@ fn fs_drop(in: DropOut) -> Fields {
         discard;
     }
     let k = 1.0 - d2;
-    let w = k * k * k;
+    let w = k * k * k * in.boost;
     // Sharper swirls: the colour counts mostly near each drop's middle (a little all over, so the
     // edge between drops keeps a colour in half floats).
-    let cw = pow(k, 3.0 + 21.0 * clamp(st.f.x, 0.0, 1.0)) + 0.002 * w;
+    let cw = (pow(k, 3.0 + 21.0 * clamp(st.f.x, 0.0, 1.0)) + 0.002 * k * k * k) * in.boost;
     var out: Fields;
     out.field = vec4<f32>(in.colour * cw, w);
     out.weights = vec4<f32>(cw, w * in.more.x, w * in.more.y, w * in.more.z);
