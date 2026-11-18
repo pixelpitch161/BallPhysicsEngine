@@ -136,7 +136,8 @@ pub enum AreaFrom {
 /// A Liquid thing's own settings: what the liquid is like.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LiquidSettings {
-    /// How big it is in real life: a glass sloshes quickly, a pool slowly.
+    /// How big it is in real life: a glass sloshes quickly, a pool slowly (the first Liquid
+    /// thing's is used for all).
     #[setting(label = "Size", simple, group = "How it flows")]
     pub size: LiquidSize,
     /// How thick it is: water at 0, honey near 1, tar past it.
@@ -274,11 +275,6 @@ pub(crate) fn num(x: f32, or: f32) -> f32 {
 
 impl LiquidSettings {
     /// The settings in `p`, any number that isn't one read as its default.
-    /// How many times the scene's gravity it falls at: its Gravity × its Size.
-    pub fn pull(&self) -> f32 {
-        self.gravity * self.size.factor()
-    }
-
     pub fn read(p: &bpe_core::Params) -> LiquidSettings {
         let s = LiquidSettings::from_params(p);
         let d = LiquidSettings::default();

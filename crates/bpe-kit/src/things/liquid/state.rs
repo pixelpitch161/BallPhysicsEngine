@@ -49,6 +49,10 @@ pub struct Host {
     pub layout: Layout,
     /// Liquid steps a second.
     pub rate: u32,
+    /// How many times the scene's gravity every liquid falls at: the first Liquid thing's Size
+    /// (one for all, as Detail: liquids of different sizes sharing a body would fall at different
+    /// gravities and layer the wrong way up).
+    pub size: f32,
     /// Liquid steps taken.
     pub step: u32,
     /// The walls the band was last worked out from.

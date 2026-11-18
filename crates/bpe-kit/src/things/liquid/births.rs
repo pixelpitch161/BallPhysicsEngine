@@ -417,7 +417,15 @@ pub fn level_moved(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<
 }
 
 /// Pour `k`'s drops for one liquid step of `dt` seconds (its share owed carried in `st.owed`).
-pub fn pour(st: &mut LiquidState, k: usize, world: &World, layout: &Layout, dt: f32, step: u32) -> Vec<Drop> {
+pub fn pour(
+    st: &mut LiquidState,
+    k: usize,
+    world: &World,
+    layout: &Layout,
+    dt: f32,
+    step: u32,
+    size: f32,
+) -> Vec<Drop> {
     let p: PourLayer = st.pours[k].clone();
     if !p.on || st.index.is_none() {
         st.owed[k] = 0.0;
@@ -427,7 +435,7 @@ pub fn pour(st: &mut LiquidState, k: usize, world: &World, layout: &Layout, dt: 
     let kind = kind_of(st, &region);
     let per_drop = layout.cell * layout.cell * 0.25;
     // A smaller liquid moves faster: its pour too, so the arc keeps its shape on screen.
-    let speed = p.speed * st.settings.size.factor().sqrt();
+    let speed = p.speed * size.max(0.0).sqrt();
     let owed = st.owed[k] + p.width * speed * p.rate * dt / per_drop;
     let owed = if owed.is_finite() { owed.min(MOST_A_STEP as f32 + 1.0) } else { 0.0 };
     let n = owed.floor() as u32;
