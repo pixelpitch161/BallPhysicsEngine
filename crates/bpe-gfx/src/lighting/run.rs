@@ -313,7 +313,14 @@ impl Lighting {
                 if plan.tinted { 1.0 } else { 0.0 },
             ],
             // Only glass that bends changes the direct light (mirrors add light, part 4a).
-            bent: [if bending { 1.0 } else { 0.0 }, dichroic_count as f32, 0.0, 0.0],
+            // Liquid fixes part B: the Liquid things' surface indices (consecutive), from z to
+            // one before w: a liquid never shadows its own body.
+            bent: {
+                let (lo, hi) =
+                    scene.liquid_surfaces.iter().fold((u32::MAX, 0), |(lo, hi), &i| (lo.min(i), hi.max(i + 1)));
+                let (lo, hi) = if lo < hi { (lo as f32, hi as f32) } else { (0.0, 0.0) };
+                [if bending { 1.0 } else { 0.0 }, dichroic_count as f32, lo, hi]
+            },
             tiles,
             tile_list,
             bends: if bending { bent_light::bend_bits(&plan.bent.benders) } else { [[0; 4]; 16] },

@@ -65,7 +65,8 @@ struct Uniform {
     /// glass takes its colour, 1 when the tint picture was drawn (glass and light part 1).
     trace: [f32; 4],
     /// Glass and light part 3: 1 when glass bends lamp light (the photon pass runs); part 4b: how
-    /// many entries `dichroic` has; two spare.
+    /// many entries `dichroic` has; liquid fixes part B: the Liquid things' surface indices, from z
+    /// to one before w (they never shadow themselves).
     bent: [f32; 4],
     /// Review S19: the light tiles ([`LightTiles::uniform`]): tiles per unit of uv across and
     /// down, how many across and down (0: no lists).

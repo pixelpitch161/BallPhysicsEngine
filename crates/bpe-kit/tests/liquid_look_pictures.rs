@@ -199,3 +199,73 @@ fn under_a_lamp_the_real_lights_shade_it_and_every_layer_draws() {
         assert!(bright(mean(&px, DEEP.0, DEEP.1)) > 5.0, "{name} draws its liquid");
     }
 }
+
+// ---- Liquid fixes part B ---------------------------------------------------------------------
+
+/// Clear water at Level 0.7 in the ring (its top at y ≈ -200), the scene's ball dropped into it
+/// fast from just above (`drop`) or moved far off; lit by a lamp inside the ring above the water
+/// when `lamp` is set.
+fn deep(drop: bool, lamp: bool) -> Scene {
+    let reg = bpe_kit::registry();
+    let mut s = bpe_kit::new_scene(&reg);
+    let ring = s.things.values().find(|t| t.kind == "shape").map(|t| t.id).unwrap();
+    bpe_kit::scenes::add_liquid(&mut s, &reg, ring, |f| f.level = 0.7, |_| {});
+    let ball = s.things.values().find(|t| t.kind == "balls").map(|t| t.id).unwrap();
+    let t = s.things.get_mut(&ball).unwrap();
+    if drop {
+        t.transform.position = glam::Vec2::new(-60.0, -380.0);
+        t.params.set("radius", Value::Number(55.0));
+        t.params.set("velocity", Value::Vec2([0.0, 900.0]));
+    } else {
+        t.transform.position = glam::Vec2::new(3000.0, -3000.0);
+    }
+    if lamp {
+        let root = s.things.get_mut(&ThingId::ROOT).unwrap();
+        let mut r = bpe_kit::things::scene::SceneSettings::from_params(&root.params);
+        r.background = bpe_kit::paint::Paint::solid(bpe_core::Color::rgb(0x30, 0x34, 0x40));
+        root.params = r.to_params();
+        let light =
+            bpe_kit::things::light::add_light(&mut s, &reg, bpe_kit::things::light::LightType::Point, ThingId::ROOT)
+                .unwrap();
+        s.things.get_mut(&light).unwrap().params.set("position", Value::Vec2([-150.0, -400.0]));
+    }
+    s
+}
+
+#[test]
+fn deep_water_is_even_across_its_body_and_meets_the_wall() {
+    let mut gpu = gpu();
+    let px = draw(&mut gpu, &deep(false, false), 0.5, "deep-still");
+    // No columns, rings or bands: at each depth the body is the same colour across.
+    let mut y = 0.0;
+    while y <= 440.0 {
+        let at = |x: f32| mean(&px, (x - 12.0, y - 8.0), (x + 12.0, y + 8.0));
+        let (a, b, c) = (at(-150.0), at(0.0), at(150.0));
+        assert!(distance(a, b) < 8.0 && distance(b, c) < 8.0, "even across at y {y}: {a:?} {b:?} {c:?}");
+        y += 40.0;
+    }
+    // Right up to the ring's inner face (its line at x ≈ -467 at y 200): no gap of background.
+    let wall = mean(&px, (-458.0, 192.0), (-450.0, 208.0));
+    let body = mean(&px, (-320.0, 192.0), (-280.0, 208.0));
+    assert!(distance(wall, body) < 16.0, "the water meets the wall: {wall:?} vs the body {body:?}");
+}
+
+#[test]
+fn the_liquid_never_shadows_its_own_body() {
+    let mut gpu = gpu();
+    let lit = deep(true, true);
+    let on = draw(&mut gpu, &lit, 0.45, "deep-blocks");
+    let mut off = lit.clone();
+    set_look(&mut off, |l| l.blocks_light = false);
+    let off = draw(&mut gpu, &off, 0.45, "deep-blocks-off");
+    // Under the crests the ball throws up, the body is lit as when it blocks no light at all.
+    for y in [40.0, 160.0, 280.0, 400.0] {
+        for x in [-300.0, -150.0, 0.0, 150.0, 300.0] {
+            let (a, b) = (
+                mean(&on, (x - 30.0, y - 30.0), (x + 30.0, y + 30.0)),
+                mean(&off, (x - 30.0, y - 30.0), (x + 30.0, y + 30.0)),
+            );
+            assert!(distance(a, b) < 10.0, "no shadow of its own at ({x}, {y}): {a:?} vs {b:?}");
+        }
+    }
+}

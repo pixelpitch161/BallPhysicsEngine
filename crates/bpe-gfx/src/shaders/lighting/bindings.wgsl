@@ -47,7 +47,8 @@ struct Lighting {
     // pass then reads it in `picture`'s place).
     trace: vec4<f32>,
     // Glass and light part 3: 1 when glass bends lamp light (the photon pass runs); part 4b: y how
-    // many entries `dichroic` has; two spare.
+    // many entries `dichroic` has; liquid fixes part B: the Liquid things' surface indices, from z
+    // to one before w (a liquid never shadows its own body).
     bent: vec4<f32>,
     // Review S19, the lights each tile of the picture lists (`lights_near`): tiles across and down per
     // unit of uv (the pictures' size over the tile's), how many tiles across and down (0 across: no

@@ -20,6 +20,10 @@ const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The drops' colour weights' format: the colour weight, and (liquid part 3) the drops' foam,
 /// speed and kick, each times its weight.
 const WEIGHTS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Liquid fixes part B: the coarse field and the depth map (`fs_coarse`, `fs_depth`).
+const COARSE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+/// How many field pixels a coarse texel is across (liquid.wgsl's `DEPTH_DIV`).
+const DEPTH_DIV: u32 = 4;
 /// Uniforms sit this far apart for dynamic offsets.
 const STRIDE: u64 = 512;
 /// The most blobs one liquid draws (a guard far above what a layer makes).
@@ -193,6 +197,17 @@ pub(crate) struct LiquidPass {
     blobs: GrowableBuffer,
     /// The field, and the drops' colour weights.
     field: Option<(u32, u32, wgpu::TextureView, wgpu::TextureView)>,
+    /// Liquid fixes part B: the coarse field and the depth map a full look reads its depth from,
+    /// their passes, and those passes' groups.
+    depth_maps: Option<(wgpu::TextureView, wgpu::TextureView)>,
+    coarse: wgpu::RenderPipeline,
+    coarse_layout: wgpu::BindGroupLayout,
+    depth: wgpu::RenderPipeline,
+    depth_layout: wgpu::BindGroupLayout,
+    coarse_group: Option<wgpu::BindGroup>,
+    depth_group: Option<wgpu::BindGroup>,
+    /// Drops near a wall again, mirrored across its face (`vs_mirror`).
+    splat_mirror: wgpu::RenderPipeline,
     group: Option<wgpu::BindGroup>,
     splat_group: Option<wgpu::BindGroup>,
     /// This frame's liquids, by their address (the frame stays put between upload and draw).
@@ -217,6 +232,7 @@ impl LiquidPass {
                     count: None,
                 },
                 util::float_texture_entry(4, S::FRAGMENT),
+                util::float_texture_entry(6, S::FRAGMENT),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -239,6 +255,16 @@ impl LiquidPass {
                 util::uniform_entry(0, S::VERTEX_FRAGMENT, true),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
+                    visibility: S::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: S::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -295,38 +321,45 @@ impl LiquidPass {
             cache: None,
         });
         let weights = wgpu::BlendState { color: add, alpha: add };
-        let splat_drops = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("liquid splat drops"),
-            layout: Some(&drops_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &drops_module,
-                entry_point: Some("vs_drop"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &drops_module,
-                entry_point: Some("fs_drop"),
-                compilation_options: Default::default(),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: FIELD_FORMAT,
-                        blend: Some(weights),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: WEIGHTS_FORMAT,
-                        blend: Some(weights),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let splat_of = |label, vs| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&drops_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &drops_module,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &drops_module,
+                    entry_point: Some("fs_drop"),
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: FIELD_FORMAT,
+                            blend: Some(weights),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        Some(wgpu::ColorTargetState {
+                            format: WEIGHTS_FORMAT,
+                            blend: Some(weights),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                    ],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let splat_drops = splat_of("liquid splat drops", "vs_drop");
+        let splat_mirror = splat_of("liquid splat mirrored drops", "vs_mirror");
         let surface = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("liquid surface"),
             layout: Some(&pipeline_layout),
@@ -420,6 +453,59 @@ impl LiquidPass {
         let dots_module = util::shader(device, "liquid dots", &[include_str!("shaders/liquid_dots.wgsl")]);
         let dots = over("liquid dots", &dots_module, "vs_dot", "fs_dot", &dots_layout);
         let wet = over("liquid wet walls", &module, "vs_full", "fs_wet", &wet_layout);
+        // Liquid fixes part B: the coarse field (style, field) and the depth map (style, sampler,
+        // coarse field), each a full-screen triangle into a quarter-size R16Float target.
+        let coarse_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("liquid coarse"),
+            entries: &[util::uniform_entry(0, S::VERTEX_FRAGMENT, true), util::float_texture_entry(1, S::FRAGMENT)],
+        });
+        let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("liquid depth"),
+            entries: &[
+                util::uniform_entry(0, S::VERTEX_FRAGMENT, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                util::float_texture_entry(7, S::FRAGMENT),
+            ],
+        });
+        let small = |label, fs, layout: &wgpu::BindGroupLayout| {
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(globals_layout), Some(layout)],
+                immediate_size: 0,
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_full"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COARSE_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let coarse = small("liquid coarse field", "fs_coarse", &coarse_layout);
+        let depth = small("liquid depth", "fs_depth", &depth_layout);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("liquid behind"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -431,6 +517,14 @@ impl LiquidPass {
         Self {
             splat,
             splat_drops,
+            splat_mirror,
+            coarse,
+            coarse_layout,
+            depth,
+            depth_layout,
+            coarse_group: None,
+            depth_group: None,
+            depth_maps: None,
             drops_layout,
             surface,
             layout,
@@ -535,7 +629,27 @@ impl LiquidPass {
                 texture("liquid field", FIELD_FORMAT),
                 texture("liquid colour weights", WEIGHTS_FORMAT),
             ));
+            let small = |label| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d {
+                            width: width.div_ceil(DEPTH_DIV).max(1),
+                            height: height.div_ceil(DEPTH_DIV).max(1),
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: COARSE_FORMAT,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            };
+            self.depth_maps = Some((small("liquid coarse field"), small("liquid depth map")));
         }
+        let (coarse_map, depth_map) = self.depth_maps.as_ref().expect("made with the field");
         let (_, _, field, weights) = self.field.as_ref().expect("made above");
         let style = || {
             wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -558,6 +672,24 @@ impl LiquidPass {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(behind) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(weights) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth_map) },
+            ],
+        }));
+        self.coarse_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("liquid coarse"),
+            layout: &self.coarse_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: style() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(field) },
+            ],
+        }));
+        self.depth_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("liquid depth"),
+            layout: &self.depth_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: style() },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(coarse_map) },
             ],
         }));
         for (key, d, dots, wet) in drops {
@@ -567,6 +699,7 @@ impl LiquidPass {
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: style() },
                     wgpu::BindGroupEntry { binding: 1, resource: d.drops.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: d.wet.as_entire_binding() },
                 ],
             });
             let dots = dots.then(|| {
@@ -643,6 +776,8 @@ impl LiquidPass {
             pass.set_bind_group(0, globals, &[]);
             pass.set_bind_group(1, drops, &[p.offset]);
             pass.draw_indirect(counts, 0);
+            pass.set_pipeline(&self.splat_mirror);
+            pass.draw_indirect(counts, 0);
         } else {
             let mut pass =
                 crate::begin_pass(encoder, field, "liquid splat", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
@@ -651,6 +786,22 @@ impl LiquidPass {
             pass.set_bind_group(1, splat_group, &[p.offset]);
             pass.set_vertex_buffer(0, self.blobs.slice());
             pass.draw(0..4, p.first..p.first + p.count);
+        }
+        // A full look's depth (liquid fixes part B): the coarse field, then the depth map.
+        if let (true, Some((coarse_map, depth_map)), Some(coarse_group), Some(depth_group)) =
+            (liquid.style.full(), &self.depth_maps, &self.coarse_group, &self.depth_group)
+        {
+            let mut pass = crate::begin_pass(encoder, coarse_map, "liquid coarse field", wgpu::LoadOp::Load);
+            pass.set_pipeline(&self.coarse);
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, coarse_group, &[p.offset]);
+            pass.draw(0..3, 0..1);
+            drop(pass);
+            let mut pass = crate::begin_pass(encoder, depth_map, "liquid depth", wgpu::LoadOp::Load);
+            pass.set_pipeline(&self.depth);
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, depth_group, &[p.offset]);
+            pass.draw(0..3, 0..1);
         }
         let mut pass = crate::begin_pass(encoder, target, "liquid surface", wgpu::LoadOp::Load);
         pass.set_pipeline(&self.surface);

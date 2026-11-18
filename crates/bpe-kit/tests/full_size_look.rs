@@ -417,7 +417,31 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         shot("liquid-looks", liquid_look(reg, "Liquid looks"), vec![1.0, 2.5, 2.55]),
         shot("liquid-lit", liquid_look(reg, "Liquid lit pool"), vec![1.0, 2.5]),
         shot("liquid-glow", liquid_look(reg, "Liquid glow"), vec![2.0]),
+        // Liquid fixes part B: lots of clear water, lit from inside the ring, with balls dropped in
+        // (self shadows, depth rings and columns, ripples over the body, the gap at the wall).
+        shot("liquid-deep-lit", liquid_deep_lit(reg), vec![1.0, 1.05, 2.5]),
     ]
+}
+
+/// Liquid fixes part B: a ring of clear water at Level 0.7 under a Point light inside the ring,
+/// five balls dropped into it.
+fn liquid_deep_lit(reg: &Registry) -> Scene {
+    use bpe_kit::paint::Paint;
+    use bpe_kit::things::scene::SceneSettings;
+    let mut s = new_scene(reg);
+    let ring = first_of(&s, "shape");
+    scenes::add_liquid(&mut s, reg, ring, |f| f.level = 0.7, |_| {});
+    let root = s.things.get_mut(&ThingId::ROOT).unwrap();
+    let mut r = SceneSettings::from_params(&root.params);
+    r.background = Paint::solid(bpe_core::Color::rgb(0x30, 0x34, 0x40));
+    root.params = r.to_params();
+    let lamp = bpe_kit::things::light::add_light(&mut s, reg, LightType::Point, ThingId::ROOT).unwrap();
+    s.things.get_mut(&lamp).unwrap().params.set("position", Value::Vec2([-150.0, -400.0]));
+    for i in 0..5 {
+        let at = Vec2::new(-300.0 + 150.0 * i as f32, -350.0 - 40.0 * i as f32);
+        add_ball(&mut s, reg, at, 40.0);
+    }
+    s
 }
 
 /// One of liquid part 3's look scenes.

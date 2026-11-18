@@ -78,6 +78,14 @@ struct Style {
 // A Liquid thing's colour weights: what its field's colour is over (r), and its drops' foam (g),
 // speed (b, world units a second / 1000) and kick (a), each times its weight.
 @group(1) @binding(4) var weights: texture_2d<f32>;
+// Liquid fixes part B: how far below the top each coarse texel is (world units, `fs_depth`), a
+// DEPTH_DIV-th of the field's size each way.
+@group(1) @binding(6) var depth_map: texture_2d<f32>;
+// The field's mean round each coarse texel (`fs_coarse`), which `fs_depth` marches.
+@group(1) @binding(7) var coarse: texture_2d<f32>;
+
+// How many field pixels a coarse texel is across.
+const DEPTH_DIV: f32 = 4.0;
 
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
     let c = g.camera;
@@ -173,7 +181,18 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // World units a picture pixel covers.
     let unit = max(g.view.z, 1e-4);
     // How far inside the cut, in pixels (the field's slope tells how fast it rises).
-    let inside = (here - level) / max(slope, 1e-5);
+    var inside = (here - level) / max(slope, 1e-5);
+    // Liquid fixes part B: the ripples ruffle the waterline (where the edge faces up).
+    if st.v.w > 0.5 && st.j.x > 0.0 && st.j.y > 0.0 && slope > 1e-6 {
+        let w = g.camera.w;
+        let facing = clamp(dot(-grad / slope, vec2<f32>(-sin(w), -cos(w))), 0.0, 1.0);
+        // Only near the top (not the lower rims of holes deep in it).
+        let top = 1.0 - smoothstep(st.j.y, 3.0 * st.j.y, depth_map_at(pos.xy));
+        if facing * top > 0.0 {
+            let world = world_of(pos.xy, vec2<f32>(size));
+            inside += ripple_height(world, g.view.w) / max(g.view.z, 1e-4) * facing * top;
+        }
+    }
     let soft = max(st.a.y / unit, 0.75);
     var cover = clamp(0.5 + inside / soft, 0.0, 1.0);
     cover = cover * cover * (3.0 - 2.0 * cover);
@@ -474,6 +493,104 @@ fn film_colour(p: vec2<f32>, depth: f32, t: f32) -> vec3<f32> {
     return 0.5 + 0.5 * cos(6.2832 * (k + vec3<f32>(0.0, 0.33, 0.67)));
 }
 
+// The ripples' height (world units, about -0.75 to 0.75 x Ripples x ripple size x 0.15) at world
+// point `p` at time `t`: two octaves of value noise drifting slowly (liquid fixes part B: no longer
+// by the flow's speed, which slid a stream's ripples past the rest as a band).
+fn ripple_noise(p: vec2<f32>, t: f32) -> f32 {
+    let q = p / max(st.j.y, 1.0) + vec2<f32>(t * 0.35, t * 0.22);
+    return vnoise(q) + 0.5 * vnoise(q * 2.1 + 7.3);
+}
+
+fn ripple_height(p: vec2<f32>, t: f32) -> f32 {
+    return (ripple_noise(p, t) - 0.75) * st.j.x * st.j.y * 0.15;
+}
+
+// How far below the top anything in a full look looks (world units).
+fn depth_range() -> f32 {
+    var range = max(3.0 * max(st.h.x, 0.0), 32.0);
+    if st.p.z > 0.0 {
+        range = max(range, st.q.y);
+    }
+    if st.m.x > 0.0 {
+        range = max(range, 2.0 * st.m.w);
+    }
+    if st.o.x > 0.0 {
+        range = max(range, 4.0 * st.o.y);
+    }
+    return min(range, 4000.0);
+}
+
+// Liquid fixes part B, depth without artifacts. First the field's mean over 13 x 13 pixels round
+// each coarse texel (every other pixel): gaps in a splash, thin spikes and holes under ~8 px wide
+// and rows of resting drops all smooth away.
+@fragment
+fn fs_coarse(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = vec2<i32>(textureDimensions(field));
+    let mid = vec2<i32>(floor(pos.xy * DEPTH_DIV));
+    var sum = 0.0;
+    for (var y = -6; y <= 6; y += 2) {
+        for (var x = -6; x <= 6; x += 2) {
+            sum += density(mid + vec2<i32>(x, y), size);
+        }
+    }
+    return vec4<f32>(sum / 49.0, 0.0, 0.0, 1.0);
+}
+
+// Then how far below the top each coarse texel is: up the screen's world up a texel a step through
+// the smooth coarse field until it falls under the level (between the last two samples, where the
+// smooth field crosses it), up to the range (also where the picture's top is passed).
+@fragment
+fn fs_depth(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(coarse));
+    let level = max(st.a.x, 1e-4);
+    let range = depth_range();
+    // A coarse texel a step, or longer when the range is longer than 256 of them.
+    let per = max(max(g.view.z, 1e-4) * DEPTH_DIV, range / 256.0);
+    let texels = per / (max(g.view.z, 1e-4) * DEPTH_DIV);
+    let w = g.camera.w;
+    let up = vec2<f32>(-sin(w), -cos(w));
+    var before = textureSampleLevel(coarse, smp, pos.xy / dims, 0.0).r;
+    if before < level {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let steps = min(i32(ceil(range / per)), 256);
+    for (var k = 1; k <= steps; k++) {
+        let at = pos.xy + up * f32(k) * texels;
+        if at.y < 0.0 || at.x < 0.0 || at.x > dims.x {
+            break;
+        }
+        let here = textureSampleLevel(coarse, smp, at / dims, 0.0).r;
+        if here < level {
+            let f = clamp((before - level) / max(before - here, 1e-6), 0.0, 1.0);
+            return vec4<f32>(min((f32(k - 1) + f) * per, range), 0.0, 0.0, 1.0);
+        }
+        before = here;
+    }
+    return vec4<f32>(range, 0.0, 0.0, 1.0);
+}
+
+// The depth map at picture point `xy` (world units), between the coarse texels round it that are
+// inside the body (those outside hold 0, which would pull the depth down along its sides).
+fn depth_map_at(xy: vec2<f32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(depth_map));
+    let q = xy / DEPTH_DIV - 0.5;
+    let i = floor(q);
+    let f = q - i;
+    var sum = 0.0;
+    var wsum = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let o = vec2<i32>(k & 1, k >> 1u);
+        let at = clamp(vec2<i32>(i) + o, vec2<i32>(0), size - 1);
+        let d = textureLoad(depth_map, at, 0).r;
+        let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        if d > 0.0 {
+            sum += d * w;
+            wsum += w;
+        }
+    }
+    return select(0.0, sum / max(wsum, 1e-6), wsum > 1e-4);
+}
+
 // A Liquid thing's surface (liquid part 3): its colour with depth, see-through and bent, its own
 // pretend light or the real lights, ripples, thin film, foam, bubbles, caustics, outline, light
 // it gives off and where colours are mixing.
@@ -499,19 +616,16 @@ fn full_surface(
     let wt = textureLoad(weights, px, 0);
     let colour = colour_of(f, px);
     let clarity = max(st.h.x, 0.0);
-    // How far below the top, as far as anything here looks.
-    var range = max(3.0 * clarity, 32.0);
-    if st.p.z > 0.0 {
-        range = max(range, st.q.y);
+    // How far below the top (liquid fixes part B): from the smooth coarse depth, and within 24 px
+    // of the top from the exact march up the field itself (foam's On top, the film's rings and
+    // bubbles popping need the top to the pixel). Deep down only the smooth one counts, so holes,
+    // gaps and rows of drops make no rings, columns or bands.
+    var depth = depth_map_at(xy);
+    let near = 24.0 * unit;
+    if depth < near {
+        let fine = depth_below(px, size, level, unit, near);
+        depth = mix(fine, depth, smoothstep(0.5 * near, near, depth));
     }
-    if st.m.x > 0.0 {
-        range = max(range, 2.0 * st.m.w);
-    }
-    if st.o.x > 0.0 {
-        range = max(range, 4.0 * st.o.y);
-    }
-    range = min(range, 4000.0);
-    let depth = depth_below(px, size, level, unit, range);
 
     // The normal: the edge rounds over within Roundness, flat inside it, with ripples on top.
     let round_px = max(st.a.z / unit, 0.5);
@@ -520,16 +634,22 @@ fn full_surface(
     let tilt = 1.0 - x;
     var bump = vec2<f32>(0.0);
     var bump_h = 0.0;
-    if st.j.x > 0.0 && st.j.y > 0.0 {
+    // Ripples (liquid fixes part B): on the top only, gone within two ripple sizes of it (all over
+    // the body they read as orange peel), a little stronger where it flows fast.
+    let top = 1.0 - smoothstep(0.5 * st.j.y, 2.0 * st.j.y, depth);
+    if st.j.x > 0.0 && st.j.y > 0.0 && top > 0.0 {
         let s = st.j.y;
         let flow = wt.b / max(f.a, 1e-5) * 1000.0;
-        let q = world / s + vec2<f32>(t * 0.35, t * 0.22) * (1.0 + flow / 400.0);
-        let e = 0.15;
-        let h0 = vnoise(q) + 0.5 * vnoise(q * 2.1 + 7.3);
-        let hx = vnoise(q + vec2<f32>(e, 0.0)) + 0.5 * vnoise((q + vec2<f32>(e, 0.0)) * 2.1 + 7.3);
-        let hy = vnoise(q + vec2<f32>(0.0, e)) + 0.5 * vnoise((q + vec2<f32>(0.0, e)) * 2.1 + 7.3);
-        bump = vec2<f32>(hx - h0, hy - h0) / e * st.j.x * 0.2;
-        bump_h = (h0 - 0.75) * st.j.x * s * 0.15;
+        let k = st.j.x * top * (1.0 + 0.5 * clamp(flow / 400.0, 0.0, 1.0));
+        let e = 0.15 * s;
+        let h0 = ripple_noise(world, t);
+        let hx = ripple_noise(world + vec2<f32>(e, 0.0), t);
+        let hy = ripple_noise(world + vec2<f32>(0.0, e), t);
+        bump = vec2<f32>(hx - h0, hy - h0) / 0.15 * k * 0.2;
+        // For the real lights the top's ripples are steeper within a ripple size of the top, so
+        // their slopes catch a lamp's light as glints (the height is all the lights see of them).
+        let crest = 1.0 + 4.0 * (1.0 - smoothstep(0.0, s, depth));
+        bump_h = (h0 - 0.75) * k * s * 0.15 * crest;
     }
     let n = normalize(vec3<f32>(out * tilt + bump, sqrt(max(1.0 - tilt * tilt, 0.0)) + 1e-3));
 
