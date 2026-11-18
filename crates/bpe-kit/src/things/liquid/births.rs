@@ -426,7 +426,9 @@ pub fn pour(st: &mut LiquidState, k: usize, world: &World, layout: &Layout, dt: 
     let region = region(st, world);
     let kind = kind_of(st, &region);
     let per_drop = layout.cell * layout.cell * 0.25;
-    let owed = st.owed[k] + p.width * p.speed * p.rate * dt / per_drop;
+    // A smaller liquid moves faster: its pour too, so the arc keeps its shape on screen.
+    let speed = p.speed * st.settings.size.factor().sqrt();
+    let owed = st.owed[k] + p.width * speed * p.rate * dt / per_drop;
     let owed = if owed.is_finite() { owed.min(MOST_A_STEP as f32 + 1.0) } else { 0.0 };
     let n = owed.floor() as u32;
     st.owed[k] = owed - n as f32;
@@ -445,10 +447,10 @@ pub fn pour(st: &mut LiquidState, k: usize, world: &World, layout: &Layout, dt: 
     for i in 0..n {
         let u = (i as f32 + dice.unit()) / n as f32 - 0.5;
         // Spread along the way it travels this step too, so drops don't come out in rows.
-        let along = dice.unit() * p.speed * dt;
+        let along = dice.unit() * speed * dt;
         let at = spout + across * (u * p.width) + way * along;
         let turn = (p.spread * dice.signed()).to_radians();
-        let v = Vec2::from_angle(aim + turn) * p.speed;
+        let v = Vec2::from_angle(aim + turn) * speed;
         let c = colour(&p.colour, world, at, i as usize, n as usize, time, p.strength);
         let g = layout.to_grid(at);
         out.push(Drop::new(g.to_array(), (v / layout.cell).to_array(), c, kind, st.born));

@@ -162,8 +162,28 @@ fn reaction(
 /// How far a pressure wave may travel in a substep, in cells. At 0.4 still water slowly gains
 /// energy and tears itself into foam within a second; 0.15 stays still.
 const CFL: f32 = 0.15;
+/// How far a drop inside the liquid moves towards an emptier place a substep (cells, at a slope of
+/// 1; at most half that): small holes and cracks, which have no pressure of their own, close up.
+/// 0.02 closed a pour's cracks within half a second in the review's renders and kept still water still.
+const CLOSE_SHIFT: f32 = 0.02;
+/// How open (0 deep inside, 1 alone) a drop may be and still move into emptier places: past it
+/// the drop is at the surface, which would spread out.
+const CLOSE_OPEN: f32 = 0.5;
 /// The heaviest a liquid steps as (Weight goes higher, the card's fixed-point sums don't).
 const MOST_WEIGHT: f32 = 20.0;
+
+/// How tall a column liquid `st` can stand in, in cells: its shape's size any way up (a little
+/// more), or the grid's height when it is free.
+fn column(st: &LiquidState, world: &World, layout: &Layout) -> f32 {
+    let rows = layout.rows as f32;
+    match births::region(st, world) {
+        births::Region::Shape(w) => crate::outline::bounds(crate::outline::contours(&w.outline).iter().flatten())
+            .map(|(lo, hi)| ((hi - lo).max_element() / layout.cell + 4.0).min(rows))
+            .filter(|t| t.is_finite())
+            .unwrap_or(rows),
+        births::Region::Free => rows,
+    }
+}
 
 /// One liquid step's settings for the liquids `list` (in their numbers' order).
 fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool) -> StepGpu {
@@ -172,14 +192,14 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
     let g = world.gravity / layout.cell;
     let g = if g.is_finite() { g } else { Vec2::ZERO };
     let mut step = StepGpu::default();
-    // Each liquid's stiffness: its weight's pressure holds a column the grid's height within its
-    // squeeze (Springiness), and never softer than a floor.
-    let tall = layout.rows as f32;
+    // Each liquid's stiffness: its weight's pressure holds a column as tall as it can be (its
+    // shape, or else the grid) within its squeeze (Springiness), and never softer than a floor.
     let stiff: Vec<f32> = list
         .iter()
         .map(|st| {
+            let tall = column(st, world, layout);
             let squeeze = lerp(0.12, 0.015, st.settings.springiness);
-            let pull = g.length() * st.settings.gravity.abs();
+            let pull = g.length() * st.settings.pull().abs();
             (pull * tall / squeeze).max(900.0)
         })
         .collect();
@@ -207,13 +227,15 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
         let m = &st.meets;
         let two_way = m.two_way();
         // At most ten times the push water gives: the card sums each ball's push in fixed point.
-        let push = if two_way { (1.0 / m.ball_density(weight)).min(10.0) } else { 0.0 };
+        // Divided by the Size: a smaller liquid's stronger gravity pushes harder by its pressure, and a
+        // ball should float or sink by its Ball weight whatever the size.
+        let push = if two_way { (1.0 / m.ball_density(weight)).min(10.0) / s.size.factor() } else { 0.0 };
         let only = |x: f32| if two_way { x } else { 0.0 };
         let ink = bpe_core::Color::to_linear(m.ink_colour);
         step.liquids[i] = LiquidGpu {
             a: [stiff[i].min(cap), pull, lerp(0.3, 0.01, s.spray), 8.0 * s.settles * s.settles],
-            b: [viscosity, weight, s.gravity, if m.balls_push { 1.0 } else { 0.0 }],
-            c: [st.look.mix_style.code() as f32, 0.0, 0.0, st.cut.unwrap_or(LiquidGpu::NO_CUT)],
+            b: [viscosity, weight, s.pull(), if m.balls_push { 1.0 } else { 0.0 }],
+            c: [st.look.mix_style.code() as f32, CLOSE_SHIFT, CLOSE_OPEN, st.cut.unwrap_or(LiquidGpu::NO_CUT)],
             d: [floor, st.born, 0, 0],
             e: [push, only(DRAG_RATE * m.drag * (1.0 + 8.0 * s.thickness.min(10.0))), only(m.carries), m.sticks],
             f: [ink[0], ink[1], ink[2], m.ink],

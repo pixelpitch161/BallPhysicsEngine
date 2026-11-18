@@ -3,7 +3,7 @@ Liquid water	1	18560	18560
 Liquid water	2	18560	18560
 Liquid water	3	18560	18560
 Liquid water	4	18560	18560
-Liquid paint mixing	1	13596	13596
-Liquid paint mixing	2	14846	14846
-Liquid paint mixing	3	16096	16096
-Liquid paint mixing	4	17346	17346
+Liquid paint mixing	1	15881	15881
+Liquid paint mixing	2	19417	19417
+Liquid paint mixing	3	22952	22952
+Liquid paint mixing	4	26488	26488

@@ -80,6 +80,30 @@ impl Detail {
     }
 }
 
+/// How big the liquid is in real life: a small one moves faster (its own gravity is stronger, so
+/// it sloshes and splashes on screen like a real glass or bucket of water would).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum LiquidSize {
+    Glass,
+    #[default]
+    Bucket,
+    Bath,
+    /// How every liquid moved before sizes (the scene's gravity as it is).
+    Pool,
+}
+
+impl LiquidSize {
+    /// How many times the scene's gravity the liquid falls at.
+    pub fn factor(self) -> f32 {
+        match self {
+            LiquidSize::Glass => 16.0,
+            LiquidSize::Bucket => 8.0,
+            LiquidSize::Bath => 3.0,
+            LiquidSize::Pool => 1.0,
+        }
+    }
+}
+
 /// How many liquid steps a second.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
 pub enum Steps {
@@ -112,6 +136,9 @@ pub enum AreaFrom {
 /// A Liquid thing's own settings: what the liquid is like.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LiquidSettings {
+    /// How big it is in real life: a glass sloshes quickly, a pool slowly.
+    #[setting(label = "Size", simple, group = "How it flows")]
+    pub size: LiquidSize,
     /// How thick it is: water at 0, honey near 1, tar past it.
     #[setting(label = "Thickness", range(0, 1e9), span(0, 1), simple, keyframe, pulse, group = "How it flows")]
     pub thickness: f32,
@@ -207,12 +234,13 @@ pub struct LiquidSettings {
 impl Default for LiquidSettings {
     fn default() -> Self {
         LiquidSettings {
-            thickness: 0.05,
+            size: LiquidSize::Bucket,
+            thickness: 0.02,
             weight: 1.0,
-            surface_pull: 0.3,
+            surface_pull: 0.2,
             springiness: 0.5,
-            spray: 0.3,
-            settles: 0.2,
+            spray: 0.4,
+            settles: 0.1,
             gravity: 1.0,
             stretch: 0.0,
             tears_at: 2.0,
@@ -246,10 +274,16 @@ pub(crate) fn num(x: f32, or: f32) -> f32 {
 
 impl LiquidSettings {
     /// The settings in `p`, any number that isn't one read as its default.
+    /// How many times the scene's gravity it falls at: its Gravity × its Size.
+    pub fn pull(&self) -> f32 {
+        self.gravity * self.size.factor()
+    }
+
     pub fn read(p: &bpe_core::Params) -> LiquidSettings {
         let s = LiquidSettings::from_params(p);
         let d = LiquidSettings::default();
         LiquidSettings {
+            size: s.size,
             thickness: num(s.thickness, d.thickness).max(0.0),
             weight: num(s.weight, d.weight).max(0.05),
             surface_pull: num(s.surface_pull, d.surface_pull).max(0.0),
