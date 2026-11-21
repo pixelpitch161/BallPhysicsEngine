@@ -318,7 +318,8 @@ pub fn show(
         ui.ctx().request_repaint();
     }
     take_requests(ui, &mut edits);
-    edits::apply(scene, reg, inspector, (id, &selected), time, edits)
+    let grid = crate::setting_snap::now(ui).map(|s| s.length as f32);
+    edits::apply(scene, reg, inspector, (id, &selected), (time, grid), edits)
 }
 
 /// The files picked in the Picture and Font pickers: a PNG chosen for a Picture is kept in the

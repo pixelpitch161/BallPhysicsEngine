@@ -206,6 +206,10 @@ impl Studio {
                 self.separate_edit |= tree.separate;
                 if let Some(id) = tree.added {
                     self.place_added(id);
+                    // A new shape lands on the grid while it snaps (not with Alt held).
+                    if let Some(step) = self.grid.step(ui.input(|i| i.modifiers.alt)) {
+                        crate::shape_snap::place_new(&mut self.scene, id, step);
+                    }
                     if tree.looks {
                         self.panels.inspector.tab.insert(id, crate::inspector::InspectorTab::Looks);
                     }

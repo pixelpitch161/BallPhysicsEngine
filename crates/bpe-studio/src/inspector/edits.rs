@@ -119,13 +119,13 @@ pub(super) fn reached_key(
 }
 
 /// Applies `edits` made on thing `id` to it and to the `selected` things they reach, values at
-/// `time`. True when the scene changed.
+/// `time`; a shape's fresh outline fits the `grid` square when the grid snaps. True when the scene changed.
 pub(super) fn apply(
     scene: &mut Scene,
     reg: &bpe_core::Registry,
     inspector: &mut Inspector,
     (id, selected): (ThingId, &[ThingId]),
-    time: f64,
+    (time, grid): (f64, Option<f32>),
     edits: Vec<Edit>,
 ) -> bool {
     let mut changed = false;
@@ -153,6 +153,10 @@ pub(super) fn apply(
                     any |= set;
                     if set {
                         any |= shape_afresh(scene, t, &key);
+                        // A fresh outline fits the grid while it snaps.
+                        if let (Some(step), "sides" | "start") = (grid, key.as_str()) {
+                            any |= crate::shape_snap::fit(scene, t, step);
+                        }
                     }
                 }
                 any

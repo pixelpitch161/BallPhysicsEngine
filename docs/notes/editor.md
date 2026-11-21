@@ -20,6 +20,12 @@ where each one is now.
   Position/Offset a place; `°`/`deg` an angle step; not the Video size, nor a slider under four steps across,
   `widgets::setting_snapper`), Alt held is free (so Alt+click resets from the label only), typed numbers stay exact.
   `NumberFeel.snap` drives `span_slider` and `two_ended`; egui sliders and boxes snap after the fact (`after_drag`).
+  **Shapes fit the grid** (`shape_snap.rs`, plan `2026-11-21-snap-new-shapes.md`): while Snap is on (not with Alt),
+  a Shape added from the tree gets its middle on a grid point (`place_new`, from `app/panels.rs`), and a new shape or
+  a changed Start from / Sides fits its outline (`fit`, from `inspector/edits.rs` after `shape_afresh`): an even
+  polygon's corners move to grid points and become its own corners, unless two would meet or a corner would flatten
+  or fold (then it stays even); a circle's Size and an ellipse's half Width / Height round to whole squares. Keyed
+  numbers, moulded outlines and riding shapes are left alone; an existing shape is never moved.
   Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector/mod.rs`: one header, Remove,
   "+ Add card" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,
