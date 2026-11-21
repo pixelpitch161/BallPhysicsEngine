@@ -39,7 +39,11 @@ pub fn fit(scene: &mut Scene, id: ThingId, step: f32) -> bool {
     }
     let s = ShapeSettings::from_params(&thing.params);
     let (centre, turn) = (thing.transform.position, thing.transform.rotation);
-    let keyed = |key: &str| scene.keyed(&Address::own(id, key));
+    // A number that moves by itself (keyed, or following sound, light or health) would leave the grid at once.
+    let keyed = |key: &str| {
+        let a = Address::own(id, key);
+        scene.keyed(&a) || scene.pulses.contains_key(&a)
+    };
     let mut set: Vec<(&str, Value)> = Vec::new();
     match s.start {
         ShapeStart::Polygon if s.moulded().is_none() && !keyed("size") => {
@@ -50,13 +54,17 @@ pub fn fit(scene: &mut Scene, id: ThingId, step: f32) -> bool {
         ShapeStart::Polygon => {}
         ShapeStart::Circle => {
             if !keyed("size") {
-                set.push(("size", Value::Number(f64::from(snap_length(s.size, Some(step))))));
+                if let Some(size) = whole_squares(s.size, step, LARGEST) {
+                    set.push(("size", Value::Number(f64::from(size))));
+                }
             }
         }
         ShapeStart::Ellipse => {
             for (key, length) in [("width", s.width), ("height", s.height)] {
                 if !keyed(key) {
-                    set.push((key, Value::Number(f64::from(2.0 * snap_length(length * 0.5, Some(step))))));
+                    if let Some(half) = whole_squares(length * 0.5, step, LARGEST * 0.5) {
+                        set.push((key, Value::Number(f64::from(2.0 * half))));
+                    }
                 }
             }
         }
@@ -71,6 +79,19 @@ pub fn fit(scene: &mut Scene, id: ThingId, step: f32) -> bool {
     }
     changed
 }
+
+/// `length` rounded to whole squares of `step`, at most `max` (rounded down when nearest is
+/// over it). `None` under one square, where rounding would grow it out of all proportion.
+fn whole_squares(length: f32, step: f32, max: f32) -> Option<f32> {
+    if !(length.is_finite() && length >= step) {
+        return None;
+    }
+    let out = snap_length(length, Some(step));
+    Some(if out > max { out - step } else { out })
+}
+
+/// The largest Size, Width or Height a shape takes.
+const LARGEST: f32 = 20000.0;
 
 fn usable(step: f32) -> bool {
     step.is_finite() && step > 0.0
@@ -202,6 +223,15 @@ mod tests {
     }
 
     #[test]
+    fn small_and_huge_round_shapes_stay_in_range() {
+        let (mut scene, id) = scene_with(Vec2::ZERO, |p| p.set("size", Value::Number(20.0)));
+        assert!(!fit(&mut scene, id, STEP), "under one square it isn't grown");
+        let (mut scene, id) = scene_with(Vec2::ZERO, |p| p.set("size", Value::Number(19999.0)));
+        assert!(fit(&mut scene, id, 70.0));
+        assert_eq!(settings(&scene, id).size, 19950.0, "not past the largest Size");
+    }
+
+    #[test]
     fn a_new_shape_lands_in_a_grid_square_corner() {
         let (mut scene, id) = scene_with(Vec2::new(29.0, -95.0), polygon(4, 300.0));
         assert!(place_new(&mut scene, id, STEP));
@@ -219,6 +249,9 @@ mod tests {
         scene.set_key(&reg, &size, 0.0, Value::Number(400.0)).unwrap();
         assert!(scene.keyed(&size));
         assert!(!fit(&mut scene, id, STEP));
+        let (mut scene, id) = scene_with(Vec2::ZERO, polygon(6, 400.0));
+        scene.pulses.insert(Address::own(id, "size"), bpe_core::Pulse::default());
+        assert!(!fit(&mut scene, id, STEP), "a Size that follows sound moves by itself");
         let (mut scene, id) = scene_with(Vec2::ZERO, polygon(6, 400.0));
         assert!(!fit(&mut scene, id, 0.0));
         assert!(!fit(&mut scene, id, f32::NAN));

@@ -154,7 +154,15 @@ pub(super) fn apply(
                     if set {
                         any |= shape_afresh(scene, t, &key);
                         // A fresh outline fits the grid while it snaps.
-                        if let (Some(step), "sides" | "start") = (grid, key.as_str()) {
+                        // Sides reaches every selected shape, but only changes a polygon's outline.
+                        let polygon = || {
+                            let s =
+                                <bpe_kit::ShapeSettings as bpe_core::Settings>::from_params(&scene.things[&t].params);
+                            s.start == bpe_kit::ShapeStart::Polygon
+                        };
+                        if let Some(step) = grid
+                            && (key == "start" || (key == "sides" && polygon()))
+                        {
                             any |= crate::shape_snap::fit(scene, t, step);
                         }
                     }

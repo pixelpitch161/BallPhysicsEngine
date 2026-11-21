@@ -22,7 +22,9 @@ the grid (when possible, and when grid snap is enabled)."
    happens for small shapes with many sides on a big grid. The same is skipped when Size is keyframed (the corners
    would scale off the grid at once).
 4. **Circle** (no corners to snap): its Size (radius) rounds to whole grid squares (at least one), so with its middle
-   on a grid point its top, bottom, left and right touch grid lines. Skipped when Size is keyframed.
+   on a grid point its top, bottom, left and right touch grid lines. Skipped when Size is keyframed or follows sound, light or health, when it is under one square (rounding would grow
+   it out of all proportion), and the result never goes past the largest Size. A Sides change made with several
+   things selected only fits the polygons among them.
 5. **Ellipse**: Width and Height round so each half is a whole number of squares (at least one), so its four ends
    reach grid lines when it is not turned. Each skipped when keyframed. Turn is left alone.
 6. **Riding shapes** (riding on another thing) are skipped: their position is relative to the thing they ride, so
