@@ -1,0 +1,16 @@
+# cargo-nextest settings (CI runs the tests with it; see docs/notes/checks.md).
+
+[profile.default]
+# Two at a time: the picture tests on the software graphics driver run out of memory with more.
+test-threads = 2
+# Print a SLOW line for any test still running after two minutes (it keeps running).
+slow-timeout = { period = "120s" }
+
+[profile.ci]
+test-threads = 2
+# Run every test even after a failure, like `cargo test --no-fail-fast`, so one failure doesn't hide another.
+fail-fast = false
+slow-timeout = { period = "120s" }
+# Show each failure's output as it happens and again at the end, and list the slow tests at the end.
+failure-output = "immediate-final"
+final-status-level = "slow"

@@ -65,7 +65,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Colour grading (Grade card, panels, GPU grade program, Grade mode, Histogram) | `grading.md` | `specs/2026-11-09-colour-grading-design.md`, `plans/colour-grading/` |
 | Built-in scenes (library, Scenes window) | `library.md` | `specs/2026-11-10-built-in-scenes-design.md`, `plans/built-in-scenes/` |
 | Liquid thing (GPU liquid, fill and pours, colour mixing, walls band, drops drawn from the card) | `liquid.md` | `specs/2026-11-17-liquid-thing-design.md`, `plans/liquid/` |
-| Checks, picture tests, this guide | this file | `plans/2026-11-08-safety-nets-lean-guide.md` |
+| Checks, picture tests, this guide | this file, `checks.md` (CI layout, focused test runs) | `plans/2026-11-08-safety-nets-lean-guide.md`, `plans/2026-11-21-faster-checks.md` |
 
 ## Crate map
 
@@ -120,10 +120,11 @@ apt-get update && apt-get install -y libasound2-dev pkg-config libudev-dev mesa-
 - Rust is pinned in `rust-toolchain.toml` (with clippy, rustfmt and the Windows target), so CI and every container
   build with the same compiler. Moving it forward is its own pull request that fixes any new clippy warnings.
 
-- Tests: `cargo test --workspace -- --test-threads=2` (what CI runs; more threads run the picture tests out of
-  memory). A cold run takes about half an hour, so run it in the background. In `--release`, `bpe-runtime`'s
-  `pushing_an_earlier_step_panics_in_debug` always fails (it is debug-only), and a few sound tests check speed
-  against real time, so CI runs only the goldens in release.
+- Tests: `cargo test --workspace -- --test-threads=2` (more threads run the picture tests out of memory; CI runs the
+  same tests with cargo-nextest split across four machines, `docs/notes/checks.md`). A cold run takes about half an
+  hour, so run it in the background. In `--release`, `bpe-runtime`'s `pushing_an_earlier_step_panics_in_debug`
+  always fails (it is debug-only), and a few sound tests check speed against real time, so CI runs only the goldens
+  in release.
 - **Picture tests need a graphics device.** Every test that draws gets it from `bpe_gfx::test_device()`, which fails
   the test when there is none (install `mesa-vulkan-drivers`). Set `BPE_SKIP_GPU_TESTS=1` only to skip them on
   purpose. New picture tests use `test_device()`, never `headless_device()`.

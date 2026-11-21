@@ -1,0 +1,30 @@
+# Installs Ubuntu packages with their downloaded .deb files kept in the Actions cache, so a slow mirror (one run
+# spent 32 minutes fetching ffmpeg at 64 kB/s) costs nothing after the first run. Recommends are skipped and man-db's
+# index rebuild is switched off: neither is used by any check.
+name: System packages
+description: apt-get install with the downloads cached between runs
+inputs:
+  packages:
+    description: Space-separated package names
+    required: true
+  cache-name:
+    description: A short name for this package set (one cache per set)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: ~/apt-debs
+        key: apt-debs-v1-ubuntu-24.04-${{ inputs.cache-name }}
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        sudo rm -f /var/lib/man-db/auto-update
+        mkdir -p ~/apt-debs/partial
+        sudo apt-get update
+        # shellcheck disable=SC2086 # the package list is meant to split on spaces
+        sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-debs" $PACKAGES
+        sudo chown -R "$(id -u):$(id -g)" ~/apt-debs
+        rm -f ~/apt-debs/lock
