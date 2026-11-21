@@ -5,10 +5,12 @@ How the online checks are laid out, and how to run only the tests a change needs
 
 ## The online checks (`.github/workflows/ci.yml`)
 
-Every job starts at once on its own machine (the gate waits for the four test machines):
+Every job starts as soon as "What changed" has picked it, each on its own machine (the gate waits for the four test
+machines). A pull request runs only what its changes can affect; a push to main checks everything.
 
 | Job | What it does | Usual time |
 | --- | --- | --- |
+| What changed | `.github/scripts/affected.py`: the changed crates plus every crate that depends on them | seconds |
 | Format | `cargo fmt --all --check` | under 1 min |
 | Clippy | `cargo clippy --workspace --all-targets -- -D warnings` | 1-2 min |
 | Tests 1/4 ... 4/4 | every test in the workspace, split four ways by cargo-nextest, two at a time per machine | see the PR |
@@ -22,6 +24,13 @@ Every job starts at once on its own machine (the gate waits for the four test ma
   its own and piles them onto machine 1). nextest is pinned in `ci.yml`; move it on purpose. Each test runs in its
   own process. More machines means a shorter wait; more threads per machine doesn't work (the picture tests on the
   software driver run out of memory above two).
+- **Only what a change affects** (plan `docs/superpowers/plans/2026-11-21-affected-checks.md`): notes and docs
+  alone run only Format. A change in `crates/<x>/` tests `x` and every crate that depends on it (nextest `-E
+  'package(..)'`, filtered before the four-way split); Goldens run only when bpe-kit or bpe-sound is picked, the
+  Windows build only when bpe-studio or bpe-cli is. Anything else (`Cargo.lock`, `Cargo.toml`,
+  `rust-toolchain.toml`, `.github/`, `.config/`, `assets/`, `crates/*/assets/`) runs everything. Try it locally with
+  `python3 .github/scripts/affected.py main`. A new file outside these places runs everything until the script
+  learns about it; a crate that reads another crate's files must be added to `SHARED_IN_CRATES` there.
 - **Doc-tests**: nextest doesn't run them, so shard 1 runs `cargo test --workspace --doc` (there are none yet).
 - **Caches**: Rust build files through `Swatinem/rust-cache` (shard 1 saves for the four test machines), and the
   downloaded system packages through `.github/actions/apt` (a slow Ubuntu mirror once cost 32 minutes). Change a

@@ -1,5 +1,6 @@
-# Checks every pull request and every push to main: formatting, lint, all tests on a software graphics driver,
-# the release goldens and the Windows cross-build. See CLAUDE.md, "Working rules", and docs/notes/checks.md.
+# Checks every pull request and every push to main: formatting, lint, the tests on a software graphics driver, the
+# release goldens and the Windows cross-build. A pull request runs only what its changes can affect (the "What
+# changed" job); a push to main and a manual run check everything. See docs/notes/checks.md.
 name: CI
 
 on:
@@ -21,6 +22,35 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Which crates a pull request touches, plus every crate that depends on them; notes and docs alone need no build.
+  # A shared file (Cargo.lock, the workspace Cargo.toml, rust-toolchain.toml, CI, assets) runs everything.
+  changes:
+    name: What changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.pick.outputs.code }}
+      filter: ${{ steps.pick.outputs.filter }}
+      goldens_kit: ${{ steps.pick.outputs.goldens_kit }}
+      goldens_sound: ${{ steps.pick.outputs.goldens_sound }}
+      windows: ${{ steps.pick.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A pull request checks out its merge commit; its first parent is the branch it merges into.
+          fetch-depth: 2
+      - name: Pick the checks
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            python3 .github/scripts/affected.py HEAD^1 > picked.txt
+          else
+            python3 .github/scripts/affected.py --all > picked.txt
+          fi
+          cat picked.txt
+          cat picked.txt >> "$GITHUB_OUTPUT"
+          { echo '```'; cat picked.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   fmt:
     name: Format
     runs-on: ubuntu-24.04
@@ -33,6 +63,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -54,6 +86,8 @@ jobs:
   # the picture tests on the software driver need the memory. See docs/superpowers/plans/2026-11-21-faster-checks.md.
   test-shard:
     name: Tests ${{ matrix.shard }}/4 (debug, software GPU)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -82,9 +116,12 @@ jobs:
         with:
           tool: cargo-nextest@0.9.152
       - name: Tests
-        # One package selection, so every crate builds once with one set of features. Two at a time and no
-        # stopping at the first failure come from the ci profile in .config/nextest.toml.
-        run: cargo nextest run --workspace --profile ci --partition slice:${{ matrix.shard }}/4
+        # One package selection, so every crate builds once with one set of features (and the cache always fits);
+        # the filter then keeps only the affected crates' tests, before they are dealt out to the four machines.
+        # Two at a time and no stopping at the first failure come from the ci profile in .config/nextest.toml.
+        run: >-
+          cargo nextest run --workspace --profile ci --partition slice:${{ matrix.shard }}/4 --no-tests=pass
+          -E '${{ needs.changes.outputs.filter }}'
       - name: Doc-tests
         # nextest doesn't run doc-tests, so one machine runs them with cargo test (there are none yet).
         if: matrix.shard == 1 && !cancelled()
@@ -94,15 +131,21 @@ jobs:
   test:
     name: Tests (debug, software GPU)
     if: always()
-    needs: test-shard
+    needs: [changes, test-shard]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # Skipped is fine only when "What changed" worked and found no code to test.
       - name: Every test machine passed
-        run: test "${{ needs.test-shard.result }}" = success
+        run: |
+          test "${{ needs.changes.result }}" = success
+          test "${{ needs.test-shard.result }}" = success ||
+            { test "${{ needs.test-shard.result }}" = skipped && test "${{ needs.changes.outputs.code }}" = false; }
 
   release-goldens:
     name: Goldens (release)
+    needs: changes
+    if: needs.changes.outputs.goldens_kit == 'true' || needs.changes.outputs.goldens_sound == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -123,13 +166,17 @@ jobs:
         with:
           prefix-key: v1-ubuntu-24.04
       - name: Physics goldens and pinned pictures
+        if: needs.changes.outputs.goldens_kit == 'true'
         run: cargo test --release -p bpe-kit --test 'golden*' --test unlit_pictures --test lit_flat_pinned
       - name: Sound goldens
+        if: needs.changes.outputs.goldens_sound == 'true' && !cancelled()
         # Only the goldens: the release-only speed checks in these files measure the machine, not the code.
         run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix golden
 
   windows:
     name: Windows cross-build
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
