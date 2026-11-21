@@ -240,3 +240,87 @@ fn every_liquids_most_drops_together_stay_under_the_cards_room() {
     share_most(states.iter_mut());
     assert_eq!(states.iter().map(|s| s.kept).collect::<Vec<_>>(), [1000, 2000, 3000]);
 }
+
+/// Every drop's speed in pixels a second.
+fn speeds(world: &World) -> Vec<f32> {
+    let cell = host(world).layout.cell;
+    drops(world).iter().map(|d| (Vec2::from(d.v) * cell).length()).collect()
+}
+
+/// How many drops are on exactly the same spot as another.
+fn stacked(all: &[Drop]) -> usize {
+    let mut at: std::collections::HashMap<(u32, u32), usize> = Default::default();
+    for d in all {
+        *at.entry((d.x[0].to_bits(), d.x[1].to_bits())).or_default() += 1;
+    }
+    at.values().filter(|n| **n > 1).sum()
+}
+
+#[test]
+fn still_water_in_a_box_comes_to_rest_without_bursting_or_packing_against_the_floor() {
+    gpu();
+    let (mut scene, shape) = crate::scenes::liquid_box(&registry());
+    add_liquid(&mut scene, &registry(), shape, |f| f.level = 0.3, |_| {});
+    let kit = kit();
+    let mut world = build(&scene);
+    let top = |world: &World| drops(world).iter().map(|d| place(world, d).y).fold(f32::MAX, f32::min);
+    let level = top(&world);
+    let mut highest = level;
+    for quarter in 1..=14 {
+        world.advance_to(quarter as f64 * 0.25, &kit.sims, &mut Log::default());
+        highest = highest.min(top(&world));
+    }
+    let all = drops(&world);
+    assert!(all.len() > 1000, "{} drops", all.len());
+    let v = speeds(&world);
+    let rms = (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+    // Drops in each half-cell layer up from the floor's inner face (it is at 448.5), over the
+    // middle 400 px, clear of the side walls.
+    let cell = host(&world).layout.cell;
+    let mut layers = [0usize; 16];
+    for p in all.iter().map(|d| place(&world, d)).filter(|p| p.x.abs() < 200.0) {
+        let layer = ((448.5 - p.y) / cell * 2.0).floor();
+        if (0.0..16.0).contains(&layer) {
+            layers[layer as usize] += 1;
+        }
+    }
+    let fullest = *layers[..4].iter().max().expect("four layers") as f32;
+    let above = layers[8..].iter().sum::<usize>() as f32 / 8.0;
+    eprintln!(
+        "still water: threw {:.0} px up, rms {rms:.1} px/s, {} of {} stacked, fullest layer on the floor {:.2} of one above",
+        level - highest,
+        stacked(&all),
+        all.len(),
+        fullest / above
+    );
+    // It once burst upwards by itself after three seconds, throwing drops 236 px.
+    assert!(level - highest < 80.0, "still water threw a drop {:.0} px up", level - highest);
+    // And simmered at 45 to 50 px/s for good.
+    assert!(rms < 25.0, "still water still moves at {rms:.1} px/s");
+    // A twentieth of its drops sat on exactly the same spots along the walls.
+    assert!(stacked(&all) * 200 < all.len(), "{} of {} drops share a spot", stacked(&all), all.len());
+    // And it packed against the floor: the drop line there held over three times the drops of a
+    // layer higher up (two rows can share a layer, so 2 is no packing at all).
+    assert!(fullest < above * 2.6, "the floor's fullest layer holds {fullest} drops, one higher up {above}");
+}
+
+#[test]
+fn water_poured_onto_a_shape_is_never_thrown_faster_than_it_could_fall() {
+    gpu();
+    let scene = crate::scenes::liquid_pour_on_a_shape(&registry());
+    let kit = kit();
+    let mut world = build(&scene);
+    // The fastest a drop can fairly go: its speed out of the spout (300 px/s × √Size), then
+    // falling all the way to the box's floor (the scene's gravity times the liquid's Size).
+    let (mut fastest, mut limit) = (0.0f32, 0.0f32);
+    for frame in 1..=150 {
+        world.advance_to(frame as f64 / 60.0, &kit.sims, &mut Log::default());
+        let fall = 2.0 * world.gravity.length() * host(&world).size * (450.0 + 380.0);
+        limit = (300.0f32 * 300.0 * host(&world).size + fall).sqrt();
+        fastest = speeds(&world).into_iter().fold(fastest, f32::max);
+    }
+    eprintln!("pour: fastest {fastest:.0} px/s, a fall gives {limit:.0}");
+    assert!(drops(&world).len() > 1000);
+    // It once threw drops at 18,000 px/s.
+    assert!(fastest < limit * 1.5, "a drop was thrown at {fastest:.0} px/s; falling gives at most {limit:.0}");
+}

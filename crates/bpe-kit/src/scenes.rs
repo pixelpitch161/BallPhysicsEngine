@@ -1838,6 +1838,37 @@ pub fn liquid_scenes(reg: &Registry) -> Vec<(String, Scene)> {
     vec![("Liquid water".into(), water), ("Liquid paint mixing".into(), paint)]
 }
 
+/// The new scene with its ball gone and its ring made a closed 600 × 900 box (walls 3 thick): for
+/// liquid tests that want still walls. The scene and the box.
+pub fn liquid_box(reg: &Registry) -> (Scene, ThingId) {
+    let mut scene = new_scene(reg);
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    scene.remove_thing(ball).expect("the ball goes");
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a ring");
+    scene.things.get_mut(&shape).expect("the ring").params =
+        crate::ShapeSettings::rectangle(600.0, 900.0, 3.0).to_params();
+    (scene, shape)
+}
+
+/// Water poured onto a filled circle in [`liquid_box`], as in the owner's scene of 2026-11-21 that
+/// sprayed everywhere: the liquid is no shape's child (it has the whole picture, the box only
+/// walls it in), its spout 380 above the middle, 60 wide at Rate 0.3 and the pour's own Speed.
+pub fn liquid_pour_on_a_shape(reg: &Registry) -> Scene {
+    let (mut scene, _) = liquid_box(reg);
+    let plate = crate::add_thing(&mut scene, reg, "shape", ThingId::ROOT).expect("kit kinds are registered");
+    let t = scene.things.get_mut(&plate).expect("just added");
+    t.params =
+        crate::ShapeSettings { fill: crate::ShapeFill::Filled, ..crate::ShapeSettings::circle(80.0, 3.0) }.to_params();
+    t.transform.position = Vec2::new(30.0, -50.0);
+    let id = add_liquid(&mut scene, reg, ThingId::ROOT, |f| f.fill = false, |_| {});
+    scene.things.get_mut(&id).expect("just added").transform.position = Vec2::new(0.0, -380.0);
+    add_pour(&mut scene, reg, id, |p| {
+        p.width = 60.0;
+        p.rate = 0.3;
+    });
+    scene
+}
+
 /// Gives Liquid thing `id`'s Look Surface `kind`, with its numbers (as the editor's chips do).
 pub fn set_liquid_surface(scene: &mut Scene, id: ThingId, kind: crate::modules::look::surface::SurfaceKind) {
     use crate::things::liquid::look::is_surface_number;

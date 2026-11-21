@@ -420,6 +420,9 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         // Liquid fixes part B: lots of clear water, lit from inside the ring, with balls dropped in
         // (self shadows, depth rings and columns, ripples over the body, the gap at the wall).
         shot("liquid-deep-lit", liquid_deep_lit(reg), vec![1.0, 1.05, 2.5]),
+        // Spray and bouncing fixed: water poured onto a shape in a box (it sprayed everywhere; look
+        // for whole sheets off the shape, a pool that fills level, and streams on the walls drawn).
+        shot("liquid-pour-on-shape", scenes::liquid_pour_on_a_shape(reg), vec![1.5, 3.0, 5.0]),
     ]
 }
 

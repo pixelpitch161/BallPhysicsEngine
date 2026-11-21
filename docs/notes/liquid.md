@@ -467,3 +467,48 @@ a lamp inside the ring, five balls).
 **Seen but not this part's.** In `liquid-deep-lit` at 2.5 s the balls' soft shadows in the air
 near the lamp show faint contour bands (Good quality); air pixels never take the liquid branch, so
 it's the lighting's soft shadows, not the liquid.
+
+## Spray and bouncing fixed, as built (2026-11-21)
+
+Plan: `docs/superpowers/plans/liquid/spray-and-bounce.md` (what was measured, and what was tried and dropped).
+The owner's scene: a pour onto a plate in a box threw drops at up to 18,000 px/s (the pour arrives at about
+3,000), and still water in a box simmered and after 3 s burst upwards by itself. More steps a second was
+measured and does not help. Three causes, three changes, all in `liquid_sim.wgsl` (no setting changed):
+
+**Walls count as full liquid** (`weight_below`, `wall_share`, `edge_share`). A drop's squeeze J is 1 / the
+liquid the grid holds round it. Beside a wall half of that was missing, so the drop took itself for the open
+surface and pushed back at nothing, and the liquid packed against every wall and floor until three times too
+many drops sat there (12 to 14 a square cell against 4), then burst when that layer was disturbed. Now each
+node adds the share of its weight that lies where no drop can be: inside the wall and the margin drops are kept
+out of (from `0.5 − WALL_GAP` cells off the face; for a band only as far as the margin on its other side; for
+the picture's edges the same). It is a flat-wall estimate from the node's nearest face: a little low in an
+inside corner, a little high round an outside one. `cs_g2p` gathers it into `vd` and the `slope`; `cs_p2g`
+gathers it again at the drop's place for the pressure (so `cs_p2g` now binds the walls, binding 5).
+**`p.j` is still the liquid alone**: the picture draws a drop with little liquid round it as a droplet, and
+a stream down a wall must keep drawing. Cooling, wind and drying (`open`) also still go by the liquid alone, as
+before (so the row on a pool's floor still counts as half open to them: older than this fix, left alone). The
+grid's volume channel is left as real liquid too (the balls' wet and depth readings use it). A drop not
+measured yet has `p.j` 0 (`Drop::new`, `cs_rewind`; it was 1) and is taken as at rest, so the walls' share
+doesn't squeeze a newborn drop for a substep. A wall at the picture's edge and the edge join as
+1 − (1 − wall)(1 − edge) (`solid_share`).
+
+**Squeezing is damped** (`cs_p2g`, `BULK` 0.7): a bulk viscosity of 0.7 × the speed of sound × one cell on
+tr(C), while `j < 1 + tear`. The pressure was a spring with nothing to calm it. Flow that keeps its volume
+feels nothing, a slosh almost nothing; a cell-sized pile-up is calmed in about one step of its own springing.
+ζ × the substep is at most 0.105 by the substeps' own rule (`CFL`), so it needs no cap. Past the tear it is off:
+there it smeared a thin pour into a fan.
+
+**"Holes close" only closes holes** (`cs_g2p`): it moves a drop only when there is liquid `CLOSE_ACROSS`
+(2.5 cells) down the slope (so not at the open surface, which it used to pump), never into a wall, and not
+at all within 0.6 cells of a wall's face (full from 1.6). Before, drops it moved into a wall were put back on
+the wall's line and ended on exactly the same spot as each other, one drop from then on: 973 of 7,240 drops
+in the owner's scene.
+
+**Tests** (`things/liquid/tests.rs`): still water in a closed box comes to rest, throws nothing, has no stacked
+drops and no packed layer on the floor; a pour onto a shape never has a drop faster than a fall gives it.
+Their scenes are `scenes::liquid_box` and `scenes::liquid_pour_on_a_shape`; the second is also the look
+check's `liquid-pour-on-shape`.
+
+**Known gaps.** Balls are not counted as full as walls are. Two drops can still end on one spot where two
+flows meet along a wall, or where Surface pull draws the top rows of perfectly still liquid together (about
+0.2 % of drops): they stay one drop, which is harmless now nothing springs.
