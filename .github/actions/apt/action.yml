@@ -1,0 +1,45 @@
+# Installs Ubuntu packages with their downloaded .deb files kept in the Actions cache, so a slow mirror (one run
+# spent 32 minutes fetching ffmpeg at 64 kB/s) costs nothing after the first run. Recommends are skipped and man-db's
+# index rebuild is switched off: neither is used by any check.
+name: System packages
+description: apt-get install with the downloads cached between runs
+inputs:
+  packages:
+    description: Space-separated package names
+    required: true
+  cache-name:
+    description: A short name for this package set (one cache per set)
+    required: true
+runs:
+  using: composite
+  steps:
+    # The key names the package list and the week, so a changed list or a week of Ubuntu updates saves a fresh cache;
+    # the restore key starts it from the last one.
+    - id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        echo "part=$(echo "$PACKAGES" | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+        echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        path: ~/apt-debs
+        key: >-
+          apt-debs-v1-ubuntu-24.04-${{ inputs.cache-name }}-${{ steps.key.outputs.part }}-${{ steps.key.outputs.week }}
+        restore-keys: apt-debs-v1-ubuntu-24.04-${{ inputs.cache-name }}-${{ steps.key.outputs.part }}-
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        sudo rm -f /var/lib/man-db/auto-update
+        mkdir -p ~/apt-debs/partial
+        sudo apt-get update
+        # shellcheck disable=SC2086 # the package list is meant to split on spaces
+        # The download folder is in the home folder, which apt's own _apt user can't reach, so apt downloads as root.
+        sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-debs" \
+          -o APT::Sandbox::User=root $PACKAGES
+        # Drop downloads that are no longer the installed version, so a restored cache doesn't keep growing.
+        sudo apt-get autoclean -o Dir::Cache::Archives="$HOME/apt-debs"
+        sudo chown -R "$(id -u):$(id -g)" ~/apt-debs
+        rm -f ~/apt-debs/lock
