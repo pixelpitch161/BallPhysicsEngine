@@ -48,10 +48,10 @@ jobs:
           prefix-key: v1-ubuntu-24.04
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The tests are split across four machines that run at the same time. cargo-nextest puts the tests of every test
-  # binary into one queue and hands each machine every fourth one, so the long binaries (bpe-kit's 1,091 unit tests
-  # took 36 minutes on one machine) are shared out too. Each machine still runs only two at a time: the picture tests
-  # on the software driver need the memory. See docs/superpowers/plans/2026-11-21-faster-checks.md.
+  # The tests are split across four machines that run at the same time. cargo-nextest's slice partition lines up the
+  # tests of every test binary together and deals them out to the four machines, so the long binaries (bpe-kit's
+  # 1,091 unit tests took 36 minutes on one machine) are shared out too. Each machine still runs only two at a time:
+  # the picture tests on the software driver need the memory. See docs/superpowers/plans/2026-11-21-faster-checks.md.
   test-shard:
     name: Tests ${{ matrix.shard }}/4 (debug, software GPU)
     runs-on: ubuntu-24.04
@@ -72,21 +72,22 @@ jobs:
             libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers ffmpeg libxkbcommon-x11-0 libxkbcommon0
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v2-ubuntu-24.04
           # The four machines build the same thing, so one saving the cache is enough.
           save-if: ${{ matrix.shard == 1 }}
+      # After the cache, so a cached ~/.cargo/bin can't swap in another version. Pinned: move it on purpose.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.152
       - name: Tests
         # One package selection, so every crate builds once with one set of features. Two at a time and no
         # stopping at the first failure come from the ci profile in .config/nextest.toml.
-        run: cargo nextest run --workspace --profile ci --partition count:${{ matrix.shard }}/4
+        run: cargo nextest run --workspace --profile ci --partition slice:${{ matrix.shard }}/4
       - name: Doc-tests
         # nextest doesn't run doc-tests, so one machine runs them with cargo test (there are none yet).
-        if: matrix.shard == 1
+        if: matrix.shard == 1 && !cancelled()
         run: cargo test --workspace --doc --no-fail-fast
 
   # The one name to look for: green only when every test machine passed.

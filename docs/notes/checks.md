@@ -5,7 +5,7 @@ How the online checks are laid out, and how to run only the tests a change needs
 
 ## The online checks (`.github/workflows/ci.yml`)
 
-Every job starts at once on its own machine:
+Every job starts at once on its own machine (the gate waits for the four test machines):
 
 | Job | What it does | Usual time |
 | --- | --- | --- |
@@ -16,10 +16,12 @@ Every job starts at once on its own machine:
 | Goldens (release) | physics goldens, pinned pictures and sound goldens in `--release` | 10-15 min |
 | Windows cross-build | the editor and the renderer for Windows | 3-10 min |
 
-- **Splitting**: `cargo nextest run --workspace --profile ci --partition count:<k>/4`. nextest queues the tests of
-  every test binary together and gives each machine every fourth test, so a big binary (bpe-kit's unit tests) is
-  shared out too. Each test runs in its own process. More machines means a shorter wait; more threads per machine
-  doesn't work (the picture tests on the software driver run out of memory above two).
+- **Splitting**: `cargo nextest run --workspace --profile ci --partition slice:<k>/4`. The slice partition lines up
+  the tests of every test binary together and deals them out to the four machines, so a big binary (bpe-kit's unit
+  tests) is shared out too and the one-test binaries don't all land on one machine (`count:` splits each binary on
+  its own and piles them onto machine 1). nextest is pinned in `ci.yml`; move it on purpose. Each test runs in its
+  own process. More machines means a shorter wait; more threads per machine doesn't work (the picture tests on the
+  software driver run out of memory above two).
 - **Doc-tests**: nextest doesn't run them, so shard 1 runs `cargo test --workspace --doc` (there are none yet).
 - **Caches**: Rust build files through `Swatinem/rust-cache` (shard 1 saves for the four test machines), and the
   downloaded system packages through `.github/actions/apt` (a slow Ubuntu mirror once cost 32 minutes). Change a
@@ -50,7 +52,7 @@ two-at-a-time limit comes from `.config/nextest.toml`:
 ```sh
 cargo nextest run -p bpe-kit --test golden
 cargo nextest run -p bpe-kit -E 'test(liquid)'
-cargo nextest run --workspace --partition count:1/4   # what CI shard 1 runs
+cargo nextest run --workspace --profile ci --partition slice:1/4   # what CI shard 1 runs
 ```
 
 - A cold build of the tests takes about 6 minutes; keep `CARGO_INCREMENTAL=0` and delete `target/debug` if the disk

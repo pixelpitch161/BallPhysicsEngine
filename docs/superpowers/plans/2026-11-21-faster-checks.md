@@ -31,9 +31,10 @@ to more machines.
 ## Decisions
 
 1. **cargo-nextest, split across 4 machines.** The Tests job becomes a matrix of 4 shards, each running
-   `cargo nextest run --workspace --partition count:<k>/4` with 2 tests at a time (the same memory limit per
-   machine as today). nextest mixes the tests of every binary into one queue, so the 36-min `bpe-kit` lib is spread
-   across all 4 shards instead of sitting in one. Each shard compiles the test binaries itself (5-6 min with the
+   `cargo nextest run --workspace --partition slice:<k>/4` with 2 tests at a time (the same memory limit per
+   machine as today). The slice partition deals out the tests of every binary together, so the 36-min `bpe-kit` lib
+   is spread across all 4 shards and the one-test binaries are spread too (`count:` splits per binary and puts every
+   one-test binary on shard 1; the review caught this). nextest is pinned (0.9.152) and installed after rust-cache. Each shard compiles the test binaries itself (5-6 min with the
    cache); passing a nextest archive between jobs was ruled out because the debug test binaries with debug info are
    several GB.
    - nextest runs each test in its own process. Every picture test already makes its own device with
@@ -47,14 +48,14 @@ to more machines.
 2. **A gate job keeps the old check name.** A job named exactly `Tests (debug, software GPU)` needs all 4 shards and
    fails unless every one passed, so anything that looks for that name (branch protection, the merge rule in
    CLAUDE.md) still works.
-3. **System packages come from a cache.** The downloaded `.deb` files are kept with `actions/cache` (key includes the
-   package list and the Ubuntu version), so a slow mirror day costs nothing after the first run. `apt-get install`
+3. **System packages come from a cache.** The downloaded `.deb` files are kept with `actions/cache` (key includes a hash of the
+   package list and the week, restoring from the previous week's), so a slow mirror day costs nothing after the first run. `apt-get install`
    uses `--no-install-recommends` (ffmpeg's recommends pull in VA drivers and more we never use) and man-db's
    rebuild trigger is switched off (it adds about a minute on hosted runners). The same applies to the MinGW install
    in the Windows job and the packages in Clippy and Goldens.
 4. **Build cache.** Already in place (`Swatinem/rust-cache`). The shards share one cache key (same build), and only
-   shard 1 saves it so four shards don't race to upload the same few GB. Its `prefix-key` moves to `v2` so the
-   first run doesn't restore a cache with a different test profile layout.
+   shard 1 saves it so four shards don't race to upload the same few GB. Its `prefix-key` moves to `v2` (a
+   fresh cache for the new job; nextest builds into the same `target/debug`).
 5. **Nothing CI checks is weakened.** Same tests, same debug profile, same two-at-a-time, same goldens, same
    Windows build, same clippy and fmt. Only where and in what order the tests run changes.
 6. **A note for focused local runs** goes in a new `docs/notes/checks.md` (one index line in CLAUDE.md, a new area),
