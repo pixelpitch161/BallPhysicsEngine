@@ -512,7 +512,7 @@ const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_clear_solid", &[0, 5]),
     ("cs_put_solid", &[0, 5, 6]),
     ("cs_clear_grid", &[0, 4]),
-    ("cs_p2g", &[0, 1, 3, 4]),
+    ("cs_p2g", &[0, 1, 3, 4, 5]),
     ("cs_grid", &[0, 4, 5]),
     ("cs_g2p", &[0, 1, 3, 4, 5, 6, 12]),
     ("cs_scan_cells", &[0, 3]),

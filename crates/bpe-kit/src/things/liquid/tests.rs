@@ -240,3 +240,101 @@ fn every_liquids_most_drops_together_stay_under_the_cards_room() {
     share_most(states.iter_mut());
     assert_eq!(states.iter().map(|s| s.kept).collect::<Vec<_>>(), [1000, 2000, 3000]);
 }
+
+/// The new scene with its ball gone and its ring made a closed 600 × 900 box (walls 3 thick).
+fn boxed() -> (Scene, ThingId) {
+    let mut scene = crate::new_scene(&registry());
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    scene.remove_thing(ball).expect("the ball goes");
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a ring");
+    scene.things.get_mut(&shape).expect("the ring").params =
+        crate::ShapeSettings::rectangle(600.0, 900.0, 3.0).to_params();
+    (scene, shape)
+}
+
+/// Every drop's speed in pixels a second.
+fn speeds(world: &World) -> Vec<f32> {
+    let cell = host(world).layout.cell;
+    drops(world).iter().map(|d| (Vec2::from(d.v) * cell).length()).collect()
+}
+
+/// How many drops are on exactly the same spot as another.
+fn stacked(all: &[Drop]) -> usize {
+    let mut at: std::collections::HashMap<(u32, u32), usize> = Default::default();
+    for d in all {
+        *at.entry((d.x[0].to_bits(), d.x[1].to_bits())).or_default() += 1;
+    }
+    at.values().filter(|n| **n > 1).sum()
+}
+
+#[test]
+fn still_water_in_a_box_comes_to_rest_without_bursting_or_packing_against_the_floor() {
+    gpu();
+    let (mut scene, shape) = boxed();
+    add_liquid(&mut scene, &registry(), shape, |f| f.level = 0.3, |_| {});
+    let kit = kit();
+    let mut world = build(&scene);
+    let top = |world: &World| drops(world).iter().map(|d| place(world, d).y).fold(f32::MAX, f32::min);
+    let level = top(&world);
+    let mut highest = level;
+    for quarter in 1..=14 {
+        world.advance_to(quarter as f64 * 0.25, &kit.sims, &mut Log::default());
+        highest = highest.min(top(&world));
+    }
+    let all = drops(&world);
+    assert!(all.len() > 1000, "{} drops", all.len());
+    // It once burst upwards by itself after three seconds, throwing drops 230 px.
+    assert!(level - highest < 40.0, "still water threw a drop {:.0} px up", level - highest);
+    // And simmered at about 45 px/s for good.
+    let v = speeds(&world);
+    let rms = (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+    assert!(rms < 15.0, "still water still moves at {rms:.1} px/s");
+    // A twelfth of its drops sat on exactly the same spots along the walls.
+    assert!(stacked(&all) * 200 < all.len(), "{} of {} drops share a spot", stacked(&all), all.len());
+    // And the cell against the floor held three times the drops a cell higher up does (the
+    // floor's inner face is at 448.5; the middle 400 px, clear of the side walls).
+    let cell = host(&world).layout.cell;
+    let count = |from: f32, to: f32| {
+        let n = all.iter().map(|d| place(&world, d)).filter(|p| p.x.abs() < 200.0).filter(|p| {
+            let up = (448.5 - p.y) / cell;
+            up >= from && up < to
+        });
+        n.count() as f32 / (to - from)
+    };
+    let (floor, above) = (count(0.0, 1.0), count(4.0, 8.0));
+    assert!(floor < above * 1.3, "{floor:.0} drops in the cell on the floor, {above:.0} in one higher up");
+}
+
+#[test]
+fn water_poured_onto_a_shape_is_never_thrown_faster_than_it_could_fall() {
+    gpu();
+    let reg = registry();
+    let (mut scene, _) = boxed();
+    // A filled circle under the spout, as in the owner's scene of 2026-11-21.
+    let plate = crate::add_thing(&mut scene, &reg, "shape", ThingId::ROOT).expect("a shape");
+    let t = scene.things.get_mut(&plate).expect("the plate");
+    t.params =
+        crate::ShapeSettings { fill: crate::ShapeFill::Filled, ..crate::ShapeSettings::circle(80.0, 3.0) }.to_params();
+    t.transform.position = Vec2::new(30.0, -50.0);
+    // The liquid is no shape's child: it has the whole picture, and the box only walls it in.
+    let id = add_liquid(&mut scene, &reg, ThingId::ROOT, |f| f.fill = false, |_| {});
+    scene.things.get_mut(&id).expect("the liquid").transform.position = Vec2::new(0.0, -380.0);
+    add_pour(&mut scene, &reg, id, |p| {
+        p.width = 60.0;
+        p.rate = 0.3;
+    });
+    let kit = kit();
+    let mut world = build(&scene);
+    // The fastest a drop can fairly go: its speed out of the spout, then falling all the way to
+    // the box's floor (the scene's gravity times the liquid's Size).
+    let (mut fastest, mut limit) = (0.0f32, 0.0f32);
+    for frame in 1..=150 {
+        world.advance_to(frame as f64 / 60.0, &kit.sims, &mut Log::default());
+        let fall = 2.0 * world.gravity.length() * host(&world).size * (450.0 + 380.0);
+        limit = (300.0f32 * 300.0 * host(&world).size + fall).sqrt();
+        fastest = speeds(&world).into_iter().fold(fastest, f32::max);
+    }
+    eprintln!("pour: fastest {fastest:.0} px/s, a fall gives {limit:.0}");
+    assert!(drops(&world).len() > 1000);
+    assert!(fastest < limit * 1.1, "a drop was thrown at {fastest:.0} px/s; falling gives at most {limit:.0}");
+}

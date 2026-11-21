@@ -108,6 +108,14 @@ const S_M: f32 = 1048576.0;
 const S_P: f32 = 4096.0;
 const LIMIT: f32 = 33554432.0;
 const STOPS: u32 = 256u;
+// How far in from each edge of the grid a liquid that fills the scene is stopped, in cells.
+const EDGE: f32 = 2.0;
+// Half the room a drop at rest takes, in cells: where the walls' share of the liquid begins.
+const WALL_GAP: f32 = 0.25;
+// How strongly squeezing is damped: times the speed of sound over one cell.
+const BULK: f32 = 0.7;
+// How far across a gap "holes close" looks for liquid, in cells.
+const CLOSE_ACROSS: f32 = 2.5;
 const FROZEN: u32 = 512u;
 const STAIN_BASE: u32 = 16u;
 const MEET_REACT: u32 = 2u;
@@ -282,6 +290,57 @@ fn wall_face(s: vec4<f32>, t: vec4<f32>, line_d: f32) -> vec3<f32> {
     return vec3<f32>(s.xy * side, abs(line_d) - t.z);
 }
 
+// How much of a node's weight lies below `x` cells from it, along one way (its weight there is
+// the quadratic spline the drops are spread with).
+fn weight_below(x: f32) -> f32 {
+    if x <= -1.5 {
+        return 0.0;
+    }
+    if x >= 1.5 {
+        return 1.0;
+    }
+    if x < -0.5 {
+        let a = x + 1.5;
+        return a * a * a / 6.0;
+    }
+    if x > 0.5 {
+        let a = 1.5 - x;
+        return 1.0 - a * a * a / 6.0;
+    }
+    return 0.5 + 0.75 * x - x * x * x / 3.0;
+}
+
+// The liquid a node would hold where no drop can be: inside a wall and the margin drops are kept
+// out of on each side of it, counted as full (0 none, 1 the whole node). Without it a drop beside
+// a wall finds half the liquid round it missing, takes itself for the open surface and pushes back
+// at nothing, so the liquid packed against every wall and floor until three times too many drops
+// were there, and burst when that layer was disturbed. `WALL_GAP` is how far in from where drops
+// stop the wall's share begins: half the room a drop at rest takes.
+fn wall_share(n: u32) -> f32 {
+    let s = solid[2u * n];
+    if s.w < 0.5 {
+        return 0.0;
+    }
+    let t = solid[2u * n + 1u];
+    let f = wall_face(s, t, s.z);
+    var share = weight_below(0.5 - WALL_GAP - f.z);
+    if t.z >= 0.0 {
+        // A band: only as far as the margin on its other side (liquid there is counted itself).
+        share = share - weight_below(WALL_GAP - 0.5 - 2.0 * t.z - f.z);
+    }
+    return share;
+}
+
+// The same for the picture's edges, which stop a liquid that fills the scene: node (`x`, `y`).
+fn edge_share(x: i32, y: i32) -> f32 {
+    let lo = EDGE + 0.05 - WALL_GAP;
+    let hi = vec2<f32>(f32(st.grid.x), f32(st.grid.y)) - lo;
+    let at = vec2<f32>(f32(x), f32(y));
+    let sx = weight_below(lo - at.x) + weight_below(at.x - hi.x);
+    let sy = weight_below(lo - at.y) + weight_below(at.y - hi.y);
+    return 1.0 - (1.0 - min(sx, 1.0)) * (1.0 - min(sy, 1.0));
+}
+
 // ---- one substep ---------------------------------------------------------------------------
 
 @compute @workgroup_size(256)
@@ -335,7 +394,22 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let vol = 0.25;
     let mass = weight * vol;
-    let j = p.j;
+    let base = base_of(p.x);
+    let fx = p.x - vec2<f32>(base);
+    var w = weights(fx);
+    // How squeezed it is: by the liquid round it, and by the walls beside it counted as full.
+    var walls = 0.0;
+    let stops = (p.kind & STOPS) != 0u;
+    for (var a = 0; a < 3; a = a + 1) {
+        for (var b = 0; b < 3; b = b + 1) {
+            var part = wall_share(node(base.x + a, base.y + b));
+            if stops {
+                part = part + edge_share(base.x + a, base.y + b);
+            }
+            walls = walls + w[a].x * w[b].y * part;
+        }
+    }
+    let j = 1.0 / max(1.0 / max(p.j, 1e-3) + walls, 0.05);
     let stiff = lq.a.x * weight;
     var pressure = 0.0;
     if j < 1.0 {
@@ -349,6 +423,15 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     var sxx = -pressure + mu * 2.0 * p.c.x;
     var sxy = mu * (p.c.y + p.c.z);
     var syy = -pressure + mu * 2.0 * p.c.w;
+    // Squeezing and springing back are damped (a bulk viscosity, sized by the speed of sound
+    // over one cell): the pressure alone is a spring with nothing to calm it, and any small
+    // pile-up was thrown back out as fast as the liquid is stiff. Flowing, which keeps its
+    // volume, feels none of it; nor does liquid torn open into spray, which it would smear.
+    if j < 1.0 + lq.a.z {
+        let squeeze = BULK * sqrt(lq.a.x) * weight * (p.c.x + p.c.w);
+        sxx = sxx + squeeze;
+        syy = syy + squeeze;
+    }
     // Stretch: the elastic part, its shape only (b / J less its mean: pressure keeps the volume).
     var share = lq.h.x;
     if frozen {
@@ -374,9 +457,6 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let ayy = k * syy + mass * p.c.w;
     let g = vec2<f32>(st.time.y, st.time.z) * lq.b.z;
     let mv = mass * (p.v + g * dt);
-    let base = base_of(p.x);
-    let fx = p.x - vec2<f32>(base);
-    var w = weights(fx);
     for (var a = 0; a < 3; a = a + 1) {
         for (var b = 0; b < 3; b = b + 1) {
             let wt = w[a].x * w[b].y;
@@ -460,7 +540,9 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     var v = vec2<f32>(0.0);
     var c = vec4<f32>(0.0);
     var vd = 0.0;
+    var liquid = 0.0;
     var slope = vec2<f32>(0.0);
+    let stops = (p.kind & STOPS) != 0u;
     for (var a = 0; a < 3; a = a + 1) {
         for (var b = 0; b < 3; b = b + 1) {
             let wt = w[a].x * w[b].y;
@@ -469,20 +551,67 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             let gv = vec2<f32>(bitcast<f32>(atomicLoad(&grid[4u * n + 1u])), bitcast<f32>(atomicLoad(&grid[4u * n + 2u])));
             v = v + wt * gv;
             c = c + 4.0 * wt * vec4<f32>(gv.x * dpos.x, gv.x * dpos.y, gv.y * dpos.x, gv.y * dpos.y);
-            let nv = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
+            // The liquid round it, and the walls' share of it (a wall counts as full).
+            let real = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
+            var nv = real + wall_share(n);
+            if stops {
+                nv = nv + edge_share(base.x + a, base.y + b);
+            }
+            liquid = liquid + wt * real;
             vd = vd + wt * nv;
             slope = slope + vec2<f32>(dw[a].x * w[b].y, w[a].x * dw[b].y) * nv;
         }
     }
-    p.j = 1.0 / max(vd, 0.05);
-    let open = exposure(vd);
+    // Kept without the walls' share: the picture draws a drop with little liquid round it as a
+    // droplet (`cs_p2g` adds the walls' share back for the pressure).
+    p.j = 1.0 / max(liquid, 0.05);
+    // How open to the air it is (cooling, wind and drying go by it): by the liquid alone, as a
+    // drop on a wall is as open as one in the air.
+    let open = exposure(liquid);
     // Inside the liquid, a drop moves a little towards where there is less liquid round it, so
     // holes and cracks left by a pour or a ball close up (a hole thinner than a cell has no
     // pressure of its own to close it). Not at the open surface, where that would spread it, nor
     // in ice.
     if lq.c.y > 0.0 && (p.kind & FROZEN) == 0u {
-        let inner = 1.0 - smoothstep(0.0, max(lq.c.z, 1e-3), open);
+        let inner = 1.0 - smoothstep(0.0, max(lq.c.z, 1e-3), exposure(vd));
         var shift = -lq.c.y * inner * slope;
+        // Only towards liquid on the far side of a gap: at the open surface (nothing across)
+        // it would pump the top of the liquid upwards for ever.
+        let steep = length(slope);
+        var across = 0.0;
+        if steep > 1e-6 {
+            let q = p.x - slope / steep * CLOSE_ACROSS;
+            if q.x >= 0.0 && q.y >= 0.0 && q.x < f32(st.grid.x) - 1.0 && q.y < f32(st.grid.y) - 1.0 {
+                let qb = vec2<i32>(floor(q));
+                let qf = q - vec2<f32>(qb);
+                let v00 = f32(atomicLoad(&grid[4u * node(qb.x, qb.y) + 3u])) / S_M;
+                let v10 = f32(atomicLoad(&grid[4u * node(qb.x + 1, qb.y) + 3u])) / S_M;
+                let v01 = f32(atomicLoad(&grid[4u * node(qb.x, qb.y + 1) + 3u])) / S_M;
+                let v11 = f32(atomicLoad(&grid[4u * node(qb.x + 1, qb.y + 1) + 3u])) / S_M;
+                across = smoothstep(0.3, 0.7, mix(mix(v00, v10, qf.x), mix(v01, v11, qf.x), qf.y));
+            }
+        }
+        shift = shift * across;
+        // Never into a wall, and not at all right against one: there every drop is put back on
+        // the same line, so drops moved along it ended on exactly the same spot and stayed one.
+        var off_wall = 1e9;
+        let fb = vec2<i32>(floor(p.x));
+        for (var a = 0; a < 2; a = a + 1) {
+            for (var b = 0; b < 2; b = b + 1) {
+                let nk = node(fb.x + a, fb.y + b);
+                let ws = solid[2u * nk];
+                if ws.w > 0.5 {
+                    let at = vec2<f32>(vec2<i32>(fb.x + a, fb.y + b));
+                    let wf = wall_face(ws, solid[2u * nk + 1u], ws.z + dot(ws.xy, p.x - at));
+                    off_wall = min(off_wall, wf.z);
+                    let into = dot(shift, wf.xy);
+                    if into < 0.0 {
+                        shift = shift - into * wf.xy;
+                    }
+                }
+            }
+        }
+        shift = shift * smoothstep(0.6, 1.6, off_wall);
         let most = 0.5 * lq.c.y;
         let len = length(shift);
         if len > most {
@@ -668,8 +797,8 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     // The edges stop a liquid that fills the scene.
-    let lo = vec2<f32>(2.0);
-    let hi = vec2<f32>(f32(st.grid.x) - 2.0, f32(st.grid.y) - 2.0);
+    let lo = vec2<f32>(EDGE);
+    let hi = vec2<f32>(f32(st.grid.x) - EDGE, f32(st.grid.y) - EDGE);
     if (p.kind & STOPS) != 0u {
         if p.x.x < lo.x + 0.05 { p.x.x = lo.x + 0.05; v.x = max(v.x, 0.0); }
         if p.x.x > hi.x - 0.05 { p.x.x = hi.x - 0.05; v.x = min(v.x, 0.0); }
@@ -1057,8 +1186,8 @@ fn alive(p: Drop) -> bool {
         return false;
     }
     if is_stain(p) {
-        let lo = vec2<f32>(2.0);
-        let hi = vec2<f32>(f32(st.grid.x) - 2.0, f32(st.grid.y) - 2.0);
+        let lo = vec2<f32>(EDGE);
+        let hi = vec2<f32>(f32(st.grid.x) - EDGE, f32(st.grid.y) - EDGE);
         return all(p.x >= lo) && all(p.x <= hi);
     }
     if p.x.y < lq.c.w {
@@ -1076,8 +1205,8 @@ fn alive(p: Drop) -> bool {
             return false;
         }
     }
-    let lo = vec2<f32>(2.0);
-    let hi = vec2<f32>(f32(st.grid.x) - 2.0, f32(st.grid.y) - 2.0);
+    let lo = vec2<f32>(EDGE);
+    let hi = vec2<f32>(f32(st.grid.x) - EDGE, f32(st.grid.y) - EDGE);
     return all(p.x >= lo) && all(p.x <= hi);
 }
 
