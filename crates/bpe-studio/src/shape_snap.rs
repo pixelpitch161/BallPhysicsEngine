@@ -53,18 +53,18 @@ pub fn fit(scene: &mut Scene, id: ThingId, step: f32) -> bool {
         }
         ShapeStart::Polygon => {}
         ShapeStart::Circle => {
-            if !keyed("size") {
-                if let Some(size) = whole_squares(s.size, step, LARGEST) {
-                    set.push(("size", Value::Number(f64::from(size))));
-                }
+            if !keyed("size")
+                && let Some(size) = whole_squares(s.size, step, LARGEST)
+            {
+                set.push(("size", Value::Number(f64::from(size))));
             }
         }
         ShapeStart::Ellipse => {
             for (key, length) in [("width", s.width), ("height", s.height)] {
-                if !keyed(key) {
-                    if let Some(half) = whole_squares(length * 0.5, step, LARGEST * 0.5) {
-                        set.push((key, Value::Number(f64::from(2.0 * half))));
-                    }
+                if !keyed(key)
+                    && let Some(half) = whole_squares(length * 0.5, step, LARGEST * 0.5)
+                {
+                    set.push((key, Value::Number(f64::from(2.0 * half))));
                 }
             }
         }
