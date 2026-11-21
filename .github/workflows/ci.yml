@@ -13,9 +13,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job runs on Ubuntu 24.04, the cloud containers' system: the goldens hash float results, and the C maths
-# library's sin/cos/exp differ in the last bit between glibc versions (on ubuntu-26.04 one particle golden moves), the
-# same known gap as native Windows. Move the image forward together with a re-bless of the goldens.
+# Every job runs on Ubuntu 24.04 (GitHub's machines, or WSL Ubuntu 24.04 on the owner's PC), the cloud containers'
+# system: the goldens hash float results, and the C maths library's sin/cos/exp differ in the last bit between glibc
+# versions (on ubuntu-26.04 one particle golden moves), the same known gap as native Windows. Move the image forward
+# together with a re-bless of the goldens.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -34,6 +35,9 @@ jobs:
       goldens_kit: ${{ steps.pick.outputs.goldens_kit }}
       goldens_sound: ${{ steps.pick.outputs.goldens_sound }}
       windows: ${{ steps.pick.outputs.windows }}
+      runner: ${{ steps.where.outputs.runner }}
+      shards: ${{ steps.where.outputs.shards }}
+      profile: ${{ steps.where.outputs.profile }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -50,6 +54,40 @@ jobs:
           cat picked.txt
           cat picked.txt >> "$GITHUB_OUTPUT"
           { echo '```'; cat picked.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # The owner's PC takes the heavy jobs when it is on: its runners (label bpe-pc, in WSL Ubuntu 24.04 with the same
+      # software graphics driver, so every golden matches) set BPE_PC_HEARTBEAT every minute. A pull request from a
+      # fork never runs there. Otherwise GitHub's machines run them, four test machines as before.
+      # See docs/notes/checks.md, "On the owner's PC".
+      - name: Pick the machines
+        id: where
+        env:
+          BEAT: ${{ vars.BPE_PC_HEARTBEAT }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          now=$(date +%s)
+          case "$BEAT" in ''|*[!0-9]*) beat=0 ;; *) beat=$BEAT ;; esac
+          age=$((now - beat))
+          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
+            why="a pull request from a fork"; pc=false
+          elif [ "$age" -lt 180 ]; then
+            why="the PC was last seen ${age}s ago"; pc=true
+          else
+            why="the PC was last seen ${age}s ago (off)"; pc=false
+          fi
+          if $pc; then
+            echo 'runner=["self-hosted","bpe-pc"]' >> "$GITHUB_OUTPUT"
+            echo 'shards=[1]' >> "$GITHUB_OUTPUT"
+            echo 'profile=pc' >> "$GITHUB_OUTPUT"
+            where="the owner's PC"
+          else
+            echo 'runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+            echo 'profile=ci' >> "$GITHUB_OUTPUT"
+            where="GitHub's machines"
+          fi
+          echo "Heavy jobs run on $where: $why." | tee -a "$GITHUB_STEP_SUMMARY"
 
   fmt:
     name: Format
@@ -65,40 +103,46 @@ jobs:
     name: Clippy
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.changes.outputs.runner) }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/apt
+        if: runner.environment == 'github-hosted'
         with:
           cache-name: clippy
           packages: libasound2-dev pkg-config libudev-dev
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           prefix-key: v1-ubuntu-24.04
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The tests are split across four machines that run at the same time. cargo-nextest's slice partition lines up the
-  # tests of every test binary together and deals them out to the four machines, so the long binaries (bpe-kit's
+  # On GitHub's machines the tests are split across four machines that run at the same time. cargo-nextest's slice
+  # partition lines up the tests of every test binary together and deals them out, so the long binaries (bpe-kit's
   # 1,091 unit tests took 36 minutes on one machine) are shared out too. Each machine still runs only two at a time:
   # the picture tests on the software driver need the memory. See docs/superpowers/plans/2026-11-21-faster-checks.md.
+  # On the owner's PC one job runs every test, more at a time (the pc profile).
   test-shard:
-    name: Tests ${{ matrix.shard }}/4 (debug, software GPU)
+    name: Tests ${{ matrix.shard }}/${{ strategy.job-total }} (debug, software GPU)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.changes.outputs.runner) }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # [1] on the owner's PC (one machine runs every test), [1, 2, 3, 4] on GitHub's machines.
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     steps:
       - uses: actions/checkout@v5
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: System packages (Mesa's software Vulkan driver, ffmpeg for the export tests)
+        if: runner.environment == 'github-hosted'
         uses: ./.github/actions/apt
         with:
           cache-name: tests
@@ -107,6 +151,7 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           prefix-key: v2-ubuntu-24.04
           # The four machines build the same thing, so one saving the cache is enough.
@@ -118,9 +163,11 @@ jobs:
       - name: Tests
         # One package selection, so every crate builds once with one set of features (and the cache always fits);
         # the filter then keeps only the affected crates' tests, before they are dealt out to the four machines.
-        # Two at a time and no stopping at the first failure come from the ci profile in .config/nextest.toml.
+        # How many at a time and no stopping at the first failure come from the ci or pc profile in
+        # .config/nextest.toml.
         run: >-
-          cargo nextest run --workspace --profile ci --partition slice:${{ matrix.shard }}/4 --no-tests=pass
+          cargo nextest run --workspace --profile ${{ needs.changes.outputs.profile }}
+          --partition slice:${{ matrix.shard }}/${{ strategy.job-total }} --no-tests=pass
           -E '${{ needs.changes.outputs.filter }}'
       - name: Doc-tests
         # nextest doesn't run doc-tests, so one machine runs them with cargo test (there are none yet).
@@ -146,7 +193,7 @@ jobs:
     name: Goldens (release)
     needs: changes
     if: needs.changes.outputs.goldens_kit == 'true' || needs.changes.outputs.goldens_sound == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.changes.outputs.runner) }}
     timeout-minutes: 90
     env:
       # LTO and a single codegen unit only make the shipped exe smaller and faster; they can't change a float result
@@ -156,6 +203,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: System packages (Mesa's software Vulkan driver for the pinned pictures)
+        if: runner.environment == 'github-hosted'
         uses: ./.github/actions/apt
         with:
           cache-name: goldens
@@ -163,6 +211,7 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           prefix-key: v1-ubuntu-24.04
       - name: Physics goldens and pinned pictures
@@ -177,7 +226,7 @@ jobs:
     name: Windows cross-build
     needs: changes
     if: needs.changes.outputs.windows == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.changes.outputs.runner) }}
     timeout-minutes: 90
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"
@@ -185,6 +234,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: MinGW
+        if: runner.environment == 'github-hosted'
         uses: ./.github/actions/apt
         with:
           cache-name: mingw
@@ -192,6 +242,7 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           prefix-key: v1-ubuntu-24.04
       - name: Build the editor and the renderer for Windows

@@ -14,3 +14,12 @@ slow-timeout = { period = "120s" }
 # Show each failure's output as it happens and again at the end, and list the slow tests at the end.
 failure-output = "immediate-final"
 final-status-level = "slow"
+
+[profile.pc]
+# The owner's PC (16 threads, 44 GB for the checks; docs/notes/checks.md, "On the owner's PC"): one machine runs every
+# test, so more at a time. Otherwise the same as ci.
+test-threads = 8
+fail-fast = false
+slow-timeout = { period = "120s" }
+failure-output = "immediate-final"
+final-status-level = "slow"

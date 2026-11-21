@@ -1,0 +1,4 @@
+# These run inside Linux: keep Unix line endings even on a Windows checkout.
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf

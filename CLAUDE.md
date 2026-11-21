@@ -121,7 +121,8 @@ apt-get update && apt-get install -y libasound2-dev pkg-config libudev-dev mesa-
   build with the same compiler. Moving it forward is its own pull request that fixes any new clippy warnings.
 
 - Tests: `cargo test --workspace -- --test-threads=2` (more threads run the picture tests out of memory; CI runs the
-  same tests with cargo-nextest split across four machines, `docs/notes/checks.md`). A cold run takes about half an
+  same tests with cargo-nextest on the owner's PC when it is on, else split across four machines,
+  `docs/notes/checks.md`). A cold run takes about half an
   hour, so run it in the background. In `--release`, `bpe-runtime`'s `pushing_an_earlier_step_panics_in_debug`
   always fails (it is debug-only), and a few sound tests check speed against real time, so CI runs only the goldens
   in release.
