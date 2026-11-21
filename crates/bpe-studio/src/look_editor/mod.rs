@@ -1068,6 +1068,23 @@ mod tests {
     }
 
     #[test]
+    fn with_the_grid_snapping_new_sides_put_the_corners_on_it() {
+        let mut h = shape_harness(|p| p.set("start", Value::Choice("polygon".into())));
+        h.state_mut().scene.things.get_mut(&SHAPE).unwrap().transform.position = glam::Vec2::ZERO;
+        let snap = crate::setting_snap::SettingSnap { length: 60.0, angle: 15.0 };
+        crate::setting_snap::put(&h.ctx, Some(snap));
+        h.get_by_role_and_label(Role::SpinButton, "Sides").set_value_accesskit(5.0);
+        h.run();
+        let s = <bpe_kit::ShapeSettings as bpe_core::Settings>::from_params(&h.state().scene.things[&SHAPE].params);
+        let path = s.moulded().expect("the corners were fitted to the grid");
+        assert_eq!((s.sides, path.points.len()), (5, 5));
+        for p in &path.points {
+            let w = glam::Vec2::from(*p) * s.size / 60.0;
+            assert!((w - w.round()).abs().max_element() < 1e-3, "{w}");
+        }
+    }
+
+    #[test]
     fn changing_sides_starts_afresh_and_one_undo_brings_the_outline_back() {
         let mut h = shape_harness(|p| {
             p.set("start", Value::Choice("polygon".into()));

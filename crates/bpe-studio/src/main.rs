@@ -39,6 +39,7 @@ mod selection;
 mod setting_snap;
 mod settings;
 mod shape_handles;
+mod shape_snap;
 mod sound_job;
 mod sound_tab;
 mod style;
