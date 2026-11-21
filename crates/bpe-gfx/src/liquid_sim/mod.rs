@@ -99,7 +99,7 @@ pub struct Drop {
     pub c: [f32; 4],
     /// Linear rgb and its strength.
     pub colour: [f32; 4],
-    /// Its volume ratio (1 at rest).
+    /// 1 / the liquid the grid holds round it (1 at rest; 0 until the card has measured it).
     pub j: f32,
     /// Its liquid's index, and [`STOPS`].
     pub kind: u32,
@@ -118,7 +118,7 @@ pub struct Drop {
 impl Drop {
     /// A new drop at rest at `x` (grid units), moving at `v`.
     pub fn new(x: [f32; 2], v: [f32; 2], colour: [f32; 4], kind: u32, serial: u32) -> Drop {
-        Drop { x, v, colour, kind, serial, j: 1.0, f: [1.0, 0.0, 0.0, 1.0], ..Default::default() }
+        Drop { x, v, colour, kind, serial, f: [1.0, 0.0, 0.0, 1.0], ..Default::default() }
     }
 
     /// The same drop at temperature `t`.

@@ -341,6 +341,15 @@ fn edge_share(x: i32, y: i32) -> f32 {
     return 1.0 - (1.0 - min(sx, 1.0)) * (1.0 - min(sy, 1.0));
 }
 
+// Both together for node (`x`, `y`): a wall right at the picture's edge is not counted twice.
+fn solid_share(x: i32, y: i32, stops: bool) -> f32 {
+    let wall = wall_share(node(x, y));
+    if !stops {
+        return wall;
+    }
+    return 1.0 - (1.0 - wall) * (1.0 - edge_share(x, y));
+}
+
 // ---- one substep ---------------------------------------------------------------------------
 
 @compute @workgroup_size(256)
@@ -402,14 +411,14 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let stops = (p.kind & STOPS) != 0u;
     for (var a = 0; a < 3; a = a + 1) {
         for (var b = 0; b < 3; b = b + 1) {
-            var part = wall_share(node(base.x + a, base.y + b));
-            if stops {
-                part = part + edge_share(base.x + a, base.y + b);
-            }
-            walls = walls + w[a].x * w[b].y * part;
+            walls = walls + w[a].x * w[b].y * solid_share(base.x + a, base.y + b, stops);
         }
     }
-    let j = 1.0 / max(1.0 / max(p.j, 1e-3) + walls, 0.05);
+    // A drop not measured yet (just born, or played back by Un-mix: `j` 0) is at rest.
+    var j = 1.0;
+    if p.j > 0.0 {
+        j = 1.0 / max(1.0 / p.j + walls, 0.05);
+    }
     let stiff = lq.a.x * weight;
     var pressure = 0.0;
     if j < 1.0 {
@@ -498,10 +507,11 @@ fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>) {
             let rows = i32(st.grid.y);
             let x = i32(k % st.grid.x);
             let y = i32(k / st.grid.x);
-            if x <= 2 { v.x = max(v.x, 0.0); }
-            if x >= cols - 2 { v.x = min(v.x, 0.0); }
-            if y <= 2 { v.y = max(v.y, 0.0); }
-            if y >= rows - 2 { v.y = min(v.y, 0.0); }
+            let edge = i32(EDGE);
+            if x <= edge { v.x = max(v.x, 0.0); }
+            if x >= cols - edge { v.x = min(v.x, 0.0); }
+            if y <= edge { v.y = max(v.y, 0.0); }
+            if y >= rows - edge { v.y = min(v.y, 0.0); }
         }
     }
     atomicStore(&grid[4u * k + 1u], bitcast<i32>(v.x));
@@ -553,10 +563,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             c = c + 4.0 * wt * vec4<f32>(gv.x * dpos.x, gv.x * dpos.y, gv.y * dpos.x, gv.y * dpos.y);
             // The liquid round it, and the walls' share of it (a wall counts as full).
             let real = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
-            var nv = real + wall_share(n);
-            if stops {
-                nv = nv + edge_share(base.x + a, base.y + b);
-            }
+            let nv = real + solid_share(base.x + a, base.y + b, stops);
             liquid = liquid + wt * real;
             vd = vd + wt * nv;
             slope = slope + vec2<f32>(dw[a].x * w[b].y, w[a].x * dw[b].y) * nv;
@@ -595,7 +602,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         // Never into a wall, and not at all right against one: there every drop is put back on
         // the same line, so drops moved along it ended on exactly the same spot and stayed one.
         var off_wall = 1e9;
-        let fb = vec2<i32>(floor(p.x));
+        let fb = clamp(vec2<i32>(floor(p.x)), vec2<i32>(0), vec2<i32>(i32(st.grid.x) - 2, i32(st.grid.y) - 2));
         for (var a = 0; a < 2; a = a + 1) {
             for (var b = 0; b < 2; b = b + 1) {
                 let nk = node(fb.x + a, fb.y + b);
@@ -1470,7 +1477,7 @@ fn cs_rewind(@builtin(global_invocation_id) id: vec3<u32>) {
     p.v = vec2<f32>(0.0);
     p.c = vec4<f32>(0.0);
     p.colour = vec4<f32>(colour, more.x);
-    p.j = 1.0;
+    p.j = 0.0;
     p.kind = kind;
     p.serial = serial;
     p.kick = 0.0;

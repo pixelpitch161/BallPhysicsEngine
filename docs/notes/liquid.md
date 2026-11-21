@@ -484,9 +484,13 @@ out of (from `0.5 − WALL_GAP` cells off the face; for a band only as far as th
 the picture's edges the same). It is a flat-wall estimate from the node's nearest face: a little low in an
 inside corner, a little high round an outside one. `cs_g2p` gathers it into `vd` and the `slope`; `cs_p2g`
 gathers it again at the drop's place for the pressure (so `cs_p2g` now binds the walls, binding 5).
-**`p.j` is still the liquid alone**, and so are cooling, wind and drying (`open`): the picture draws a drop
-with little liquid round it as a droplet, and a drop on a wall is as open to the air as one in it. The grid's
-volume channel is left as real liquid too (the balls' wet and depth readings use it).
+**`p.j` is still the liquid alone**: the picture draws a drop with little liquid round it as a droplet, and
+a stream down a wall must keep drawing. Cooling, wind and drying (`open`) also still go by the liquid alone, as
+before (so the row on a pool's floor still counts as half open to them: older than this fix, left alone). The
+grid's volume channel is left as real liquid too (the balls' wet and depth readings use it). A drop not
+measured yet has `p.j` 0 (`Drop::new`, `cs_rewind`; it was 1) and is taken as at rest, so the walls' share
+doesn't squeeze a newborn drop for a substep. A wall at the picture's edge and the edge join as
+1 − (1 − wall)(1 − edge) (`solid_share`).
 
 **Squeezing is damped** (`cs_p2g`, `BULK` 0.7): a bulk viscosity of 0.7 × the speed of sound × one cell on
 tr(C), while `j < 1 + tear`. The pressure was a spring with nothing to calm it. Flow that keeps its volume
@@ -502,6 +506,8 @@ in the owner's scene.
 
 **Tests** (`things/liquid/tests.rs`): still water in a closed box comes to rest, throws nothing, has no stacked
 drops and no packed layer on the floor; a pour onto a shape never has a drop faster than a fall gives it.
+Their scenes are `scenes::liquid_box` and `scenes::liquid_pour_on_a_shape`; the second is also the look
+check's `liquid-pour-on-shape`.
 
 **Known gaps.** Balls are not counted as full as walls are. Two drops can still end on one spot where two
 flows meet along a wall, or where Surface pull draws the top rows of perfectly still liquid together (about

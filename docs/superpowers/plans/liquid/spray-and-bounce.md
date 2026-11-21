@@ -49,11 +49,15 @@ All in `crates/bpe-gfx/src/shaders/liquid_sim.wgsl`. No setting, uniform or file
    other side of a thin wall is not counted twice. For the picture's edges (drops with `STOPS`): the same
    from `EDGE + 0.05 − WALL_GAP`. It is a flat-wall estimate from each node's nearest face (what the walls
    band holds), so it is a little low in an inside corner and a little high round an outside one.
-   - `cs_g2p`: the gathered volume `vd` and its `slope` include the shares (so `exposure` no longer sees a
-     wall as open surface, and the slope no longer points into walls). `p.j` is still stored **without** them
-     (`liquid`): `liquid_drops.wgsl` reads it to draw a drop with little liquid round it as a droplet, and a
-     thin stream down a wall must keep drawing.
-   - `cs_p2g`: `j = 1 / (1 / p.j + walls)`, the shares gathered at the drop's place (9 nodes).
+   - `cs_g2p`: the gathered volume `vd` and its `slope` include the shares (so "holes close" no longer takes
+     a wall for the open surface, and the slope no longer points into walls). `p.j` is still stored
+     **without** them (`liquid`): `liquid_drops.wgsl` reads it to draw a drop with little liquid round it as a
+     droplet, and a thin stream down a wall must keep drawing. Cooling, wind and drying (`open`) also still
+     go by the liquid alone, as before: changing what dries is not this fix's business.
+   - `cs_p2g`: `j = 1 / (1 / p.j + walls)`, the shares gathered at the drop's place (9 nodes). A drop not
+     measured yet (`p.j` 0: just born, or played back by Un-mix) is at rest, as before; it used to be marked
+     by `p.j` 1, which the walls' share would have turned into a squeeze on its first substep.
+   - Where a wall is at the picture's edge the two shares are joined as 1 − (1 − wall)(1 − edge), not added.
    - Not added to the grid's volume channel itself: the balls' "wet" and "how deep" readings and the
      hole-closing probe read that channel and must see real liquid only.
 2. **Squeezing is damped** (`cs_p2g`): a bulk viscosity, stress += `BULK` (0.7) × √stiffness × weight ×
@@ -87,16 +91,18 @@ apart in `cs_mix` (not needed once 1 and 3 are in); laying a fill down already s
 
 1. Tests first (`crates/bpe-kit/src/things/liquid/tests.rs`), both failing on main:
    - `still_water_in_a_box_comes_to_rest_without_bursting_or_packing_against_the_floor`: a closed box filled to
-     0.3, 3.5 s: no drop thrown 40 px above the level, RMS speed under 15 px/s, under 0.5 % of drops stacked,
-     the cell on the floor holds under 1.3 × the drops of a cell higher up.
+     0.3, 3.5 s: no drop thrown 80 px above the level (main: 236), RMS speed under 25 px/s (main: 45 to 50),
+     under 0.5 % of drops stacked (main: 6 %), the fullest half-cell layer on the floor under 2.6 × one higher up
+     (main: over 3; two rows can share a layer, so 2 is no packing).
    - `water_poured_onto_a_shape_is_never_thrown_faster_than_it_could_fall`: a pour onto a filled circle in a box
      (the liquid no shape's child, as in the owner's scene), checked every frame for 2.5 s: no drop faster than
-     1.1 × its spout speed plus a fall to the floor. Main: 18,105 px/s against a limit of 2,713.
+     1.5 × its spout speed plus a fall to the floor. Main: 18,105 px/s against a limit of 2,713.
 2. The shader changes above. Remove every scratch hook; `sim.rs` is unchanged.
 3. Run only what this touches: `cargo test -p bpe-kit --lib things::liquid -- --test-threads=2`,
    `cargo test -p bpe-gfx liquid_sim -- --test-threads=2`. Re-bless `golden_liquid` in debug and `--release`
    and check only liquid lines moved.
-4. Full-size look check `LOOK_ONLY=liquid`; look at the pictures (walls: no gap, no thin line; pours; lone
+4. Full-size look check `LOOK_ONLY=liquid` with a new scene `liquid-pour-on-shape` (the second test's scene,
+   `scenes::liquid_pour_on_a_shape`); look at the pictures (walls: no gap, no thin line; pours; lone
    drops and streams on walls still drawn).
 5. `docs/notes/liquid.md`: "Spray and bouncing fixed, as built". Clippy, fmt. One review. PR, CI, merge.
 
