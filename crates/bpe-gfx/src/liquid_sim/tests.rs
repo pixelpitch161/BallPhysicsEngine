@@ -618,3 +618,40 @@ fn only_the_liquids_side_of_a_thin_wall_gets_wet() {
         assert_eq!(at(x, 22), 0.0, "the far side stays dry at {x}");
     }
 }
+
+#[test]
+fn a_lone_drop_falls_as_fast_as_gravity_says() {
+    // Gravity as gentle as Size Pool's at Detail Normal (cells/s²), and as many substeps as a real
+    // scene takes. The grid's sums once rounded toward zero, which braked a slow drop like friction
+    // at every substep: this one hung in the air (it fell a twentieth of a cell in a second).
+    let g = 60.0;
+    let mut body = Body::new(card(), 40, 80);
+    let (mut step, _) = water(80, g, STYLE_BLEND);
+    let dt = 1.0 / (240.0 * 32.0);
+    step.grid[2] = 32;
+    step.time = [dt, 0.0, g, 0.45 / dt];
+    step.more[0] = 0.2 / dt;
+    step.liquids[0].a[3] = 0.0;
+    let drop = [Drop::new([20.0, 10.0], [0.0, 0.0], [0.2, 0.4, 0.9, 1.0], STOPS, 0)];
+    run(&mut body, &step, &drop, 240);
+    let drops = body.read();
+    assert_eq!(drops.len(), 1);
+    let fell = drops[0].x[1] - 10.0;
+    assert!(
+        (fell - 0.5 * g).abs() < 0.02 * 0.5 * g,
+        "it fell {fell:.2} cells in a second; gravity gives {:.2}",
+        0.5 * g
+    );
+}
+
+#[test]
+fn the_drawing_shaders_count_a_drops_numbers_as_the_card_does() {
+    // They read the drops as bare numbers, so a drop that grows must grow there too.
+    let says = format!("const DROP_FLOATS: u32 = {DROP_FLOATS}u;");
+    for (name, source) in [
+        ("liquid_drops.wgsl", include_str!("../shaders/liquid_drops.wgsl")),
+        ("liquid_dots.wgsl", include_str!("../shaders/liquid_dots.wgsl")),
+    ] {
+        assert!(source.contains(&says), "{name} does not say `{says}`");
+    }
+}

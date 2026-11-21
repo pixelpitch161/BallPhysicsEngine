@@ -26,7 +26,7 @@ use wgpu::util::DeviceExt;
 mod wet;
 pub use wet::DRY_SECONDS;
 
-/// The most drops a body holds: 2^20, so its biggest buffer (96 bytes a drop, 96 MiB) stays under
+/// The most drops a body holds: 2^20, so its biggest buffer (112 bytes a drop, 112 MiB) stays under
 /// the 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
 pub const MOST_DROPS: u32 = 1 << 20;
 /// The most Liquid things one body holds.
@@ -87,7 +87,7 @@ pub const MEET_LAYER: u32 = 1;
 /// Meeting drops of the two turn into a third liquid (the pair's target).
 pub const MEET_REACT: u32 = 2;
 
-/// One drop. Matches `Drop` in liquid_sim.wgsl (96 bytes).
+/// One drop. Matches `Drop` in liquid_sim.wgsl (112 bytes, [`DROP_FLOATS`] numbers).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct Drop {
@@ -113,7 +113,15 @@ pub struct Drop {
     pub spare: [f32; 2],
     /// Its elastic stretch F (xx, xy, yx, yy): the identity at rest.
     pub f: [f32; 4],
+    /// `[0]`: the squeeze it carries, as J − 1 (0 at rest, below 0 squeezed, above 0 stretched): what
+    /// the pressure goes by. The card moves it with the flow and holds it loosely to the liquid
+    /// round the drop. The rest is spare.
+    pub more: [f32; 4],
 }
+
+/// How many numbers a drop takes on the card (the shaders that read drops as bare numbers,
+/// liquid_drops.wgsl and liquid_dots.wgsl, say the same).
+pub const DROP_FLOATS: usize = std::mem::size_of::<Drop>() / 4;
 
 impl Drop {
     /// A new drop at rest at `x` (grid units), moving at `v`.

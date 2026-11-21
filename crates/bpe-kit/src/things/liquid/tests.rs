@@ -324,3 +324,88 @@ fn water_poured_onto_a_shape_is_never_thrown_faster_than_it_could_fall() {
     // It once threw drops at 18,000 px/s.
     assert!(fastest < limit * 1.5, "a drop was thrown at {fastest:.0} px/s; falling gives at most {limit:.0}");
 }
+
+/// The middle of all the drops, across (pixels).
+fn middle_x(world: &World) -> f32 {
+    let all = drops(world);
+    all.iter().map(|d| place(world, d).x).sum::<f32>() / all.len().max(1) as f32
+}
+
+#[test]
+fn a_slosh_in_a_box_keeps_swinging() {
+    gpu();
+    let (mut scene, shape) = crate::scenes::liquid_box(&registry());
+    add_liquid(&mut scene, &registry(), shape, |f| f.level = 0.3, |_| {});
+    let kit = kit();
+    let mut world = build(&scene);
+    let down = world.gravity;
+    // Pulled sideways for 0.4 s, then left alone: where its middle is every twentieth of a second.
+    let mut swing = Vec::new();
+    for k in 1..=90 {
+        let t = k as f64 * 0.05;
+        world.gravity = if t <= 0.4 { down + Vec2::new(250.0, 0.0) } else { down };
+        world.advance_to(t, &kit.sims, &mut Log::default());
+        swing.push((t as f32, middle_x(&world)));
+    }
+    // Each turn of the swing (a furthest point either side), once the pull has stopped.
+    let mut turns = Vec::new();
+    for w in swing.windows(3) {
+        let (a, (t, b), c) = (w[0].1, w[1], w[2].1);
+        if t > 0.45 && b.abs() > 0.8 && ((b > a && b >= c) || (b < a && b <= c)) {
+            turns.push((t, b));
+        }
+    }
+    eprintln!("slosh turns: {turns:?}");
+    assert!(turns.len() >= 5, "it swung {} times and stopped: {turns:?}", turns.len());
+    // Water this deep in a box this wide swings once every 1.46 s (a half swing every 0.73).
+    let half = (turns[3].0 - turns[0].0) / 3.0;
+    assert!((0.6..0.86).contains(&half), "a half swing takes {half:.2} s");
+    // Each swing is nearly as wide as the one before (the first loses most, to ripples). It once
+    // kept two thirds, then 0.59, then under a half, and was dead by the fifth: a rounding error
+    // in the grid's sums braked slow liquid like friction.
+    for pair in turns[..5].windows(2) {
+        let kept = (pair[1].1 / pair[0].1).abs();
+        assert!(kept > 0.7, "a swing kept only {kept:.2} of the one before: {turns:?}");
+    }
+    let left = (turns[4].1 / turns[0].1).abs();
+    assert!(left > 0.4, "by its fifth turn the swing was down to {left:.2} of its first: {turns:?}");
+}
+
+#[test]
+fn still_water_rests_wherever_the_walls_sit_on_the_grid() {
+    gpu();
+    // The box's width and its walls' thickness: each puts the walls' faces somewhere else between
+    // the grid's nodes. Without the friction of the grid's old rounding, still water simmered or
+    // threw drops at some of these and rested at others, so each Detail level (which moves the
+    // grid) had its own; and "holes close" stirred it where it had no holes to close.
+    for (width, wall) in [(594.0, 3.0), (604.0, 3.0), (600.0, 36.0)] {
+        let (mut scene, shape) = crate::scenes::liquid_box(&registry());
+        scene.things.get_mut(&shape).expect("the box").params =
+            crate::ShapeSettings::rectangle(width, 900.0, wall).to_params();
+        add_liquid(&mut scene, &registry(), shape, |f| f.level = 0.3, |_| {});
+        let kit = kit();
+        let mut world = build(&scene);
+        let top = |world: &World| drops(world).iter().map(|d| place(world, d).y).fold(f32::MAX, f32::min);
+        let level = top(&world);
+        let mut highest = level;
+        for quarter in 1..=20 {
+            world.advance_to(quarter as f64 * 0.25, &kit.sims, &mut Log::default());
+            highest = highest.min(top(&world));
+        }
+        let all = drops(&world);
+        let v = speeds(&world);
+        let rms = (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+        eprintln!(
+            "still water, box {width} wide, walls {wall}: threw {:.0} px up, rms {rms:.1} px/s, {} of {} stacked",
+            level - highest,
+            stacked(&all),
+            all.len()
+        );
+        assert!(all.len() > 1000, "{} drops", all.len());
+        // (A Fill starts with a small jolt, as its first rows are not laid to fit the walls: a
+        // drop or two rise 30 to 70 px in the first second. A burst threw them 236.)
+        assert!(level - highest < 120.0, "box {width}, walls {wall}: threw a drop {:.0} px up", level - highest);
+        assert!(rms < 25.0, "box {width}, walls {wall}: still water moves at {rms:.1} px/s");
+        assert!(stacked(&all) * 200 < all.len(), "box {width}, walls {wall}: {} drops share a spot", stacked(&all));
+    }
+}
