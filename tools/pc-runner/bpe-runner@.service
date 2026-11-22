@@ -1,0 +1,27 @@
+# One GitHub Actions runner for the checks (bpe-pc-%i). See docs/notes/checks.md, "On the owner's PC".
+[Unit]
+Description=GitHub Actions runner bpe-pc-%i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=runner
+WorkingDirectory=/home/runner/actions-runner-%i
+# The job environment: rustup's folder on PATH, and the .env setup-wsl.sh writes (build files outside the checkout,
+# lavapipe only). The runner's own .path / .env handling didn't reach the jobs.
+Environment=PATH=/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/home/runner/actions-runner-%i/.env
+ExecStart=/home/runner/actions-runner-%i/run.sh
+# Low priority so the owner's own programs come first inside the machine.
+Nice=10
+CPUWeight=50
+IOWeight=50
+Restart=always
+RestartSec=10
+# Stop everything the runner started (with KillMode=process a restart left old listeners taking jobs).
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target

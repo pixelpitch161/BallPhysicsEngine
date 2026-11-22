@@ -14,3 +14,29 @@ slow-timeout = { period = "120s" }
 # Show each failure's output as it happens and again at the end, and list the slow tests at the end.
 failure-output = "immediate-final"
 final-status-level = "slow"
+
+[profile.pc]
+# The owner's PC (16 threads, 44 GB for the checks; docs/notes/checks.md, "On the owner's PC"): one machine runs every
+# test, so more at a time. Otherwise the same as ci. Measured on bpe-gfx's 361 unit tests: 8 at a time with lavapipe
+# using every thread took 160 s, 12 at a time with LP_NUM_THREADS=2 (in the runners' .env) 127 s, 16 with 1 thread
+# 123 s; 12 keeps the long single picture tests from crawling.
+test-threads = 12
+fail-fast = false
+slow-timeout = { period = "120s" }
+failure-output = "immediate-final"
+final-status-level = "slow"
+
+# On the PC the run ends when its slowest test does, so the known long ones (several minutes each on the software
+# driver) start first instead of trailing at the end.
+[[profile.pc.overrides]]
+filter = """
+binary(golden_liquid) | binary(liquid_sound) | binary(ready_look_pictures) | binary(liquid_look_pictures)
+| test(/^things::liquid::tests_sound::/) | (package(bpe-sound) & binary(alloc))
+"""
+priority = 100
+
+# A test that compares two timings of its own needs the machine to itself: at 12 at a time "Osc B off" once measured
+# slower than on.
+[[profile.pc.overrides]]
+filter = "package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing)"
+threads-required = "num-test-threads"
