@@ -151,6 +151,18 @@ off at its default.
   (older files still load). The status line says "Sound can't keep up: try fewer voices or effects." when dropouts
   grow. `thread_priority.rs` raises the sound thread and lowers the aiming and particle threads on Windows
   (`windows-sys` `SetThreadPriority`; elsewhere nothing).
+- **A sound engine slower than real time still listens** (2026-11-22, found by the hands-on editor review):
+  `Worker::fill` rendered until the ring held 100 ms and only then looked for commands. With a big liquid in the
+  sound's own physics the engine ran under real time, the speakers emptied the ring as fast as it filled, the loop
+  never ended, and Home, Pause, every edit and Quit were never taken: the clock froze (it waits for the seek's
+  clear) until the app was restarted. `fill` now asks after every block whether a command waits (`take_waiting`,
+  the same question the paused warm-up asks) and hands it to the loop. The sound is still slow in such a scene (the
+  status line says it can't keep up); a seek's own physics catch-up is still worked out in one go.
+  `filling_stops_for_a_command_when_the_ring_never_fills` and `a_job_that_never_gets_ahead_still_takes_a_seek` pin
+  it. The seek tests that time themselves are less fussy about a busy machine: `seeking_clears_old_audio` reads the
+  new sound once the thread is ahead, and `a_seek_stops_the_old_sound_at_once` accepts a late stop when it is
+  still early in the time the seek took. `osc_b_off_costs_nothing` (bpe-sound) takes up to twenty more turns when
+  its first five were all on a busy machine.
 
 ## Balls and Emitters make sound (W10, 2026-11-08)
 
