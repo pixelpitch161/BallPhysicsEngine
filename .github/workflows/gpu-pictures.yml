@@ -42,14 +42,20 @@ jobs:
           BRANCH: ${{ inputs.branch }}
         run: |
           if ($env:BRANCH -eq 'main' -or $env:BRANCH -eq '') { throw "Refresh a branch, not main: open a pull request." }
+      # The write token isn't left in .git/config, where the build (the branch's own code) could read it; the push
+      # step passes it just for the push.
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.branch }}
+          persist-credentials: false
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
-      # The same build files folders as CI's gpu-pictures job, so nothing builds twice.
+      # Its own build files folder: a pull request's build in CI's folder can't leave anything behind for this job,
+      # which holds a write token.
       - name: Build files folder
-        run: Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\gpu-pictures"
+        run: |
+          if (-not $env:BPE_GPU_TARGET) { throw "BPE_GPU_TARGET is missing from the runner's .env" }
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\gpu-refresh"
       - name: Make the pictures (debug)
         env:
           BLESS_GOLDEN: "1"
@@ -62,11 +68,15 @@ jobs:
           BLESS_GOLDEN: "1"
         run: cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
       - name: Check they come out the same twice
+        env:
+          BPE_CARD_GOLDENS_REQUIRED: "1"
         run: |
           cargo test -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
           if ($LASTEXITCODE -ne 0) { throw "The card drew different pictures on a second run." }
           cargo test -p bpe-gfx --lib paths_tests::shapes_draw_as_before
           if ($LASTEXITCODE -ne 0) { throw "The card drew different shapes on a second run." }
+          cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
+          if ($LASTEXITCODE -ne 0) { throw "The card drew different pictures on a second run (release)." }
       - name: Commit and push
         env:
           BRANCH: ${{ inputs.branch }}
@@ -92,7 +102,8 @@ jobs:
           git add -- $files
           git commit -m "Refresh the expected pictures on the owner's graphics card" -m "Made on: $card"
           if ($LASTEXITCODE -ne 0) { throw 'commit failed' }
-          git push origin "HEAD:refs/heads/$env:BRANCH"
+          $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:TOKEN"))
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $basic" push origin "HEAD:refs/heads/$env:BRANCH"
           if ($LASTEXITCODE -ne 0) { throw 'push failed (did the branch move? run this again)' }
           $headers = @{ Authorization = "Bearer $env:TOKEN"; Accept = 'application/vnd.github+json' }
           $body = @{ ref = $env:BRANCH } | ConvertTo-Json

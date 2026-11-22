@@ -22,6 +22,10 @@ concurrency:
 # system: the goldens hash float results, and the C maths library's sin/cos/exp differ in the last bit between glibc
 # versions (on ubuntu-26.04 one particle golden moves), the same known gap as native Windows. Move the image forward
 # together with a re-bless of the goldens.
+# Jobs only read the repository (the self-hosted runners keep files between jobs, so no job gets a write token).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -227,13 +231,17 @@ jobs:
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # A card golden made on another card fails here instead of passing as "not compared".
+      BPE_CARD_GOLDENS_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       # Build files stay between runs, outside the checkout (BPE_GPU_TARGET comes from the runner's .env).
       - name: Build files folder
-        run: Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\${{ github.job }}"
+        run: |
+          if (-not $env:BPE_GPU_TARGET) { throw "BPE_GPU_TARGET is missing from the runner's .env" }
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\${{ github.job }}"
       # The build files are kept between runs; past 100 GB they are emptied (the next build starts cold).
       - name: Keep the build files under 100 GB
         run: |

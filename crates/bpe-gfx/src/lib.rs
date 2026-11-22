@@ -294,8 +294,19 @@ pub fn card_golden(path: &std::path::Path, lines: &str) -> CardGolden {
         return CardGolden::Blessed;
     }
     let text = std::fs::read_to_string(path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
-    card_golden_compare(&text, &here)
+    let decision = card_golden_compare(&text, &here);
+    // On the owner's card (CI sets this there) a file made anywhere else is an error, not a pass: otherwise a golden
+    // blessed by mistake in a container would quietly stop being checked anywhere.
+    if let CardGolden::NotCompared(why) = &decision
+        && std::env::var(CARD_GOLDENS_REQUIRED).is_ok_and(|v| v == "1")
+    {
+        panic!("{why}. {CARD_GOLDENS_REQUIRED}=1: refresh it with the \"Refresh GPU pictures\" workflow");
+    }
+    decision
 }
+
+/// Set to `1` where card goldens must be compared (CI's job on the owner's card): one made on another card fails.
+pub const CARD_GOLDENS_REQUIRED: &str = "BPE_CARD_GOLDENS_REQUIRED";
 
 /// The decision of [`card_golden`], from the file's text and this card's name.
 pub fn card_golden_compare(text: &str, here: &str) -> CardGolden {
