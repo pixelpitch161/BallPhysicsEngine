@@ -132,7 +132,10 @@ fn starter_patch_renders_its_golden() {
         std::fs::write(&path, &line).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    // A Windows checkout made before .gitattributes kept these LF may still hold CRLF.
+    let expected = std::fs::read_to_string(&path)
+        .expect("the golden file is missing; run with BLESS_GOLDEN=1")
+        .replace("\r\n", "\n");
     assert_eq!(line, expected, "the starter patch sounds different");
     assert_eq!(render(&scene, &kit, 2.0), out, "the same every time");
 }

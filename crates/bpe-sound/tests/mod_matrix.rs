@@ -368,7 +368,10 @@ fn modulators_patch_golden() {
         std::fs::write(&path, &line).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    // A Windows checkout made before .gitattributes kept these LF may still hold CRLF.
+    let expected = std::fs::read_to_string(&path)
+        .expect("the golden file is missing; run with BLESS_GOLDEN=1")
+        .replace("\r\n", "\n");
     assert_eq!(line, expected, "the modulators patch sounds different");
 }
 
