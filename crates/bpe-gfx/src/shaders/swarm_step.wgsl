@@ -377,7 +377,8 @@ fn dipole(p: vec2<f32>, centre: vec2<f32>, mm: vec2<f32>, size: f32) -> vec4<f32
     if all(b == vec2<f32>(0.0)) {
         return vec4<f32>(0.0);
     }
-    return vec4<f32>(b * strength, -n * strength);
+    // The pull fades inside 4 px, as the exact engine's.
+    return vec4<f32>(b * strength, -r / max(d, 4.0) * strength);
 }
 
 // Magnetic field: kind.z from (0 each ball, 1 its place), kind.w points (0 along its motion,

@@ -141,8 +141,8 @@ particle's `Speck.spot` (1-based) names its **home**, which follows the anchor a
 the scene sim; `things::scene::sim::beat_of`); `ThingSim::key_restarts_beside` puts the tempo keys into `beside_fingerprint` so
 a tempo edit restarts the particles (not the physics). Heading **Round the middle**. Nine force layers
 (`more_forces.rs`): Pull to / Push away from (Toward Its place, A point, Its ball, Ball number, The middle of its parent,
-Balls nearby; Falloff, Orbit, Swallow; inside 4 px of its centre a pull fades to nothing, so particles passing by the
-centre aren't flung by a last-bit rounding, which the card's fused maths would decide), Spring home, Flock (start-of-step `ready::Flockmates` grid, at most
+Balls nearby; Falloff, Orbit, Swallow; inside 4 px of its centre a pull fades to nothing, as a magnet's pull does,
+so particles passing by the centre aren't flung by a last-bit rounding the card's fused maths decides), Spring home, Flock (start-of-step `ready::Flockmates` grid, at most
 `MOST_MATES`), Magnetic field (balls as dipoles; turns needles), Flow field (Noise / Waves / Spiral / Vortex),
 Spirograph, Pulse on the beat, Ripple from hits (rings from the log, `MOST_RINGS`); what they read is gathered once a
 step in `ready.rs::Ready` so any thread count gives the same. Every force's Only for gains A share / The rest (the same
