@@ -4,7 +4,7 @@
 # registered afresh. The one-hour registration token goes straight from gh to config.sh.
 set -euo pipefail
 repo=pixelpitch161/BallPhysicsEngine
-runners=3
+runners=4
 known=$(su - beat -c "gh api repos/$repo/actions/runners --jq '.runners[].name'")
 for n in $(seq 1 $runners); do
   d=/home/runner/actions-runner-$n

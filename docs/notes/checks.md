@@ -51,7 +51,7 @@ Design `docs/superpowers/specs/2026-11-21-pc-test-runner-design.md`, plan
   machines as above. Format, "What changed" and the gate always run on GitHub's machines. The step summary of "What
   changed" says which and why. A manual run (Actions, CI, "Run workflow") can tick "Run on GitHub's machines".
 - **The PC side**: WSL2 distro `bpe-ci` (Ubuntu 24.04, on `D:\WSL\bpe-ci`, `.wslconfig` 44 GB / 16 threads) with
-  three runners `bpe-pc-1..3` as systemd services `bpe-runner@1..3` (user `runner`, `Nice=10`). Same glibc and Mesa
+  four runners `bpe-pc-1..4` (one per heavy job) as systemd services `bpe-runner@1..4` (user `runner`, `Nice=10`). Same glibc and Mesa
   lavapipe as GitHub's machines (each runner's `.env` forces lavapipe), so the goldens and pinned pictures match.
   Windows drives aren't mounted and Windows programs can't be started from it. Build files stay in
   `/home/runner/target/<job>` between runs (one folder per job, set by a `ci.yml` step, since a job can land on any
@@ -61,7 +61,7 @@ Design `docs/superpowers/specs/2026-11-21-pc-test-runner-design.md`, plan
   distro at logon.
 - **Steps skipped on the PC** (`if: runner.environment == 'github-hosted'`): Free disk space, the apt action (the
   packages are installed once by `setup-wsl.sh`), rust-cache and the nextest install. `rustup toolchain install`
-  runs under `flock`, since the three runners share one `~/.rustup`.
+  runs under `flock`, since the four runners share one `~/.rustup`.
 - **Fork pull requests**: their workflows need the owner's approval (repository setting "Require approval for all
   outside collaborators"). A fork can edit `ci.yml` to name the PC's label, and the runners keep their files between
   jobs, so **never approve a fork's run without reading its workflow changes**.

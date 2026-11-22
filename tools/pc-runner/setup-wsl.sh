@@ -5,7 +5,7 @@
 set -euo pipefail
 export CARGO_NET_RETRY=10
 here=/root/pc-runner
-runners=3
+runners=4
 nextest=0.9.152 # the version ci.yml pins; move both together
 
 export DEBIAN_FRONTEND=noninteractive
@@ -37,11 +37,11 @@ chmod 700 /home/beat
 if [ ! -x /home/runner/.cargo/bin/rustup ]; then
   su - runner -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
 fi
-# The pinned toolchain up front, so the three runners don't race to install it (CI also takes a lock).
+# The pinned toolchain up front, so the four runners don't race to install it (CI also takes a lock).
 toolchain=$(tr -d '\r' < "$here/rust-toolchain.toml" | sed -n 's/^channel = "\(.*\)"$/\1/p')
 su - runner -c "RUSTUP_MAX_RETRIES=10 ~/.cargo/bin/rustup toolchain install $toolchain --profile minimal \
   --component rustfmt --component clippy --target x86_64-pc-windows-gnu"
-# nextest once here (ci.yml installs it only on GitHub's machines: three jobs writing ~/.cargo/bin at once collide).
+# nextest once here (ci.yml installs it only on GitHub's machines: four jobs writing ~/.cargo/bin at once collide).
 if ! su - runner -c "~/.cargo/bin/cargo-nextest nextest --version 2>/dev/null" | grep -q "nextest $nextest"; then
   su - runner -c "curl -fsSL --retry 10 --retry-all-errors https://get.nexte.st/$nextest/linux | tar -xzf - -C ~/.cargo/bin"
 fi

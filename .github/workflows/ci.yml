@@ -104,7 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Rust (the version in rust-toolchain.toml)
-        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
       - run: cargo fmt --all --check
 
@@ -122,9 +122,9 @@ jobs:
           cache-name: clippy
           packages: libasound2-dev pkg-config libudev-dev
       - name: Rust (the version in rust-toolchain.toml)
-        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
       # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
@@ -164,9 +164,9 @@ jobs:
           packages: >-
             libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers ffmpeg libxkbcommon-x11-0 libxkbcommon0
       - name: Rust (the version in rust-toolchain.toml)
-        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
       # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
@@ -178,7 +178,7 @@ jobs:
           # The four machines build the same thing, so one saving the cache is enough.
           save-if: ${{ matrix.shard == 1 }}
       # After the cache, so a cached ~/.cargo/bin can't swap in another version. Pinned: move it on purpose, together
-      # with tools/pc-runner/setup-wsl.sh, which installs it once on the PC (three jobs writing one ~/.cargo/bin at
+      # with tools/pc-runner/setup-wsl.sh, which installs it once on the PC (four jobs writing one ~/.cargo/bin at
       # the same time collide).
       - uses: taiki-e/install-action@v2
         if: runner.environment == 'github-hosted'
@@ -233,9 +233,9 @@ jobs:
           cache-name: goldens
           packages: libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers
       - name: Rust (the version in rust-toolchain.toml)
-        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
       # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
@@ -270,9 +270,9 @@ jobs:
           cache-name: mingw
           packages: gcc-mingw-w64-x86-64
       - name: Rust (the version in rust-toolchain.toml)
-        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
       # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
