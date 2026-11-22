@@ -7,6 +7,10 @@ Wants=network-online.target
 [Service]
 User=runner
 WorkingDirectory=/home/runner/actions-runner-%i
+# The job environment: rustup's folder on PATH, and the .env setup-wsl.sh writes (build files outside the checkout,
+# lavapipe only). The runner's own .path / .env handling didn't reach the jobs.
+Environment=PATH=/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/home/runner/actions-runner-%i/.env
 ExecStart=/home/runner/actions-runner-%i/run.sh
 # Low priority so the owner's own programs come first inside the machine.
 Nice=10
