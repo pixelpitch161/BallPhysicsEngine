@@ -299,7 +299,12 @@ Seen while measuring (full-size, the owner's scene and the test box, no Lighting
    thin film.
 4. **Small pinholes near where the pour lands** at Normal even with "holes close" on: the draw's reach per
    drop is tied to the cell; a slightly wider reach inside the liquid (not at its edge) would hide them.
-5. The full-size look check with a Lighting card (Flat and Stage, `liquid-lit`, `liquid-deep-lit`,
+5. **Small dark notches between the liquid and a curved wall** (the ring in `liquid-water` and
+   `liquid-mixing`, full size, 1:1): a row of them a cell or so apart where the drawn liquid does not quite
+   reach the wall. They were there before part 1 (as bumps and beads along the wall); after it the liquid lies
+   smooth against the wall and the notches are a regular row. The same gap shows as dashes along a flat floor
+   (item 1).
+6. The full-size look check with a Lighting card (Flat and Stage, `liquid-lit`, `liquid-deep-lit`,
    `lit-liquid-smoke`) after part 1, at 1:1, for seams at walls, flicker between the 1.0 and 1.05 s frames and
    banding in the depth colour. Part 1 changes how drops sit at walls and at the surface, so this has to be
    looked at after it, not before.
