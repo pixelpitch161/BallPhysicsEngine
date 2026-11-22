@@ -68,3 +68,26 @@ changes; "lock it" for denying the runner account the data drives).
   test that fails only on Windows maths goes in the `gpu` filter with a comment.
 - Don't touch the WSL runners, the main checkout on the PC, or the Ball Studio exe.
 - Don't store the runner account's password or any token on disk.
+
+## As built (2026-11-22)
+
+- **The runner** is a Windows service running as the standard user `bpe-gpu` (session 0 sees the RX 9070 XT through
+  the AMD Vulkan driver: `vulkaninfo` from a background task as that user). The account may only log on as a batch
+  job or service and is hidden from the sign-in screen; its password is made fresh on every admin run and never
+  written down. Rust 1.97.0 GNU, nextest 0.9.152, WinLibs gcc 16.2 and ffmpeg live in `F:\bpe-gpu`. A native build
+  needed nothing beyond MinGW (no MSVC).
+- **Data drives**: D:, E: and F: let every signed-in user in by default, so (owner: "lock it") `bpe-gpu` is denied on
+  them; its own allow on `F:\bpe-gpu` takes precedence. The owner's profile on C: was already private.
+- **Normal priority**: below-normal on the runner (through Image File Execution Options) let the WSL checks and
+  normal-priority builds starve the listener until a job missed its 30-second hand-over ("lost communication").
+- **PowerShell**: steps use `powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"` (the runner account's
+  default policy refuses the step scripts; pwsh isn't installed).
+- **One more pinned picture**: `bpe-gfx`'s `paths_tests::shapes_draw_as_before` had its hash in the code; it now uses
+  `crates/bpe-gfx/tests/golden-shapes.txt` like the others. The card's pictures: unlit 109 lines changed, lit-flat 9,
+  liquid unchanged (header only), shapes changed. Same pictures twice in a row on the card.
+- **Review fixes**: `BPE_CARD_GOLDENS_REQUIRED=1` on the card turns "not compared" into a failure (a golden blessed by
+  mistake in a container would otherwise stop being checked); `ci.yml` gets a read-only token; the refresh workflow
+  keeps its write token out of `.git/config` and builds in its own folder (`target\gpu-refresh`), and checks release
+  a second time too; the scripts keep `F:\bpe-gpu\setup` read-only for `bpe-gpu`.
+- **First trial** (bpe-gfx unit tests as `bpe-gpu`): build 6 min, tests 461 s, 363 of 364 passed (the shapes hash
+  above).
