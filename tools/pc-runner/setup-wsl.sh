@@ -67,12 +67,14 @@ for n in $(seq 1 $runners); do
   if [ ! -f "$d/run.sh" ]; then
     su - runner -c "mkdir -p $d && tar -xzf $tar -C $d"
   fi
-  # Read by the service unit: Mesa's software driver only (the same as GitHub's machines), retries for this PC's
+  # Read by the service unit: Mesa's software driver only (the same as GitHub's machines; two threads per test, as
+  # the pc nextest profile runs 12 at a time), retries for this PC's
   # network, and the hook that sweeps old build files before a job starts.
   cat > "$d/.env" <<EOF
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 GALLIUM_DRIVER=llvmpipe
+LP_NUM_THREADS=2
 LANG=C.UTF-8
 CARGO_NET_RETRY=10
 RUSTUP_MAX_RETRIES=10

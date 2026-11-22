@@ -17,8 +17,10 @@ final-status-level = "slow"
 
 [profile.pc]
 # The owner's PC (16 threads, 44 GB for the checks; docs/notes/checks.md, "On the owner's PC"): one machine runs every
-# test, so more at a time. Otherwise the same as ci.
-test-threads = 8
+# test, so more at a time. Otherwise the same as ci. Measured on bpe-gfx's 361 unit tests: 8 at a time with lavapipe
+# using every thread took 160 s, 12 at a time with LP_NUM_THREADS=2 (in the runners' .env) 127 s, 16 with 1 thread
+# 123 s; 12 keeps the long single picture tests from crawling.
+test-threads = 12
 fail-fast = false
 slow-timeout = { period = "120s" }
 failure-output = "immediate-final"

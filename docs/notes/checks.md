@@ -47,7 +47,7 @@ Design `docs/superpowers/specs/2026-11-21-pc-test-runner-design.md`, plan
 - **Where the jobs run**: "What changed" also picks the machines. When the repository variable `BPE_PC_HEARTBEAT`
   is under 180 seconds old and the change isn't a pull request from a fork, Clippy, the tests, Goldens (release) and
   the Windows cross-build run on the owner's PC (`runs-on: [self-hosted, bpe-pc]`) and the tests are one job
-  (`Tests 1/1`) with the `pc` nextest profile (8 at a time, the slowest tests first). Otherwise they run on GitHub's
+  (`Tests 1/1`) with the `pc` nextest profile (12 at a time with two lavapipe threads each, the slowest tests first). Otherwise they run on GitHub's
   machines as above. Format, "What changed" and the gate always run on GitHub's machines. The step summary of "What
   changed" says which and why. A manual run (Actions, CI, "Run workflow") can tick "Run on GitHub's machines".
 - **The PC side**: WSL2 distro `bpe-ci` (Ubuntu 24.04, on `D:\WSL\bpe-ci`, `.wslconfig` 44 GB / 16 threads) with
