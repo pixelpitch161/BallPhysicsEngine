@@ -656,8 +656,7 @@ steps queued ahead. On a device with timestamps (`bpe_gfx::TIMING_FEATURES`, whi
 step's compute pass is timed by the card (`StepTimer`, two timestamps resolved into the count reader's staging
 buffer), and the line reads "· Liquid: 412,000 drops, 3.1 ms a step (64 small steps)" (`Host::reading`,
 `Reading`, `liquid_readout`). There are 240 liquid steps a second of video, so a step under 4.2 ms keeps up
-with playback. **Nothing here was timed on a real card** (the cloud's and the checks' cards are software ones):
-that line is how the owner's card gets measured.
+with playback. (The timings below were taken without it, from the outside.)
 
 **Checking a speed change**: `crates/bpe-kit/tests/liquid_speed.rs` (ignored; run by hand, in release) plays a
 pour, a filled box, the two liquid test scenes, a "strange" scene (ice, stretch, stains, a clinging, inking,
@@ -693,13 +692,79 @@ on the owner's scene at Fine and Extreme, and next to nothing (0 to 5 %, inside 
 liquid fills the grid. That card is a processor: for it a pass costs what the arithmetic in it costs, the
 arithmetic is the same on purpose, and there is no cost to starting a pass. A real card is the other way round
 (arithmetic is nearly free, starting 76,800 passes for a second of liquid is not), so its gain should be larger,
-but **it has not been measured**: read it off the status line.
+and it is: see the next table.
+
+**Numbers on the owner's card** (Radeon RX 9070 XT, 2026-11-22).
+Seconds of work for **5 seconds** of liquid (so under 5.00 is faster than real time), release, the test built
+for Windows and run on the card itself (`# card AMD Radeon RX 9070 XT, Vulkan, driver 26.11.2 (LLPC)`), old and
+new in turn, each twice, the mean of the two (they were within a few percent), with no check running on the PC:
+
+| Scene | Detail | Drops after 5 s | Before | After | Less time |
+| --- | --- | --- | --- | --- | --- |
+| A pour onto a shape | Normal | 4,772 | 1.20 | 1.09 | 9 % |
+| A pour onto a shape | Fine | 8,485 | 1.40 | 1.16 | 17 % |
+| A pour onto a shape | Extreme | 33,941 | 3.95 | 3.00 | 24 % |
+| The owner's scene (Water Weird) | Normal | 5,091 | 1.19 | 1.06 | 11 % |
+| The owner's scene | Fine | 9,050 | 1.40 | 1.41 | -1 % |
+| The owner's scene | Extreme | 36,203 | 3.65 | 2.78 | 24 % |
+| A filled box | Normal | 19,832 | 1.06 | 1.21 | -14 % |
+| A filled box | Fine | 34,888 | 2.87 | 2.23 | 22 % |
+| A filled box | Extreme | 141,768 | 11.14 | 7.56 | 32 % |
+| Liquid water (a ball drops in) | Normal | 18,560 | 2.44 | 2.15 | 12 % |
+| Liquid water | Fine | 32,920 | 3.76 | 2.89 | 23 % |
+| Liquid water | Extreme | 132,578 | 12.09 | 8.46 | 30 % |
+| Liquid paint mixing | Normal | 30,023 | 3.03 | 2.42 | 20 % |
+| Liquid paint mixing | Fine | 53,494 | 4.49 | 3.25 | 28 % |
+| Liquid paint mixing | Extreme | 215,357 | 19.06 | 13.07 | 31 % |
+| Strange (ice, stains, forces) | Normal | 18,475 | 2.38 | 1.68 | 29 % |
+| Strange | Fine | 32,764 | 3.43 | 2.80 | 18 % |
+| Strange | Extreme | 131,843 | 11.21 | 6.94 | 38 % |
+| A filled box, 40 s of liquid | Normal | 19,832 | 13.74 | 11.36 | 17 % |
+
+- **About 30 % less time at Extreme, 10 to 25 % at Normal and Fine.** The gain grows with the grid and the drops,
+  the opposite of the software card.
+- **One case is slower at its start**: the filled box at Normal takes 1.31 s for its first 5 s where it took 1.17
+  (measured three times each, the same to a hundredth), and 11.36 s for 40 s where it took 13.74. So the new code
+  is faster for each second played and behind over the first few. Why the start costs more was not found; it is
+  about a tenth of a second, once.
+- **The liquid's stepping is probably not most of what makes the owner's playback slow.** On this card the
+  physics alone runs faster than real time at Normal and Fine in every scene (the preview's Detail in Water Weird
+  is Fine), and at Extreme up to some 60,000 drops: Water Weird's first 5 s at Extreme take 2.8 s (3.7 before).
+  A full scene at Extreme is slower than real time but not by much: 130,000 to 215,000 drops take 1.4 to 2.6 s
+  for a second of liquid (2.2 to 3.8 before). The slow playback and the long exports the owner reported must be
+  mostly somewhere else (drawing the liquid, lighting, the editor's own work for each picture, encoding). That
+  is the next thing to measure, on the card, the same way.
+
+**On the real card old and new are not bit for bit the same**, as they are on the software card: every print
+differs, from the first tenth of a second on. Each build repeats its own prints exactly (three runs each), and
+the drop counts are the same. This is what the review said could happen: the numbers and their order are the
+same, but some arithmetic now sits in another pass, and the card's driver fuses multiplies and adds differently
+around it. What was checked on the card, old against new:
+
+- The liquid as a whole (the columns `liquid_speed` prints after the print: mean place, mean speed squared, mean
+  squeeze, frozen drops). After 0.05 s (12 liquid steps, some 500 substeps) the two agree to six or seven
+  figures in every scene at Normal and Extreme (the filled box's mean height 144.490430 against 144.490429, its
+  mean speed squared 339.46769 against 339.46772). After 1 s they are a few tenths of a percent apart, after 5 s
+  a few percent in the splashing scenes and still a hundredth of a percent in the calm ones (the box's height
+  145.281 against 145.293; frozen drops in the strange scene 10,704 against 10,694). That is last-bit
+  differences growing in a chaotic flow, not another liquid: a wrong tile, a wrong ball time or a missed write
+  would show at once and in the first figures.
+- `skipping_the_empty_tiles_changes_no_drop` passes on the card: with and without skipping tiles the new build
+  gives the same drops to the last bit there too (both sides are the same shader, so the driver cancels out).
+- The solver's 27 tests and the liquid's 53 behaviour tests (still water in every box, sloshing, balls, the
+  stranger liquids, sound) pass on the card with the new build, as the old build's 25 and 53 do.
+
+**How it was run** (worth repeating for any liquid speed work): the checks on the owner's PC use a software card
+on purpose and their Linux box cannot start Windows programs, so they can't time anything on the Radeon.
+A session on the PC built `liquid_speed` (and the gfx and kit unit tests) for `x86_64-pc-windows-gnu` inside that
+box, in a scratch folder of its own, copied the programs out to a temporary Windows folder and ran them there.
+Nothing is installed and the app is not touched. Never run cargo on Windows inside the project folder: the
+pinned toolchain starts downloading. Time only when no check is running on the PC.
 
 Pitfalls: `cs_g2p2g` names eight storage buffers, the most a default device allows a shader stage, so it can
 take no ninth. A scratch given back as a spare must drop its bind groups (`Drop for Body`), or they keep the
-dead body's drops. "Bit for bit" was shown on the software card; a real card's driver may fuse the arithmetic
-that moved between passes differently, which would change last bits only (see the plan's "As built"). The
-reading's substeps and time belong to the same answered step (`CountReader.substeps`), 0 until one is back.
+dead body's drops. "Bit for bit" holds on the software card only: on the owner's card the last bits differ (see
+"Numbers on the owner's card"). The reading's substeps and time belong to the same answered step (`CountReader.substeps`), 0 until one is back.
 
 Left out, with reasons in the plan: bigger time steps and a half-rate preview (both change the liquid), sorting
 drops by cell (can't be judged without a real card), fewer atomic adds (changes the rounding). Do not "tidy"
