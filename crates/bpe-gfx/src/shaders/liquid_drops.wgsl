@@ -49,7 +49,7 @@ struct Style {
 
 // Numbers a drop takes in the card's buffer (liquid_sim.wgsl's `Drop`): x at 0, v at 2, colour at
 // 8, j at 12, kind at 13, serial at 14, kick at 15.
-const DROP_FLOATS: u32 = 24u;
+const DROP_FLOATS: u32 = 28u;
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> st: Style;

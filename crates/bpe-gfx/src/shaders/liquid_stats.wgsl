@@ -14,6 +14,7 @@ struct Drop {
     mat: vec2<f32>,
     spare: vec2<f32>,
     f: vec4<f32>,
+    more: vec4<f32>,
 };
 
 const WORDS: u32 = 12u;

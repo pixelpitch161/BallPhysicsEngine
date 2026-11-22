@@ -25,6 +25,9 @@ struct Drop {
     spare: vec2<f32>,
     // its elastic stretch F: xx, xy, yx, yy (the identity at rest)
     f: vec4<f32>,
+    // x: the squeeze it carries, as J - 1 (0 at rest, below 0 squeezed, above 0 stretched; at
+    // CARRY_LOOSE or more it is loose). yzw spare.
+    more: vec4<f32>,
 };
 
 struct Liquid {
@@ -116,6 +119,27 @@ const WALL_GAP: f32 = 0.25;
 const BULK: f32 = 0.7;
 // How far across a gap "holes close" looks for liquid, in cells.
 const CLOSE_ACROSS: f32 = 2.5;
+// The squeeze a drop carries is held within this share of what the grid says is round it, moved
+// to that edge at CARRY_DOWN a second when the liquid is more packed than the drop thinks and at
+// CARRY_UP when less. A narrow band, or a quick way up, brings the simmer at walls back. Stretched
+// to CARRY_LOOSE (or its liquid's tear, when that is more) a drop is loose: it carries nothing and
+// takes the grid's word when it joins liquid again. That is well past the slack on purpose: at a
+// liquid's own tear, which Spray takes down to a hundredth, drops inside sound liquid would come
+// loose and join again all the time, each time taking the grid's noisy reading as their squeeze.
+const CARRY_SLACK: f32 = 0.15;
+const CARRY_DOWN: f32 = 30.0;
+const CARRY_UP: f32 = 4.0;
+const CARRY_LOOSE: f32 = 0.3;
+// "Holes close" moves a drop only where the liquid round it (walls counted) reads less than this
+// share of full, and fully from 0.15 under it.
+const HOLE_BELOW: f32 = 0.95;
+// A drop a wall stops is squeezed by this many times how far the wall put it back, in cells (its
+// own room is half a cell).
+const WALL_SQUEEZE: f32 = 2.0;
+// How far off each face of a thin wall `cs_grid` looks for which side the liquid is on, in cells,
+// and how many times more liquid the other side must hold for a node to move with it.
+const GHOST_LOOK: f32 = 1.5;
+const GHOST_MORE: f32 = 4.0;
 const FROZEN: u32 = 512u;
 const STAIN_BASE: u32 = 16u;
 const MEET_REACT: u32 = 2u;
@@ -181,8 +205,11 @@ fn node(x: i32, y: i32) -> u32 {
     return u32(y) * st.grid.x + u32(x);
 }
 
+// To the nearest whole number. Toward zero (a bare `i32()`) every add lost up to one unit in the
+// direction that slows the liquid: a friction that stopped slow liquid dead, the more so the more
+// substeps, so each Detail level had its own.
 fn fixed(x: f32, scale: f32) -> i32 {
-    return i32(clamp(x * scale, -LIMIT, LIMIT));
+    return i32(round(clamp(x * scale, -LIMIT, LIMIT)));
 }
 
 fn liquid_of(d: Drop) -> u32 {
@@ -406,25 +433,18 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let base = base_of(p.x);
     let fx = p.x - vec2<f32>(base);
     var w = weights(fx);
-    // How squeezed it is: by the liquid round it, and by the walls beside it counted as full.
-    var walls = 0.0;
-    let stops = (p.kind & STOPS) != 0u;
-    for (var a = 0; a < 3; a = a + 1) {
-        for (var b = 0; b < 3; b = b + 1) {
-            walls = walls + w[a].x * w[b].y * solid_share(base.x + a, base.y + b, stops);
-        }
-    }
-    // A drop not measured yet (just born, or played back by Un-mix: `j` 0) is at rest.
-    var j = 1.0;
-    if p.j > 0.0 {
-        j = 1.0 / max(1.0 / p.j + walls, 0.05);
+    // How squeezed it is: the squeeze it carries (`cs_g2p` keeps it), as J - 1. Squeezed, it pushes
+    // back; stretched less than its liquid tears at, it pulls together; torn off, neither.
+    var e = 0.0;
+    if abs(p.more.x) < 1e30 {
+        e = p.more.x;
     }
     let stiff = lq.a.x * weight;
     var pressure = 0.0;
-    if j < 1.0 {
-        pressure = stiff * (1.0 - j);
-    } else if j < 1.0 + lq.a.z {
-        pressure = -stiff * lq.a.y * (j - 1.0);
+    if e < 0.0 {
+        pressure = -stiff * e;
+    } else if e < lq.a.z {
+        pressure = -stiff * lq.a.y * e;
     }
     let dt = st.time.x;
     // σ = −p I + μ (C + Cᵀ), μ = ν ρ; affine = −dt · vol · 4 · σ + m C.
@@ -436,7 +456,7 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     // over one cell): the pressure alone is a spring with nothing to calm it, and any small
     // pile-up was thrown back out as fast as the liquid is stiff. Flowing, which keeps its
     // volume, feels none of it; nor does liquid torn open into spray, which it would smear.
-    if j < 1.0 + lq.a.z {
+    if e < lq.a.z {
         let squeeze = BULK * sqrt(lq.a.x) * weight * (p.c.x + p.c.w);
         sxx = sxx + squeeze;
         syy = syy + squeeze;
@@ -478,6 +498,52 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
             atomicAdd(&grid[4u * n + 3u], fixed(wt * vol, S_M));
         }
     }
+    // A wall holds the liquid's pressure: it pushes back as the liquid that would be in its place
+    // would. Each drop near a wall is mirrored in it (in the plane `WALL_GAP` short of where drops
+    // stop, so drops at rest and their mirrors are evenly spaced), and the mirror pushes the nodes
+    // on the liquid's side straight off the wall with the drop's own pressure, plus what the depth
+    // between them adds. Without it the nodes within two cells of a wall, short of drops on the
+    // wall's side, were pushed at the wall by the drops on the other; the liquid packed against
+    // it until that layer was squeezed enough to hold them, and a layer squeezed more than its
+    // depth asks is lighter than the liquid beside it: it crept up every wall for good. It has to
+    // be the drops' own sum again, mirrored: a smooth stand-in is a hundredth or two out, and at
+    // the bottom of a pool thirty cells deep a hundredth of the pressure is a third of gravity.
+    if e < lq.a.z {
+        let near = clamp(vec2<i32>(round(p.x)), vec2<i32>(0), vec2<i32>(i32(st.grid.x) - 1, i32(st.grid.y) - 1));
+        let s = solid[2u * node(near.x, near.y)];
+        if s.w > 0.5 {
+            let t = solid[2u * node(near.x, near.y) + 1u];
+            let face = wall_face(s, t, s.z + dot(s.xy, p.x - vec2<f32>(near)));
+            // How far the drop is from the mirror: past a cell and a half its mirror reaches no
+            // node on its own side.
+            let off = face.z - (0.5 - WALL_GAP);
+            let n = face.xy;
+            let xm = p.x - 2.0 * off * n;
+            // (A mirror off the grid's edge has no nodes of its own to push.)
+            let on_grid = all(xm >= vec2<f32>(0.5)) && all(xm < vec2<f32>(f32(st.grid.x), f32(st.grid.y)) - 1.5);
+            if off > 0.0 && off < 1.5 && on_grid {
+                var pm = pressure - weight * dot(g, n) * 2.0 * off;
+                pm = max(pm, min(pressure, 0.0));
+                let mbase = base_of(xm);
+                let mfx = xm - vec2<f32>(mbase);
+                let mw = weights(mfx);
+                let k = dt * vol * 4.0 * pm;
+                for (var a = 0; a < 3; a = a + 1) {
+                    for (var b = 0; b < 3; b = b + 1) {
+                        let out = dot(vec2<f32>(f32(a), f32(b)) - mfx, n);
+                        // Only the nodes on the liquid's side of the mirror: those behind it
+                        // are the wall's (`cs_grid` stops them going into it).
+                        if out >= off {
+                            let push = k * mw[a].x * mw[b].y * out * n;
+                            let nm = node(mbase.x + a, mbase.y + b);
+                            atomicAdd(&grid[4u * nm + 1u], fixed(push.x, S_P));
+                            atomicAdd(&grid[4u * nm + 2u], fixed(push.y, S_P));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @compute @workgroup_size(256)
@@ -493,7 +559,39 @@ fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>) {
         let s = solid[2u * k];
         let t = solid[2u * k + 1u];
         let f = wall_face(s, t, s.z);
-        if s.w > 0.5 && f.z < 0.75 {
+        // A node across a thin wall from the liquid whose weight it holds (drops beside a hollow
+        // shape's wall reach over it): it moves along the wall with that liquid, and neither into
+        // the wall nor away from it. Left free to move away, such nodes drifted off on their own
+        // side, where there is nothing, and fed that back to the drops: still water crept or
+        // simmered depending on where the wall's faces fell between the grid's nodes.
+        var ghost = false;
+        // Only a node this near the wall's line can hold weight from across it: drops stop half
+        // a cell short of the wall's face and reach a cell and a half each way along x and y.
+        let across = 1.5 * (abs(s.x) + abs(s.y)) - 0.5 - t.z;
+        if s.w > 0.5 && t.z >= 0.0 && abs(s.z) < across {
+            // How much liquid there is GHOST_LOOK cells off each face of the wall, straight out
+            // from the node's nearest point on its line. `s.xy` points out of the outline and
+            // `s.z` is how far out the node is, so its own side is the normal's when that is 0
+            // or more.
+            let at = vec2<f32>(f32(k % st.grid.x), f32(k / st.grid.x));
+            let hi = vec2<f32>(f32(st.grid.x) - 1.0, f32(st.grid.y) - 1.0);
+            let line = at - s.z * s.xy;
+            let out = (t.z + GHOST_LOOK) * s.xy;
+            let pa = vec2<i32>(clamp(round(line + out), vec2<f32>(0.0), hi));
+            let pb = vec2<i32>(clamp(round(line - out), vec2<f32>(0.0), hi));
+            let va = f32(atomicLoad(&grid[4u * node(pa.x, pa.y) + 3u]));
+            let vb = f32(atomicLoad(&grid[4u * node(pb.x, pb.y) + 3u]));
+            let own = select(vb, va, s.z >= 0.0);
+            let other = select(va, vb, s.z >= 0.0);
+            // With liquid on its own side too it is an ordinary wall node: that liquid feeds it.
+            if other > GHOST_MORE * own {
+                ghost = true;
+                let vw = t.xy;
+                let vr = v - vw;
+                v = vr - dot(vr, s.xy) * s.xy + vw;
+            }
+        }
+        if !ghost && s.w > 0.5 && f.z < 0.75 {
             let vw = t.xy;
             var vr = v - vw;
             let vn = dot(vr, f.xy);
@@ -570,8 +668,44 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     // Kept without the walls' share: the picture draws a drop with little liquid round it as a
-    // droplet (`cs_p2g` adds the walls' share back for the pressure).
+    // droplet. The pressure does not go by it (see `more.x` below).
     p.j = 1.0 / max(liquid, 0.05);
+    // The squeeze it carries (what `cs_p2g` turns into pressure). It is moved by the flow's own
+    // squeezing and only held to what the grid says is round it, loosely: read straight off the
+    // grid (as it once was) the pressure heard every bit of the grid's sampling noise, which
+    // changes with where a wall's face falls between nodes, and the top two cells of any liquid,
+    // or a whole thin sheet, read "less than full" and carried no pressure at all.
+    {
+        let loose = max(lq.a.z, CARRY_LOOSE);
+        // What the liquid round it says, were the drop at a flat open edge: `full` is the share of
+        // its reach that lies inside the liquid there (1 deep inside, a half on the edge line),
+        // from how steeply the liquid falls away.
+        let r = length(slope) / max(vd, 0.05);
+        let full = 1.0 / (1.0 + 0.2023 * r + 0.6425 * r * r);
+        let jref = 1.0 / max(vd / max(full, 0.2), 0.05);
+        var e = p.more.x;
+        if !(abs(e) < 1e30) {
+            e = 0.0;
+        }
+        if e >= loose {
+            // Loose: it joins again as soon as the liquid round it is dense enough.
+            e = clamp(jref - 1.0, -0.9, loose);
+        } else {
+            e = e + (1.0 + e) * dt * (c.x + c.w);
+            // The net: quickly when the liquid is more packed than the drop thinks (that is what
+            // bursts), slowly when less (the usual state near an edge the estimate gets wrong;
+            // answered quickly, corners simmered).
+            let most = jref * (1.0 + CARRY_SLACK) - 1.0;
+            let least = jref * (1.0 - CARRY_SLACK) - 1.0;
+            if e > most {
+                e = e + (most - e) * (1.0 - exp(-CARRY_DOWN * dt));
+            } else if e < least {
+                e = e + (least - e) * (1.0 - exp(-CARRY_UP * dt));
+            }
+            e = clamp(e, -0.9, loose);
+        }
+        p.more = vec4<f32>(e, 0.0, 0.0, 0.0);
+    }
     // How open to the air it is (cooling, wind and drying go by it): by the liquid alone, as a
     // drop on a wall is as open as one in the air.
     let open = exposure(liquid);
@@ -581,7 +715,11 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     // in ice.
     if lq.c.y > 0.0 && (p.kind & FROZEN) == 0u {
         let inner = 1.0 - smoothstep(0.0, max(lq.c.z, 1e-3), exposure(vd));
-        var shift = -lq.c.y * inner * slope;
+        // And only where liquid is really missing (the rim of a hole or a crack reads well under
+        // full). Liquid with no holes reads within a tenth of full everywhere, by how its drops
+        // happen to sit; moved down those slopes too, still water was kept stirring for good.
+        let hole = 1.0 - smoothstep(HOLE_BELOW - 0.15, HOLE_BELOW, vd);
+        var shift = -lq.c.y * inner * hole * slope;
         // Only towards liquid on the far side of a gap: at the open surface (nothing across)
         // it would pump the top of the liquid upwards for ever.
         let steep = length(slope);
@@ -799,6 +937,16 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             let vn = dot(vr, f.xy);
             if vn < 0.0 {
                 vr = vr - vn * f.xy;
+                // Stopped by the wall, it is squeezed by as much as it was put back: the grid's
+                // flow, which `more.x` goes by, carried it into the wall's margin and knows
+                // nothing of the wall stopping it there (the half cell next to a wall filled
+                // with half as many drops again as their squeeze said). Never by more than it
+                // is moving into the wall, so a drop two walls pass between them in a corner
+                // is not squeezed for that.
+                if p.more.x < max(lq.a.z, CARRY_LOOSE) {
+                    let by = WALL_SQUEEZE * min(0.5 - f.z, -2.0 * vn * dt);
+                    p.more.x = max(p.more.x - (1.0 + p.more.x) * by, -0.9);
+                }
             }
             v = vr + vw;
         }
@@ -1002,8 +1150,9 @@ fn mix_colours(style: u32, a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
 
 const Q: f32 = 65536.0;
 
+// To the nearest whole number, as `fixed` does and for the same reason.
 fn q(x: f32) -> i32 {
-    return i32(clamp(x * Q, -1.0e9, 1.0e9));
+    return i32(round(clamp(x * Q, -1.0e9, 1.0e9)));
 }
 
 @compute @workgroup_size(256)
@@ -1483,6 +1632,7 @@ fn cs_rewind(@builtin(global_invocation_id) id: vec3<u32>) {
     p.kick = 0.0;
     p.mat = vec2<f32>(0.0);
     p.spare = vec2<f32>(kt.y, more.y);
+    p.more = vec4<f32>(0.0);
     p.f = vec4<f32>(1.0, 0.0, 0.0, 1.0);
     // Balls still push it aside (its place only).
     let lq = st.liquids[liquid_of(p)];
