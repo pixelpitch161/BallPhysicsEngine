@@ -49,12 +49,11 @@ threads-required = "num-test-threads"
 # The owner's graphics card (an AMD RX 9070 XT on Windows; job "Pictures (owner's graphics card)",
 # docs/notes/checks.md). Every test runs here natively except the goldens pinned to Ubuntu's maths library, which
 # Windows' rounds a hair differently: the CPU physics goldens and the sound goldens stay on the Linux machines.
-# KNOWN ON THE CARD (owner's choice 2026-11-22, "switch now, fix after"): four tests that fail only on the owner's
+# KNOWN ON THE CARD (owner's choice 2026-11-22, "switch now, fix after"): tests that fail only on the owner's
 # card or Windows are left out here until each is fixed in its own change (docs/notes/checks.md lists them). Take
-# each one out of this list in the change that fixes it. The two CPU ones still run on the Linux machines; the two
-# drawing ones run nowhere until fixed.
+# each one out of this list in the change that fixes it. The two CPU ones still run on the Linux machines; the
+# drawing one runs nowhere until fixed.
 #   - swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does: Pull toward its ball 87 px off on the card.
-#   - shadow_quality a_shadow_edge_moves_on_smoothly: the edge steps in a 4-frame pattern on the card.
 #   - alloc render_does_not_allocate: a sound block allocates on Windows.
 #   - library every_scene_plays_its_full_length_and_lands_its_payoff: Windows' maths moves stem-battle's payoff.
 # (golden_liquid draws, so it runs here, with its golden made on the card.) Also left out: osc_b_off_costs_nothing,
@@ -68,7 +67,6 @@ not (
   | (package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing))
   | (
     (package(bpe-kit) & test(=things::particles::swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does))
-    | (package(bpe-kit) & binary(shadow_quality) & test(=a_shadow_edge_moves_on_smoothly))
     | (package(bpe-sound) & binary(alloc) & test(=render_does_not_allocate))
     | (package(bpe-kit) & binary(library) & test(=every_scene_plays_its_full_length_and_lands_its_payoff))
   )

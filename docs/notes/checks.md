@@ -101,13 +101,18 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   with `vulkaninfo`). Everything lives in `F:\bpe-gpu` (runner, `rustup`, `cargo`, MinGW, ffmpeg, build files in
   `F:\bpe-gpu\target\<job>`). Its `.env` turns off the overlay Vulkan layers installed on the PC
   (`VK_LOADER_LAYERS_DISABLE=~implicit~`), so OBS or Steam can't change a picture.
-- **Known on the card** (2026-11-22, the owner chose to switch first and fix after): four tests are left out of the
-  `gpu` profile until each is fixed in its own change, which takes it out of the list there:
+- **Known on the card** (2026-11-22, the owner chose to switch first and fix after): tests left out of the `gpu`
+  profile until each is fixed in its own change, which takes it out of the list there:
   `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` (Pull toward its ball ends 87 px off on the
-  card), `shadow_quality::a_shadow_edge_moves_on_smoothly` (the edge steps in a 4-frame pattern on the card),
-  `alloc::render_does_not_allocate` (a sound block allocates on Windows) and
+  card), `alloc::render_does_not_allocate` (a sound block allocates on Windows) and
   `library::every_scene_plays_its_full_length_and_lands_its_payoff` (Windows' maths moves stem-battle's payoff from
-  26.5 s to 30.9 s). The last two still run on the Linux machines; the two drawing ones run nowhere until fixed.
+  26.5 s to 30.9 s). The last two still run on the Linux machines; the drawing one runs nowhere until fixed.
+  Fixed: `shadow_quality::a_shadow_edge_moves_on_smoothly` (the lighting field's footprint maths, `foot_span` in
+  `docs/notes/lighting.md`).
+- **Finding a card-only difference**: a temporary test that reads back the pictures in question and fails on purpose
+  (so nextest prints its output), pushed to the branch with CI started by hand (`workflow_dispatch`); the card job's
+  log holds the prints. Compare them with the same test on lavapipe. WGSL allows a division to be 2.5 ULP off, and
+  the card uses that freedom where lavapipe doesn't: never floor or ceil the result of a division meant to be whole.
 - **Timings**: the job summary's "Timings on the owner's graphics card" (`tests/liquid_speed.rs`, `light_speed.rs`).
 
 ## Running only the tests a change needs
