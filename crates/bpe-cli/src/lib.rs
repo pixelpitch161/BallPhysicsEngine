@@ -430,7 +430,7 @@ fn export_with(
             (Ok(()), Ok(())) => Ok(()),
         }
     })
-    .and_then(|()| mux(&options.ffmpeg, &video_only, &sound, &output))
+    .and_then(|()| mux(&options.ffmpeg, &video_only, &sound, &output, seconds))
     .and_then(|()| if progress(total, total) { Ok(()) } else { Err(anyhow::anyhow!(CANCELLED)) });
     if made.is_err() {
         remove_outputs();
@@ -578,13 +578,15 @@ fn draw_video(
 }
 
 /// Puts the drawn `video` and the `sound` together into `output`: the picture copied as it is, the
-/// sound encoded as every export's is.
-fn mux(ffmpeg: &Path, video: &Path, sound: &Path, output: &Path) -> anyhow::Result<()> {
+/// sound encoded as every export's is, both `seconds` long. The length is given outright: with the
+/// picture copied, `-shortest` alone let ffmpeg 9 keep the whole sound (a 0.5 s clip came out 0.98 s).
+fn mux(ffmpeg: &Path, video: &Path, sound: &Path, output: &Path, seconds: f64) -> anyhow::Result<()> {
     let mut command = Command::new(ffmpeg);
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     command.arg("-i").arg(video).arg("-i").arg(sound);
     command.args(["-map", "0:v", "-map", "1:a", "-c:v", "copy"]);
     command.args(AUDIO_ARGS);
+    command.args(["-t", &format!("{seconds:.6}")]);
     command.args(["-movflags", "+faststart", "-shortest", "-f", "mp4"]);
     command.arg(output);
     let done = spawn(command, ffmpeg)?.wait_with_output()?;

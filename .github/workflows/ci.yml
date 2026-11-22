@@ -261,10 +261,12 @@ jobs:
           }
       - name: Which card
         run: vulkaninfo --summary | Select-String -Pattern 'deviceName|driverName|driverInfo'
+      # Below normal (the tests inherit it), so the Linux checks running beside this job on the same processor, some
+      # of which time themselves against real time, aren't crowded out. The runner itself stays at normal priority.
       - name: Tests on the card
-        run: >-
-          cargo nextest run --workspace --profile gpu --no-tests=pass
-          -E '${{ needs.changes.outputs.filter }}'
+        run: |
+          (Get-Process -Id $PID).PriorityClass = 'BelowNormal'
+          cargo nextest run --workspace --profile gpu --no-tests=pass -E '${{ needs.changes.outputs.filter }}'
       - name: Pictures pinned to the card (release)
         if: needs.changes.outputs.goldens_kit == 'true' && !cancelled()
         run: cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
