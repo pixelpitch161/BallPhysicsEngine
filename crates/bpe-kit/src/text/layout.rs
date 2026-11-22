@@ -4,6 +4,7 @@
 //! merged under the non-zero rule with i_overlay, because variable fonts overlap their contours.
 //! Layouts are cached for the process.
 
+use bpe_core::maths::Maths;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -201,7 +202,7 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
     let height = (metrics.ascent - metrics.descent + metrics.leading).max(0.1 * em);
     let line_step = height * scale * spec.line_spacing.max(0.0);
     let spacing = if spec.letter_spacing.is_finite() { spec.letter_spacing } else { 0.0 };
-    let shear = spec.slant.clamp(-89.0, 89.0).to_radians().tan();
+    let shear = spec.slant.clamp(-89.0, 89.0).to_radians().det_tan();
     let words: String = cased(spec.words, spec.case).chars().take(MOST_CHARS).collect();
 
     // Shape each paragraph, then break it into lines between words.
@@ -367,7 +368,7 @@ pub fn glyph_outline(font: &FontData, glyph: u16, weight: f32, slant: f32, size:
     let em = metrics.units_per_em.max(1) as f32;
     let cap = metrics.cap_height.filter(|c| *c > 0.0).unwrap_or(0.7 * em);
     let scale = size / cap;
-    let shear = slant.clamp(-89.0, 89.0).to_radians().tan();
+    let shear = slant.clamp(-89.0, 89.0).to_radians().det_tan();
     let key = (font.id, glyph, weight.map_or(0, f32::to_bits), scale.to_bits(), shear.to_bits());
     let glyphs = sk.outline_glyphs();
     cached_outline(key, || outline(&glyphs, glyph, &location, scale, shear)).map(|c| Vec::clone(&c))
@@ -665,7 +666,7 @@ mod tests {
         let pts: Vec<Vec2> = i.contours.iter().flatten().copied().collect();
         let top = pts.iter().filter(|p| p.y < -95.0).map(|p| p.x).fold(f32::MIN, f32::max);
         let bottom = pts.iter().filter(|p| p.y > -5.0).map(|p| p.x).fold(f32::MIN, f32::max);
-        let want = 100.0 * 20f32.to_radians().tan();
+        let want = 100.0 * 20f32.to_radians().det_tan();
         assert!((top - bottom - want).abs() < 4.0, "{} vs {want}", top - bottom);
     }
 

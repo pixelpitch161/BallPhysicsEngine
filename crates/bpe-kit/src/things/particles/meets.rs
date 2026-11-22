@@ -4,6 +4,7 @@
 //! world's walls, two-sided as for balls: particles bounce, stop, vanish, settle or pile up on
 //! them. With **Two-way** on, the particles push back on the balls (`two_way.rs`).
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, ModuleKind, Params, SettingDef, Settings, SlotId, ThingId};
 use bpe_runtime::{Outline, Touch, Wall, keep_clear_from};
 use glam::Vec2;
@@ -387,7 +388,7 @@ pub fn meet_balls(s: &mut Speck, grid: &BallGrid, m: &MeetsSettings, dt: f32, t:
         let reach = b.radius * grid.reach;
         if m.push != 0.0 && d < reach {
             let w = m.push * (1.0 - d / reach.max(1e-3)).powi(2);
-            let take = 1.0 - (-12.0 * w * dt).exp();
+            let take = 1.0 - (-12.0 * w * dt).det_exp();
             let before = s.velocity;
             s.velocity += (b.velocity - s.velocity) * take;
             // Inside the ball it is shoved straight out, at the ball's speed.

@@ -8,6 +8,7 @@
 //! site's centre, turn and size: `q = rotate(u - centre, -turn) * k`. The same maths runs on the
 //! GPU in `bpe-gfx/src/shaders/paint.wgsl`; the noise is the same hash on both.
 
+use crate::maths::Maths;
 use glam::Vec2;
 
 use crate::dice::{pcg32, unit24_closed};
@@ -372,8 +373,8 @@ pub fn fbm(q: Vec2, octaves: f32, seed: u32) -> f32 {
 fn polygon(q: Vec2, sides: f32, star: f32) -> f32 {
     let n = finite(sides, 5.0).round_ties_even().clamp(3.0, 4096.0);
     let step = std::f32::consts::PI / n;
-    let inner = (step.cos() * (1.0 - finite(star, 0.0))).max(0.02);
-    let theta = q.y.atan2(q.x) + std::f32::consts::FRAC_PI_2;
+    let inner = (step.det_cos() * (1.0 - finite(star, 0.0))).max(0.02);
+    let theta = q.y.det_atan2(q.x) + std::f32::consts::FRAC_PI_2;
     let k = (theta / step).floor();
     let corner = |k: f32| {
         let a = -std::f32::consts::FRAC_PI_2 + k * step;
@@ -420,7 +421,7 @@ fn off_centre(q: Vec2, focus: [f32; 2], stretch: f32, stretch_turn: f32) -> f32 
 pub fn along(form: GradientForm, layout: &Layout, q: Vec2, k: f32, time: f32) -> f32 {
     let q = Vec2::new(finite(q.x, 0.0), finite(q.y, 0.0));
     let time = finite(time, 0.0);
-    let turns = q.y.atan2(q.x) / std::f32::consts::TAU;
+    let turns = q.y.det_atan2(q.x) / std::f32::consts::TAU;
     let fract = |x: f32| x - x.floor();
     let out = match form {
         GradientForm::Straight => q.x * 0.5 + 0.5,
@@ -442,7 +443,7 @@ pub fn along(form: GradientForm, layout: &Layout, q: Vec2, k: f32, time: f32) ->
         GradientForm::Waves => {
             let wave = (std::f32::consts::TAU
                 * (finite(layout.count, 0.0) * (q.y * 0.5 + 0.5) + finite(layout.flow, 0.0) * time))
-                .sin();
+                .det_sin();
             q.x * 0.5 + 0.5 + finite(layout.height, 0.0) * 0.5 * wave
         }
         GradientForm::Marble => {
@@ -522,7 +523,7 @@ pub fn points_after(old: &Gradient, new: &Gradient, points: &[[f32; 2]]) -> Opti
 /// Where Free point `i` of `n` sits when none is stored: round a circle from the top.
 pub fn default_point(i: usize, n: usize) -> [f32; 2] {
     let a = (-90.0 + 360.0 * i as f32 / n.max(1) as f32).to_radians();
-    [0.6 * a.cos(), 0.6 * a.sin()]
+    [0.6 * a.det_cos(), 0.6 * a.det_sin()]
 }
 
 /// Each Free point and its stop's colour (linear light): at most [`MOST_POINTS`], one per stop.
@@ -559,7 +560,7 @@ pub fn free_colour(g: &Gradient, layout: &Layout, q: Vec2) -> [f32; 4] {
     let nearest = nearest.map_or(g.first().to_linear(), |p| p.1);
     for &(p, c) in &points {
         let d = (q - Vec2::from(p)).length();
-        let w = 1.0 / (d.powf(power) + 1e-6);
+        let w = 1.0 / (d.det_powf(power) + 1e-6);
         let rgb = [c[0], c[1], c[2]];
         let v = if oklab { crate::oklab::linear_to_oklab(rgb) } else { rgb };
         for k in 0..3 {
@@ -637,7 +638,7 @@ mod tests {
             for star in [0.0f32, 0.5] {
                 let l = Layout { sides: n as f32, star, ..Layout::default() };
                 let step = std::f32::consts::PI / n as f32;
-                let inner = (step.cos() * (1.0 - star)).max(0.02);
+                let inner = (step.det_cos() * (1.0 - star)).max(0.02);
                 for k in 0..2 * n {
                     let a = -std::f32::consts::FRAC_PI_2 + k as f32 * step;
                     let r = if k % 2 == 0 { 1.0 } else { inner };

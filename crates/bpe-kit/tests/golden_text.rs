@@ -52,6 +52,9 @@ fn every_text_scene_keeps_its_event_log() {
         std::fs::write(&path, &lines).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    // A Windows checkout made before .gitattributes kept these LF may still hold CRLF.
+    let expected = std::fs::read_to_string(&path)
+        .expect("the golden file is missing; run with BLESS_GOLDEN=1")
+        .replace("\r\n", "\n");
     assert_eq!(expected, lines, "text event logs changed");
 }

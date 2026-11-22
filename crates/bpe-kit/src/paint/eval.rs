@@ -3,6 +3,7 @@
 
 use super::{Follow, Paint, Repeat, Space};
 use bpe_core::gradient_form::{along, free_colour, turned};
+use bpe_core::maths::Maths;
 use bpe_core::{Color, GapBlend, Gradient, GradientForm, Stop, ThingId};
 use bpe_runtime::{EventKind, Log};
 use glam::Vec2;
@@ -41,7 +42,7 @@ fn finite(x: f32) -> f32 {
 /// The unit vector pointing `degrees` round from +x towards +y (y points down).
 fn dir(degrees: f32) -> Vec2 {
     let r = degrees.to_radians();
-    Vec2::new(r.cos(), r.sin())
+    Vec2::new(r.det_cos(), r.det_sin())
 }
 
 /// `x` brought into 0 to 1 the way `repeat` says.

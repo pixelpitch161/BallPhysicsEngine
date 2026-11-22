@@ -4,6 +4,7 @@
 //!
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/break-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Color, Gradient, Scene, Settings, SlotId, Stop, ThingId, Value, Who, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{ShapeFill, ShapeSettings, add_thing, kit, new_studio_scene};
@@ -229,8 +230,9 @@ fn a_shattered_ball_breaks_into_clipped_pieces() {
     let soon = draw(&mut gpu, &scene, BROKE + 0.03, "ball-soon");
     let later = draw(&mut gpu, &scene, BROKE + 0.6, "ball-later");
     let background = at(&whole, 0.0, 800.0);
-    let place =
-        |pixels: &[u8]| pixels_of(pixels).filter(|(x, y, p)| x.hypot(*y) < 150.0 && off(*p, background) > 60).count();
+    let place = |pixels: &[u8]| {
+        pixels_of(pixels).filter(|(x, y, p)| x.det_hypot(*y) < 150.0 && off(*p, background) > 60).count()
+    };
     let (w, s, l) = (place(&whole), place(&soon), place(&later));
     assert!(w > 1000, "the ball shows: {w}");
     assert!(s as f32 > 0.75 * w as f32, "just broken, nearly whole: {s}/{w}");

@@ -5,6 +5,7 @@
 //! group of balls draws a copy on each, and fast letters read a distance tile
 //! (`Frame::push_glyph`) instead of walking their outline.
 
+use bpe_core::maths::Maths;
 use std::sync::Arc;
 
 use bpe_core::{Blend, Params, Resolved, ResolvedThing, Scene, Settings, SlotId, ThingId};
@@ -342,7 +343,7 @@ fn edge_of(world: &World, s: &TextSettings, id: ThingId, pose: Pose, screen: boo
             (0..ROUND_EDGE_POINTS)
                 .map(|k| {
                     let a = k as f32 / ROUND_EDGE_POINTS as f32 * std::f32::consts::TAU;
-                    Vec2::new(a.sin() * axes.x, -a.cos() * axes.y)
+                    Vec2::new(a.det_sin() * axes.x, -a.det_cos() * axes.y)
                 })
                 .collect()
         }

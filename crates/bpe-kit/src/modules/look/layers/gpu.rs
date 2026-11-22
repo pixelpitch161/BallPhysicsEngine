@@ -2,6 +2,7 @@
 //! written once per thing per frame, and one instance per ball naming them. Only the body's
 //! colour, the ball's own variation and its motion differ from ball to ball.
 
+use bpe_core::maths::Maths;
 use std::borrow::Cow;
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
@@ -200,7 +201,7 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
             LayerGpu {
                 head: [LayerGpu::SUB_SHADOW, 0, 0, 0],
                 amount: [s.opacity, 0.0, 0.0, 0.0],
-                p0: [d * a.cos(), d * a.sin(), s.softness.max(0.0), s.moves.code()],
+                p0: [d * a.det_cos(), d * a.det_sin(), s.softness.max(0.0), s.moves.code()],
                 colour: s.colour.to_linear(),
                 ..LayerGpu::ZERO
             }
@@ -1186,7 +1187,7 @@ mod tests {
         assert_eq!((records[1].head[3], records[5].head[3]), (3, 6), "each layer counts its sub-layers");
         assert!(records[2..5].iter().all(|r| r.head[1] == 0 && r.head[3] == 0), "sub-layers have no blend");
         // The shadow falls 45° down and right, 0.15 radii.
-        let off = 0.15 * 45f32.to_radians().cos();
+        let off = 0.15 * 45f32.to_radians().det_cos();
         assert!((records[2].p0[0] - off).abs() < 1e-5 && (records[2].p0[1] - off).abs() < 1e-5);
         assert_eq!(records[3].head[2], LayerGpu::FLAG, "the glow takes its layer's colour");
         assert_eq!(records[3].amount[..2], [1.0, 0.8]);

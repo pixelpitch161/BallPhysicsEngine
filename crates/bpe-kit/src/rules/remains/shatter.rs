@@ -3,6 +3,7 @@
 //! instance again, moved and turned with the piece and clipped to its cell, so it wears exactly its
 //! part of the picture. Pure in time: a piece is worked out afresh from the break at every moment.
 
+use bpe_core::maths::Maths;
 use bpe_runtime::{Wall, keep_clear, reflect};
 use glam::Vec2;
 
@@ -109,7 +110,7 @@ fn sample(m: &Material, rng: &mut Stream) -> Vec2 {
     match m.edge {
         Edge::Ellipse(ab) => {
             let (r, a) = (rng.unit().sqrt(), rng.unit() * std::f32::consts::TAU);
-            Vec2::new(a.cos() * ab.x, a.sin() * ab.y) * r
+            Vec2::new(a.det_cos() * ab.x, a.det_sin() * ab.y) * r
         }
         Edge::Points(ps) => {
             let (lo, hi) =
@@ -133,8 +134,8 @@ fn along(edge: Edge, u: f32) -> (Vec2, Vec2) {
     match edge {
         Edge::Ellipse(ab) => {
             let a = u * std::f32::consts::TAU;
-            let at = Vec2::new(a.cos() * ab.x, a.sin() * ab.y);
-            let n = Vec2::new(a.cos() / ab.x.max(1e-6), a.sin() / ab.y.max(1e-6)).normalize_or(Vec2::X);
+            let at = Vec2::new(a.det_cos() * ab.x, a.det_sin() * ab.y);
+            let n = Vec2::new(a.det_cos() / ab.x.max(1e-6), a.det_sin() / ab.y.max(1e-6)).normalize_or(Vec2::X);
             (at, n)
         }
         Edge::Points(ps) => {

@@ -3,6 +3,7 @@
 //! settings, the scene's beat, the log and the Follow sound reader. Drawing only: the wall, the
 //! parts and the physics never see them.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::TAU;
 
 use bpe_core::{
@@ -94,9 +95,9 @@ fn hop(u: f64) -> f32 {
 pub(crate) fn wobble(t: f64, speed: f32, seed: u32, k: usize, axis: i64) -> f32 {
     let f = finite(speed, 0.0).max(0.0) as f64;
     let ph = |n: i64| dice(seed, k, axis * 3 + n) as f64 * std::f64::consts::TAU;
-    let s = (std::f64::consts::TAU * f * t + ph(0)).sin()
-        + 0.5 * (std::f64::consts::TAU * 2.31 * f * t + ph(1)).sin()
-        + 0.25 * (std::f64::consts::TAU * 4.73 * f * t + ph(2)).sin();
+    let s = (std::f64::consts::TAU * f * t + ph(0)).det_sin()
+        + 0.5 * (std::f64::consts::TAU * 2.31 * f * t + ph(1)).det_sin()
+        + 0.25 * (std::f64::consts::TAU * 4.73 * f * t + ph(2)).det_sin();
     (s / 1.75) as f32
 }
 
@@ -342,8 +343,8 @@ fn effect_of(cx: &MoveCx, m: &Move, i: usize, k: usize, prepared: &Prepared) -> 
             let letters = finite(w.letters, 8.0).max(0.1);
             let phase = TAU * (finite(w.speed, 0.5) * t as f32 - kf / letters);
             Effect {
-                offset: Vec2::new(0.0, -finite(w.height, 30.0) * phase.sin()),
-                turn: finite(w.tilt, 0.0).to_radians() * phase.cos(),
+                offset: Vec2::new(0.0, -finite(w.height, 30.0) * phase.det_sin()),
+                turn: finite(w.tilt, 0.0).to_radians() * phase.det_cos(),
                 ..Effect::NONE
             }
         }
@@ -416,7 +417,7 @@ fn effect_of(cx: &MoveCx, m: &Move, i: usize, k: usize, prepared: &Prepared) -> 
             let (speed, later, swing) = (finite(s.speed, 90.0), finite(s.later, 0.0), finite(s.swing, 0.0));
             let turn = if swing > 0.0 {
                 let phase = TAU * speed / 360.0 * t as f32 + (later * kf).to_radians();
-                swing.to_radians() * phase.sin()
+                swing.to_radians() * phase.det_sin()
             } else {
                 ((speed * t as f32 + later * kf) % 360.0).to_radians()
             };

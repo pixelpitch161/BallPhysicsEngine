@@ -2,6 +2,7 @@
 //! punching, and staying inside the world box. Its state lives in the world, so a rewound or
 //! scrubbed run gives the same shot as one played straight through.
 
+use bpe_core::maths::Maths;
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{CameraView, EventKind, Log, ThingSim, World, state, state_mut};
 use glam::Vec2;
@@ -312,7 +313,7 @@ impl ThingSim for CameraSim {
                         let need = (half + s.fit_margin).max(Vec2::splat(1.0));
                         let fit = (video.x * 0.5 / need.x).min(video.y * 0.5 / need.y);
                         let goal_zoom = key.zoom.min(fit);
-                        st.zoom += (goal_zoom - st.zoom) * (1.0 - (-omega * dt).exp());
+                        st.zoom += (goal_zoom - st.zoom) * (1.0 - (-omega * dt).det_exp());
                         view.zoom = st.zoom;
                     } else {
                         st.zoom = key.zoom;
@@ -348,8 +349,8 @@ impl ThingSim for CameraSim {
                 st.punch = (st.punch + s.punch * strength).min(s.punch * 2.0);
             }
         }
-        st.trauma *= (-dt * 3.0 / s.shake_fade.max(0.01)).exp();
-        st.punch *= (-dt * 3.0 / s.punch_recovery.max(0.01)).exp();
+        st.trauma *= (-dt * 3.0 / s.shake_fade.max(0.01)).det_exp();
+        st.punch *= (-dt * 3.0 / s.punch_recovery.max(0.01)).det_exp();
         if st.trauma > 1e-4 {
             let t = world.time() * SHAKE_RATE;
             let seed = world.seed ^ me.0 as u64;

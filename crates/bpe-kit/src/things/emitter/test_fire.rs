@@ -22,6 +22,7 @@
 //! Leaving when needed (part 4's way), each ball keeps its direction and a speed near Speed and
 //! leaves when that way takes it there with the others.
 
+use bpe_core::maths::Maths;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -544,7 +545,7 @@ impl Search<'_> {
         };
         let prefer = self.prefer;
         let off = |x: f64| match knob {
-            Knob::Speed => (x.max(1e-9) / prefer.max(1e-9)).ln().abs(),
+            Knob::Speed => (x.max(1e-9) / prefer.max(1e-9)).det_ln().abs(),
             Knob::Tweak(_) => x.abs(),
         };
         let mut flown: Vec<(f64, Flight)> = Vec::new();
@@ -623,7 +624,7 @@ impl Search<'_> {
             for i in 1..flown.len() {
                 let (a, b) = (flown[i - 1].0, flown[i].0);
                 let wide = match knob {
-                    Knob::Speed if a > 0.0 => (b / a).ln(),
+                    Knob::Speed if a > 0.0 => (b / a).det_ln(),
                     _ => b - a,
                 };
                 if wide <= 1e-6 {
@@ -1252,7 +1253,7 @@ fn meet(
             // Where the paths bend, a slower ball may be there sooner as well as later.
             let can = bends || lead.speed * lead.e / t <= hunt.ceiling * (1.0 + 1e-9);
             let key = match (can, bends) {
-                (true, true) => (lead.e / t).ln().abs(),
+                (true, true) => (lead.e / t).det_ln().abs(),
                 (true, false) => lead.arc as f64 * 1e3 + wrap(lead.a.0 - own).abs(),
                 (false, _) => lead.e,
             };
@@ -1427,7 +1428,7 @@ pub fn aim_shots(
                 .fold(1.0, f64::max);
             let quickest = reach / (t.max(1.0) * aim.dt as f64);
             let (lo, hi) = (0.5 * quickest.min(prefer), (4.0 * quickest.max(prefer)).min(ceiling));
-            let ratio = (hi / lo).max(1.0).powf(1.0 / (TIMED_SPEEDS - 1) as f64);
+            let ratio = (hi / lo).max(1.0).det_powf(1.0 / (TIMED_SPEEDS - 1) as f64);
             std::iter::once(prefer).chain((0..TIMED_SPEEDS).map(|i| lo * ratio.powi(i as i32))).collect()
         }
         (None, false, true) => KEEP_SPEEDS.iter().map(|r| prefer * r).collect(),
@@ -1512,7 +1513,7 @@ pub fn aim_shots(
             None => return unaimed(aim, s, shots[k].at(base).1, fire),
         };
         let mut order: Vec<usize> = firsts[k].0.iter().copied().filter(|&li| g.leads[li].e <= t + 0.5).collect();
-        let off = |li: usize| (g.leads[li].speed / prefer).ln().abs();
+        let off = |li: usize| (g.leads[li].speed / prefer).det_ln().abs();
         order.sort_by(|&a, &b| off(a).total_cmp(&off(b)).then(g.leads[a].e.total_cmp(&g.leads[b].e)));
         let mut budget = BALL_STEPS;
         let way = order

@@ -6,6 +6,7 @@
 //! ball can't slip through a thin band. Inside a hollow ring or box the maths is the old editor's
 //! closed-arena collision, unchanged.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 
@@ -131,7 +132,7 @@ impl Gaps {
                 Outline::Ellipse { half, .. } => o * outline.reach() / half.max(Vec2::splat(1e-6)),
                 _ => o,
             };
-            return (o.x.atan2(-o.y) / TAU).rem_euclid(1.0);
+            return (o.x.det_atan2(-o.y) / TAU).rem_euclid(1.0);
         };
         let n = points.len();
         let mut best = (f32::INFINITY, 0.0f32);
@@ -151,7 +152,7 @@ impl Gaps {
         let place = place.rem_euclid(1.0);
         let own = match &self.guide {
             None => {
-                let d = Vec2::new((place * TAU).sin(), -(place * TAU).cos());
+                let d = Vec2::new((place * TAU).det_sin(), -(place * TAU).det_cos());
                 match *outline {
                     Outline::Ellipse { half, .. } => d * half / outline.reach().max(1e-6),
                     _ => d,
@@ -207,7 +208,7 @@ pub struct Contact {
 }
 
 fn dir(angle: f32) -> Vec2 {
-    Vec2::new(angle.cos(), angle.sin())
+    Vec2::new(angle.det_cos(), angle.det_sin())
 }
 
 /// The nearest point to `p` on the closed polygon `points`, and that piece's unit normal (either
@@ -237,8 +238,8 @@ impl Outline {
                 }
                 let step = TAU / sides as f32;
                 let side = (u / step).round();
-                let apothem = radius * (PI / sides as f32).cos();
-                center + dir(angle + u) * (apothem / (u - side * step).cos())
+                let apothem = radius * (PI / sides as f32).det_cos();
+                center + dir(angle + u) * (apothem / (u - side * step).det_cos())
             }
             &Outline::Box { center, half, angle, .. } => {
                 let d = dir(u);
@@ -365,7 +366,7 @@ impl Outline {
                 if sides < 3 {
                     return offset.length_squared() < radius * radius;
                 }
-                let apothem = radius * (PI / sides as f32).cos();
+                let apothem = radius * (PI / sides as f32).det_cos();
                 (0..sides).all(|i| offset.dot(dir(angle + TAU * i as f32 / sides as f32)) < apothem)
             }
             &Outline::Box { center, half, angle, .. } => {
@@ -511,7 +512,7 @@ pub fn nearest_on_ellipse(half: Vec2, p: Vec2) -> Vec2 {
 fn ellipse_root(r0: f64, z0: f64, z1: f64, g: f64) -> f64 {
     let n0 = r0 * z0;
     let mut s0 = z1 - 1.0;
-    let mut s1 = if g < 0.0 { 0.0 } else { n0.hypot(z1) - 1.0 };
+    let mut s1 = if g < 0.0 { 0.0 } else { n0.det_hypot(z1) - 1.0 };
     let mut s = 0.0;
     for _ in 0..64 {
         s = (s0 + s1) * 0.5;
@@ -691,7 +692,7 @@ fn keep_gapped(
     // A ball too big for the room inside sits at its middle, as in a closed ring or box.
     let room = match wall.outline {
         Outline::Ring { radius, sides: 0, .. } => Some(radius),
-        Outline::Ring { radius, sides, .. } => Some(radius * (PI / sides.max(3) as f32).cos()),
+        Outline::Ring { radius, sides, .. } => Some(radius * (PI / sides.max(3) as f32).det_cos()),
         Outline::Box { half, .. } | Outline::Ellipse { half, .. } => Some(half.min_element()),
         Outline::Path { .. } | Outline::Letters { .. } => None,
     };
@@ -835,7 +836,7 @@ fn keep_inside_exact(position: &mut Vec2, velocity: Vec2, radius: f32, band: f32
             contact(*position, velocity, radius, outward, wall, 0)
         }
         Outline::Ring { center, radius: wall_radius, sides, angle, .. } => {
-            let apothem = wall_radius * (PI / sides as f32).cos();
+            let apothem = wall_radius * (PI / sides as f32).det_cos();
             let planes = (0..sides).map(|i| (dir(angle + TAU * i as f32 / sides as f32), apothem));
             keep_inside_planes(position, velocity, radius, center, planes, thickness, wall)
         }
@@ -1218,7 +1219,7 @@ mod tests {
         (0..n)
             .map(|k| {
                 let t = k as f32 / n as f32 * TAU;
-                center + Vec2::from_angle(angle).rotate(Vec2::new(half.x * t.cos(), half.y * t.sin()))
+                center + Vec2::from_angle(angle).rotate(Vec2::new(half.x * t.det_cos(), half.y * t.det_sin()))
             })
             .collect()
     }
@@ -1422,7 +1423,7 @@ mod tests {
         let gaps = wall.gaps.clone().unwrap();
         let (top_end, _) = gaps.ends(&wall.outline, 0);
         // The end nearer the top, at 0.2 of the way round.
-        let want = Vec2::new((0.2 * TAU).sin(), -(0.2 * TAU).cos()) * 300.0;
+        let want = Vec2::new((0.2 * TAU).det_sin(), -(0.2 * TAU).det_cos()) * 300.0;
         assert!((top_end - want).length() < 1e-2, "{top_end} {want}");
         let v = top_end.normalize() * 600.0;
         let (_, hits, contacts) = run(&wall, Vec2::ZERO, v, 20.0, 120);
@@ -1443,7 +1444,7 @@ mod tests {
     fn a_fast_ball_beside_the_gap_does_not_get_through() {
         // Aimed at the closed band just past the gap's end (0.32 of the way round), fast.
         for place in [0.32f32, 0.18, 0.5, 0.9] {
-            let aim = Vec2::new((place * TAU).sin(), -(place * TAU).cos());
+            let aim = Vec2::new((place * TAU).det_sin(), -(place * TAU).det_cos());
             let (at, hits, _) = run(&gapped_ring(), Vec2::ZERO, aim * 4000.0, 20.0, 480);
             assert!(hits >= 1, "{place}");
             assert!(at.length() < 300.0, "{place}: got out at {at}");
@@ -1462,7 +1463,7 @@ mod tests {
         for k in 0..40 {
             let place = 0.3001 + k as f32 * 0.00002;
             for tilt in [-0.02f32, -0.01, 0.0] {
-                let out = Vec2::new((place * TAU).sin(), -(place * TAU).cos());
+                let out = Vec2::new((place * TAU).det_sin(), -(place * TAU).det_cos());
                 let previous = out * 293.0;
                 let mut at = previous + Vec2::from_angle(tilt).rotate(out) * 14.0;
                 keep_clear_from(&mut at, previous, &wall.outline, out * 3360.0, 5.0, Touch::Edge, &wall);

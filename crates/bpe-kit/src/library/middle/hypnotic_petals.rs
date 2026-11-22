@@ -1,6 +1,7 @@
 //! Hypnotic petals: hundreds of balls fired out from the middle of a slowly turning flower, a rainbow
 //! round them that slowly turns.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Gradient, Registry, Scene, ShapePath, SlotId, ThingId};
 use glam::Vec2;
 
@@ -45,8 +46,8 @@ fn flower() -> ShapePath {
         .map(|k| {
             let a = k as f32 / POINTS as f32 * std::f32::consts::TAU;
             // Tips up, and round petals: |cos| keeps each petal fat at the end.
-            let r = 1.0 - DIP * (1.0 - (PETALS * 0.5 * a).cos().abs().powf(0.6));
-            [r * a.sin(), -r * a.cos()]
+            let r = 1.0 - DIP * (1.0 - (PETALS * 0.5 * a).det_cos().abs().det_powf(0.6));
+            [r * a.det_sin(), -r * a.det_cos()]
         })
         .collect();
     ShapePath { bends: vec![None; points.len()], points }

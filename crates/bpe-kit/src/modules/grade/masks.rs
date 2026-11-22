@@ -9,6 +9,7 @@
 //! draw, so the picture's grade only ever sees the screen. A Things part names the things whose
 //! silhouettes it covers by their thing codes.
 
+use bpe_core::maths::Maths;
 use bpe_core::{
     Choice, Color, EditError, KindId, Layer, LayerId, LayerKind, LayerSection, Params, Registry, ResolvedSlot, Scene,
     SettingDef, Settings, Slot, SlotId, Strokes, Target, ThingId, Value, layered_key,
@@ -660,7 +661,7 @@ pub fn places(
         GradePlace { at: [s.x, s.y], turn: turn - camera.turn, scale: camera.zoom * scale, world: true }
     };
     let grow = |radius: f32| if grows && radius.is_finite() && radius > 0.0 { radius / GROW_RADIUS } else { 1.0 };
-    let heading = |v: Vec2| if turns && v.is_finite() && v.length() >= 1.0 { v.y.atan2(v.x) } else { 0.0 };
+    let heading = |v: Vec2| if turns && v.is_finite() && v.length() >= 1.0 { v.y.det_atan2(v.x) } else { 0.0 };
     match place {
         Placed::OnTheScreen => vec![GradePlace::SCREEN],
         Placed::InTheWorld => vec![on(Vec2::ZERO, 0.0, 1.0)],

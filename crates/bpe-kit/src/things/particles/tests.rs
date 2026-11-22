@@ -1,5 +1,6 @@
 //! Tests of the Particles thing: births, forces, meeting things, replays and drawing.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Address, Resolved, Scene, Settings, SlotId, ThingId, Value, resolve};
 use bpe_gfx::{Frame, build_frame};
 use bpe_runtime::{Log, Playback, World, main_part};
@@ -509,7 +510,7 @@ fn more_shapes_draw_their_codes_and_pixels_sit_on_the_grid() {
             let (world, _, _) = run(&scene, 0.5);
             let st = particles(&world, scene.order.iter().copied().find(|t| scene.things[t].kind == KIND).unwrap());
             for (p, s) in frame.particles.iter().zip(&st.specks) {
-                let way = s.velocity.y.atan2(s.velocity.x);
+                let way = s.velocity.y.det_atan2(s.velocity.x);
                 assert!((p.place[2] - way).abs() < 1e-4, "{} {}", p.place[2], way);
             }
         }

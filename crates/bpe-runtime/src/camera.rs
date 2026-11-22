@@ -1,5 +1,6 @@
 //! What the video shows of the world: where the camera looks, how close and how turned.
 
+use bpe_core::maths::Maths;
 use glam::Vec2;
 
 /// The camera's shot at one moment. The default is the identity: the world as the video,
@@ -21,7 +22,7 @@ impl Default for CameraView {
 }
 
 fn rotate(p: Vec2, angle: f32) -> Vec2 {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.det_sin_cos();
     Vec2::new(p.x * c - p.y * s, p.x * s + p.y * c)
 }
 
@@ -49,7 +50,7 @@ impl CameraView {
     /// Half the size of the axis-aligned box around the turned shot.
     pub fn shot_bounds_half(&self, video: Vec2) -> Vec2 {
         let h = self.shot_half(video);
-        let (s, c) = self.turn.sin_cos();
+        let (s, c) = self.turn.det_sin_cos();
         Vec2::new(h.x * c.abs() + h.y * s.abs(), h.x * s.abs() + h.y * c.abs())
     }
 

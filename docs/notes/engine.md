@@ -451,3 +451,24 @@ Spec `docs/superpowers/specs/2026-11-09-one-way-to-ride-design.md`, plan `docs/s
   beside the gap, places from the top or first corner), `things/shape/sim.rs` (no gaps, capped size, turning and
   shrinking with the shape), `rules/tests_part5.rs` (a ball escaping through a gap fires Leaves), `tests/
   gap_pictures.rs` (every outline cut, glow cut) and the full-size `gaps` picture.
+
+## The same maths on every platform (2026-11-22)
+
+The physics used to call the platform's maths library for `sin`, `cos`, `tan`, `atan2`, `exp`, `ln`, `powf`,
+`mul_add` and the rest. Windows' (MinGW's) rounds some of them a hair differently from Ubuntu's glibc, and the
+chaotic physics grows that into a different video: built-in scene stem-battle's winner came at 26.5 s in the checks
+and 30.9 s on the owner's PC (the card's first CI run found it). As built:
+
+- `bpe_core::maths::Maths` (crates/bpe-core/src/maths.rs): a trait on `f32` and `f64` whose methods are the std
+  ones with `det_` in front (`x.det_sin()`, `y.det_atan2(x)`, `v.det_powf(2.0)`), each the `libm` crate's (pure
+  Rust, the same code everywhere). `det_log` is `ln / ln` like std's `log`. `sqrt`, `abs`, `floor`, `round`, `%` and
+  `powi` stay as they are: exact by the floating-point standard, or the compiler's own.
+- glam's `libm` feature (workspace `Cargo.toml`), so `Vec2::from_angle`, rotations and so on match too.
+- `crates/bpe-core/clippy.toml`, `bpe-runtime/clippy.toml` and `bpe-kit/clippy.toml` list every platform maths method
+  as `disallowed-methods`, so clippy (warnings are errors in CI) refuses a new one in those crates, tests included.
+  bpe-gfx, bpe-sound, bpe-dsp and the editor keep the platform maths (drawing and sound aren't stepped physics).
+- Every physics golden moved and was re-blessed; with libm, Linux now gives the 30.9 s that Windows did, so
+  stem-battle's payoff check says 30.90. The physics goldens now also run on the owner's PC (nextest `gpu` profile);
+  the sound goldens still don't (the oscillators use the platform's maths).
+- Still platform-dependent: a setting that Follows sound reads the sound engine, whose DSP uses the platform maths,
+  so a physics setting that follows sound can still differ by a hair between platforms.

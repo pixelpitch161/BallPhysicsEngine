@@ -17,6 +17,7 @@
 //! pure in the time and the scene's tempo. A companion's `when` names other companions of the
 //! same gradient as `~<name>` (`"~form=spiral"`): read it with [`when_of`].
 
+use crate::maths::Maths;
 use std::sync::LazyLock;
 
 use crate::gradient_form::{GradientForm, Layout, Repeat, RippleFrom, defaults};
@@ -1057,7 +1058,7 @@ impl MovesAt {
             } else {
                 time * f.number("breathe_speed")
             };
-            fin(amount * (std::f64::consts::TAU * phase.rem_euclid(1.0)).sin()) as f32
+            fin(amount * (std::f64::consts::TAU * phase.rem_euclid(1.0)).det_sin()) as f32
         } else {
             0.0
         };

@@ -238,6 +238,7 @@ dependencies = [
  "base64",
  "bpe-settings-derive",
  "glam",
+ "libm",
  "ron",
  "serde",
 ]
@@ -1094,6 +1095,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc148d4ddd3930c52f9e5ae79b89805c6f07e9ff417e7b083e0348cea60a5aba"
 dependencies = [
  "bytemuck",
+ "libm",
  "serde_core",
 ]
 

@@ -1,5 +1,6 @@
 //! Drawing the balls and their hit flashes, through the layers of their Look.
 
+use bpe_core::maths::Maths;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -1162,7 +1163,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         if !(0.0..=1.0).contains(&age) {
             continue;
         }
-        let intensity = hit_strength(e.speed) * (-3.0 * age).exp() * 0.35 * f.flash / 0.4;
+        let intensity = hit_strength(e.speed) * (-3.0 * age).det_exp() * 0.35 * f.flash / 0.4;
         if intensity < 0.002 {
             continue;
         }

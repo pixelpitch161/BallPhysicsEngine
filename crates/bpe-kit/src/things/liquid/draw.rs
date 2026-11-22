@@ -8,6 +8,7 @@
 //! above 0) the real lights shade it through its Surface, as they do the Particles Liquid layer
 //! (W15): its colour, height and surface index go into the light passes.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Resolved, SlotId, ThingId};
 use bpe_gfx::liquid_sim::STAIN_BASE;
 use bpe_gfx::{DrawCx, Frame, Liquid, LiquidStyle, ThingDraw};
@@ -114,7 +115,7 @@ pub fn style_of(
         style.s[2] = m.size;
     }
     if let Some(w) = &layers.wet_walls {
-        let floor = (-w.dries / bpe_gfx::liquid_sim::DRY_SECONDS).exp();
+        let floor = (-w.dries / bpe_gfx::liquid_sim::DRY_SECONDS).det_exp();
         style.u = [w.amount, floor, w.streaks, 0.0];
     }
     style

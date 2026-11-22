@@ -1,6 +1,7 @@
 //! Tests of part 3's motion: word, picture and grid places, On the beat, the new forces and the
 //! looks they make.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use bpe_core::{Scene, Settings, SlotId, ThingId, Value, resolve};
@@ -481,7 +482,7 @@ fn a_flock_aligns_holds_its_speed_and_skips_itself() {
     assert!(s.velocity.y > 0.0, "turned towards its neighbours' way");
     let speed = s.velocity.length();
     assert!((200.0 - 1e-3..=440.0 + 1e-3).contains(&speed), "{speed}");
-    assert!((s.turn - s.velocity.y.atan2(s.velocity.x)).abs() < 1e-6, "faces the way it flies");
+    assert!((s.turn - s.velocity.y.det_atan2(s.velocity.x)).abs() < 1e-6, "faces the way it flies");
     // Too slow: sped up to Least speed.
     let mut slow = speck(Vec2::new(-9000.0, 0.0), Vec2::new(10.0, 0.0));
     forces.apply(&mut slow, 3, 1.0, &CX, &ready);
@@ -571,12 +572,12 @@ fn a_long_pulse_still_gives_every_kick_its_whole_strength() {
         given += pulse_share(&b, DT as f64, 1.0);
     }
     let end = 1200.0 * DT as f64;
-    let owed: f64 = (0..=20).map(|m| 1.0 - (-(end - m as f64 * 0.5)).exp()).sum();
+    let owed: f64 = (0..=20).map(|m| 1.0 - (-(end - m as f64 * 0.5)).det_exp()).sum();
     assert!((given - owed).abs() < 1e-6, "{given} against {owed}");
     // Beats closer together than a step are all counted.
     let fast = Moments { first: 0.0, every: 0.002 };
     let b = fast.beats_at(DT as f64).unwrap();
-    let all: f64 = (0..b.count).map(|m| 1.0 - (-(b.since + m as f64 * 0.002) / 0.01_f64).exp()).sum();
+    let all: f64 = (0..b.count).map(|m| 1.0 - (-(b.since + m as f64 * 0.002) / 0.01_f64).det_exp()).sum();
     // Everything before the first step's end came in that step.
     let first_step = pulse_share(&b, DT as f64, 0.01);
     assert!((first_step - all).abs() < 1e-9, "{first_step} against {all}");

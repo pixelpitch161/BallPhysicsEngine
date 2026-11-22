@@ -1,5 +1,6 @@
 //! The shape's wall, turning and shrinking.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::FRAC_PI_2;
 
 use std::sync::Arc;
@@ -271,7 +272,7 @@ pub fn place_on_edge(world: &World, shape: ThingId, point: Vec2) -> Option<(f32,
         };
         let own = Vec2::from_angle(-angle).rotate(point - center);
         let q = bpe_runtime::nearest_on_ellipse(half, own) / half.max(Vec2::splat(1e-6));
-        let place = (q.x.atan2(-q.y) / std::f32::consts::TAU).rem_euclid(1.0);
+        let place = (q.x.det_atan2(-q.y) / std::f32::consts::TAU).rem_euclid(1.0);
         return Some((place, 0, 1));
     }
     let path = &st.path;

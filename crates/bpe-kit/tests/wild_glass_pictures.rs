@@ -8,6 +8,7 @@
 //! Measured on the cloud's software GPU at 270 × 480 (4 world units a pixel), in linear light.
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/wild-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, Color, Gradient, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::modules::look::surface::{SurfaceKind, preset_values};
@@ -63,7 +64,7 @@ fn draw_as(gpu: &mut Gpu, scene: &Scene, name: &str, show: LightShow) -> Vec<u8>
 
 fn linear(v: u8) -> f32 {
     let c = v as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
 }
 
 /// The colour at world point (x, y) in linear light, the mean of the 3 × 3 pixels round it: the

@@ -48,8 +48,9 @@ pub(crate) const ENTRY: Entry = Entry {
 
 const PARTS_LEFT: &str = "Parts left";
 const WINNER: &str = "The winner";
-/// When the third ball goes (for the payoff check).
-const WON: f64 = 26.52;
+/// When the third ball goes (for the payoff check). Since the physics maths rounds the same everywhere
+/// (`bpe_core::maths`) this is the same on Windows and Linux; it was 26.52 with Linux's own maths.
+const WON: f64 = 30.90;
 const TEMPO: f32 = 110.0;
 /// What hurts a fighter when it hits it: the other fighters and the bumper, not the arena's wall.
 const HURTS: &str = "hurts";

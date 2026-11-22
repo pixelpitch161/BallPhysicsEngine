@@ -16,6 +16,7 @@
 //! previous buffers, so any number of threads gives the same air.
 
 use bpe_core::ThingId;
+use bpe_core::maths::Maths;
 use bpe_runtime::{Outline, World, wall_velocity};
 use glam::{IVec2, Vec2};
 
@@ -430,7 +431,7 @@ impl Air {
         let threads = if cols * rows >= THREADED_CELLS { threads.clamp(1, MOST_THREADS) } else { 1 };
 
         // Calm towards the wind.
-        let calm = (-fin(self.spec.calm).max(0.0) * DT).exp();
+        let calm = (-fin(self.spec.calm).max(0.0) * DT).det_exp();
         {
             let (spec, origin) = (&self.spec, self.origin.as_vec2());
             let f = |r: usize, row: &mut [Vec2]| {
@@ -464,7 +465,7 @@ impl Air {
                                 continue;
                             }
                             let f = (1.0 - d / reach).powi(2);
-                            let take = 1.0 - (-STIR_RATE * stir * f * DT).exp();
+                            let take = 1.0 - (-STIR_RATE * stir * f * DT).det_exp();
                             let k = r * cols + c;
                             let now = self.vel[k];
                             self.vel[k] = now + (v - now) * take;
@@ -476,7 +477,7 @@ impl Air {
 
         // Heat: what came in, lifting the air, then fading.
         let rises = fin(self.spec.rises);
-        let fades = (-fin(self.spec.fades).max(0.0) * DT).exp();
+        let fades = (-fin(self.spec.fades).max(0.0) * DT).det_exp();
         for k in 0..cols * rows {
             // No heat goes into a shape: a cell a solid shape covers stays cold.
             let t = if self.solid.get(k).copied().unwrap_or(false) {

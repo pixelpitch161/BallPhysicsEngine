@@ -4,6 +4,7 @@
 //! y, the origin at the shape's middle, not turned. The even polygon's corners lie on the unit
 //! circle; the Shape's Size multiplies.
 
+use crate::maths::Maths;
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -97,7 +98,7 @@ impl ShapePath {
         let points = (0..n)
             .map(|k| {
                 let angle = -FRAC_PI_2 - offset + k as f32 * TAU / n as f32;
-                [angle.cos(), angle.sin()]
+                [angle.det_cos(), angle.det_sin()]
             })
             .collect();
         ShapePath { points, bends: vec![None; n as usize] }
@@ -120,10 +121,10 @@ impl ShapePath {
     /// The unit circle as `n` curved sides from the top, each point put through `place`, which
     /// must be linear (a stretch and a turn).
     fn round(n: usize, place: impl Fn(Vec2) -> Vec2) -> ShapePath {
-        let handle = 4.0 / 3.0 * (TAU / (4 * n) as f32).tan();
+        let handle = 4.0 / 3.0 * (TAU / (4 * n) as f32).det_tan();
         let corner = |k: usize| {
             let angle = -FRAC_PI_2 + k as f32 * TAU / n as f32;
-            (Vec2::new(angle.cos(), angle.sin()), Vec2::new(-angle.sin(), angle.cos()))
+            (Vec2::new(angle.det_cos(), angle.det_sin()), Vec2::new(-angle.det_sin(), angle.det_cos()))
         };
         let mut path = ShapePath::default();
         for k in 0..n {
@@ -617,7 +618,7 @@ mod tests {
         let h = hexagon();
         let (side, _, d) = h.nearest_side(Vec2::new(0.0, -2.0)).unwrap();
         assert_eq!(side, 0, "the flat top");
-        assert!((d - (2.0 - (PI / 6.0).cos())).abs() < 1e-5);
+        assert!((d - (2.0 - (PI / 6.0).det_cos())).abs() < 1e-5);
         let flat = h.flatten(FLATTEN);
         assert!(inside_polygon(&flat, Vec2::ZERO));
         assert!(!inside_polygon(&flat, Vec2::new(1.1, 0.0)));
