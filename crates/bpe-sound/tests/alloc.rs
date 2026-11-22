@@ -14,20 +14,26 @@ struct Counting;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
-// TEMPORARY diagnostics (to be removed before merging): where the first allocations came from.
+/// Where each allocation counted came from (its size, its thread and a backtrace), printed when
+/// a check fails. Taken with counting off, so the record's own memory isn't counted.
 static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 fn note(size: usize) {
     if COUNTING.swap(false, Ordering::SeqCst) {
-        let bt = std::backtrace::Backtrace::force_capture();
-        let name = std::thread::current().name().map(|s| s.to_string());
-        SEEN.lock().unwrap().push(format!("size {size} thread {name:?}\n{bt}"));
+        let trace = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current().name().map(str::to_string);
+        SEEN.lock().unwrap().push(format!("{size} bytes on thread {thread:?}\n{trace}"));
         COUNTING.store(true, Ordering::SeqCst);
     }
 }
+
+/// Prints where the allocations counted came from, if any were.
 fn report() {
     COUNTING.store(false, Ordering::SeqCst);
-    for s in SEEN.lock().unwrap().iter() {
-        eprintln!("ALLOC {s}");
+    if ALLOCATIONS.load(Ordering::SeqCst) != 0 {
+        for seen in SEEN.lock().unwrap().iter() {
+            eprintln!("allocated: {seen}");
+        }
     }
 }
 
@@ -62,6 +68,15 @@ fn render_does_not_allocate() {
     scene.things.get_mut(&shape).unwrap().tags.insert("test-tone".into());
     let resolved = resolve_scene(&scene, &kit.registry);
     let mut e = Engine::new(&scene, &resolved, &kit);
+    // The first step starts the engine's own physics threads, and every one is up when it
+    // returns: none is still starting (which takes memory) while the sound plays. A thread the
+    // system is slow to start, as on a busy Windows machine, used to land in a block below.
+    e.step_physics();
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    COUNTING.store(true, Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    report();
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a physics thread was still starting");
     let mut block = [0.0f32; BLOCK * 2];
     for _ in 0..200 {
         e.render(&mut block);
@@ -75,9 +90,7 @@ fn render_does_not_allocate() {
         COUNTING.store(true, Ordering::SeqCst);
         e.render_prepared(&mut block);
         COUNTING.store(false, Ordering::SeqCst);
-        if ALLOCATIONS.load(Ordering::SeqCst) != 0 {
-            report();
-        }
+        report();
         assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block allocated");
         heard |= block.iter().any(|&v| v != 0.0);
     }
