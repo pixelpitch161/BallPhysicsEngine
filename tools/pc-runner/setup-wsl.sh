@@ -61,7 +61,7 @@ if [ ! -f "$tar" ]; then
   mv "$tar.part" "$tar"
   chown runner:runner "$tar"
 fi
-install -m 0755 "$here/job-started.sh" /usr/local/bin/bpe-job-started
+install -m 0755 "$here/job-started.sh" /usr/local/bin/bpe-job-started.sh
 for n in $(seq 1 $runners); do
   d=/home/runner/actions-runner-$n
   if [ ! -f "$d/run.sh" ]; then
@@ -78,7 +78,7 @@ LP_NUM_THREADS=2
 LANG=C.UTF-8
 CARGO_NET_RETRY=10
 RUSTUP_MAX_RETRIES=10
-ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/bin/bpe-job-started
+ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/bin/bpe-job-started.sh
 EOF
   chown runner:runner "$d/.env"
 done
