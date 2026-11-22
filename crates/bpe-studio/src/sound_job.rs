@@ -896,6 +896,12 @@ mod tests {
         let mut feeder = Feeder::new(consumer, shared.clone(), RATE);
         let mut job = SoundJob::start_with_sink(&scene, &resolved, kit, producer, shared);
         job.play(0.0);
+        // Once it has got ahead (starting the thread can take a while on a busy machine; the CI machines run the
+        // card's checks beside these), it stays ahead while 100 ms are played and the clock follows them.
+        let started = Instant::now();
+        while feeder.buffered_frames() < AHEAD_FRAMES && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let mut heard = Vec::new();
         consume(&mut feeder, 100, &mut heard);
         assert!(feeder.buffered_frames() >= AHEAD_FRAMES, "{} frames ahead", feeder.buffered_frames());
