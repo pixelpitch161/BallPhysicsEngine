@@ -266,7 +266,7 @@ jobs:
       - name: TEMPORARY exit-crash diagnosis
         if: github.event_name == 'workflow_dispatch'
         env:
-          STRESS_RUNS: "150"
+          STRESS_RUNS: "12"
         run: .github/scripts/exit-crash-diag.ps1
       - name: Tests on the card
         if: github.event_name != 'workflow_dispatch'

@@ -770,8 +770,7 @@ fn read_words(gpu: &LiquidCard, buffer: &wgpu::Buffer, count: usize) -> Vec<u32>
 /// than nothing, and less than the whole run took by the clock.
 #[test]
 fn the_card_times_a_step_when_it_can() {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+    let Ok(adapter) = crate::headless_adapter(wgpu::PowerPreference::default()) else {
         // (Every other test here fails without a device; this one needs no second message.)
         return;
     };
