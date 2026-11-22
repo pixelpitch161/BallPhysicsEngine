@@ -620,6 +620,33 @@ fn only_the_liquids_side_of_a_thin_wall_gets_wet() {
 }
 
 #[test]
+fn the_wet_grid_keeps_each_wall_nodes_line_and_band() {
+    // The picture's walls (liquid look, walls and streams) read each band node's distance from its
+    // wall's line and whether the wall is filled or hollow, with no guess at the liquid's side.
+    let mut body = Body::new(card(), 40, 40);
+    let (step, _) = water(40, 120.0, STYLE_BLEND);
+    let node = |x: u32, y: u32, dist: f32, half: f32| WallNode {
+        index: y * 40 + x,
+        n: [0.0, -1.0],
+        dist,
+        half,
+        v: [0.0; 2],
+        wall: 255,
+    };
+    let band = [node(10, 36, 1.5, -1.0), node(11, 36, -0.5, -1.0), node(10, 20, -0.75, 0.25), node(11, 20, 2.0, 0.25)];
+    let heap = lattice(3, 20, 10, 30, |_, _| [0.2, 0.4, 0.9, 1.0]);
+    body.step(&StepIn { step, births: &heap, walls: Some(band.as_slice()), balls: &[], feel: false, fresh: false });
+    let (line, kind) = body.read_walls();
+    let at = |x: u32, y: u32| (line[(y * 40 + x) as usize], kind[(y * 40 + x) as usize]);
+    assert_eq!(at(10, 36), (1.5, 1.0), "a filled wall's node: its distance, band 1");
+    assert_eq!(at(11, 36), (-0.5, 1.0), "inside the outline it is below 0");
+    assert_eq!(at(10, 20), (-0.75, 2.25), "a hollow wall's node: its signed distance, 2 + its half thickness");
+    assert_eq!(at(11, 20), (2.0, 2.25));
+    assert_eq!(at(12, 30), (0.0, 0.0), "off the band: nothing");
+    assert_eq!(body.clone().read_walls(), (line, kind), "a copy holds the same");
+}
+
+#[test]
 fn a_lone_drop_falls_as_fast_as_gravity_says() {
     // Gravity as gentle as Size Pool's at Detail Normal (cells/s²), and as many substeps as a real
     // scene takes. The grid's sums once rounded toward zero, which braked a slow drop like friction

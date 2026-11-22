@@ -15,6 +15,8 @@
 //! - `LOOK_QUALITIES`: the lighting qualities for the lighting scenes (default `good,ultra`; also `draft`, `high`).
 //! - `LOOK_SHOW=light`: lit scenes show their light only.
 //! - `LOOK_SET`: `key=value;key=value` written onto every Lighting card (a number, or a choice).
+//! - `LOOK_FILE`: a saved scene file drawn as well (pictures named `file-...`), at `LOOK_TIMES` (a comma list of
+//!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
 
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
@@ -1166,6 +1168,16 @@ fn library_shots(reg: &Registry) -> Vec<Shot> {
         .collect()
 }
 
+/// The scene file `LOOK_FILE` names (if any), at the `LOOK_TIMES` moments.
+fn file_shots(reg: &Registry) -> Vec<Shot> {
+    let Some(path) = std::env::var_os("LOOK_FILE") else { return Vec::new() };
+    let text = std::fs::read_to_string(&path).expect("LOOK_FILE can be read");
+    let scene = bpe_core::save::load(&text, reg).expect("LOOK_FILE is a scene file");
+    let times = std::env::var("LOOK_TIMES").unwrap_or_else(|_| "1,3,5".into());
+    let times = times.split(',').map(|t| t.trim().parse().expect("LOOK_TIMES are seconds")).collect();
+    vec![shot("file", scene, times)]
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1204,6 +1216,7 @@ fn render_at_full_size() {
         ("links", link_shots(&reg)),
         ("riding", riding_shots(&reg)),
         ("library", library_shots(&reg)),
+        ("file", file_shots(&reg)),
     ];
     let mut count = 0;
     for (group, shots) in groups {

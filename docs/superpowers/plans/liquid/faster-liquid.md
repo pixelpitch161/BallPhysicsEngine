@@ -252,6 +252,9 @@ arithmetic is the same on purpose, and there is no cost to starting a pass. A re
 (arithmetic is nearly free, starting 76,800 passes for a second of liquid is not), so its gain should be larger,
 and it is: it was measured before the merge, see "On the owner's card" below.
 
+(These prints are of main at commit 50daa70. The look part, merged after, made pours narrower, so the pour and
+the owner's scene print differently from then on: always compare old and new on one base.)
+
 All 15 prints are the same before and after, which is the check that the liquid did not change: 2 s at Normal
 and Fine of every scene, 2 s at Extreme of the pour and the owner's scene, and 6 s of the owner's scene.
 

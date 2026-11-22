@@ -388,8 +388,8 @@ pub struct PourLayer {
     /// How fast it comes out (with Width, how much comes out a second).
     #[setting(label = "Speed", range(0, 1e9), span(0, 2000), unit = "px/s", simple, keyframe, pulse)]
     pub speed: f32,
-    /// How much comes out, times what Width and Speed pour (0 pours nothing; above 1 it comes out
-    /// thicker than it would flow).
+    /// How much comes out, times what Width and Speed pour (0 pours nothing; under 1 the stream
+    /// is that much narrower; above 1 it comes out thicker than it would flow).
     #[setting(label = "Rate", range(0, 1e9), span(0, 4), unit = "×", keyframe, pulse)]
     pub rate: f32,
     /// How far each drop's way can stray from Aim.
@@ -929,6 +929,10 @@ pub struct LookSettings {
     /// shows smaller drops and finer splashes.
     #[setting(label = "Smoothing", range(0, 1e9), span(0, 1), keyframe, group = "Shape of the surface")]
     pub smoothing: f32,
+    /// How far fast drops and thin streams smear along their way, as a camera sees falling water:
+    /// 0 draws round drops.
+    #[setting(label = "Streaks", range(0, 1e9), span(0, 4), keyframe, group = "Shape of the surface")]
+    pub streaks: f32,
     /// How far in you see before its colour takes over: 0 is solid, more is clearer.
     #[setting(label = "Clarity", range(0, 1e9), span(0, 600), unit = "px", simple, keyframe, pulse, group = "Inside")]
     pub clarity: f32,
@@ -1037,6 +1041,7 @@ impl Default for LookSettings {
             in_front: false,
             surface: SurfaceKind::Glass,
             smoothing: 0.25,
+            streaks: 1.0,
             clarity: 160.0,
             deep: Color::rgb(110, 140, 170),
             soaks_in: 0.0,
@@ -1077,6 +1082,7 @@ impl LookSettings {
             light_angle: num(s.light_angle, d.light_angle),
             opacity: num(s.opacity, d.opacity).clamp(0.0, 1.0),
             smoothing: num(s.smoothing, d.smoothing).max(0.0),
+            streaks: num(s.streaks, d.streaks).max(0.0),
             clarity: num(s.clarity, d.clarity).max(0.0),
             soaks_in: num(s.soaks_in, d.soaks_in).max(0.0),
             own_rim: num(s.own_rim, d.own_rim).clamp(0.0, 1.0),

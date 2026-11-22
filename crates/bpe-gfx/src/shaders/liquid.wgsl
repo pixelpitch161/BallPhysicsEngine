@@ -22,7 +22,7 @@ struct Style {
     a: vec4<f32>,
     // light angle, shine, bend, tint
     b: vec4<f32>,
-    // rim, opacity
+    // rim, opacity, how much it bends lamp light, Streaks (liquid_drops.wgsl)
     c: vec4<f32>,
     sky_top: vec4<f32>,
     sky_bottom: vec4<f32>,
@@ -155,6 +155,27 @@ fn density(p: vec2<i32>, size: vec2<i32>) -> f32 {
     return textureLoad(field, clamp(p, vec2<i32>(0), size - 1), 0).a;
 }
 
+// The field at picture point `xy`, between its four pixels.
+fn density_at(xy: vec2<f32>, size: vec2<i32>) -> f32 {
+    let q = xy - 0.5;
+    let i = floor(q);
+    let f = q - i;
+    let p = vec2<i32>(i);
+    return mix(
+        mix(density(p, size), density(p + vec2<i32>(1, 0), size), f.x),
+        mix(density(p + vec2<i32>(0, 1), size), density(p + vec2<i32>(1, 1), size), f.x),
+        f.y,
+    );
+}
+
+// The field's slope at pixel `p` (a pixel either side).
+fn slope_at(p: vec2<i32>, size: vec2<i32>) -> vec2<f32> {
+    return vec2<f32>(
+        density(p + vec2<i32>(1, 0), size) - density(p - vec2<i32>(1, 0), size),
+        density(p + vec2<i32>(0, 1), size) - density(p - vec2<i32>(0, 1), size),
+    ) * 0.5;
+}
+
 const MATTE: i32 = 0;
 const PLASTIC: i32 = 1;
 const CHROME: i32 = 2;
@@ -165,37 +186,82 @@ const TOON: i32 = 5;
 @fragment
 fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let size = vec2<i32>(textureDimensions(field));
-    let px = vec2<i32>(pos.xy);
-    let f = textureLoad(field, px, 0);
+    var px = vec2<i32>(pos.xy);
+    // Where the liquid's shape and depth at this pixel are read from: the pixel itself, but see
+    // `wall_lift`.
+    var at = pos.xy;
+    var f = textureLoad(field, px, 0);
     let level = max(st.a.x, 1e-4);
-    let here = f.a;
-    // Far outside: nothing (the cheap way out for most of the picture).
-    if here < level * 0.25 {
-        return vec4<f32>(0.0);
-    }
-    let grad = vec2<f32>(
-        density(px + vec2<i32>(1, 0), size) - density(px - vec2<i32>(1, 0), size),
-        density(px + vec2<i32>(0, 1), size) - density(px - vec2<i32>(0, 1), size),
-    ) * 0.5;
-    let slope = length(grad);
     // World units a picture pixel covers.
     let unit = max(g.view.z, 1e-4);
-    // How far inside the cut, in pixels (the field's slope tells how fast it rises).
-    var inside = (here - level) / max(slope, 1e-5);
-    // Liquid fixes part B: the ripples ruffle the waterline (where the edge faces up).
-    if st.v.w > 0.5 && st.j.x > 0.0 && st.j.y > 0.0 && slope > 1e-6 {
-        let w = g.camera.w;
-        let facing = clamp(dot(-grad / slope, vec2<f32>(-sin(w), -cos(w))), 0.0, 1.0);
-        // Only near the top (not the lower rims of holes deep in it).
-        let top = 1.0 - smoothstep(st.j.y, 3.0 * st.j.y, depth_map_at(pos.xy));
-        if facing * top > 0.0 {
-            let world = world_of(pos.xy, vec2<f32>(size));
-            inside += ripple_height(world, g.view.w) / max(g.view.z, 1e-4) * facing * top;
+    let soft = max(st.a.y / unit, 0.75);
+    var grad = vec2<f32>(0.0);
+    var slope = 0.0;
+    var inside = 0.0;
+    var cover = 0.0;
+    // Far outside: nothing (the cheap way out for most of the picture).
+    if f.a >= level * 0.25 {
+        grad = slope_at(px, size);
+        slope = length(grad);
+        // How far inside the cut, in pixels (the field's slope tells how fast it rises).
+        inside = (f.a - level) / max(slope, 1e-5);
+        // Liquid fixes part B: the ripples ruffle the waterline (where the edge faces up).
+        if st.v.w > 0.5 && st.j.x > 0.0 && st.j.y > 0.0 && slope > 1e-6 {
+            let w = g.camera.w;
+            let facing = clamp(dot(-grad / slope, vec2<f32>(-sin(w), -cos(w))), 0.0, 1.0);
+            // Only near the top (not the lower rims of holes deep in it).
+            let top = 1.0 - smoothstep(st.j.y, 3.0 * st.j.y, depth_map_at(pos.xy));
+            if facing * top > 0.0 {
+                let world = world_of(pos.xy, vec2<f32>(size));
+                inside += ripple_height(world, g.view.w) / max(g.view.z, 1e-4) * facing * top;
+            }
+        }
+        cover = clamp(0.5 + inside / soft, 0.0, 1.0);
+        cover = cover * cover * (3.0 - 2.0 * cover);
+    }
+    // Liquid look (walls and streams): a gap between a body of liquid and a wall closes (drops on
+    // the card). Beside a wall, by as much as the liquid a little way off the wall is a whole body
+    // (`wall_lift`, `whole_near`), the pixel is that body carried on to the wall's face: covered
+    // and flat, with no edge, rim or pocket of its own. Its colour stays its own where it has one.
+    if st.v.x >= 1.0 {
+        let lift = wall_lift(pos.xy, vec2<f32>(size));
+        if lift.on > 0.5 {
+            // A body: nearly whole just past the gap, and liquid for LIFT_DEEP cells on from there (a
+            // stream a cell or two wide running down a wall is not one, however near it runs).
+            var whole = whole_near(lift.to + lift.out * LIFT_FAR);
+            let cell_px = st.e.z / unit;
+            for (var k = 1; k <= LIFT_DEEP && whole > 0.0; k++) {
+                let on = density_at(lift.to + lift.out * (cell_px * f32(k)), size);
+                whole *= smoothstep(0.75 * level, level, on);
+            }
+            if whole > 0.0 {
+                let p2 = clamp(vec2<i32>(lift.to), vec2<i32>(0), size - 1);
+                let f2 = textureLoad(field, p2, 0);
+                if f.a < level && f2.a > f.a {
+                    px = p2;
+                    f = f2;
+                }
+                // Liquid with a colour to show (not a hole in the body there as well as here): the
+                // field there between its pixels (to the nearest one it striped along the wall).
+                let cover2 = whole * smoothstep(0.25 * level, level, max(f.a, density_at(lift.to, size)));
+                at = mix(at, lift.to, cover2);
+                inside = mix(inside, max(inside, 64.0), cover2);
+                cover = max(cover, cover2);
+            }
         }
     }
-    let soft = max(st.a.y / unit, 0.75);
-    var cover = clamp(0.5 + inside / soft, 0.0, 1.0);
-    cover = cover * cover * (3.0 - 2.0 * cover);
+    if cover <= 0.0 && f.a < level * 0.25 {
+        return vec4<f32>(0.0);
+    }
+    // Pinholes close (a full look), and the wall's face cuts it (drops on the card).
+    if st.v.w > 0.5 {
+        let fill = pinhole_fill(pos.xy, unit);
+        cover = max(cover, fill);
+        inside = max(inside, fill * max(st.a.z / unit, 0.5));
+    }
+    if st.v.x >= 1.0 {
+        cover *= wall_cover(pos.xy, vec2<f32>(size), unit);
+    }
     if cover <= 0.0 {
         return vec4<f32>(0.0);
     }
@@ -203,7 +269,7 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let code = i32(st.a.w + 0.5);
     let mode = light_pass(g.light.x);
     if st.v.w > 0.5 {
-        return full_surface(pos.xy, px, f, grad, slope, inside, unit, shown, code, mode);
+        return full_surface(pos.xy, at, px, f, grad, slope, inside, unit, shown, code, mode);
     }
     if st.d.x > 0.0 {
         return real_lit(colour_of(f, px), vec3<f32>(0.0), 0.0, shown, inside, unit, mode);
@@ -269,7 +335,7 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         }
         case GLASS: {
             let dims = vec2<f32>(textureDimensions(behind));
-            let bend = n.xy * st.b.z / unit;
+            let bend = wall_bend(pos.xy, n.xy * st.b.z / unit, dims);
             let uv = (pos.xy + bend) / dims;
             let seen = textureSampleLevel(behind, smp, uv, 0.0).rgb;
             let tint = clamp(st.b.w, 0.0, 1.0);
@@ -591,11 +657,214 @@ fn depth_map_at(xy: vec2<f32>) -> f32 {
     return select(0.0, sum / max(wsum, 1e-6), wsum > 1e-4);
 }
 
+// Liquid look (walls and streams): how much of the pixel at `xy` counts as liquid because the
+// liquid round it is nearly whole (0 to 1). The coarse field is the field's mean over 13 x 13
+// pixels; resting liquid's field is pi x reach squared (reach in cells, four drops a cell). A void
+// 0.8 of a cell across (smaller than the physics can see: a pinhole or a slit between rows of
+// drops) takes 0.003 x (the cell in pixels) squared out of that window, and is closed; a straight
+// free edge reads a half and a hole over a cell across less than `lo`, so neither is touched.
+fn pinhole_fill(xy: vec2<f32>, unit: f32) -> f32 {
+    let reach = st.e.w / max(st.e.z, 1e-6);
+    let full = 3.14159265 * reach * reach;
+    if full <= 0.0 {
+        return 0.0;
+    }
+    let dims = vec2<f32>(textureDimensions(coarse));
+    let c = textureSampleLevel(coarse, smp, xy / DEPTH_DIV / dims, 0.0).r / full;
+    let cell_px = st.e.z / unit;
+    let hi = clamp(1.0 - 0.003 * cell_px * cell_px, 0.8, 0.97);
+    return smoothstep(hi - 0.12, hi, c);
+}
+
+// Grid node (x, y)'s signed distance from its wall's line (grid units, below 0 inside the outline)
+// and its band (0 off the walls band, 1 a filled wall, 2 + its half thickness a hollow one): the
+// wet grid's last two numbers a node (liquid_wet.wgsl; the same lookups as liquid_drops.wgsl).
+fn wall_node(x: i32, y: i32) -> vec2<f32> {
+    let cols = i32(st.v.x);
+    let rows = i32(st.v.y);
+    if cols < 1 || x < 0 || y < 0 || x >= cols || y >= rows {
+        return vec2<f32>(0.0);
+    }
+    let cells = u32(cols * rows);
+    let n = u32(y * cols + x);
+    return vec2<f32>(wet_grid[4u * cells + n], wet_grid[5u * cells + n]);
+}
+
+// The wall at grid point `q`: x the signed distance from its line, y its half thickness (below 0
+// for a filled wall), z 1 when all four nodes round `q` are in the band, all filled or all hollow
+// and one wall's (else 0).
+fn wall_at(q: vec2<f32>) -> vec3<f32> {
+    let i = floor(q);
+    let f = q - i;
+    let x = i32(i.x);
+    let y = i32(i.y);
+    let a = wall_node(x, y);
+    let b = wall_node(x + 1, y);
+    let c = wall_node(x, y + 1);
+    let d = wall_node(x + 1, y + 1);
+    let least = min(min(a.y, b.y), min(c.y, d.y));
+    let most = max(max(a.y, b.y), max(c.y, d.y));
+    if least < 0.5 || (least < 1.5) != (most < 1.5) {
+        return vec3<f32>(0.0);
+    }
+    // Nodes of two different walls (each node keeps its nearer wall's distance, and one wall's
+    // inside is another's outside): a distance changes by at most 1 from a node to the next, so a
+    // bigger step is two walls, and between them there is no one distance to read.
+    let jump = max(max(abs(b.x - a.x), abs(d.x - c.x)), max(abs(c.x - a.x), abs(d.x - b.x)));
+    if jump > 1.5 {
+        return vec3<f32>(0.0);
+    }
+    let v = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    return vec3<f32>(v.x, select(v.y - 2.0, -1.0, most < 1.5), 1.0);
+}
+
+// How much of the liquid at picture point `xy` a wall leaves (the picture `dims` across): whole
+// from half a pixel outside the wall's face, none a pixel inside it, so the liquid runs just under
+// the wall's own soft edge and nothing shows between them. The drops are splatted a few pixels
+// past the face (liquid_drops.wgsl), so the field is whole up to this cut and has no edge of its
+// own at the wall: no rim, highlight or bent picture there.
+fn wall_cover(xy: vec2<f32>, dims: vec2<f32>, unit: f32) -> f32 {
+    let q = (world_of(xy, dims) - st.e.xy) / max(st.e.z, 1e-6);
+    let w = wall_at(q);
+    if w.z < 0.5 {
+        return 1.0;
+    }
+    let face = select(abs(w.x) - w.y, w.x, w.y < 0.0);
+    return clamp(face * st.e.z / unit + 1.0, 0.0, 1.0);
+}
+
+// How far off a wall's face a gap under a body of liquid is closed from (grid units), and how much
+// further off (picture pixels) the body must be whole: most of half the coarse field's 13 px
+// window, so little of the gap and the wall is in it.
+const LIFT: f32 = 1.5;
+const LIFT_FAR: f32 = 5.0;
+// How many cells on from there the liquid must carry on for the gap to be closed.
+const LIFT_DEEP: i32 = 3;
+
+struct Lift {
+    // Where to read the liquid from (picture pixels), the way out from the wall there (a unit
+    // step in the picture), 1 when there is a wall near enough (else 0).
+    to: vec2<f32>,
+    out: vec2<f32>,
+    on: f32,
+}
+
+// A world step as a step in picture pixels (`world_of` backwards).
+fn px_step(d: vec2<f32>, dims: vec2<f32>) -> vec2<f32> {
+    var q = d;
+    let w = g.camera.w;
+    if w != 0.0 {
+        let s = sin(-w);
+        let k = cos(-w);
+        q = vec2<f32>(d.x * k - d.y * s, d.x * s + d.y * k);
+    }
+    q *= g.camera.z;
+    return vec2<f32>(q.x * g.view.x * dims.x, q.y * g.view.y * dims.y) * 0.5;
+}
+
+// The slope of the wall's distance at grid point `q` between its four nodes, towards the side `q`
+// is on, as a unit step (0 when there is no clear one, as at a corner's far diagonal).
+fn wall_way(q: vec2<f32>, w: vec3<f32>) -> vec2<f32> {
+    let i = floor(q);
+    let f = q - i;
+    let x = i32(i.x);
+    let y = i32(i.y);
+    let a = wall_node(x, y).x;
+    let b = wall_node(x + 1, y).x;
+    let c = wall_node(x, y + 1).x;
+    let d = wall_node(x + 1, y + 1).x;
+    let grad = vec2<f32>(mix(b - a, d - c, f.y), mix(c - a, d - b, f.x));
+    let len = length(grad);
+    if len < 0.5 || len > 1.5 {
+        return vec2<f32>(0.0);
+    }
+    return grad / len * select(select(-1.0, 1.0, w.x >= 0.0), 1.0, w.y < 0.0);
+}
+
+// Liquid look (walls and streams): drops rest up to a cell or so off a wall, unevenly, so the field
+// under a body of liquid can dip under the Edge level short of the wall's face: pockets and a
+// broken line along the floor. For the pixel at `xy` within LIFT cells of a face, this is the point
+// LIFT cells off it straight out (twice over in a corner, once for each wall), where the liquid is
+// read instead when it is a whole body there.
+fn wall_lift(xy: vec2<f32>, dims: vec2<f32>) -> Lift {
+    var l: Lift;
+    l.on = 0.0;
+    let cell = max(st.e.z, 1e-6);
+    var q = (world_of(xy, dims) - st.e.xy) / cell;
+    var way = vec2<f32>(0.0);
+    for (var k = 0; k < 2; k++) {
+        let w = wall_at(q);
+        if w.z < 0.5 {
+            break;
+        }
+        let face = select(abs(w.x) - w.y, w.x, w.y < 0.0);
+        if face >= LIFT || face < -1.0 {
+            break;
+        }
+        let n = wall_way(q, w);
+        if n.x == 0.0 && n.y == 0.0 {
+            break;
+        }
+        q += n * (LIFT - face);
+        way = n;
+        l.on = 1.0;
+    }
+    if l.on > 0.5 {
+        let q0 = (world_of(xy, dims) - st.e.xy) / cell;
+        l.to = xy + px_step((q - q0) * cell, dims);
+        let step = px_step(way, dims);
+        l.out = step / max(length(step), 1e-6);
+    }
+    return l;
+}
+
+// Liquid look (walls and streams): the bent step `bend` (picture pixels) the picture behind the
+// liquid at `xy` is read at, cut short where it would land in a wall (drops on the card): the
+// liquid is in front of what is behind it, not of the wall it lies against, and a wall read
+// through its rim showed as pale patches all along it. The step stops BEND_OFF cells short of the
+// face (a rainbow split reaches a little further, and the wall's own edge is soft).
+const BEND_OFF: f32 = 0.4;
+
+fn wall_bend(xy: vec2<f32>, bend: vec2<f32>, dims: vec2<f32>) -> vec2<f32> {
+    if st.v.x < 1.0 || (bend.x == 0.0 && bend.y == 0.0) {
+        return bend;
+    }
+    let cell = max(st.e.z, 1e-6);
+    let far = wall_at((world_of(xy + bend, dims) - st.e.xy) / cell);
+    if far.z < 0.5 {
+        return bend;
+    }
+    let there = select(abs(far.x) - far.y, far.x, far.y < 0.0);
+    if there >= BEND_OFF {
+        return bend;
+    }
+    let near = wall_at((world_of(xy, dims) - st.e.xy) / cell);
+    if near.z < 0.5 {
+        return bend;
+    }
+    let here = select(abs(near.x) - near.y, near.x, near.y < 0.0);
+    return bend * clamp((here - BEND_OFF) / max(here - there, 1e-4), 0.0, 1.0);
+}
+
+// How whole the liquid round picture point `xy` is, from the coarse field (0 under 0.5 of resting
+// liquid, 1 from 0.75).
+fn whole_near(xy: vec2<f32>) -> f32 {
+    let reach = st.e.w / max(st.e.z, 1e-6);
+    let full = 3.14159265 * reach * reach;
+    if full <= 0.0 {
+        return 0.0;
+    }
+    let dims = vec2<f32>(textureDimensions(coarse));
+    let c = textureSampleLevel(coarse, smp, xy / DEPTH_DIV / dims, 0.0).r / full;
+    return smoothstep(0.5, 0.75, c);
+}
+
 // A Liquid thing's surface (liquid part 3): its colour with depth, see-through and bent, its own
 // pretend light or the real lights, ripples, thin film, foam, bubbles, caustics, outline, light
 // it gives off and where colours are mixing.
 fn full_surface(
     xy: vec2<f32>,
+    deep: vec2<f32>,
     px: vec2<i32>,
     f: vec4<f32>,
     grad: vec2<f32>,
@@ -620,7 +889,7 @@ fn full_surface(
     // of the top from the exact march up the field itself (foam's On top, the film's rings and
     // bubbles popping need the top to the pixel). Deep down only the smooth one counts, so holes,
     // gaps and rows of drops make no rings, columns or bands.
-    var depth = depth_map_at(xy);
+    var depth = depth_map_at(deep);
     let near = 24.0 * unit;
     if depth < near {
         let fine = depth_below(px, size, level, unit, near);
@@ -709,7 +978,7 @@ fn full_surface(
     // What is behind, bent (and split into a rainbow) through it.
     if behind_too && mode == PASS_PICTURE {
         let bdims = vec2<f32>(textureDimensions(behind));
-        let bend = (n.xy) * st.b.z / unit;
+        let bend = wall_bend(xy, (n.xy) * st.b.z / unit, bdims);
         let split = clamp(st.h.w, 0.0, 1.0);
         let uv = (xy + bend) / bdims;
         var seen = textureSampleLevel(behind, smp, uv, 0.0).rgb;
@@ -820,10 +1089,11 @@ fn full_surface(
     return vec4<f32>(max(c, vec3<f32>(0.0)) * alpha + max(glow, vec3<f32>(0.0)) * shown, alpha);
 }
 
-// Wet walls (liquid part 3): the wet grid (`wet_grid`, a storage buffer of `4 × cols × rows`
+// Wet walls (liquid part 3): the wet grid (`wet_grid`, a storage buffer of `6 × cols × rows`
 // floats: two halves of wetness, the newest `st.v.z`, then each node's distance from its wall's
-// face on the liquid's side) drawn as a film in the wet colour, in streaks, before the liquid
-// itself, only within a cell or two of the face (so it follows the wall smoothly).
+// face on the liquid's side, its side, and the two numbers `wall_node` reads) drawn as a film in
+// the wet colour, in streaks, before the liquid itself, only within a cell or two of the face (so
+// it follows the wall smoothly).
 @group(1) @binding(5) var<storage, read> wet_grid: array<f32>;
 
 fn wet_at(x: i32, y: i32) -> f32 {

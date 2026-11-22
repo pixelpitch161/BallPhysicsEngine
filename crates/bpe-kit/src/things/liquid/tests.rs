@@ -325,6 +325,23 @@ fn water_poured_onto_a_shape_is_never_thrown_faster_than_it_could_fall() {
     assert!(fastest < limit * 1.5, "a drop was thrown at {fastest:.0} px/s; falling gives at most {limit:.0}");
 }
 
+#[test]
+fn a_pour_under_rate_1_is_a_narrower_stream_not_a_curtain_of_spray() {
+    gpu();
+    // The spout is 60 wide at Rate 0.3, 380 above the middle; the plate's top is 130 above it. Its
+    // drops once came out over the whole 60, at a third of resting density: a curtain of spray.
+    let scene = crate::scenes::liquid_pour_on_a_shape(&registry());
+    let world = run(&scene, 0.5);
+    let falling: Vec<Vec2> =
+        drops(&world).iter().map(|d| place(&world, d)).filter(|p| p.y > -370.0 && p.y < -250.0).collect();
+    let (least, most) = falling.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+    eprintln!("the stream: {} drops, {:.1} px wide", falling.len(), most - least);
+    assert!(falling.len() > 30, "it pours: {} drops on their way down", falling.len());
+    // 60 × 0.3 = 18 wide out of the spout, and a little wider as it falls (its Spread).
+    assert!(most - least < 36.0, "the stream is {:.1} px wide", most - least);
+    assert_eq!(super::births::pour_width(&super::PourLayer { width: 60.0, rate: 2.0, ..Default::default() }), 60.0);
+}
+
 /// The middle of all the drops, across (pixels).
 fn middle_x(world: &World) -> f32 {
     let all = drops(world);
