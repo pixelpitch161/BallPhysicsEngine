@@ -30,6 +30,9 @@ if [ ! -x /home/runner/.cargo/bin/rustup ]; then
   su - runner -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
 fi
 
+# The pinned toolchain up front, so the three runners don't race to install it (CI also takes a lock).
+su - runner -c 'RUSTUP_MAX_RETRIES=10 ~/.cargo/bin/rustup toolchain install 1.97.0 --profile minimal   --component rustfmt --component clippy --target x86_64-pc-windows-gnu'
+
 # The GitHub Actions runner, one copy per runner.
 release=$(curl -fsSL --retry 10 --retry-all-errors https://api.github.com/repos/actions/runner/releases/latest)
 ver=$(jq -r .tag_name <<<"$release" | sed 's/^v//')
@@ -56,6 +59,8 @@ VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 GALLIUM_DRIVER=llvmpipe
 LANG=C.UTF-8
+CARGO_NET_RETRY=10
+RUSTUP_MAX_RETRIES=10
 EOF
   echo "PATH=/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > "$d/.path"
   chown runner:runner "$d/.env" "$d/.path"

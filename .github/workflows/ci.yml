@@ -96,7 +96,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Rust (the version in rust-toolchain.toml)
-        run: rustup toolchain install
+        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        run: flock "$HOME/.rustup-install.lock" rustup toolchain install
       - run: cargo fmt --all --check
 
   clippy:
@@ -113,7 +114,8 @@ jobs:
           cache-name: clippy
           packages: libasound2-dev pkg-config libudev-dev
       - name: Rust (the version in rust-toolchain.toml)
-        run: rustup toolchain install
+        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        run: flock "$HOME/.rustup-install.lock" rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -149,7 +151,8 @@ jobs:
           packages: >-
             libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers ffmpeg libxkbcommon-x11-0 libxkbcommon0
       - name: Rust (the version in rust-toolchain.toml)
-        run: rustup toolchain install
+        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        run: flock "$HOME/.rustup-install.lock" rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -209,7 +212,8 @@ jobs:
           cache-name: goldens
           packages: libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers
       - name: Rust (the version in rust-toolchain.toml)
-        run: rustup toolchain install
+        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        run: flock "$HOME/.rustup-install.lock" rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -240,7 +244,8 @@ jobs:
           cache-name: mingw
           packages: gcc-mingw-w64-x86-64
       - name: Rust (the version in rust-toolchain.toml)
-        run: rustup toolchain install
+        # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
+        run: flock "$HOME/.rustup-install.lock" rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
