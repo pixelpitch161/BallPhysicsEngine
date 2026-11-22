@@ -1299,3 +1299,11 @@ fn the_toolbar_switches_to_grade_mode() {
     h.run();
     assert_eq!(h.state().mode, crate::grade_mode::EditorMode::Build);
 }
+
+#[test]
+fn the_liquid_readout_says_drops_time_and_small_steps() {
+    assert_eq!(liquid_readout(120_000, 3.24, 38), "· Liquid: 120,000 drops, 3.2 ms a step (38 small steps)");
+    assert_eq!(liquid_readout(900, 0.4, 1), "· Liquid: 900 drops, 0.4 ms a step (1 small step)");
+    // Before the first step is back there is no time to say.
+    assert_eq!(liquid_readout(900, 0.0, 0), "· Liquid: 900 drops");
+}

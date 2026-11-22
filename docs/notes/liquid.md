@@ -12,7 +12,7 @@ at the start, Level, Colour, Colour strength, Most drops, and a list of **Pours*
 Bounce slot: Balls push it, and a list of **Other liquid** rules: Mix or Layer, a mix style, its own
 speed) and **Look** (Colour from, Mix style Paint / Light / Blend / Marble / Keep apart, Mix speed,
 Mixes when, Swirl detail, the surface). Put under a hollow shape it fills the shape; anywhere else
-it fills the Area and stops at its edges. The status line says "· Liquid: N drops, X ms", or
+it fills the Area and stops at its edges. The status line says "· Liquid: N drops, X ms a step (S small steps)", or
 "· Liquid needs the graphics card" when there is none. No built-in scene uses it (the owner asked
 for none); the test scenes are `scenes::liquid_scenes` ("Liquid water", "Liquid paint mixing").
 
@@ -608,6 +608,170 @@ not mirrored as walls are, so liquid still packs a little round a sunk ball. A c
 wall. Bigger time steps (`CFL` 0.2: a quarter fewer substeps) were measured and left alone:
 still water simmers at about twice the energy and creeps up. Speed and look: parts 2 and 3 of the plan.
 
+## Faster liquid, as built (2026-11-22)
+
+Plan: `docs/superpowers/plans/liquid/faster-liquid.md` (what each change is, why it is exact, what was left out
+and the timings). The rule of this part: **the liquid does not behave differently**. Every drop is where it was,
+bit for bit, on the cloud's software card; that was checked with `liquid_speed` (below), not argued. Nothing
+drawn changed and no golden moved.
+
+**A substep is two passes, not five.** A liquid step of S substeps was `S x (cs_clear_grid, cs_p2g, cs_grid,
+cs_g2p, cs_tick)`; it is `cs_p2g`, then `S x (cs_grid, cs_g2p2g)` with the last drops' pass a plain `cs_g2p`.
+`scatter(p)` and `gather(p)` are the old `cs_p2g` and `cs_g2p` bodies as functions, and `cs_g2p2g` calls one
+after the other on the same drop (the "G2P2G" transfer). To make that possible:
+
+- The grid's sums are **two buffers used in turn** (`Scratch.grids`, `Scratch.clean` is the all-zero one). The
+  grid pass reads the sums just scattered (binding 4) and clears the other (binding 17, `next_sums`) for the
+  scatter that follows, so no pass only clears. The wet pass reads the last substep's sums (`grids[a]`).
+- **`nodes`** (binding 16, four floats a node: speed x, y, volume, walls' share) is written by `cs_grid` and is
+  the only thing the gather and `cs_feel` read of the grid. The walls' share is worked out once a node a substep
+  (`wall_share`), not nine times a drop. Do not read the sums in the gather again.
+- **Pass numbers come from the processor**: `tick` (binding 19) is a 16-byte uniform bound at a dynamic offset
+  into `LiquidCard.ticks`, a table of the numbers 0 to 64 written once. A gather in pass n has taken `n - 1`
+  substeps (the balls' place, `ball_now`). `cs_tick` and the `counts[7]` count are gone (the word is spare).
+
+**Only the tiles of the grid that hold liquid are worked on.** `cs_grid` is `@workgroup_size(16, 16)`: one
+workgroup is one tile of 16 x 16 nodes. A scatter writes its number into the stamp (`stamps`, binding 18, one
+`atomic<u32>` a tile) of every tile it adds to (`stamp_tiles`, for the drop's nodes and its wall mirror's).
+Scatters count on from step to step (`Scratch.stamp`, in the step's uniform as `st.feel.z`); grid pass n works
+on a tile only when its stamp is this scatter's or the one before's, by equality. Two scatters, because the pass
+must also clear what the scatter before left in the other sums and put `nodes` back to empty there. Everywhere
+else is already as a full sweep would leave it: sums zero, `nodes` `(0, 0, 0, walls' share)`. **A liquid step
+that puts the walls sweeps every tile** (`st.flags.y`: a body's or a copy's first step, and every step while a
+shape moves), because that changes every node's walls' share. So a scene with a moving shape gets nothing from
+the tiles, only from the fewer passes.
+
+**Work that could not move a drop is skipped**, each with the same bits as before: "holes close" runs only
+when `inner > 0 && hole > 0` (it multiplied its move by both); the picture edges' share (`edge_share`) only for
+a drop whose nodes are within 4 of an edge (it is exactly 0 further in); and the gather writes back only what
+it can change (`keep`: never serial or mat, colour only when ink or paint ran in, F only when stretched or
+frozen: 68 bytes of 112 for plain water).
+
+**Bind groups are kept** (`Scratch.bound`, `Bound { key, groups }`): the step's 22 entry points' groups, two
+each where the entry names the sums, made again only when one of the 16 buffers they name is another buffer.
+They were all made every liquid step.
+
+**The status line gives the card's own time.** `Body::step_ms` was "sent to answer noticed", which counts the
+steps queued ahead. On a device with timestamps (`bpe_gfx::TIMING_FEATURES`, which the editor asks for) the
+step's compute pass is timed by the card (`StepTimer`, two timestamps resolved into the count reader's staging
+buffer), and the line reads "· Liquid: 412,000 drops, 3.1 ms a step (64 small steps)" (`Host::reading`,
+`Reading`, `liquid_readout`). There are 240 liquid steps a second of video, so a step under 4.2 ms keeps up
+with playback. (The timings below were taken without it, from the outside.)
+
+**Checking a speed change**: `crates/bpe-kit/tests/liquid_speed.rs` (ignored; run by hand, in release) plays a
+pour, a filled box, the two liquid test scenes, a "strange" scene (ice, stretch, stains, a clinging, inking,
+heating ball, one of each force) and a saved scene (`LIQUID_SCENE=<file>`), at `LIQUID_DETAILS`, for
+`LIQUID_SECONDS`, and prints a hash of every number of every drop with the wall-clock time. Run it on main and on
+the branch (a second worktree with its own `CARGO_TARGET_DIR`): the prints must be the same. Solver tests:
+`skipping_the_empty_tiles_changes_no_drop` (a body that skips tiles against one given the walls every step,
+drop for drop) and `the_card_times_a_step_when_it_can`.
+
+(The prints below were taken on main as it was before the look part merged, commit 50daa70. That part made
+pours narrower, so the pour and the owner's scene print differently now; compare old and new on one base.)
+
+**Numbers**: seconds of work for one second of liquid (release, the cloud's software card lavapipe on 4 cores, old and
+new run one after the other on a quiet machine; 2 s of liquid unless said):
+
+| Scene | Detail | Drops at the end | Before | After | Less time | Print (the same before and after) |
+| --- | --- | --- | --- | --- | --- | --- |
+| A pour onto a shape | Normal | 1,909 | 6.32 | 4.45 | 30 % | `6ae6ac1d5ae0e4f7` |
+| A pour onto a shape | Fine | 3,394 | 10.96 | 8.70 | 21 % | `be9f22bc8c34a07d` |
+| A pour onto a shape | Extreme | 13,576 | 40.62 | 33.64 | 17 % | `3340751fd6a9e3c7` |
+| The owner's scene (Water Weird) | Normal | 2,036 | 6.45 | 5.01 | 22 % | `2e6e6daa4dd84102` |
+| The owner's scene | Fine | 3,620 | 11.18 | 10.28 | 8 % | `8313d4d264ee9c06` |
+| The owner's scene | Extreme | 14,481 | 40.75 | 36.37 | 11 % | `e64ce38fdc0c20ab` |
+| The owner's scene, 6 s | Normal | 6,109 | 11.70 | 10.54 | 10 % | `3ef9bc24a461e5ef` |
+| A filled box | Normal | 19,832 | 23.43 | 22.15 | 5 % | `7496ce5e58cfb2f3` |
+| A filled box | Fine | 34,888 | 53.70 | 51.00 | 5 % | `7fd41259d8014e93` |
+| Liquid water (a ball drops in) | Normal | 18,560 | 26.21 | 25.62 | 2 % | `0559964d8407b491` |
+| Liquid water | Fine | 32,920 | 55.27 | 55.46 | 0 % | `49f1858d986973ad` |
+| Liquid paint mixing | Normal | 19,417 | 24.06 | 23.43 | 3 % | `c3855201c59d38ea` |
+| Liquid paint mixing | Fine | 34,638 | 47.99 | 48.93 | -2 % | `ab3ff9c30915f76b` |
+| Strange (ice, stains, forces) | Normal | 18,478 | 27.12 | 25.91 | 4 % | `fd1a0853fe08cdde` |
+| Strange | Fine | 32,776 | 58.41 | 52.64 | 10 % | `085a5b3d7f9e3e51` |
+
+So on the software card: a fifth to a third less time where the liquid covers little of the grid, about a tenth
+on the owner's scene at Fine and Extreme, and next to nothing (0 to 5 %, inside the noise for some lines) where
+liquid fills the grid. That card is a processor: for it a pass costs what the arithmetic in it costs, the
+arithmetic is the same on purpose, and there is no cost to starting a pass. A real card is the other way round
+(arithmetic is nearly free, starting 76,800 passes for a second of liquid is not), so its gain should be larger,
+and it is: see the next table.
+
+**Numbers on the owner's card** (Radeon RX 9070 XT, 2026-11-22).
+Seconds of work for **5 seconds** of liquid (so under 5.00 is faster than real time), release, the test built
+for Windows and run on the card itself (`# card AMD Radeon RX 9070 XT, Vulkan, driver 26.11.2 (LLPC)`), old and
+new in turn, each twice, the mean of the two (they were within a few percent), with no check running on the PC:
+
+| Scene | Detail | Drops after 5 s | Before | After | Less time |
+| --- | --- | --- | --- | --- | --- |
+| A pour onto a shape | Normal | 4,772 | 1.20 | 1.09 | 9 % |
+| A pour onto a shape | Fine | 8,485 | 1.40 | 1.16 | 17 % |
+| A pour onto a shape | Extreme | 33,941 | 3.95 | 3.00 | 24 % |
+| The owner's scene (Water Weird) | Normal | 5,091 | 1.19 | 1.06 | 11 % |
+| The owner's scene | Fine | 9,050 | 1.40 | 1.41 | -1 % |
+| The owner's scene | Extreme | 36,203 | 3.65 | 2.78 | 24 % |
+| A filled box | Normal | 19,832 | 1.06 | 1.21 | -14 % |
+| A filled box | Fine | 34,888 | 2.87 | 2.23 | 22 % |
+| A filled box | Extreme | 141,768 | 11.14 | 7.56 | 32 % |
+| Liquid water (a ball drops in) | Normal | 18,560 | 2.44 | 2.15 | 12 % |
+| Liquid water | Fine | 32,920 | 3.76 | 2.89 | 23 % |
+| Liquid water | Extreme | 132,578 | 12.09 | 8.46 | 30 % |
+| Liquid paint mixing | Normal | 30,023 | 3.03 | 2.42 | 20 % |
+| Liquid paint mixing | Fine | 53,494 | 4.49 | 3.25 | 28 % |
+| Liquid paint mixing | Extreme | 215,357 | 19.06 | 13.07 | 31 % |
+| Strange (ice, stains, forces) | Normal | 18,475 | 2.38 | 1.68 | 29 % |
+| Strange | Fine | 32,764 | 3.43 | 2.80 | 18 % |
+| Strange | Extreme | 131,843 | 11.21 | 6.94 | 38 % |
+| A filled box, 40 s of liquid | Normal | 19,832 | 13.74 | 11.36 | 17 % |
+
+- **About 30 % less time at Extreme, 10 to 25 % at Normal and Fine.** The gain grows with the grid and the drops,
+  the opposite of the software card.
+- **One case is slower at its start**: the filled box at Normal takes 1.31 s for its first 5 s where it took 1.17
+  (measured three times each, the same to a hundredth), and 11.36 s for 40 s where it took 13.74. So the new code
+  is faster for each second played and behind over the first few. Why the start costs more was not found; it is
+  about a tenth of a second, once.
+- **The liquid's stepping is probably not most of what makes the owner's playback slow.** On this card the
+  physics alone runs faster than real time at Normal and Fine in every scene (the preview's Detail in Water Weird
+  is Fine), and at Extreme up to some 60,000 drops: Water Weird's first 5 s at Extreme take 2.8 s (3.7 before).
+  A full scene at Extreme is slower than real time but not by much: 130,000 to 215,000 drops take 1.4 to 2.6 s
+  for a second of liquid (2.2 to 3.8 before). The slow playback and the long exports the owner reported must be
+  mostly somewhere else (drawing the liquid, lighting, the editor's own work for each picture, encoding). That
+  is the next thing to measure, on the card, the same way.
+
+**On the real card old and new are not bit for bit the same**, as they are on the software card: every print
+differs, from the first tenth of a second on. Each build repeats its own prints exactly (three runs each), and
+the drop counts are the same. This is what the review said could happen: the numbers and their order are the
+same, but some arithmetic now sits in another pass, and the card's driver fuses multiplies and adds differently
+around it. What was checked on the card, old against new:
+
+- The liquid as a whole (the columns `liquid_speed` prints after the print: mean place, mean speed squared, mean
+  squeeze, frozen drops). After 0.05 s (12 liquid steps, some 500 substeps) the two agree to six or seven
+  figures in every scene at Normal and Extreme (the filled box's mean height 144.490430 against 144.490429, its
+  mean speed squared 339.46769 against 339.46772). After 1 s they are a few tenths of a percent apart, after 5 s
+  a few percent in the splashing scenes and still a hundredth of a percent in the calm ones (the box's height
+  145.281 against 145.293; frozen drops in the strange scene 10,704 against 10,694). That is last-bit
+  differences growing in a chaotic flow, not another liquid: a wrong tile, a wrong ball time or a missed write
+  would show at once and in the first figures.
+- `skipping_the_empty_tiles_changes_no_drop` passes on the card: with and without skipping tiles the new build
+  gives the same drops to the last bit there too (both sides are the same shader, so the driver cancels out).
+- The solver's 27 tests and the liquid's 53 behaviour tests (still water in every box, sloshing, balls, the
+  stranger liquids, sound) pass on the card with the new build, as the old build's 25 and 53 do.
+
+**How it was run** (worth repeating for any liquid speed work): the checks on the owner's PC use a software card
+on purpose and their Linux box cannot start Windows programs, so they can't time anything on the Radeon.
+A session on the PC built `liquid_speed` (and the gfx and kit unit tests) for `x86_64-pc-windows-gnu` inside that
+box, in a scratch folder of its own, copied the programs out to a temporary Windows folder and ran them there.
+Nothing is installed and the app is not touched. Never run cargo on Windows inside the project folder: the
+pinned toolchain starts downloading. Time only when no check is running on the PC.
+
+Pitfalls: `cs_g2p2g` names eight storage buffers, the most a default device allows a shader stage, so it can
+take no ninth. A scratch given back as a spare must drop its bind groups (`Drop for Body`), or they keep the
+dead body's drops. "Bit for bit" holds on the software card only: on the owner's card the last bits differ (see
+"Numbers on the owner's card"). The reading's substeps and time belong to the same answered step (`CountReader.substeps`), 0 until one is back.
+
+Left out, with reasons in the plan: bigger time steps and a half-rate preview (both change the liquid), sorting
+drops by cell (can't be judged without a real card), fewer atomic adds (changes the rounding). Do not "tidy"
+`scatter` or `gather`: any change in the order of their arithmetic moves the drops' last bits.
 
 ## The look at walls, thin streams, pinholes and the pour, as built (2026-11-22)
 

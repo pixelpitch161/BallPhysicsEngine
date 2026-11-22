@@ -682,3 +682,119 @@ fn the_drawing_shaders_count_a_drops_numbers_as_the_card_does() {
         assert!(source.contains(&says), "{name} does not say `{says}`");
     }
 }
+
+/// A thin hollow wall standing on the floor of a `cols`-wide grid at column `x`, from row `top`
+/// down to the floor at `bottom` (normal pointing right, a cell thick).
+fn post(cols: u32, x: u32, top: u32, bottom: u32) -> Vec<WallNode> {
+    let mut band = Vec::new();
+    for y in top..bottom - 4 {
+        for at in (x - 3)..(x + 4) {
+            band.push(WallNode {
+                index: y * cols + at,
+                n: [1.0, 0.0],
+                dist: at as f32 - x as f32,
+                half: 0.5,
+                v: [0.0, 0.0],
+                wall: 255,
+            });
+        }
+    }
+    band
+}
+
+/// The grid pass skips the tiles that hold no liquid (liquid speed). Stepped that way, and with
+/// every tile done every time (a step that puts the walls does them all), the drops must be the
+/// same to the last bit: through a heap falling across tiles onto a floor and round a thin wall, a
+/// second heap born later in tiles that had been empty, mixing, and a cut that empties tiles.
+#[test]
+fn skipping_the_empty_tiles_changes_no_drop() {
+    let gpu = card();
+    // 100 × 90 nodes: seven tiles by six, the last of each row and column cut short.
+    let (cols, rows) = (100, 90);
+    let (mut step, _) = water(rows, 120.0, STYLE_BLEND);
+    let mut band = floor(cols, 84);
+    band.extend(post(cols, 40, 60, 84));
+    let first = lattice(8, 24, 6, 20, |c, _| if c % 2 == 0 { [1.0, 0.0, 0.0, 1.0] } else { [0.0, 0.0, 1.0, 1.0] });
+    let second = lattice(70, 86, 4, 12, |_, _| [0.2, 0.9, 0.3, 1.0]);
+    let mut bodies = [Body::new(gpu.clone(), cols, rows), Body::new(gpu.clone(), cols, rows)];
+    for k in 0..320u32 {
+        step.flags[0] = u32::from(k % MIX_EVERY == MIX_EVERY - 1);
+        // Late on, everything above row 70 is cut away: the tiles up there go empty.
+        if k == 280 {
+            step.liquids[0].c[3] = 70.0;
+        }
+        let births = match k {
+            0 => first.as_slice(),
+            60 => second.as_slice(),
+            _ => &[],
+        };
+        for (which, body) in bodies.iter_mut().enumerate() {
+            // The second body is given its walls again every step, so it does every tile.
+            let walls = (k == 0 || which == 1).then_some(band.as_slice());
+            body.step(&StepIn { step, births, walls, balls: &[], feel: false, fresh: false });
+        }
+    }
+    let (skipping, every) = (bodies[0].read(), bodies[1].read());
+    assert!(skipping.len() > 500, "{} drops", skipping.len());
+    assert!(all_finite(&skipping));
+    assert!(skipping.iter().all(|d| d.x[1] >= 70.0 - 0.5), "the cut left drops above it");
+    assert!(skipping == every, "skipping the empty tiles moved a drop");
+    // And tiles were skipped: after the cut the liquid lies along the floor, so the last grid pass
+    // of the first body worked on some tiles (those the last two scatters stamped) and not all.
+    let scratch = bodies[0].scratch.as_ref().expect("it stepped");
+    let tiles = (cols.div_ceil(TILE) * rows.div_ceil(TILE)) as usize;
+    let stamps = read_words(&gpu, &scratch.stamps, tiles);
+    let live = stamps.iter().filter(|s| scratch.stamp.wrapping_sub(**s) < 2).count();
+    assert!(live > 0 && live < tiles / 2, "{live} of {tiles} tiles worked on");
+}
+
+/// The first `count` words of a buffer on the card.
+fn read_words(gpu: &LiquidCard, buffer: &wgpu::Buffer, count: usize) -> Vec<u32> {
+    let bytes = count as u64 * 4;
+    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test read"),
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, bytes);
+    gpu.queue.submit([encoder.finish()]);
+    staging.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("a read"));
+    gpu.device.poll(wgpu::PollType::wait_indefinitely()).expect("the card");
+    let view = staging.slice(..).get_mapped_range().expect("mapped");
+    bytemuck::cast_slice::<u8, u32>(&view).to_vec()
+}
+
+/// On a device made with timestamps, a liquid step's time is the card's own (liquid speed): more
+/// than nothing, and less than the whole run took by the clock.
+#[test]
+fn the_card_times_a_step_when_it_can() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+        // (Every other test here fails without a device; this one needs no second message.)
+        return;
+    };
+    if !adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        return;
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("liquid timing test"),
+        required_features: wgpu::Features::TIMESTAMP_QUERY,
+        ..Default::default()
+    }))
+    .expect("a device with timestamps");
+    let mut body = Body::new(LiquidCard::for_device(&device, &queue), 40, 40);
+    let (step, _) = water(40, 120.0, STYLE_BLEND);
+    assert_eq!((body.step_ms(), body.substeps()), (0.0, 0));
+    let started = std::time::Instant::now();
+    run(&mut body, &step, &lattice(4, 36, 10, 30, |_, _| [1.0; 4]), 30);
+    // Reading the drops waits for the card; the next step takes the answer it left.
+    assert!(!body.read().is_empty());
+    let by_the_clock = started.elapsed().as_secs_f32() * 1000.0;
+    run(&mut body, &step, &[], 1);
+    assert!(body.reader.as_ref().is_some_and(|r| r.timer.is_some()), "the device has timestamps and no timer was made");
+    assert_eq!(body.substeps(), step.grid[2]);
+    let ms = body.step_ms();
+    assert!(ms > 0.0 && ms < by_the_clock, "a step took {ms} ms of {by_the_clock}");
+}

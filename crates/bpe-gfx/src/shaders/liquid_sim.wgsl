@@ -1,11 +1,23 @@
 // The Liquid thing's drops (liquid part 1): a weakly compressible MLS-MPM liquid in grid units
 // (one grid cell is 1). Each liquid step: births appended; the walls band put on the grid when the
-// walls moved; `substeps` times: the grid cleared, the drops' mass, momentum and volume scattered to
-// it in fixed point (integer atomics, so the order drops add in can't change the sum), the grid's
+// walls moved; `substeps` times: the drops' mass, momentum and volume scattered to the grid's sums
+// in fixed point (integer atomics, so the order drops add in can't change the sum), the grid's
 // speeds worked out and held off the walls, the speeds gathered back to the drops (APIC), the drops
 // kept off the walls, the balls and the edges and moved. Every MIX_EVERY-th step the drops are put
 // into bins by cell and each one mixes its colour with its neighbours' (fixed point again). Last,
 // the living drops are packed back in order by an integer prefix sum. See liquid_sim/mod.rs.
+//
+// A substep is two passes, not five (liquid speed): there are two buffers of sums, and the grid
+// pass, which reads one, clears the other and writes each node's speeds, volume and walls' share
+// to `nodes`; then one pass over the drops gathers from `nodes`, moves each drop and scatters it
+// straight into the cleared sums for the next substep (`cs_g2p2g`), so a drop is read and written
+// once a substep. Only a liquid step's first scatter (`cs_p2g`: births, mixing and packing changed
+// the drops since the last) and last gather (`cs_g2p`) are passes of their own.
+//
+// The grid pass skips the tiles of the grid (16 × 16 nodes, a workgroup each) that hold no liquid:
+// every scatter stamps the tiles it adds to with its number (`stamps`), and a tile neither this
+// scatter nor the one before stamped is already as the pass would leave it. The passes are told
+// their number by the processor (`tick`), so nothing on the card counts them.
 
 struct Drop {
     x: vec2<f32>,
@@ -88,7 +100,8 @@ struct Step {
     words_at: vec4<u32>,
     // the ball grid: cols, rows, cell (grid cells, as bits), where the cells' items are
     ball_grid: vec4<u32>,
-    // what the balls feel: recorded (0/1), ring points, 0, 0
+    // what the balls feel: recorded (0/1), ring points; then the number of the last scatter before
+    // this liquid step (the tiles' stamps count on from it, wrapping), 0
     feel: vec4<u32>,
     // the liquid step's number, forces, un-mix's t (f32 bits), un-mix takes the older sample (0/1)
     extra: vec4<u32>,
@@ -171,8 +184,8 @@ const WHEN_HITS: u32 = 2u;
 // [0..3] the draw's arguments (4, count, 0, 0), [4] the drops being worked on, [5] what a scan
 // covers
 @group(0) @binding(3) var<storage, read_write> counts: array<u32>;
-// per node: mass, momentum x, momentum y, volume (fixed point); after the grid pass, speed x and y
-// as float bits in the middle two
+// The sums the drops are adding to (or, in the grid pass, the ones just added): per node mass,
+// momentum x, momentum y, volume (fixed point). There are two such buffers, used in turn.
 @group(0) @binding(4) var<storage, read_write> grid: array<atomic<i32>>;
 // per node: (normal xy, distance, in the band), (wall speed xy, 0, 0)
 @group(0) @binding(5) var<storage, read_write> solid: array<vec4<f32>>;
@@ -189,6 +202,21 @@ const WHEN_HITS: u32 = 2u;
 @group(0) @binding(13) var<storage, read_write> sample: array<u32>;
 @group(0) @binding(14) var<storage, read> newer: array<u32>;
 @group(0) @binding(15) var<storage, read> older: array<u32>;
+// per node, written by the grid pass: speed x and y, the volume of liquid, the walls' share
+@group(0) @binding(16) var<storage, read_write> nodes: array<vec4<f32>>;
+// The other buffer of sums, which the grid pass clears for the next substep's drops.
+@group(0) @binding(17) var<storage, read_write> next_sums: array<i32>;
+// per tile of TILE × TILE nodes: the number of the last scatter that added to it
+@group(0) @binding(18) var<storage, read_write> stamps: array<atomic<u32>>;
+
+// Which of a liquid step's passes this is (bound at an offset into a table of numbers): 0 for the
+// first scatter; n for the n-th grid pass and for the pass over the drops that follows it.
+struct Tick {
+    n: vec4<u32>,
+};
+@group(0) @binding(19) var<uniform> tick: Tick;
+
+const TILE: u32 = 16u;
 
 var<workgroup> shared_sums: array<u32, 256>;
 
@@ -264,18 +292,12 @@ fn cs_births_done() {
     counts[7] = 0u;
 }
 
-// Counts the substeps taken: the balls move on along their speed in each.
-@compute @workgroup_size(1)
-fn cs_tick() {
-    counts[7] = counts[7] + 1u;
-}
-
-// Where ball `at` is in this substep: where it was at the liquid step's start, moved on along
-// its speed for the substeps taken so far.
-fn ball_now(at: u32) -> vec2<f32> {
+// Where ball `at` is after `taken` substeps: where it was at the liquid step's start, moved on
+// along its speed.
+fn ball_now(at: u32, taken: u32) -> vec2<f32> {
     let x = vec2<f32>(wf(at), wf(at + 1u));
     let v = vec2<f32>(wf(at + 2u), wf(at + 3u));
-    return x + v * (f32(counts[7]) * st.time.x);
+    return x + v * (f32(taken) * st.time.x);
 }
 
 @compute @workgroup_size(256)
@@ -368,27 +390,13 @@ fn edge_share(x: i32, y: i32) -> f32 {
     return 1.0 - (1.0 - min(sx, 1.0)) * (1.0 - min(sy, 1.0));
 }
 
-// Both together for node (`x`, `y`): a wall right at the picture's edge is not counted twice.
-fn solid_share(x: i32, y: i32, stops: bool) -> f32 {
-    let wall = wall_share(node(x, y));
-    if !stops {
-        return wall;
-    }
-    return 1.0 - (1.0 - wall) * (1.0 - edge_share(x, y));
+// Both together: `wall` is a node's walls' share and `edge` its edges' share. A wall right at
+// the picture's edge is not counted twice.
+fn solid_share(wall: f32, edge: f32) -> f32 {
+    return 1.0 - (1.0 - wall) * (1.0 - edge);
 }
 
 // ---- one substep ---------------------------------------------------------------------------
-
-@compute @workgroup_size(256)
-fn cs_clear_grid(@builtin(global_invocation_id) id: vec3<u32>) {
-    let k = id.x;
-    if k >= st.counts.w {
-        return;
-    }
-    for (var c = 0u; c < 4u; c = c + 1u) {
-        atomicStore(&grid[4u * k + c], 0);
-    }
-}
 
 fn weights(fx: vec2<f32>) -> array<vec2<f32>, 3> {
     return array<vec2<f32>, 3>(
@@ -409,14 +417,32 @@ fn base_of(x: vec2<f32>) -> vec2<i32> {
     return clamp(b, vec2<i32>(0), vec2<i32>(i32(st.grid.x) - 3, i32(st.grid.y) - 3));
 }
 
-@compute @workgroup_size(256)
-fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if i >= counts[4] {
-        return;
+// Whether a drop takes part in the substeps (a stain doesn't, nor a drop that is no number).
+fn steps(p: Drop) -> bool {
+    return finite2(p.x) && finite2(p.v) && !is_stain(p);
+}
+
+// Stamps the tiles of the 3 × 3 nodes from `base` with this scatter's number, so the grid pass
+// that follows (and the one after it, which clears these sums) knows liquid was added there.
+// Nearly always the stamp is there already: a load, and a store only when it is not.
+fn stamp_tiles(base: vec2<i32>) {
+    let number = st.feel.z + tick.n.x + 1u;
+    let across = (st.grid.x + TILE - 1u) / TILE;
+    let lo = vec2<u32>(base) / TILE;
+    let hi = vec2<u32>(base + vec2<i32>(2)) / TILE;
+    for (var ty = lo.y; ty <= hi.y; ty = ty + 1u) {
+        for (var tx = lo.x; tx <= hi.x; tx = tx + 1u) {
+            let t = ty * across + tx;
+            if atomicLoad(&stamps[t]) != number {
+                atomicStore(&stamps[t], number);
+            }
+        }
     }
-    let p = drops[i];
-    if !finite2(p.x) || !finite2(p.v) || is_stain(p) {
+}
+
+// Scatters drop `p` to the sums (`grid`): its mass, momentum and volume, and its walls' push.
+fn scatter(p: Drop) {
+    if !steps(p) {
         return;
     }
     let lq = st.liquids[liquid_of(p)];
@@ -486,6 +512,7 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let ayy = k * syy + mass * p.c.w;
     let g = vec2<f32>(st.time.y, st.time.z) * lq.b.z;
     let mv = mass * (p.v + g * dt);
+    stamp_tiles(base);
     for (var a = 0; a < 3; a = a + 1) {
         for (var b = 0; b < 3; b = b + 1) {
             let wt = w[a].x * w[b].y;
@@ -525,6 +552,7 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
                 var pm = pressure - weight * dot(g, n) * 2.0 * off;
                 pm = max(pm, min(pressure, 0.0));
                 let mbase = base_of(xm);
+                stamp_tiles(mbase);
                 let mfx = xm - vec2<f32>(mbase);
                 let mw = weights(mfx);
                 let k = dt * vol * 4.0 * pm;
@@ -546,11 +574,43 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
+// A liquid step's first scatter: the births, the mixing and the packing changed the drops since
+// the last gather. (Every later one is the second half of `cs_g2p2g`.)
 @compute @workgroup_size(256)
-fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>) {
-    let k = id.x;
-    if k >= st.counts.w {
+fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= counts[4] {
         return;
+    }
+    scatter(drops[i]);
+}
+
+// The grid pass: each node's speed from the sums the drops just added (`grid`), held off the
+// walls, and with it the node's volume and its walls' share, to `nodes`, where the gather reads
+// all four in one go. It also clears the other buffer of sums for the scatter that follows (so no
+// pass does only that).
+//
+// A workgroup is one tile of the grid, and does nothing when neither the scatter just done nor
+// the one before added to its tile: then these sums are zero there, the other sums (which the
+// scatter before wrote) are zero there, and `nodes` already says "no liquid" there (no speed, no
+// volume, the walls' share). The one time that is not so is when the walls were just put, which
+// changes the walls' share of every node: then every tile is done.
+@compute @workgroup_size(16, 16)
+fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+    if id.x >= st.grid.x || id.y >= st.grid.y {
+        return;
+    }
+    if st.flags.y == 0u {
+        let across = (st.grid.x + TILE - 1u) / TILE;
+        let stamp = atomicLoad(&stamps[wid.y * across + wid.x]);
+        let number = st.feel.z + tick.n.x;
+        if stamp != number && stamp != number - 1u {
+            return;
+        }
+    }
+    let k = id.y * st.grid.x + id.x;
+    for (var c = 0u; c < 4u; c = c + 1u) {
+        next_sums[4u * k + c] = 0;
     }
     let m = f32(atomicLoad(&grid[4u * k])) / S_M;
     var v = vec2<f32>(0.0);
@@ -612,8 +672,7 @@ fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>) {
             if y >= rows - edge { v.y = min(v.y, 0.0); }
         }
     }
-    atomicStore(&grid[4u * k + 1u], bitcast<i32>(v.x));
-    atomicStore(&grid[4u * k + 2u], bitcast<i32>(v.y));
+    nodes[k] = vec4<f32>(v, f32(atomicLoad(&grid[4u * k + 3u])) / S_M, wall_share(k));
 }
 
 // The balls near `x`: their index range in the ball grid's cell.
@@ -628,16 +687,23 @@ fn ball_cell(x: vec2<f32>) -> vec2<u32> {
     return vec2<u32>(words[starts + k], words[starts + k + 1u]);
 }
 
-@compute @workgroup_size(256)
-fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if i >= counts[4] {
-        return;
-    }
-    var p = drops[i];
-    if !finite2(p.x) || !finite2(p.v) || is_stain(p) {
-        return;
-    }
+// A drop after a gather, and which of its numbers that are not written back every time changed.
+struct Gathered {
+    p: Drop,
+    // its colour (a ball's ink or a shape's paint ran into it)
+    tinted: bool,
+    // its stretch F
+    stretched: bool,
+};
+
+// Gathers the grid's speeds back to drop `pin` (which `steps`) from `nodes`, keeps it off the
+// balls, the walls and the edges, and moves it: the drop as it is after the substep.
+fn gather(pin: Drop) -> Gathered {
+    var p = pin;
+    var tinted = false;
+    var stretched = false;
+    // The substeps taken before this one (the balls have moved on through them).
+    let taken = tick.n.x - 1u;
     let lq = st.liquids[liquid_of(p)];
     let me = liquid_of(p);
     let dt = st.time.x;
@@ -651,17 +717,32 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     var liquid = 0.0;
     var slope = vec2<f32>(0.0);
     let stops = (p.kind & STOPS) != 0u;
+    // The edges' share is nothing more than 3.3 cells in from every edge: only a drop whose nodes
+    // come nearer works it out (it is four splines a node).
+    let cols = i32(st.grid.x);
+    let rows = i32(st.grid.y);
+    let by_edge = base.x < 4 || base.y < 4 || base.x + 6 > cols || base.y + 6 > rows;
     for (var a = 0; a < 3; a = a + 1) {
         for (var b = 0; b < 3; b = b + 1) {
             let wt = w[a].x * w[b].y;
             let dpos = vec2<f32>(f32(a), f32(b)) - fx;
             let n = node(base.x + a, base.y + b);
-            let gv = vec2<f32>(bitcast<f32>(atomicLoad(&grid[4u * n + 1u])), bitcast<f32>(atomicLoad(&grid[4u * n + 2u])));
+            // The node's speed, the liquid it holds and its walls' share (the grid pass's).
+            let g = nodes[n];
+            let gv = g.xy;
             v = v + wt * gv;
             c = c + 4.0 * wt * vec4<f32>(gv.x * dpos.x, gv.x * dpos.y, gv.y * dpos.x, gv.y * dpos.y);
             // The liquid round it, and the walls' share of it (a wall counts as full).
-            let real = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
-            let nv = real + solid_share(base.x + a, base.y + b, stops);
+            let real = g.z;
+            var share = g.w;
+            if stops {
+                var edge = 0.0;
+                if by_edge {
+                    edge = edge_share(base.x + a, base.y + b);
+                }
+                share = solid_share(share, edge);
+            }
+            let nv = real + share;
             liquid = liquid + wt * real;
             vd = vd + wt * nv;
             slope = slope + vec2<f32>(dw[a].x * w[b].y, w[a].x * dw[b].y) * nv;
@@ -713,12 +794,18 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     // holes and cracks left by a pour or a ball close up (a hole thinner than a cell has no
     // pressure of its own to close it). Not at the open surface, where that would spread it, nor
     // in ice.
+    var inner = 0.0;
+    var hole = 0.0;
     if lq.c.y > 0.0 && (p.kind & FROZEN) == 0u {
-        let inner = 1.0 - smoothstep(0.0, max(lq.c.z, 1e-3), exposure(vd));
+        inner = 1.0 - smoothstep(0.0, max(lq.c.z, 1e-3), exposure(vd));
         // And only where liquid is really missing (the rim of a hole or a crack reads well under
         // full). Liquid with no holes reads within a tenth of full everywhere, by how its drops
         // happen to sit; moved down those slopes too, still water was kept stirring for good.
-        let hole = 1.0 - smoothstep(HOLE_BELOW - 0.15, HOLE_BELOW, vd);
+        hole = 1.0 - smoothstep(HOLE_BELOW - 0.15, HOLE_BELOW, vd);
+    }
+    // (Most drops are in sound liquid or out at the surface, where one of the two is nothing and
+    // the move with it: they skip the looking across and at the walls.)
+    if inner > 0.0 && hole > 0.0 {
         var shift = -lq.c.y * inner * hole * slope;
         // Only towards liquid on the far side of a gap: at the open surface (nothing across)
         // it would pump the top of the liquid upwards for ever.
@@ -729,10 +816,10 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             if q.x >= 0.0 && q.y >= 0.0 && q.x < f32(st.grid.x) - 1.0 && q.y < f32(st.grid.y) - 1.0 {
                 let qb = vec2<i32>(floor(q));
                 let qf = q - vec2<f32>(qb);
-                let v00 = f32(atomicLoad(&grid[4u * node(qb.x, qb.y) + 3u])) / S_M;
-                let v10 = f32(atomicLoad(&grid[4u * node(qb.x + 1, qb.y) + 3u])) / S_M;
-                let v01 = f32(atomicLoad(&grid[4u * node(qb.x, qb.y + 1) + 3u])) / S_M;
-                let v11 = f32(atomicLoad(&grid[4u * node(qb.x + 1, qb.y + 1) + 3u])) / S_M;
+                let v00 = nodes[node(qb.x, qb.y)].z;
+                let v10 = nodes[node(qb.x + 1, qb.y)].z;
+                let v01 = nodes[node(qb.x, qb.y + 1)].z;
+                let v11 = nodes[node(qb.x + 1, qb.y + 1)].z;
                 across = smoothstep(0.3, 0.7, mix(mix(v00, v10, qf.x), mix(v01, v11, qf.x), qf.y));
             }
         }
@@ -839,7 +926,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             if ((words[at + 5u] >> me) & 1u) == 0u {
                 continue;
             }
-            let bx = ball_now(at);
+            let bx = ball_now(at, taken);
             let bv = vec2<f32>(wf(at + 2u), wf(at + 3u));
             let r = wf(at + 4u) + 0.5;
             let off = p.x - bx;
@@ -879,6 +966,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
                 if lq.f.w > 0.0 {
                     let t = 1.0 - exp(-12.0 * lq.f.w * dt);
                     p.colour = vec4<f32>(mix(p.colour.rgb, lq.f.rgb, t), p.colour.a);
+                    tinted = true;
                 }
                 if record {
                     atomicAdd(&feel[fb + 2u], fixed(mass, S_TOUCH));
@@ -929,6 +1017,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         let wall = u32(t.w + 0.5);
         if lq.j.w > 0.0 && f.z < 1.0 && wall < 64u && ((st.paints[wall / 4u][wall % 4u] >> me) & 1u) == 1u {
             p.colour = vec4<f32>(mix(p.colour.rgb, lq.l.rgb, 1.0 - exp(-12.0 * lq.j.w * dt)), p.colour.a);
+            tinted = true;
         }
         if f.z < 0.5 {
             p.x = p.x + f.xy * min(0.5 - f.z, 4.0);
@@ -968,6 +1057,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             frozen = true;
             p.kind = p.kind | FROZEN;
             p.f = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+            stretched = true;
         } else if frozen && heat > lq.h.w {
             frozen = false;
             p.kind = p.kind & ~FROZEN;
@@ -1005,6 +1095,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             g = vec4<f32>(1.0, 0.0, 0.0, 1.0);
         }
         p.f = g;
+        stretched = true;
     }
     // Drying, at its surface: past its own point it goes (or stays as a stain).
     if lq.i.w > 0.0 {
@@ -1019,7 +1110,57 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     p.c = c;
     p.x = p.x + dt * v;
     p.kick = max(p.kick - 2.0 * dt, 0.0);
-    drops[i] = p;
+    return Gathered(p, tinted, stretched);
+}
+
+// Writes a gathered drop back: only the numbers a gather can change (never its serial or its
+// weight and thickness, and its colour and stretch only when they did).
+fn keep(i: u32, g: Gathered) {
+    drops[i].x = g.p.x;
+    drops[i].v = g.p.v;
+    drops[i].c = g.p.c;
+    if g.tinted {
+        drops[i].colour = g.p.colour;
+    }
+    drops[i].j = g.p.j;
+    drops[i].kind = g.p.kind;
+    drops[i].kick = g.p.kick;
+    drops[i].spare = g.p.spare;
+    if g.stretched {
+        drops[i].f = g.p.f;
+    }
+    drops[i].more = g.p.more;
+}
+
+// A liquid step's last gather (the drops are mixed and packed before they are scattered again).
+@compute @workgroup_size(256)
+fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= counts[4] {
+        return;
+    }
+    let p = drops[i];
+    if !steps(p) {
+        return;
+    }
+    keep(i, gather(p));
+}
+
+// A substep's gather and the next substep's scatter in one pass over the drops: each drop is
+// read once, moved, written once and added straight to the sums the grid pass just cleared.
+@compute @workgroup_size(256)
+fn cs_g2p2g(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= counts[4] {
+        return;
+    }
+    let p = drops[i];
+    if !steps(p) {
+        return;
+    }
+    let g = gather(p);
+    keep(i, g);
+    scatter(g.p);
 }
 
 // ---- mixing --------------------------------------------------------------------------------
@@ -1470,16 +1611,16 @@ fn cs_packed() {
 // ---- what the balls feel -------------------------------------------------------------------
 
 // Each ball's ring: how many of RING points two cells outside it are in the liquid, and the liquid's
-// mean speed there (after the last substep, the grid holds the speeds and the volume).
+// mean speed there (after the last substep, `nodes` holds the speeds and the volume).
 @compute @workgroup_size(256)
 fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
-    // (bindings: the step, counts, grid, words, feel)
+    // (bindings: the step, counts, words, feel, nodes)
     let bi = id.x;
     if bi >= st.flags.z || st.feel.x == 0u {
         return;
     }
     let at = st.words_at.z + bi * BALL_WORDS;
-    let bx = ball_now(at);
+    let bx = ball_now(at, tick.n.x);
     let r = wf(at + 4u) + 2.0;
     let fb = bi * FEEL;
     // A ball no drop of a liquid that meets it touched is in none.
@@ -1500,10 +1641,10 @@ fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
             continue;
         }
         let n = node(q.x, q.y);
-        let vol = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
-        if vol > 0.3 {
+        let g = nodes[n];
+        if g.z > 0.3 {
             wet = wet + 1u;
-            flow = flow + vec2<f32>(bitcast<f32>(atomicLoad(&grid[4u * n + 1u])), bitcast<f32>(atomicLoad(&grid[4u * n + 2u])));
+            flow = flow + g.xy;
         }
     }
     if wet > 0u {
@@ -1525,7 +1666,7 @@ fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
         if q.x < 0 || q.y < 0 || q.x >= i32(st.grid.x) || q.y >= i32(st.grid.y) {
             break;
         }
-        if f32(atomicLoad(&grid[4u * node(q.x, q.y) + 3u])) / S_M <= 0.3 {
+        if nodes[node(q.x, q.y)].z <= 0.3 {
             break;
         }
         depth = depth + 1u;

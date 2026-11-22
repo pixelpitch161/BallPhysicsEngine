@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use bpe_core::{Resolved, Scene, ThingId};
 use bpe_kit::things::liquid::LiquidState;
+use bpe_kit::things::liquid::state::Reading;
 use bpe_kit::things::particles::state::ParticlesState;
 use bpe_runtime::{Playback, Sims, ThingState};
 
@@ -36,9 +37,8 @@ pub struct Snapshot {
     pub count: usize,
     /// How long their last particle step took, in milliseconds, all things together.
     pub step_ms: f32,
-    /// The Liquid things' drops (as the card last said), how long their last liquid step took in
-    /// milliseconds, and whether there is a card to move them on: `None` without a Liquid thing.
-    pub liquid: Option<(u32, f32, bool)>,
+    /// What the status line says of the liquid: `None` without a Liquid thing.
+    pub liquid: Option<Reading>,
 }
 
 impl Snapshot {
@@ -66,7 +66,7 @@ impl Snapshot {
                     step_ms += p.last_ms;
                 }
                 if let Some(h) = (**state).as_any().downcast_ref::<LiquidState>().and_then(|l| l.host.as_ref()) {
-                    liquid = Some((h.count_hint(), h.step_ms(), h.body.is_some()));
+                    liquid = Some(h.reading());
                 }
                 states.push((*id, Arc::from(state.clone())));
             }
