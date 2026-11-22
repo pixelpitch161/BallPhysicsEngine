@@ -5,7 +5,12 @@
 //! `cargo test --release -p bpe-kit --test liquid_speed -- --ignored --nocapture`
 //!
 //! and compare the lines. A change that is only meant to make the liquid faster must leave every
-//! print as it was: the same drops, to the last bit, on the same machine and driver.
+//! print as it was: the same drops, to the last bit, on the same machine and driver. That holds on
+//! the software card (lavapipe). A real card's driver may fuse arithmetic differently when code
+//! moves between passes, so there the last bits (and after a while, where each drop is) can differ
+//! with nothing wrong; the columns after the print are for that case: the liquid as a whole (where
+//! its middle is, how fast it moves, how squeezed it is, how many drops are frozen), which must
+//! agree closely early on (a few liquid steps: `LIQUID_SECONDS=0.05`) and roughly later.
 //!
 //! - `LIQUID_DETAILS=normal,fine` picks the Detail levels (the default is those two).
 //! - `LIQUID_SECONDS=3` is how long each scene plays.
@@ -15,7 +20,7 @@
 use std::time::Instant;
 
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, resolve};
-use bpe_gfx::liquid_sim::Drop;
+use bpe_gfx::liquid_sim::{Drop, FROZEN};
 use bpe_gfx::swarm::{SwarmGpu, use_for_now};
 use bpe_kit::things::liquid::{CURRENT, DRAIN, Detail, HEAT, LiquidSettings, MAGNET, MeetsSettings, state_of};
 use bpe_kit::{kit, scenes};
@@ -114,7 +119,10 @@ fn liquid_timings() {
         let text = std::fs::read_to_string(&path).expect("the scene file");
         list.push(("file".into(), bpe_core::load(&text, reg).expect("a scene")));
     }
-    println!("# scene\tdetail\tgrid\tdrops\tseconds\twall s\twall s a second\tprint");
+    println!(
+        "# scene\tdetail\tgrid\tdrops\tseconds\twall s\twall s a second\tprint\tmean x\tmean y\tmean speed²\t\
+         mean squeeze\tfrozen"
+    );
     for (name, scene) in list {
         if only.as_ref().is_some_and(|o| !o.split(',').any(|n| n.trim() == name)) {
             continue;
@@ -138,12 +146,19 @@ fn liquid_timings() {
                 .iter()
                 .flat_map(words)
                 .fold(0xcbf2_9ce4_8422_2325u64, |h, w| (h ^ u64::from(w)).wrapping_mul(0x0000_0100_0000_01b3));
+            // The liquid as a whole, in grid cells (see the top of this file).
+            let n = drops.len().max(1) as f64;
+            let mean = |of: &dyn Fn(&Drop) -> f64| drops.iter().map(of).sum::<f64>() / n;
+            let (x, y) = (mean(&|d| f64::from(d.x[0])), mean(&|d| f64::from(d.x[1])));
+            let speed = mean(&|d| f64::from(d.v[0]).powi(2) + f64::from(d.v[1]).powi(2));
+            let squeeze = mean(&|d| f64::from(d.more[0]));
+            let frozen = drops.iter().filter(|d| d.kind & FROZEN != 0).count();
             let drops = drops.len();
             let (cols, rows) = body.size();
             println!(
-                "{name}\t{detail:?}\t{cols}x{rows}\t{drops}\t{seconds}\t{wall:.2}\t{:.2}\t{:016x}",
+                "{name}\t{detail:?}\t{cols}x{rows}\t{drops}\t{seconds}\t{wall:.2}\t{:.2}\t{print:016x}\t{x:.6}\t{y:.6}\t\
+                 {speed:.6}\t{squeeze:.6}\t{frozen}",
                 wall / seconds,
-                print
             );
         }
     }
