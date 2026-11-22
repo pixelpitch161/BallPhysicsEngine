@@ -46,4 +46,10 @@ disallowed-methods = [
   { path = "f64::hypot", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_hypot)" },
   { path = "f64::cbrt", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_cbrt)" },
   { path = "f64::mul_add", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_mul_add)" },
+  { path = "f32::asinh", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_asinh)" },
+  { path = "f32::acosh", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_acosh)" },
+  { path = "f32::atanh", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_atanh)" },
+  { path = "f64::asinh", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_asinh)" },
+  { path = "f64::acosh", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_acosh)" },
+  { path = "f64::atanh", reason = "the platform's maths rounds differently on Windows; use bpe_core::maths::Maths (det_atanh)" },
 ]

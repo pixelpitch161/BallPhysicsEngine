@@ -35,6 +35,9 @@ pub trait Maths: Copy {
     fn det_sinh(self) -> Self;
     fn det_cosh(self) -> Self;
     fn det_tanh(self) -> Self;
+    fn det_asinh(self) -> Self;
+    fn det_acosh(self) -> Self;
+    fn det_atanh(self) -> Self;
     fn det_hypot(self, other: Self) -> Self;
     fn det_cbrt(self) -> Self;
     /// `self * a + b` rounded once, like [`f32::mul_add`].
@@ -44,7 +47,7 @@ pub trait Maths: Copy {
 macro_rules! maths_for {
     ($t:ty, $sin:ident, $cos:ident, $tan:ident, $asin:ident, $acos:ident, $atan:ident, $atan2:ident,
      $sincos:ident, $exp:ident, $exp2:ident, $expm1:ident, $ln:ident, $ln1p:ident, $log2:ident, $log10:ident,
-     $pow:ident, $sinh:ident, $cosh:ident, $tanh:ident, $hypot:ident, $cbrt:ident, $fma:ident) => {
+     $pow:ident, $sinh:ident, $cosh:ident, $tanh:ident, $asinh:ident, $acosh:ident, $atanh:ident, $hypot:ident, $cbrt:ident, $fma:ident) => {
         impl Maths for $t {
             #[inline]
             fn det_sin(self) -> Self {
@@ -127,6 +130,18 @@ macro_rules! maths_for {
                 libm::$tanh(self)
             }
             #[inline]
+            fn det_asinh(self) -> Self {
+                libm::$asinh(self)
+            }
+            #[inline]
+            fn det_acosh(self) -> Self {
+                libm::$acosh(self)
+            }
+            #[inline]
+            fn det_atanh(self) -> Self {
+                libm::$atanh(self)
+            }
+            #[inline]
             fn det_hypot(self, other: Self) -> Self {
                 libm::$hypot(self, other)
             }
@@ -144,34 +159,61 @@ macro_rules! maths_for {
 
 maths_for!(
     f32, sinf, cosf, tanf, asinf, acosf, atanf, atan2f, sincosf, expf, exp2f, expm1f, logf, log1pf, log2f, log10f,
-    powf, sinhf, coshf, tanhf, hypotf, cbrtf, fmaf
+    powf, sinhf, coshf, tanhf, asinhf, acoshf, atanhf, hypotf, cbrtf, fmaf
 );
 maths_for!(
     f64, sin, cos, tan, asin, acos, atan, atan2, sincos, exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh,
-    tanh, hypot, cbrt, fma
+    tanh, asinh, acosh, atanh, hypot, cbrt, fma
 );
 
 #[cfg(test)]
 mod tests {
     use super::Maths;
 
+    /// Each one against the platform's own: a wrong mapping (a swapped argument, the f64 one on an f32) shows.
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn they_agree_with_the_standard_ones_to_a_hair() {
+        let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() <= 1e-6 * b.abs().max(1.0), "{what}: {a} {b}");
         for k in -40..=40 {
             let x = k as f32 * 0.173;
-            assert!((x.det_sin() - x.det_sin()).abs() <= 1e-6, "sin {x}");
-            assert!((x.det_cos() - x.det_cos()).abs() <= 1e-6, "cos {x}");
-            assert!((x.det_atan2(0.7) - x.det_atan2(0.7)).abs() <= 1e-6, "atan2 {x}");
-            assert!((x.det_exp() - x.det_exp()).abs() <= 1e-6 * x.det_exp(), "exp {x}");
+            close(x.det_sin(), x.sin(), "sin");
+            close(x.det_cos(), x.cos(), "cos");
+            close((x * 0.3).det_tan(), (x * 0.3).tan(), "tan");
+            close(x.det_atan(), x.atan(), "atan");
+            close(x.det_atan2(0.7), x.atan2(0.7), "atan2");
+            close(0.7f32.det_atan2(x), 0.7f32.atan2(x), "atan2 the other way");
             let (s, c) = x.det_sin_cos();
-            assert!((s - x.det_sin()).abs() <= 1e-6 && (c - x.det_cos()).abs() <= 1e-6, "sin_cos {x}");
+            close(s, x.sin(), "sin_cos sin");
+            close(c, x.cos(), "sin_cos cos");
+            close(x.det_exp(), x.exp(), "exp");
+            close(x.det_exp2(), x.exp2(), "exp2");
+            close(x.det_exp_m1(), x.exp_m1(), "exp_m1");
+            close(x.det_sinh(), x.sinh(), "sinh");
+            close(x.det_cosh(), x.cosh(), "cosh");
+            close(x.det_tanh(), x.tanh(), "tanh");
+            close(x.det_asinh(), x.asinh(), "asinh");
+            close(x.det_cbrt(), x.cbrt(), "cbrt");
+            close(x.det_hypot(1.3), x.hypot(1.3), "hypot");
+            close(x.det_mul_add(1.7, -0.4), x.mul_add(1.7, -0.4), "mul_add");
+            // Inside -0.7..0.7: near ±1 atanh is so steep that std's own (built on ln_1p) parts from the true value.
+            let u = x / 10.0;
+            close(u.det_asin(), u.asin(), "asin");
+            close(u.det_acos(), u.acos(), "acos");
+            close(u.det_atanh(), u.atanh(), "atanh");
             let y = x.abs() + 0.5;
-            assert!((y.det_ln() - y.det_ln()).abs() <= 1e-6, "ln {y}");
-            assert!((y.det_powf(1.7) - y.det_powf(1.7)).abs() <= 1e-5 * y.det_powf(1.7), "powf {y}");
-            assert!((y.det_log(3.0) - y.det_log(3.0)).abs() <= 1e-6, "log {y}");
+            close(y.det_ln(), y.ln(), "ln");
+            close(y.det_ln_1p(), y.ln_1p(), "ln_1p");
+            close(y.det_log(3.0), y.log(3.0), "log");
+            close(y.det_log2(), y.log2(), "log2");
+            close(y.det_log10(), y.log10(), "log10");
+            close(y.det_powf(1.7), y.powf(1.7), "powf");
+            close((y + 1.0).det_acosh(), (y + 1.0).acosh(), "acosh");
             let z = x as f64;
-            assert!((z.det_sin() - z.det_sin()).abs() <= 1e-15, "f64 sin {z}");
-            assert_eq!(z.det_mul_add(2.0, 1.0), z.det_mul_add(2.0, 1.0));
+            assert!((z.det_sin() - z.sin()).abs() <= 1e-15, "f64 sin {z}");
+            assert!((z.det_atan2(0.7) - z.atan2(0.7)).abs() <= 1e-15, "f64 atan2 {z}");
+            assert!((z.det_exp() - z.exp()).abs() <= 1e-15 * z.exp().max(1.0), "f64 exp {z}");
+            assert_eq!(z.det_mul_add(2.0, 1.0), z.mul_add(2.0, 1.0));
         }
     }
 }

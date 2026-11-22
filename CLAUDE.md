@@ -153,7 +153,8 @@ owner's graphics card (`golden-unlit*`, `golden-lit-flat*`, `golden-liquid*`, bp
 line "made on") can only be made there: start the **"Refresh GPU pictures"** workflow on your branch instead, then
 check its commit's diff. The tests that draw run only on that card in CI (`docs/notes/checks.md`); a container
 still runs them on lavapipe.
-The physics goldens match on every platform, because the physics uses `bpe_core::maths` (below). The sound goldens
+The physics goldens match on every platform, because the physics uses `bpe_core::maths` (below); a physics setting
+that Follows sound still reads the sound engine, whose maths is the platform's. The sound goldens
 still differ slightly on native Windows and on newer Linux (the oscillators use the platform's maths): CI runs them on
 Ubuntu 24.04 to match the containers.
 

@@ -102,7 +102,7 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   `F:\bpe-gpu\target\<job>`). Its `.env` turns off the overlay Vulkan layers installed on the PC
   (`VK_LOADER_LAYERS_DISABLE=~implicit~`), so OBS or Steam can't change a picture.
 - **Known on the card** (2026-11-22, the owner chose to switch first and fix after): four tests were left out of the
-  `gpu` profile until each is fixed in its own change, which takes it out of the list there:
+  `gpu` profile until each is fixed in its own change, which takes it out of the list there. Still out:
   `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` (Pull toward its ball ends 87 px off on the
   card), `shadow_quality::a_shadow_edge_moves_on_smoothly` (the edge steps in a 4-frame pattern on the card) and
   `alloc::render_does_not_allocate` (a sound block allocates on Windows; still runs on the Linux machines). The two
