@@ -1,16 +1,13 @@
-//! Flat lighting with Matte surfaces draws the picture lighting part 1a drew: the tile averages in
-//! `tests/golden-lit-flat*.txt` were made on main without part 2a (Stage and surfaces; last made
-//! after parts 1b and 1c, which changed Flat pictures themselves, and again in part 2b, whose shadow
-//! march no longer half-shadows a thing's own edge in speckles), on the cloud's software GPU
-//! (lavapipe). Each 10 × 10 pixel tile may move by at most
-//! 1/255 per channel (part 2a rewrote the pass; the sums may round a hair differently). Another GPU
-//! draws a few bits differently, so there the test only checks that the scenes draw.
+//! Flat lighting with Matte surfaces keeps drawing the picture it draws: the tile averages in
+//! `tests/golden-lit-flat*.txt` are made on the owner's graphics card, named on the file's first
+//! line (`bpe_gfx::card_golden`). Each 10 × 10 pixel tile may move by at most 1/255 per channel.
+//! Another card draws a few bits differently, so there the test only checks that the scenes draw.
 //!
-//! Bless with `BLESS_GOLDEN=1`, once in debug and once with `--release` (the frames come from the
-//! physics, whose trig differs a hair between the two), and only when a change is meant to move
-//! Flat lit pictures.
+//! Bless on the owner's card with the "Refresh GPU pictures" workflow (debug and `--release`: the
+//! frames come from the physics, whose trig differs a hair between the two), and only when a
+//! change is meant to move Flat lit pictures.
 
-use bpe_gfx::{Frame, Renderer, build_frame, test_device};
+use bpe_gfx::{CardGolden, Frame, Renderer, build_frame, card_golden, test_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
@@ -77,15 +74,12 @@ fn flat_matte_lighting_draws_as_part_1a_did() {
     }
     let file = if cfg!(debug_assertions) { "tests/golden-lit-flat-debug.txt" } else { "tests/golden-lit-flat.txt" };
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-    if std::env::var_os("BLESS_GOLDEN").is_some() {
-        std::fs::write(&path, &lines).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
-    if std::env::var_os("BPE_ANY_GPU").is_some() {
-        return;
-    }
-    assert_eq!(expected.lines().count(), lines.lines().count());
+    let (expected, driver_note) = match card_golden(&path, &lines) {
+        CardGolden::Blessed => return,
+        CardGolden::NotCompared(why) => return eprintln!("{why}"),
+        CardGolden::Compare { expected, driver_note } => (expected, driver_note.unwrap_or_default()),
+    };
+    assert_eq!(expected.lines().count(), lines.lines().count(), "{driver_note}");
     for (was, now) in expected.lines().zip(lines.lines()).skip(1) {
         let (a, b): (Vec<&str>, Vec<&str>) = (was.split('\t').collect(), now.split('\t').collect());
         assert_eq!(a[..2], b[..2]);
@@ -99,7 +93,7 @@ fn flat_matte_lighting_draws_as_part_1a_did() {
             .unwrap();
         assert!(
             worst.1 <= 1,
-            "{} at {}: tile {} (x {}, y {}) moved by {}/255",
+            "{} at {}: tile {} (x {}, y {}) moved by {}/255 {driver_note}",
             a[0],
             a[1],
             worst.0,

@@ -100,9 +100,9 @@ Dependencies go bottom to top. `docs/notes/engine.md`, `sound.md` and `editor.md
 - Keep code Windows-friendly. Exes are cross-built from Linux with MinGW.
 - **Notes, not this file**: when a part lands, add its "as built" summary to its area's file in `docs/notes/` in the
   same pull request. Change this file only for a new area (one index line), a new working rule or a new pitfall.
-- **Checks**: every pull request runs `.github/workflows/ci.yml` (format, clippy with warnings as errors, all tests on
-  a software Vulkan driver, release goldens, the Windows cross-build). Merge only when every check is green; never
-  skip, disable or `#[ignore]` a test to get there.
+- **Checks**: every pull request runs `.github/workflows/ci.yml` (format, clippy with warnings as errors, the tests
+  that draw on the owner's graphics card and the rest on Linux, release goldens, the Windows cross-build). Merge only
+  when every check is green; never skip, disable or `#[ignore]` a test to get there.
 - **Look at full-size pictures**: after any change to what is drawn, run the full-size look check (below), open the
   pictures and their 1:1 crops, and look for jagged edges, light leaks, banding, seams, flicker between frames and
   anything that doesn't make sense, before the PR. Picture tests run at 270 x 480 and check numbers, so they miss
@@ -148,9 +148,13 @@ The physics is deterministic, and goldens pin it: `crates/bpe-kit/tests/golden*.
 `crates/bpe-sound/tests/golden-sound*.txt`.
 
 Any change that moves balls changes golden lines. Re-bless with `BLESS_GOLDEN=1`, **once in debug and once with
-`--release`**. Then diff against main: only the lines you meant to change may differ. Goldens differ slightly on
-native Windows (libm trig) and on newer Linux (glibc after 2.39), known gaps: CI runs on Ubuntu 24.04 to match the
-containers.
+`--release`**. Then diff against main: only the lines you meant to change may differ. The pictures pinned to the
+owner's graphics card (`golden-unlit*`, `golden-lit-flat*`, `golden-liquid*`, bpe-gfx's `golden-shapes`, first
+line "made on") can only be made there: start the **"Refresh GPU pictures"** workflow on your branch instead, then
+check its commit's diff. The tests that draw run only on that card in CI (`docs/notes/checks.md`); a container
+still runs them on lavapipe.
+The CPU goldens differ slightly on native Windows (libm trig) and on newer Linux (glibc after 2.39), known gaps: CI
+runs them on Ubuntu 24.04 to match the containers.
 
 ## egui / kittest pitfalls
 

@@ -521,8 +521,9 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-/// Shapes draw byte for byte as they did before letters came (the hash was made on the code
-/// before the change).
+/// Shapes keep drawing byte for byte as they do (first pinned before letters came). The hash is in
+/// `tests/golden-shapes.txt`, made on the owner's graphics card (`crate::card_golden`); refresh it
+/// with the "Refresh GPU pictures" workflow.
 #[test]
 fn shapes_draw_as_before() {
     const W: u32 = 540;
@@ -539,8 +540,15 @@ fn shapes_draw_as_before() {
     let paint = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 4.0);
     wear(&mut frame, j, vec![body_record(), paint], 0.0);
     let Some(pixels) = render_sized(&frame, W, H) else { return };
-    // Re-pinned 2026-11-08 (W3): white now comes out 255, not 247, and the final dither changed.
-    assert_eq!(format!("{:016x}", fnv(&pixels)), "f86e5b02bf743a93");
+    let lines = format!("shapes\t{:016x}\n", fnv(&pixels));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden-shapes.txt");
+    match crate::card_golden(&path, &lines) {
+        crate::CardGolden::Blessed => {}
+        crate::CardGolden::NotCompared(why) => eprintln!("{why}"),
+        crate::CardGolden::Compare { expected, driver_note } => {
+            assert_eq!(expected, lines, "shapes draw differently {}", driver_note.unwrap_or_default())
+        }
+    }
 }
 
 // ---- Styled instances (Text part 5) ----

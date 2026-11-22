@@ -1,0 +1,2 @@
+# The goldens keep LF line ends in every checkout (the owner's graphics card checks them on Windows).
+crates/*/tests/golden*.txt text eol=lf

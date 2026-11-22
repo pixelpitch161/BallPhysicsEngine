@@ -1,0 +1,112 @@
+# Refresh GPU pictures: makes the expected pictures pinned to the owner's graphics card again, on a branch, and
+# commits them there. Use it when a change is meant to move those pictures (they can't be made anywhere else), and
+# after a graphics driver update moves them. Start it from Actions ("Refresh GPU pictures", "Run workflow"), naming
+# the branch. See docs/notes/checks.md, "The owner's graphics card".
+name: Refresh GPU pictures
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: The branch to refresh (not main; a refresh goes in through a pull request)
+        type: string
+        required: true
+
+concurrency:
+  group: gpu-pictures-${{ inputs.branch }}
+
+permissions:
+  contents: write
+  # To start CI on the branch afterwards: a push made with this workflow's own token starts no workflow.
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+jobs:
+  refresh:
+    name: Refresh the pictures on the owner's graphics card
+    runs-on: [self-hosted, Windows, bpe-gpu]
+    timeout-minutes: 60
+    defaults:
+      run:
+        # Windows PowerShell with the script policy lifted for this step only (the runner account's default policy
+        # refuses the step scripts the runner writes).
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
+    steps:
+      - name: Not main
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          if ($env:BRANCH -eq 'main' -or $env:BRANCH -eq '') { throw "Refresh a branch, not main: open a pull request." }
+      # The write token isn't left in .git/config, where the build (the branch's own code) could read it; the push
+      # step passes it just for the push.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.branch }}
+          persist-credentials: false
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      # Its own build files folder: a pull request's build in CI's folder can't leave anything behind for this job,
+      # which holds a write token.
+      - name: Build files folder
+        run: |
+          if (-not $env:BPE_GPU_TARGET) { throw "BPE_GPU_TARGET is missing from the runner's .env" }
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\gpu-refresh"
+      - name: Make the pictures (debug)
+        env:
+          BLESS_GOLDEN: "1"
+        run: |
+          cargo test -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bpe-gfx --lib paths_tests::shapes_draw_as_before
+      - name: Make the pictures (release)
+        env:
+          BLESS_GOLDEN: "1"
+        run: cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
+      - name: Check they come out the same twice
+        env:
+          BPE_CARD_GOLDENS_REQUIRED: "1"
+        run: |
+          cargo test -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
+          if ($LASTEXITCODE -ne 0) { throw "The card drew different pictures on a second run." }
+          cargo test -p bpe-gfx --lib paths_tests::shapes_draw_as_before
+          if ($LASTEXITCODE -ne 0) { throw "The card drew different shapes on a second run." }
+          cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
+          if ($LASTEXITCODE -ne 0) { throw "The card drew different pictures on a second run (release)." }
+      - name: Commit and push
+        env:
+          BRANCH: ${{ inputs.branch }}
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $files = 'crates/bpe-kit/tests/golden-unlit.txt', 'crates/bpe-kit/tests/golden-unlit-debug.txt',
+            'crates/bpe-kit/tests/golden-lit-flat.txt', 'crates/bpe-kit/tests/golden-lit-flat-debug.txt',
+            'crates/bpe-kit/tests/golden-liquid.txt', 'crates/bpe-kit/tests/golden-liquid-debug.txt',
+            'crates/bpe-gfx/tests/golden-shapes.txt'
+          $changed = git status --porcelain -- $files
+          $card = (Get-Content 'crates/bpe-kit/tests/golden-unlit.txt' -TotalCount 1) -replace '^# made on: ', ''
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Made on: $card"
+          if (-not $changed) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'The pictures came out the same: nothing to commit.'
+            exit 0
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+          git diff --stat -- $files | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- $files
+          git commit -m "Refresh the expected pictures on the owner's graphics card" -m "Made on: $card"
+          if ($LASTEXITCODE -ne 0) { throw 'commit failed' }
+          $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:TOKEN"))
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $basic" push origin "HEAD:refs/heads/$env:BRANCH"
+          if ($LASTEXITCODE -ne 0) { throw 'push failed (did the branch move? run this again)' }
+          $headers = @{ Authorization = "Bearer $env:TOKEN"; Accept = 'application/vnd.github+json' }
+          $body = @{ ref = $env:BRANCH } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Headers $headers -Body $body -ContentType 'application/json' `
+            -Uri "https://api.github.com/repos/$env:REPO/actions/workflows/ci.yml/dispatches"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Committed to $env:BRANCH and started CI there."

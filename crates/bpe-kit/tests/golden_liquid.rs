@@ -6,8 +6,10 @@
 //! pushes balls (part 2) moves them, so on this machine a seek must give exactly the same balls and
 //! log too; one that doesn't must leave them hitting exactly as they do without it.
 //!
-//! When a change is meant to change the liquid, run with `BLESS_GOLDEN=1` (once with `--release`
-//! and once without) and say why in the pull request.
+//! The drop counts depend on the card, so the golden is made on the owner's card, named on its
+//! first line (`bpe_gfx::card_golden`); on another card only the seeking and second-run checks
+//! apply. When a change is meant to change the liquid, refresh it with the "Refresh GPU pictures"
+//! workflow (debug and `--release`) and say why in the pull request.
 
 use bpe_gfx::swarm::{SwarmGpu, use_for_now};
 use bpe_kit::things::liquid::{hash_of, state_of};
@@ -54,10 +56,11 @@ fn every_liquid_scene_keeps_its_liquid() {
     }
     let file = if cfg!(debug_assertions) { "tests/golden-liquid-debug.txt" } else { "tests/golden-liquid.txt" };
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-    if std::env::var_os("BLESS_GOLDEN").is_some() {
-        std::fs::write(&path, &lines).unwrap();
-        return;
+    match bpe_gfx::card_golden(&path, &lines) {
+        bpe_gfx::CardGolden::Blessed => {}
+        bpe_gfx::CardGolden::NotCompared(why) => eprintln!("{why}"),
+        bpe_gfx::CardGolden::Compare { expected, driver_note } => {
+            assert_eq!(expected, lines, "the liquid changed {}", driver_note.unwrap_or_default())
+        }
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
-    assert_eq!(expected, lines, "the liquid changed");
 }

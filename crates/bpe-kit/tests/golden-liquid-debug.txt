@@ -1,3 +1,4 @@
+# made on: AMD Radeon RX 9070 XT (AMD proprietary driver, 26.11.2 (LLPC))
 # scene	second	born	drops
 Liquid water	1	18560	18560
 Liquid water	2	18560	18560
