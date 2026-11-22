@@ -694,7 +694,16 @@ fn on_own_threads<R: Send>(work: impl FnOnce() -> R + Send) -> R {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     let pool = POOL.get_or_init(|| {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
-        rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("sound physics {i}")).build().ok()
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("sound physics {i}"))
+            .build()
+            .ok()?;
+        // Waits here until every thread of the pool is up and has run something: a thread
+        // starting takes memory (its name, its thread-locals, on Windows more), and one the
+        // system was slow to start would otherwise do that while the sound is playing.
+        pool.broadcast(|_| ());
+        Some(pool)
     });
     match pool {
         Some(pool) => pool.install(work),
