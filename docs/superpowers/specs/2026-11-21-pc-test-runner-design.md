@@ -53,7 +53,7 @@ faster so more work gets done, and they are the only user of the software, so us
   are installed once at setup. rustup for `runner`; `rust-toolchain.toml` picks the version as on the hosted runners.
 - Graphics: Mesa's software driver lavapipe, the same as the hosted runners. WSL also offers the real GPU through
   Mesa's `dzn` driver, which would change pictures, so the runner's environment forces lavapipe:
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json` (and the older `VK_ICD_FILENAMES` with the same
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json` (and the older `VK_ICD_FILENAMES` with the same
   value) and `GALLIUM_DRIVER=llvmpipe`, and `/dev/dxg` passthrough is not relied on.
 - Three GitHub Actions runners, `bpe-pc-1`, `bpe-pc-2`, `bpe-pc-3`, each a systemd service, labels
   `self-hosted, linux, x64, bpe-pc`. Three so the tests, the release goldens and clippy / the Windows cross-build run

@@ -42,7 +42,7 @@ leaves `bpe-ci` Running after the shell exits.
     --body "$(date +%s)"`.
   - `bpe-target-sweep.service` + `.timer` (weekly): `du -s /home/runner/target`, delete its contents over 150 GB.
 - Each runner's `.env`: `CARGO_TARGET_DIR=/home/runner/target/bpe-pc-<n>`,
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`, `VK_ICD_FILENAMES=` the same,
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`, `VK_ICD_FILENAMES=` the same,
   `GALLIUM_DRIVER=llvmpipe`, `PATH` including `/home/runner/.cargo/bin`.
 
 Verify: `systemctl is-system-running` is running or degraded with nothing of ours failed; `ls /mnt` has no Windows

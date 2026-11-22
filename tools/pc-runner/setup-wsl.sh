@@ -2,11 +2,22 @@
 # Linux half of the PC test runner setup (docs/superpowers/plans/2026-11-21-pc-test-runner.md, step 2). Runs as
 # root inside the bpe-ci WSL distro, with this folder's files in /root/pc-runner. Safe to run again.
 set -euo pipefail
+export CARGO_NET_RETRY=10
 here=/root/pc-runner
 runners=3
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
+# This PC's Wi-Fi sometimes damages downloads (hash mismatches, TLS errors), so retry instead of stopping.
+echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80-retries
+for i in 1 2 3 4 5; do apt-get update -o APT::Update::Error-Mode=any && break; sleep 5; done
+# Up to date like GitHub's machines (their image takes Ubuntu's updates weekly; libc's maths and Mesa must match).
+apt-get upgrade -y
+# GitHub's own gh package: Ubuntu's 2.45 gives up on the device login ("slow_down").
+if [ ! -f /etc/apt/sources.list.d/github-cli.list ]; then
+  curl -fsSL --retry 10 --retry-all-errors -o /etc/apt/keyrings/githubcli-archive-keyring.gpg     https://cli.github.com/packages/githubcli-archive-keyring.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"     > /etc/apt/sources.list.d/github-cli.list
+  for i in 1 2 3 4 5; do apt-get update -o APT::Update::Error-Mode=any && break; sleep 5; done
+fi
 # The packages the hosted jobs install (ci.yml), plus what the runner and the heartbeat need.
 apt-get install -y --no-install-recommends \
   libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers ffmpeg libxkbcommon-x11-0 libxkbcommon0 \
@@ -20,11 +31,11 @@ if [ ! -x /home/runner/.cargo/bin/rustup ]; then
 fi
 
 # The GitHub Actions runner, one copy per runner.
-release=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest)
+release=$(curl -fsSL --retry 10 --retry-all-errors https://api.github.com/repos/actions/runner/releases/latest)
 ver=$(jq -r .tag_name <<<"$release" | sed 's/^v//')
 tar=/home/runner/actions-runner-linux-x64-$ver.tar.gz
 if [ ! -f "$tar" ]; then
-  curl -fsSL -o "$tar.part" "https://github.com/actions/runner/releases/download/v$ver/actions-runner-linux-x64-$ver.tar.gz"
+  curl -fsSL --retry 10 --retry-all-errors -C - -o "$tar.part" "https://github.com/actions/runner/releases/download/v$ver/actions-runner-linux-x64-$ver.tar.gz"
   # The release notes carry each file's SHA-256 between "BEGIN SHA linux-x64" markers.
   want=$(jq -r .body <<<"$release" | grep -o 'BEGIN SHA linux-x64 -->[0-9a-f]\{64\}' | grep -o '[0-9a-f]\{64\}')
   got=$(sha256sum "$tar.part" | cut -d' ' -f1)
@@ -41,8 +52,8 @@ for n in $(seq 1 $runners); do
   # software driver only, the same as GitHub's machines (WSL also offers the real GPU through dzn).
   cat > "$d/.env" <<EOF
 CARGO_TARGET_DIR=/home/runner/target/bpe-pc-$n
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 GALLIUM_DRIVER=llvmpipe
 LANG=C.UTF-8
 EOF
