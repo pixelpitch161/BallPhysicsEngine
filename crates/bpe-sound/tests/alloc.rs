@@ -14,24 +14,25 @@ struct Counting;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
-/// Where each allocation counted came from (its size, its thread and a backtrace), printed when
-/// a check fails. Taken with counting off, so the record's own memory isn't counted.
+/// Where the first allocation counted came from (its size and a backtrace), printed when a check
+/// fails. Only the first is recorded, so recording (which allocates itself) never recurses.
 static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static RECORDED: AtomicBool = AtomicBool::new(false);
 
 fn note(size: usize) {
-    if COUNTING.swap(false, Ordering::SeqCst) {
+    if !RECORDED.swap(true, Ordering::SeqCst) {
         let trace = std::backtrace::Backtrace::force_capture();
-        let thread = std::thread::current().name().map(str::to_string);
-        SEEN.lock().unwrap().push(format!("{size} bytes on thread {thread:?}\n{trace}"));
-        COUNTING.store(true, Ordering::SeqCst);
+        let seen = format!("{size} bytes\n{trace}");
+        SEEN.lock().unwrap().push(seen);
     }
 }
 
-/// Prints where the allocations counted came from, if any were.
+/// Prints where the first allocation counted came from, if one was.
 fn report() {
     COUNTING.store(false, Ordering::SeqCst);
+    let seen = std::mem::take(&mut *SEEN.lock().unwrap());
     if ALLOCATIONS.load(Ordering::SeqCst) != 0 {
-        for seen in SEEN.lock().unwrap().iter() {
+        for seen in seen {
             eprintln!("allocated: {seen}");
         }
     }

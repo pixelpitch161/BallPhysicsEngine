@@ -295,5 +295,5 @@ threads to start, so a thread the system was slow to start (a busy Windows machi
 too) took its start-up memory (its name, stack guard, thread-locals; on Windows more) inside a counted block. The
 pool now runs one empty `broadcast` when it is built, so every thread is up before the first step returns, and
 nothing starts while the sound plays. The test checks that first (100 ms counted right after the first step) and,
-when any check fails, prints each counted allocation's size, thread and backtrace.
+when any check fails, prints the first counted allocation's size and backtrace.
 
