@@ -193,6 +193,19 @@ fn pixel_meets(ip: vec2<i32>) -> bool {
     return pixel_block(ip) >= BLOCK_LEAST || bends_at(ip);
 }
 
+// The picture pixels under field texel `t`: from xy up to (not including) zw, at least one each way. In whole
+// numbers: as floats, the picture-over-field scale is a division, which WGSL lets a graphics card round a hair off
+// (on the owner's AMD card 480 / 480 came out a hair under 1), and floor and ceil of a texel's edges then took in the
+// picture row before it. Each field texel then blocked wherever the row above blocked, and the cover that lets a
+// ball's edge slide smoothly through a texel (`edge_inset`) averaged two rows: shadow edges stepped a texel at a time.
+fn foot_span(t: vec2<i32>) -> vec4<i32> {
+    let fsize = max(vec2<i32>(u.field.xy), vec2<i32>(1));
+    let size = vec2<i32>(textureDimensions(surface));
+    let lo = (t * size) / fsize;
+    let hi = min(max(((t + 1) * size + fsize - 1) / fsize, lo + 1), size);
+    return vec4<i32>(lo, hi);
+}
+
 // Whether the blocker nearest world point `p` (by the blockers' jump flood, bound as `seeds` after
 // the field pass) is glass that bends lamp light: any picture pixel under its field texel bends.
 fn nearest_bends(p: vec2<f32>) -> bool {
@@ -207,10 +220,9 @@ fn nearest_bends(p: vec2<f32>) -> bool {
         return false;
     }
     let t = vec2<i32>(s.xy);
-    let size = vec2<i32>(textureDimensions(surface));
-    let scale = vec2<f32>(size) / vec2<f32>(fsize);
-    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
-    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    let span = foot_span(t);
+    let lo = span.xy;
+    let hi = span.zw;
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
             if bends_at(vec2<i32>(x, y)) {
@@ -250,13 +262,12 @@ fn foot_blocks(t: vec2<i32>) -> bool {
     if any(t < vec2<i32>(0)) || any(t >= fsize) {
         return false;
     }
-    let size = vec2<i32>(textureDimensions(surface));
-    let scale = vec2<f32>(size) / vec2<f32>(fsize);
-    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
+    let span = foot_span(t);
+    let lo = span.xy;
     // On a Stage a ball blocks as a sphere and marks the surface with a quarter (layers.wgsl):
     // only more than that seeds there.
     let least = select(BLOCK_LEAST, 0.3, u.trace.y > 0.5);
-    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    let hi = span.zw;
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
             let ip = vec2<i32>(x, y);
@@ -271,11 +282,9 @@ fn foot_blocks(t: vec2<i32>) -> bool {
 // How much of field texel `t` its blockers cover, 0 to 1: the mean of its picture pixels' smooth
 // cover (`cover_block`, antialiased edges counted by how much they cover).
 fn foot_cover(t: vec2<i32>) -> f32 {
-    let fsize = vec2<i32>(u.field.xy);
-    let size = vec2<i32>(textureDimensions(surface));
-    let scale = vec2<f32>(size) / vec2<f32>(fsize);
-    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
-    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    let span = foot_span(t);
+    let lo = span.xy;
+    let hi = span.zw;
     var sum = 0.0;
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
@@ -319,11 +328,10 @@ fn foot_most(t: vec2<i32>) -> f32 {
     if any(t < vec2<i32>(0)) || any(t >= fsize) {
         return -1.0;
     }
-    let size = vec2<i32>(textureDimensions(surface));
-    let scale = vec2<f32>(size) / vec2<f32>(fsize);
-    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
+    let span = foot_span(t);
+    let lo = span.xy;
     let least = select(BLOCK_LEAST, 0.3, u.trace.y > 0.5);
-    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    let hi = span.zw;
     var most = -1.0;
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
@@ -369,11 +377,10 @@ fn foot_tint(t: vec2<i32>) -> FootTint {
     if any(t < vec2<i32>(0)) || any(t >= fsize) {
         return out;
     }
-    let size = vec2<i32>(textureDimensions(surface));
-    let scale = vec2<f32>(size) / vec2<f32>(fsize);
-    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
+    let span = foot_span(t);
+    let lo = span.xy;
     let least = select(BLOCK_LEAST, 0.3, u.trace.y > 0.5);
-    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    let hi = span.zw;
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
             let ip = vec2<i32>(x, y);

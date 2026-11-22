@@ -263,7 +263,11 @@ thin walls); `SlabRay.over` lets light over the shapes' front. **V4**:
 `fs_field` adds `edge_inset` outside blockers (the seed texel cut by how much its blockers cover, `foot_cover`, only
 where the texel behind it is wholly covered, only for solid blockers and not on Draft, gated by its steps so preview and
 video agree): shadow edges move about 2.5× more evenly on Ultra and 1.7× on Good; Draft is left as it was (it made
-its 4-pixel texels worse).
+its 4-pixel texels worse). **Field footprints in whole numbers** (2026-11-22): which picture pixels a field
+texel covers (`foot_span` in `field.wgsl`, used by `foot_blocks`, `foot_cover`, `foot_most`, `foot_tint` and
+`nearest_bends`) is integer maths. It was `floor`/`ceil` of `t × size / fsize` in floats, and the owner's AMD card
+rounds that division a hair under 1, so a texel took in the pixel row above it: the field grew a row upward and
+`edge_inset`'s covers averaged two rows (zero inset), and shadow edges stepped a texel at a time on the card only.
 Still open: the texel steps of a thin shape's contact shadow right beside it on a Stage. **V5**:
 `Renderer::preview_field_like_video(true)` (the editor's preview and its warm-up spare; `shadow_quality.rs` too)
 sizes the field by the frame's world width (`lighting.rs::field_divisor`, rounding down: never coarser in the scene

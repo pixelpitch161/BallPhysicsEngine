@@ -104,8 +104,7 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
 - **Known on the card** (2026-11-22, the owner chose to switch first and fix after): tests are left out of the
   `gpu` profile until each is fixed in its own change, which takes it out of the list there. Still out:
   `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` (Pull toward its ball ends 87 px off on the
-  card) and `shadow_quality::a_shadow_edge_moves_on_smoothly` (the edge steps in a 4-frame pattern on the card);
-  they run nowhere until fixed.
+  card); it runs nowhere until fixed.
   `alloc::render_does_not_allocate` was fixed and runs on the card again (the sound's physics threads all start
   before the engine's first step returns; `docs/notes/sound.md`, "No memory taken while a block plays").
   `library::every_scene_plays_its_full_length_and_lands_its_payoff` was fixed (stem-battle's payoff came 26.5 s on
@@ -113,6 +112,12 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   rest, and Windows' rounds a hair differently, which the chaotic fight grew into a different winner time. The
   physics now uses `bpe_core::maths` (the `libm` crate, plus glam's `libm` feature), the same on every platform;
   the payoff is 30.9 s everywhere, and the physics goldens run on the card too.
+  `shadow_quality::a_shadow_edge_moves_on_smoothly` was fixed too (the lighting field's footprint maths, `foot_span`
+  in `docs/notes/lighting.md`).
+- **Finding a card-only difference**: a temporary test that reads back the pictures in question and fails on purpose
+  (so nextest prints its output), pushed to the branch with CI started by hand (`workflow_dispatch`); the card job's
+  log holds the prints. Compare them with the same test on lavapipe. WGSL allows a division to be 2.5 ULP off, and
+  the card uses that freedom where lavapipe doesn't: never floor or ceil the result of a division meant to be whole.
 - **Timings**: the job summary's "Timings on the owner's graphics card" (`tests/liquid_speed.rs`, `light_speed.rs`).
 
 ## Running only the tests a change needs
