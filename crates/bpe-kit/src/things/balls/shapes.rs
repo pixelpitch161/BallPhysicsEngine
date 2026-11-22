@@ -1,6 +1,7 @@
 //! Where each ball of a group starts, relative to the thing, for every group shape. All of them
 //! are worked out the same way every time, on every machine.
 
+use bpe_core::maths::Maths;
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::sync::{Mutex, OnceLock};
@@ -76,7 +77,7 @@ pub fn ring(count: usize, radius: f32) -> Vec<Vec2> {
     (0..count)
         .map(|i| {
             let angle = -FRAC_PI_2 + TAU * i as f32 / count as f32;
-            Vec2::new(angle.cos(), angle.sin()) * radius
+            Vec2::new(angle.det_cos(), angle.det_sin()) * radius
         })
         .collect()
 }
@@ -97,7 +98,7 @@ pub fn filled_ring(radius: f32, step: f32) -> Vec<Vec2> {
     }
     while r <= radius + step * 1e-3 && out.len() < MAX_BALLS {
         // The most balls whose neighbours (a chord apart) are at least a step apart.
-        let n = ((std::f32::consts::PI / (step / (2.0 * r)).min(1.0).asin()).floor() as usize).max(1);
+        let n = ((std::f32::consts::PI / (step / (2.0 * r)).min(1.0).det_asin()).floor() as usize).max(1);
         if n > MAX_BALLS - out.len() {
             break;
         }
@@ -120,7 +121,7 @@ pub fn filled_circle(count: usize, step: f32) -> Vec<Vec2> {
             points.push(Vec2::new(x, r as f32 * row));
         }
     }
-    let angle = |p: &Vec2| (p.x.atan2(-p.y) + TAU) % TAU;
+    let angle = |p: &Vec2| (p.x.det_atan2(-p.y) + TAU) % TAU;
     points.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()).then(angle(a).total_cmp(&angle(b))));
     points.truncate(count);
     points
@@ -168,8 +169,8 @@ pub fn spiral(count: usize, step: f32) -> Vec<Vec2> {
 
 /// The heart curve's point at `t` (0 to 2π), y down, about 32 units across.
 fn heart_at(t: f32) -> Vec2 {
-    let x = 16.0 * t.sin().powi(3);
-    let y = 13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
+    let x = 16.0 * t.det_sin().powi(3);
+    let y = 13.0 * t.det_cos() - 5.0 * (2.0 * t).det_cos() - 2.0 * (3.0 * t).det_cos() - (4.0 * t).det_cos();
     Vec2::new(x, -y)
 }
 

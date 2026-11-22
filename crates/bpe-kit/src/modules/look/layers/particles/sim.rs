@@ -1,6 +1,7 @@
 //! How one particle moves from the moment it was let off to the moment drawn, worked out afresh
 //! every frame from its emission and its number: the same wherever the frame came from.
 
+use bpe_core::maths::Maths;
 use bpe_runtime::{Wall, keep_clear, reflect};
 use glam::Vec2;
 
@@ -117,7 +118,7 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
         // Gravity and drag alone have an exact answer.
         if drag > 1e-6 {
             let fall = gravity / drag;
-            let k = (-drag * age).exp();
+            let k = (-drag * age).det_exp();
             (e.place + fall * age + (v0 - fall) * (1.0 - k) / drag, fall + (v0 - fall) * k)
         } else {
             (e.place + v0 * age + gravity * (0.5 * age * age), v0 + gravity * age)
@@ -156,12 +157,12 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
         (p, v)
     };
     let angle = match layer.made_of {
-        MadeOf::Sparks | MadeOf::Streaks => velocity.y.atan2(velocity.x),
+        MadeOf::Sparks | MadeOf::Streaks => velocity.y.det_atan2(velocity.x),
         _ => start_angle + spin.to_radians() * age,
     };
     let twinkle = layer.twinkle.clamp(0.0, 1.0);
     let flicker =
-        1.0 - twinkle * (0.5 + 0.5 * (layer.twinkle_speed * std::f32::consts::TAU * age + twinkle_phase).sin());
+        1.0 - twinkle * (0.5 + 0.5 * (layer.twinkle_speed * std::f32::consts::TAU * age + twinkle_phase).det_sin());
     Some(Live { place, velocity, angle, size: size * grow, alpha: layer.fade.at(t) * flicker, life: t })
 }
 

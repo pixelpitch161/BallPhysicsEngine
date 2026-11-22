@@ -1,6 +1,7 @@
 //! Tests of particles part 4: particles that feed other particles, popping, sticking, settling,
 //! piles and two-way.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Resolved, Scene, Settings, SlotId, ThingId, resolve};
 use bpe_runtime::{Log, Playback, World, main_part};
 use glam::Vec2;
@@ -376,7 +377,7 @@ fn sand_heaps_up_to_its_angle_and_pours_off_a_ledge() {
     let p = &piles.list[n];
     assert_eq!(p.first, 0);
     assert_eq!(p.base.len(), 20, "the pile covers the ledge and no more");
-    let allowed = repose.tan() * COLUMN;
+    let allowed = repose.det_tan() * COLUMN;
     for k in 1..p.base.len() {
         let step = (p.top(k) - p.top(k - 1)).abs();
         assert!(step <= allowed + 0.05, "column {k}: {step} > {allowed}");

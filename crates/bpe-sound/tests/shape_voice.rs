@@ -132,7 +132,10 @@ fn starter_patch_renders_its_golden() {
         std::fs::write(&path, &line).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    // A Windows checkout made before .gitattributes kept these LF may still hold CRLF.
+    let expected = std::fs::read_to_string(&path)
+        .expect("the golden file is missing; run with BLESS_GOLDEN=1")
+        .replace("\r\n", "\n");
     assert_eq!(line, expected, "the starter patch sounds different");
     assert_eq!(render(&scene, &kit, 2.0), out, "the same every time");
 }
@@ -385,11 +388,16 @@ fn osc_b_off_costs_nothing() {
         run(&mut v, p.world(), 50, 400, &[]);
         t.elapsed().as_secs_f64()
     };
-    // The best of five each, taken in turns, so a busy machine doesn't decide it.
+    // The best of five each, taken in turns, so a busy machine doesn't decide it. A machine busy all through those
+    // five (the card's checks run beside this one on the owner's processor) gets up to twenty more turns: a best
+    // time only gets nearer the true one, and each side has had its five by then, so one lucky turn can't pass it.
     let (mut off, mut on) = (f64::MAX, f64::MAX);
-    for _ in 0..5 {
+    for turn in 0..25 {
         off = off.min(timed(false));
         on = on.min(timed(true));
+        if turn >= 4 && off < 0.7 * on {
+            break;
+        }
     }
     assert!(off < 0.7 * on, "Osc B off took {off:.4} s, on {on:.4} s");
 }

@@ -7,6 +7,7 @@
 //! Liquid thing there with it): its card records what each ball felt, and the next world step's
 //! first substep gives it to them (`feel.rs`). Otherwise the liquids are stepped beside it.
 
+use bpe_core::maths::Maths;
 use std::sync::Arc;
 
 use bpe_core::{ResolvedThing, Scene, SlotId, Thing, ThingId};
@@ -245,7 +246,7 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
             g: [m.splash, m.splash_from / layout.cell, m.wakes, only(m.take_now())],
             h: [
                 (0.25 * s.stretch).min(1.0),
-                s.tears_at.min(20.0).ln(),
+                s.tears_at.min(20.0).det_ln(),
                 if s.freezes { s.freezes_below } else { -1.0 },
                 s.melts_above.max(if s.freezes { s.freezes_below } else { 0.0 }),
             ],

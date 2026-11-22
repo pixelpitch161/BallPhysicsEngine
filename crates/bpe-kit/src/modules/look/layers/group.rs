@@ -2,6 +2,7 @@
 //! a colour from where it sits in the group (or its number, speed, hits…) and mixes it with the
 //! ball's own colours.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 use glam::Vec2;
 
@@ -254,10 +255,10 @@ pub fn eased(t: f32, ease: Easing, strength: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     match ease {
         Easing::Even => t,
-        Easing::EaseIn => t.powf(k),
-        Easing::EaseOut => 1.0 - (1.0 - t).powf(k),
+        Easing::EaseIn => t.det_powf(k),
+        Easing::EaseOut => 1.0 - (1.0 - t).det_powf(k),
         Easing::EaseBoth => {
-            let (a, b) = (t.powf(k), (1.0 - t).powf(k));
+            let (a, b) = (t.det_powf(k), (1.0 - t).det_powf(k));
             if a + b > 0.0 { a / (a + b) } else { t }
         }
     }

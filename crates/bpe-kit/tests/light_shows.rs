@@ -4,6 +4,7 @@
 //!
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/show-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Address, Color, Registry, Scene, Settings, SlotId, ThingId, Value};
 use bpe_gfx::{Frame, LightGpu, build_frame};
 use bpe_kit::modules::light_scenes::{self, ScenesPlay};
@@ -117,10 +118,10 @@ fn a_sweep_turns_the_spots() {
     });
     // Half way through the first beat the swing is at its end: 90° down + 30°.
     let l = &lights_at(&scene, 0.25)[0];
-    let angle = l.p3[1].atan2(l.p3[0]).to_degrees();
+    let angle = l.p3[1].det_atan2(l.p3[0]).to_degrees();
     assert!((angle - 120.0).abs() < 0.5, "{angle}");
     let back = &lights_at(&scene, 0.75)[0];
-    assert!((back.p3[1].atan2(back.p3[0]).to_degrees() - 60.0).abs() < 0.5);
+    assert!((back.p3[1].det_atan2(back.p3[0]).to_degrees() - 60.0).abs() < 0.5);
 }
 
 #[test]

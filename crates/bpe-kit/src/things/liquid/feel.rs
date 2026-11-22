@@ -6,6 +6,7 @@
 //! worked out for the next after-step to log. Everything here is worked out from integers the card
 //! summed, so it is the same on every play.
 
+use bpe_core::maths::Maths;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -118,7 +119,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
             let carry = word(w, feel_at::CARRY) / S_TOUCH / touch;
             let flow = Vec2::new(float(w, feel_at::FLOW), float(w, feel_at::FLOW + 1)) * cell;
             let k = (drag * wet * span).max(0.0);
-            dv += clamp_len(-(v - carry * flow) * (1.0 - (-k).exp()), ceiling);
+            dv += clamp_len(-(v - carry * flow) * (1.0 - (-k).det_exp()), ceiling);
         }
         if !bodies.held[r] {
             let after = v + dv;
@@ -134,7 +135,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
             if k != 0.0 && k.is_finite() {
                 let map = sizes.get_or_insert_with(|| (*host.sizes).clone());
                 let first = *map.entry((thing, row)).or_insert(bodies.radius[r]);
-                let now = bodies.radius[r] * (-k).exp();
+                let now = bodies.radius[r] * (-k).det_exp();
                 let now = if dissolves > 0.5 {
                     if now < (first * DISSOLVED).max(0.5) && !host.dissolved.contains(&(thing, row)) {
                         host.dissolved.push((thing, row));
@@ -204,7 +205,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
         if take > 0.0 && wet > 0.0 {
             let colour = [0, 1, 2].map(|c| word(w, feel_at::COLOUR + c) / S_TOUCH / touch);
             if colour.iter().all(|c| c.is_finite()) {
-                let t = 1.0 - (-TAKE_RATE * take * wet * span).exp();
+                let t = 1.0 - (-TAKE_RATE * take * wet * span).det_exp();
                 let map = taken.get_or_insert_with(|| (*host.taken).clone());
                 let was = map.get(&(thing, row)).copied().unwrap_or([0.0; 4]);
                 let mixed = if was[3] <= 0.0 { colour } else { [0, 1, 2].map(|c| was[c] + (colour[c] - was[c]) * t) };

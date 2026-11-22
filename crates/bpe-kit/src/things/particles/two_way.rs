@@ -4,6 +4,7 @@
 //! `forces`), and stuck particles' weight pulls every substep until the next particle step. Balls
 //! rest on piles in each substep's Settle stage (`hold_up`).
 
+use bpe_core::maths::Maths;
 use std::collections::BTreeMap;
 
 use bpe_core::ThingId;
@@ -140,7 +141,7 @@ pub fn hold_up(st: &mut ParticlesState, world: &mut World, dt: f32) {
             if v.y > 0.0 {
                 b.velocity[r].y = -v.y * bounce;
             }
-            b.velocity[r].x *= (-SAND_FRICTION * dt).exp();
+            b.velocity[r].x *= (-SAND_FRICTION * dt).det_exp();
         }
     }
     let share = st.meets.thrown_up;

@@ -4,6 +4,7 @@
 //! simulation runs and identical every time the same scene is simulated (see [`Log::hash`]).
 
 use bpe_core::ThingId;
+use bpe_core::maths::Maths;
 use glam::Vec2;
 
 use crate::camera::CameraView;
@@ -259,7 +260,7 @@ pub fn hit_strength(log: &Log, time: f64, steps_per_second: u32) -> f32 {
             continue;
         }
         let age = (time - e.time(rate)).max(0.0) as f32;
-        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).exp();
+        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).det_exp();
     }
     if sum.is_finite() { sum.clamp(0.0, 1.0) } else { 0.0 }
 }

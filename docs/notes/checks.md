@@ -82,11 +82,13 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
 
 - **What runs there**: job "Pictures (owner's graphics card)" (`gpu-pictures` in `ci.yml`), on the native Windows
   runner `bpe-gpu-1` (labels `self-hosted, Windows, bpe-gpu`), an AMD Radeon RX 9070 XT. It runs the workspace with
-  the nextest `gpu` profile, whose `default-filter` leaves out only the goldens pinned to Ubuntu's maths library (the
-  CPU physics goldens and the sound goldens), then `unlit_pictures`, `lit_flat_pinned` and `golden_liquid` in
+  the nextest `gpu` profile, whose `default-filter` leaves out only the sound goldens (pinned to Ubuntu's maths
+  library, which the sound's oscillators still use; the physics goldens run here too, `bpe_core::maths`), then `unlit_pictures`, `lit_flat_pinned` and `golden_liquid` in
   release, then the liquid and light timings into the job summary. The Linux test machines set
   `BPE_SKIP_GPU_TESTS=1`, so every test that draws ends there as passed at `test_device()` (under nextest it exits
-  the test's process with 0; under plain `cargo test` it returns an error).
+  the test's process with 0; under plain `cargo test` it returns an error). The sound job's tests
+  (`sound_job::tests`) each run alone there, as on the `pc` profile: they time themselves against real time, and
+  beside seven other tests on a processor the Linux checks share they failed now and then (2026-11-22).
 - **No fallback**: while the PC is off this job waits in the queue and the "Tests" gate stays pending (GitHub cancels
   a job queued 24 hours; re-run it once the PC is back). A fork's pull request never runs there, so its gate fails.
 - **Pictures pinned to the card**: `crates/bpe-kit/tests/golden-unlit*.txt`, `golden-lit-flat*.txt`,
@@ -102,14 +104,24 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   `F:\bpe-gpu\target\<job>`). Its `.env` turns off the overlay Vulkan layers installed on the PC
   (`VK_LOADER_LAYERS_DISABLE=~implicit~`), so OBS or Steam can't change a picture.
 - **Known on the card** (2026-11-22, the owner chose to switch first and fix after): tests are left out of the
-  `gpu` profile until each is fixed in its own change, which takes it out of the list there:
-  `shadow_quality::a_shadow_edge_moves_on_smoothly` (the edge steps in a 4-frame pattern on the card),
-  `alloc::render_does_not_allocate` (a sound block allocates on Windows) and
-  `library::every_scene_plays_its_full_length_and_lands_its_payoff` (Windows' maths moves stem-battle's payoff from
-  26.5 s to 30.9 s). The last two still run on the Linux machines; the drawing one runs nowhere until fixed.
-  Fixed: `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` (Pull toward its ball was 87 px off: the
-  card fuses `place + velocity * dt`, and a pull flung particles passing by its centre whichever way that last bit
-  said; a pull now fades to nothing inside 4 px of its centre, `docs/notes/particles.md`).
+  `gpu` profile until each is fixed in its own change, which takes it out of the list there. All four are fixed
+  and none is left out now.
+  `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` was fixed (Pull toward its ball was 87 px off:
+  the card fuses `place + velocity * dt`, and a pull flung particles passing by its centre whichever way that last
+  bit said; a pull and a magnet's pull now fade to nothing inside 4 px of their centre, `docs/notes/particles.md`).
+  `alloc::render_does_not_allocate` was fixed and runs on the card again (the sound's physics threads all start
+  before the engine's first step returns; `docs/notes/sound.md`, "No memory taken while a block plays").
+  `library::every_scene_plays_its_full_length_and_lands_its_payoff` was fixed (stem-battle's payoff came 26.5 s on
+  Linux, 30.9 s on Windows): the physics called each platform's own maths library for sin, cos, exp, powf and the
+  rest, and Windows' rounds a hair differently, which the chaotic fight grew into a different winner time. The
+  physics now uses `bpe_core::maths` (the `libm` crate, plus glam's `libm` feature), the same on every platform;
+  the payoff is 30.9 s everywhere, and the physics goldens run on the card too.
+  `shadow_quality::a_shadow_edge_moves_on_smoothly` was fixed too (the lighting field's footprint maths, `foot_span`
+  in `docs/notes/lighting.md`).
+- **Finding a card-only difference**: a temporary test that reads back the pictures in question and fails on purpose
+  (so nextest prints its output), pushed to the branch with CI started by hand (`workflow_dispatch`); the card job's
+  log holds the prints. Compare them with the same test on lavapipe. WGSL allows a division to be 2.5 ULP off, and
+  the card uses that freedom where lavapipe doesn't: never floor or ceil the result of a division meant to be whole.
 - **Timings**: the job summary's "Timings on the owner's graphics card" (`tests/liquid_speed.rs`, `light_speed.rs`).
 
 ## Running only the tests a change needs

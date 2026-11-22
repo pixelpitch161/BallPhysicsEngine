@@ -4,6 +4,7 @@
 //! on a physics setting, a Motion or Bounce card spread by Light or Shadow, Moths), and nothing the
 //! probe or the renderer reads ever depends on it.
 
+use bpe_core::maths::Maths;
 use std::sync::Arc;
 
 use bpe_core::{LightLevels, LightSource, Resolved, Scene, ThingId};
@@ -67,7 +68,7 @@ impl LightLevels for LightLevelsAt<'_> {
 /// `1 − e^(−amount)`, so 0 in the dark, about 0.63 at 1 and 0.95 at 3, never stuck at the top
 /// under bright lamps. Negative light (darkness) reads 0.
 pub fn level_of(amount: f32) -> f32 {
-    if amount.is_finite() && amount > 0.0 { 1.0 - (-amount).exp() } else { 0.0 }
+    if amount.is_finite() && amount > 0.0 { 1.0 - (-amount).det_exp() } else { 0.0 }
 }
 
 #[cfg(test)]

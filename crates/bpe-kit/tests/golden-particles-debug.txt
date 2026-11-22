@@ -7,83 +7,83 @@ Rain	5	296	212dd8b357b96cd4
 Rain	6	283	76092534e2f085d6
 Rain	7	279	892ca69aa148c42c
 Rain	8	292	52dd800441687b38
-Snow	1	78	a95290e015c8025c
-Snow	2	152	78631fb4302f089e
-Snow	3	227	485d2ca9ab891b72
-Snow	4	302	d39f3fa845d80755
-Snow	5	371	433f285f908a1a1a
-Snow	6	439	462edefbbea980bc
-Snow	7	508	3f84b261e139a1ce
-Snow	8	576	da4870249a17940d
-Spark fountain	1	151	a08c0c709e83c8ce
-Spark fountain	2	293	31f1d6038e483db8
-Spark fountain	3	329	6b21c4b5e0b6e04d
-Spark fountain	4	337	351cd04117a5e853
-Spark fountain	5	328	7fe40491fdbada53
-Spark fountain	6	332	fa9e7e25bdfba127
-Spark fountain	7	326	ee5f30855a7ec2b3
-Spark fountain	8	331	f836a4b74dcb29b7
-Fire on the balls	1	2102	16cb0551b55659c3
-Fire on the balls	2	2128	d79c7a68c783de75
-Fire on the balls	3	2116	c3e7c318b556d8b4
-Fire on the balls	4	2138	eca97b7fba66bae0
-Fire on the balls	5	2106	66e9bd07cf813094
-Fire on the balls	6	2103	78052efea8415051
-Fire on the balls	7	2140	4ecfd9754ea19c8f
-Fire on the balls	8	2119	17f23cef50449866
-Confetti	1	150	9028589a69bd43e1
-Confetti	2	150	6e0e7b0681788962
-Confetti	3	300	aec9769b64833a48
-Confetti	4	283	16d76e3fb3375471
-Confetti	5	227	7ef6ba4d1b1a197c
-Confetti	6	326	269293064caabad6
-Confetti	7	281	0736757fe4ab6b38
-Confetti	8	234	61453534d7c24c76
+Snow	1	78	c3e2fb81842c914e
+Snow	2	152	0676313c7197c507
+Snow	3	227	728501a1d1928962
+Snow	4	302	5e6d418b222fd480
+Snow	5	371	4b09ff174461cebe
+Snow	6	439	7688da782478dae9
+Snow	7	508	44d563b7ea456cf6
+Snow	8	576	8f862518b306013e
+Spark fountain	1	151	82d40252b2bd94fe
+Spark fountain	2	293	b6c99818a5be335a
+Spark fountain	3	329	0cbff19f22478d61
+Spark fountain	4	337	9044d7fc722090f8
+Spark fountain	5	328	4fef9701cc7792ee
+Spark fountain	6	332	6fcf80cdc0f9dd31
+Spark fountain	7	326	91362b80cf753688
+Spark fountain	8	331	683a839fa1c10575
+Fire on the balls	1	2102	e2d7b23c34929e8e
+Fire on the balls	2	2128	b9598b387343a0dd
+Fire on the balls	3	2116	2e01dfdf8c4864d2
+Fire on the balls	4	2138	15bcb6568b86d13d
+Fire on the balls	5	2106	d2e768a4d6d2997d
+Fire on the balls	6	2103	9f0de1881f0c62fc
+Fire on the balls	7	2140	9eacb231827b87e4
+Fire on the balls	8	2119	00fac6b038f1330d
+Confetti	1	150	82476b3a329faa8f
+Confetti	2	150	3b21ed3daece310a
+Confetti	3	300	dc6c6db6bc1a8a9d
+Confetti	4	283	62e2811d34f315c0
+Confetti	5	227	248e8b726e0d1018
+Confetti	6	326	5773a59019a34651
+Confetti	7	281	9ae7b143241a5a7f
+Confetti	8	234	7ecc6c4a4cdb9390
 Fireflies	1	40	78c6f125c2e8d2b7
 Fireflies	2	40	68b7d0912e56fd3f
-Fireflies	3	40	4900ba195249ca6c
+Fireflies	3	40	253f1fbc3e8a3fe8
 Fireflies	4	40	cc77ea1bc0905a5d
-Fireflies	5	40	512e0ebabc41facd
-Fireflies	6	40	8dc7487bb31810ce
-Fireflies	7	40	bb9f10b6f3ec09fd
-Fireflies	8	39	81959fdaa6bd83ac
-Rainbow smoke	1	1452	cc1112824292c1a0
-Rainbow smoke	2	2870	34d8e0224f38a660
-Rainbow smoke	3	3580	dd5799016b94fd7f
-Rainbow smoke	4	3615	3533bc496b13a5db
-Rainbow smoke	5	3592	79707d756ca03fa7
-Rainbow smoke	6	3634	e8cf159e78e05203
-Rainbow smoke	7	3576	48d191ae2d9a04e3
-Rainbow smoke	8	3616	0077021e51e54dd8
-Ink	1	400	ccde4c9717e751da
-Ink	2	400	c38c0dc5c6fbbf54
-Ink	3	400	e7ae6b51783d25a2
-Ink	4	800	dd8fb70aba8ca5da
-Ink	5	710	b5c4c6201deae599
-Ink	6	610	7bf756a5c113dcc7
-Ink	7	499	6e9f6b9872d0d1a5
-Ink	8	800	be0e9d397ccdd764
+Fireflies	5	40	ea0c7fa76a4e29c5
+Fireflies	6	40	b87a0dba2417a898
+Fireflies	7	40	8cb2cf67ba4fea41
+Fireflies	8	39	f61055955949e6fd
+Rainbow smoke	1	1452	beff15ff6b9166d3
+Rainbow smoke	2	2870	e254f3ae0ca79479
+Rainbow smoke	3	3580	fa87c309fdcf707b
+Rainbow smoke	4	3615	cc82ab850bc470d9
+Rainbow smoke	5	3592	7a55b0b90ef95197
+Rainbow smoke	6	3634	6a564d93862334ec
+Rainbow smoke	7	3576	1e91a8972e7a69a6
+Rainbow smoke	8	3616	c5115d4dac631d27
+Ink	1	400	c1924fdbd597726a
+Ink	2	400	03fcbefb38b8125c
+Ink	3	400	f575f851c1d2ff9b
+Ink	4	800	8c6e2a6af92b5984
+Ink	5	710	2032e20b519e0fb9
+Ink	6	610	645fda6b3b5e590f
+Ink	7	499	af4b36a5986f5379
+Ink	8	800	b25c878fd3ff570d
 Dust in the air	1	0	cbf29ce484222325
-Dust in the air	2	26	a6f72c8dc3abba45
-Dust in the air	3	83	1ae83c87c2b98a46
-Dust in the air	4	95	3aaf108e1079492d
-Dust in the air	5	56	9f00a7c71b384a6f
-Dust in the air	6	50	e868d7e856bc4ae5
-Dust in the air	7	64	8f52c2e3634ffe23
-Dust in the air	8	47	cfa7683893f3e949
-Smoke heating the air	1	1452	3979c990433508d6
-Smoke heating the air	2	2870	b56e23b914ae6a4f
-Smoke heating the air	3	3580	9ce6890882a34f16
-Smoke heating the air	4	3615	9b8bcaaf8688d1d3
-Smoke heating the air	5	3592	bd30a327cf9f8545
-Smoke heating the air	6	3634	cb10ab4d1315e0be
-Smoke heating the air	7	3576	4082cfb9d9d362cf
-Smoke heating the air	8	3616	9219232be4b7d986
+Dust in the air	2	26	414923915047db76
+Dust in the air	3	83	07fa951c9326c16b
+Dust in the air	4	95	4c0848fca4fbcce1
+Dust in the air	5	56	89ab7fac846a691a
+Dust in the air	6	50	ad3be19b14996713
+Dust in the air	7	64	76c1eff9cf8a34c9
+Dust in the air	8	47	9086cc8d803a8734
+Smoke heating the air	1	1452	2751e651f5f5ae0c
+Smoke heating the air	2	2870	bd00784bd4ce4196
+Smoke heating the air	3	3580	2425b1fcf5a8c8b7
+Smoke heating the air	4	3615	8a7d93f7eb558117
+Smoke heating the air	5	3592	b73952d64c5d1d0e
+Smoke heating the air	6	3634	1ac9baeb400ca661
+Smoke heating the air	7	3576	054fa6bf3a0c40da
+Smoke heating the air	8	3616	252e4b57d5197c91
 Sandstorm	1	906	9e75c458460b7957
 Sandstorm	2	1771	8678b0c1ef0835c7
-Sandstorm	3	1854	81c71206ec611de0
-Sandstorm	4	1597	fd5fbae50d85318f
-Sandstorm	5	2120	e38beefadce2f08d
-Sandstorm	6	2760	ffd79ed4bcb25275
-Sandstorm	7	1617	57fe94838ba5c05e
-Sandstorm	8	1459	3ea3bcc15b87db03
+Sandstorm	3	1854	c06d99f31b6bbfb2
+Sandstorm	4	1597	4e9c3af8e713b68e
+Sandstorm	5	2120	a16f25a1573393e4
+Sandstorm	6	2760	05f55f92f08bf906
+Sandstorm	7	1617	a30400b5deb2bfb8
+Sandstorm	8	1459	36dc270a42859b80

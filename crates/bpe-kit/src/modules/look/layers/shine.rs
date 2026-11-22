@@ -1,6 +1,7 @@
 //! Shine: light on the ball, so it looks round and shiny. At full strength with its spot where it
 //! starts, it lights the ball exactly as the old Shiny style did.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 use glam::Vec2;
 
@@ -80,7 +81,7 @@ impl ShineLayer {
     /// a quarter at 1.
     pub fn sharpness(&self) -> f32 {
         let s = if self.softness.is_finite() { self.softness.clamp(0.0, 1.0) } else { 0.5 };
-        4f32.powf(1.0 - 2.0 * s) - 1.0
+        4f32.det_powf(1.0 - 2.0 * s) - 1.0
     }
 }
 

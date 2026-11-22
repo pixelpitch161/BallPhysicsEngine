@@ -4,6 +4,7 @@
 //! worked out from where the balls are at the moment drawn, seeded by the balls' numbers and the
 //! flicker's tick, so scrubbing and export draw the same.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Blend, Choice, Color, Settings};
 use bpe_gfx::Frame;
 use glam::Vec2;
@@ -185,7 +186,7 @@ fn bolt(from: Vec2, to: Vec2, n: usize, jagged: f32, seed: u32) -> Vec<Vec2> {
         .map(|k| {
             let t = k as f32 / (n - 1) as f32;
             let wave = noise(seed, t * 4.0) * 0.66 + noise(seed ^ 0x9e37_79b9, t * 11.0) * 0.34;
-            from + d * t + side * (wave * jagged * len * (std::f32::consts::PI * t).sin())
+            from + d * t + side * (wave * jagged * len * (std::f32::consts::PI * t).det_sin())
         })
         .collect()
 }

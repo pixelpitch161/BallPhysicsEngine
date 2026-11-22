@@ -9,6 +9,7 @@
 //! per channel, against the same scene with the blocker not blocking. `BPE_SAVE_RENDERS=1` saves
 //! the pictures into `target/pictures/tint-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Color, Gradient, LayerId, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::{ShapeFill, ShapeSettings, add_thing, kit, scenes};
@@ -55,7 +56,7 @@ fn draw(gpu: &mut Gpu, scene: &Scene, name: &str) -> Vec<u8> {
 
 fn linear(v: u8) -> f32 {
     let c = v as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
 }
 
 /// The light reaching world point (x, y), per channel in linear light: the video is 1080 × 1920
@@ -275,7 +276,7 @@ fn deeper_when_thick_deepens_the_middle() {
     };
     let (r0, r1) = (ratio(&flat, middle), ratio(&deep, middle));
     assert!(near(r0, t, 0.03 + 0.15 * t), "Deeper 0: {r0} against {t}");
-    let want = t.powf(1.0 + 2.0 * 0.5);
+    let want = t.det_powf(1.0 + 2.0 * 0.5);
     assert!(near(r1, want, 0.02 + 0.25 * want), "Deeper ½ through the middle: {r1} against {want}");
     // At (270, 300) the ray from the lamp passes 0.9 radii (144) from the middle:
     // 400 x / sqrt(x² + 700²) = 144.

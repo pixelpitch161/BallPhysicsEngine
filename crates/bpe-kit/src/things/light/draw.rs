@@ -2,6 +2,7 @@
 //! [`ThingDraw::light`] hook. It reads where it is from its Position, or from what it rides when
 //! its parent in the tree is a Balls, Emitter, Shape or Text thing (`crate::riding`).
 
+use bpe_core::maths::Maths;
 use bpe_core::{Settings, ThingId};
 use bpe_gfx::{DrawCx, Frame, LightGpu, LightScene, ThingDraw};
 use bpe_runtime::{EventKind, World};
@@ -176,7 +177,7 @@ fn push_light(
     let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
     let strength = if s.negative { -strength } else { strength };
     let dir = Vec2::from_angle(aim_angle(s, place, cx.time) + drive.turn.to_radians());
-    let height = if s.kind == LightType::Sun { s.elevation.to_radians().sin() } else { s.height };
+    let height = if s.kind == LightType::Sun { s.elevation.to_radians().det_sin() } else { s.height };
     let shadow = s.shadow_colour.to_linear();
     let mut size = s.size.max(0.0);
     // Each run of segments the light lights from, with its share of the light's colour and
@@ -331,7 +332,7 @@ fn push_one(
 ) {
     let half_cone = (0.5 * s.cone).to_radians();
     let edge = s.cone_edge.max(0.0).to_radians();
-    let (cos_inner, cos_outer) = ((half_cone - edge).max(0.0).cos(), half_cone.cos());
+    let (cos_inner, cos_outer) = ((half_cone - edge).max(0.0).det_cos(), half_cone.det_cos());
     let [first, count] = run;
     scene.lights.push(LightGpu {
         p0: [place.at.x, place.at.y, height, s.kind.code()],
@@ -342,7 +343,7 @@ fn push_one(
         p5: [shadow[0], shadow[1], shadow[2], if s.casts { 1.0 } else { 0.0 }],
         p6: [
             place.skip,
-            s.sun_size.max(0.0).to_radians().tan(),
+            s.sun_size.max(0.0).to_radians().det_tan(),
             if s.area_shape == AreaShape::Disc { 1.0 } else { 0.0 },
             s.softness.max(0.0),
         ],
@@ -373,10 +374,10 @@ fn meets_of(at: AtThings) -> Meets {
 /// pattern turns with where it points (a sun's lies on the world), by Gobo turn and Spin.
 fn gobo_turn(s: &LightSettings, dir: Vec2, time: f64) -> [f32; 4] {
     let t = time as f32;
-    let aim = if s.kind == LightType::Point || s.kind == LightType::Sun { 0.0 } else { dir.y.atan2(dir.x) };
+    let aim = if s.kind == LightType::Point || s.kind == LightType::Sun { 0.0 } else { dir.y.det_atan2(dir.x) };
     let turn = aim + (s.gobo_turn + s.gobo_spin * t).to_radians();
     let drift = s.gobo_drift * t;
-    [turn.cos(), turn.sin(), drift.x, drift.y]
+    [turn.det_cos(), turn.det_sin(), drift.x, drift.y]
 }
 
 /// How much of its strength a flickering light gives at `time` (1 with no Flicker): pure in
@@ -406,7 +407,7 @@ pub fn flicker(time: f64, amount: f32, speed: f32, style: FlickerStyle, seed: u3
             }
         }
         FlickerStyle::Pulse => {
-            let w = (std::f64::consts::TAU * x).sin() as f32;
+            let w = (std::f64::consts::TAU * x).det_sin() as f32;
             0.5 - 0.5 * w
         }
     };
@@ -501,12 +502,12 @@ fn layer_colour(resolved: &bpe_core::ResolvedThing, number: u32) -> Option<[f32;
 pub fn aim_angle(s: &LightSettings, place: &Place, time: f64) -> f32 {
     match s.points {
         Points::FixedAngle => s.direction.to_radians(),
-        Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.atan2(place.velocity.x),
+        Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.det_atan2(place.velocity.x),
         Points::WhereItsGoing => s.direction.to_radians(),
         Points::Spins => (s.direction + s.spin * time as f32).to_radians(),
         Points::AtThePen | Points::AtAThing => {
             match place.aim.map(|a| a - place.at).filter(|d| d.length_squared() > 1e-6) {
-                Some(d) => d.y.atan2(d.x),
+                Some(d) => d.y.det_atan2(d.x),
                 None => s.direction.to_radians(),
             }
         }

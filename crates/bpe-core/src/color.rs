@@ -1,4 +1,5 @@
 use crate::Choice;
+use crate::maths::Maths;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// An sRGB colour, written in scene files as a hex string like "#ff8800" or "#ff880080".
@@ -93,7 +94,7 @@ impl Color {
     pub fn to_linear(self) -> [f32; 4] {
         let channel = |c: u8| {
             let c = c as f32 / 255.0;
-            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
         };
         [channel(self.r), channel(self.g), channel(self.b), self.a as f32 / 255.0]
     }
@@ -102,7 +103,7 @@ impl Color {
     pub fn from_linear(c: [f32; 4]) -> Self {
         let channel = |c: f32| {
             let c = c.clamp(0.0, 1.0);
-            let s = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+            let s = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.det_powf(1.0 / 2.4) - 0.055 };
             (s * 255.0).round() as u8
         };
         Self { r: channel(c[0]), g: channel(c[1]), b: channel(c[2]), a: (c[3].clamp(0.0, 1.0) * 255.0).round() as u8 }
@@ -398,11 +399,11 @@ fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 
 /// The sRGB number (0 to 1, not rounded) of a linear-light channel, and back.
 fn encode(c: f32) -> f32 {
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.max(0.0).det_powf(1.0 / 2.4) - 0.055 }
 }
 
 fn decode(s: f32) -> f32 {
-    if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).det_powf(2.4) }
 }
 
 /// Below this OKLCH chroma a colour counts as grey and has no hue of its own.
@@ -567,7 +568,7 @@ impl Gradient {
             }
         }
         if m.breathe != 0.0 && m.breathe.is_finite() {
-            v = 0.5 + (v - 0.5) * (-m.breathe).exp();
+            v = 0.5 + (v - 0.5) * (-m.breathe).det_exp();
         }
         let mut c = self.sample_still(v);
         if let Some(morph) = &m.morph {
@@ -623,7 +624,7 @@ impl Gradient {
             return (if f < m { a.color } else { b.color }).to_linear();
         }
         // `f^p` with `m^p = 1/2`; the middle at 0.5 leaves `f` exactly as it is.
-        let f = if a.middle == 0.5 { f } else { f.powf(0.5f32.ln() / m.ln()) };
+        let f = if a.middle == 0.5 { f } else { f.det_powf(0.5f32.det_ln() / m.det_ln()) };
         let u = match a.blend {
             GapBlend::Smooth | GapBlend::Steps => f,
             GapBlend::Eased => f * f * (3.0 - 2.0 * f),
@@ -1177,7 +1178,7 @@ mod tests {
         let spread = moved(&g, Moves { breathe: b, ..Moves::default() });
         // The stop at 0.25... here the stops are 0, 0.5, 1: the one at 0 shows at 0.5 - 0.5·e^b
         // (clamped), so look at a place inside: 0.4 shows as 0.5 + (0.4 - 0.5)·e^-b.
-        let inside = 0.5 + (0.4 - 0.5) * (-b).exp();
+        let inside = 0.5 + (0.4 - 0.5) * (-b).det_exp();
         assert!(close(spread.sample(0.4), g.sample(inside)));
         assert!(close(spread.sample(0.5), g.sample(0.5)), "the middle stays");
     }

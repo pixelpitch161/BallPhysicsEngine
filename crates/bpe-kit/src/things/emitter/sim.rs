@@ -2,6 +2,7 @@
 //! step, earlier rounds kept, faded or removed, and balls caught as their centres come into the
 //! catch circle (taken out, sent back out, or let through), in waves.
 
+use bpe_core::maths::Maths;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -512,7 +513,7 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
     let (velocity, speed) = match (at.aim, launch.arrive) {
         _ if let Some(b) = &through => {
             if b.velocity.length() > 0.0 {
-                dir = b.velocity.y.atan2(b.velocity.x);
+                dir = b.velocity.y.det_atan2(b.velocity.x);
             }
             (b.velocity, b.velocity.length())
         }
@@ -525,7 +526,7 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
             };
             if v.length() > 0.0 {
                 // Its launch angle is the way it really leaves.
-                dir = v.y.atan2(v.x);
+                dir = v.y.det_atan2(v.x);
             }
             (v, v.length())
         }

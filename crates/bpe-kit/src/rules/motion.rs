@@ -1,5 +1,6 @@
 //! Do: Change motion.
 
+use bpe_core::maths::Maths;
 use bpe_core::{BlockSection, Choice, Params, Settings, Who};
 use bpe_runtime::{Action, BlockSim, Firing, MotionChange, PrepareCx, StageCx, ThingState, state};
 use glam::Vec2;
@@ -162,7 +163,7 @@ impl BlockSim for ChangeMotion {
                         }
                         Way::Angle => {
                             let a = (m.angle.or_fixed(firing) as f32).to_radians();
-                            Vec2::new(a.sin(), -a.cos())
+                            Vec2::new(a.det_sin(), -a.det_cos())
                         }
                         Way::TowardAThing => {
                             let Some(p) = toward else { continue };

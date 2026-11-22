@@ -1,6 +1,7 @@
 //! Drawing a shape: its plain white Body, filled or as a band, with the paint layers of its Look
 //! (see `modules::look::shape`) walked over it on the GPU.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::FRAC_PI_2;
 
 use bpe_core::{Blend, ResolvedThing, ShapePath, SlotId};
@@ -461,10 +462,10 @@ pub fn form_along(form: &WallForm, q: Vec2) -> f32 {
     if let Some(ab) = form.ellipse {
         let ab = ab.max(Vec2::splat(1e-6));
         let c = bpe_runtime::nearest_on_ellipse(ab, q);
-        return ((c.x / ab.x).atan2(-c.y / ab.y) / TAU).rem_euclid(1.0);
+        return ((c.x / ab.x).det_atan2(-c.y / ab.y) / TAU).rem_euclid(1.0);
     }
     let Some(ps) = form.points.as_deref().filter(|p| p.len() >= 2) else {
-        return (q.x.atan2(-q.y) / TAU).rem_euclid(1.0);
+        return (q.x.det_atan2(-q.y) / TAU).rem_euclid(1.0);
     };
     let n = ps.len();
     let (mut best, mut best_at, mut total) = (f32::INFINITY, 0.0f32, 0.0f32);
@@ -495,12 +496,12 @@ fn outline_world(form: &WallForm) -> Vec<Vec2> {
             (0..MIRROR_POINTS)
                 .map(|k| {
                     let a = k as f32 / MIRROR_POINTS as f32 * std::f32::consts::TAU;
-                    Vec2::new(a.cos() * axes.x, a.sin() * axes.y)
+                    Vec2::new(a.det_cos() * axes.x, a.det_sin() * axes.y)
                 })
                 .collect()
         }
     };
-    let (sin, cos) = form.turn.sin_cos();
+    let (sin, cos) = form.turn.det_sin_cos();
     unit.into_iter()
         .map(|p| {
             let q = p * form.scale;

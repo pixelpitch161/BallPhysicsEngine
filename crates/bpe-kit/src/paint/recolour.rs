@@ -3,12 +3,13 @@
 //! sub-layer changes a trail's colours the way it changes a ball's.
 
 use crate::modules::look::layers::subs::{RecolourMode, SubFlash, SubHue, SubRecolour};
+use bpe_core::maths::Maths;
 
 /// Linear light as sRGB-ish, 0 to 1 (`sub_to_srgb`).
 fn to_srgb(c: [f32; 3]) -> [f32; 3] {
     c.map(|x| {
         let x = x.clamp(0.0, 1.0);
-        if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+        if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.det_powf(1.0 / 2.4) - 0.055 }
     })
 }
 
@@ -16,7 +17,7 @@ fn to_srgb(c: [f32; 3]) -> [f32; 3] {
 fn to_linear(c: [f32; 3]) -> [f32; 3] {
     c.map(|x| {
         let x = x.clamp(0.0, 1.0);
-        if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+        if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).det_powf(2.4) }
     })
 }
 
@@ -53,7 +54,7 @@ pub fn hue_turn(c: [f32; 3], turn: f32) -> [f32; 3] {
 
 /// How light `c` (linear light) looks, 0 to 1.
 fn lightness(c: [f32; 3]) -> f32 {
-    (c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722).clamp(0.0, 1.0).powf(1.0 / 2.2)
+    (c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722).clamp(0.0, 1.0).det_powf(1.0 / 2.2)
 }
 
 /// `c` (linear light) through a Recolour sub-layer, mixed in by its opacity.
@@ -81,7 +82,7 @@ pub fn recolour(r: &SubRecolour, c: [f32; 3]) -> [f32; 3] {
 /// `c` lit by a Flash on hit sub-layer, `age` seconds after a hit of `strength`.
 pub fn flash(f: &SubFlash, c: [f32; 3], age: f32, strength: f32) -> [f32; 3] {
     let impact = if f.follow_impact { strength.max(0.0) } else { 1.0 };
-    let level = f.strength.max(0.0) * (-3.0 * age.max(0.0) / f.length.max(1e-3)).exp() * impact;
+    let level = f.strength.max(0.0) * (-3.0 * age.max(0.0) / f.length.max(1e-3)).det_exp() * impact;
     let k = f.colour.to_linear();
     [c[0] + k[0] * level, c[1] + k[1] * level, c[2] + k[2] * level]
 }

@@ -6,6 +6,7 @@
 //! other end), `"<key>~by"` (the spread) and `"<key>~ease"` (how the values bunch). A layer's
 //! keep their layer prefix: `"3/width~to"`. A setting varies exactly when its `~by` key is there.
 
+use crate::maths::Maths;
 use std::sync::LazyLock;
 
 use crate::{Choice, Color, Depth, Flags, Gradient, Params, SettingDef, Stop, Value, ValueType};
@@ -332,7 +333,7 @@ pub fn launch_turn(direction: glam::Vec2) -> f32 {
     if direction.length_squared() < 1e-12 {
         return 0.0;
     }
-    let deg = direction.y.atan2(direction.x).to_degrees();
+    let deg = direction.y.det_atan2(direction.x).to_degrees();
     (deg.rem_euclid(360.0) / 360.0).clamp(0.0, 1.0)
 }
 

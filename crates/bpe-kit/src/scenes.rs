@@ -8,6 +8,7 @@
 mod emitter;
 #[path = "scenes_stage5.rs"]
 mod stage5;
+use bpe_core::maths::Maths;
 pub use emitter::emitter_scenes;
 pub use stage5::{stage5, stage5_with_twins};
 
@@ -1721,7 +1722,7 @@ pub fn moths(reg: &Registry) -> Scene {
     let at = bpe_core::Address::own(light, "position");
     for (k, t) in [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0].iter().enumerate() {
         let a = k as f32 * std::f32::consts::FRAC_PI_2;
-        let p = Value::Vec2([300.0 * a.cos(), 300.0 * a.sin()]);
+        let p = Value::Vec2([300.0 * a.det_cos(), 300.0 * a.det_sin()]);
         scene.set_key(reg, &at, *t, p).expect("a key");
     }
     scene

@@ -18,7 +18,10 @@ bpe-dsp = { path = "crates/bpe-dsp" }
 bpe-sound = { path = "crates/bpe-sound" }
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
-glam = { version = "0.34", features = ["serde", "bytemuck"] }
+# `libm`: glam's trig (from_angle, rotations) rounds the same on every platform, like `bpe_core::maths`.
+glam = { version = "0.34", features = ["serde", "bytemuck", "libm"] }
+# Maths that rounds the same on Windows and Linux, for the physics (`bpe_core::maths`).
+libm = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
 anyhow = "1"
 pollster = "1"

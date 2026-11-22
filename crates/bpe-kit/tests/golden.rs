@@ -38,7 +38,10 @@ fn every_stage_scene_keeps_its_event_log() {
         std::fs::write(&path, &lines).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    // A Windows checkout made before .gitattributes kept these LF may still hold CRLF.
+    let expected = std::fs::read_to_string(&path)
+        .expect("the golden file is missing; run with BLESS_GOLDEN=1")
+        .replace("\r\n", "\n");
     let differ: Vec<_> = expected
         .lines()
         .zip(lines.lines())
@@ -129,6 +132,9 @@ fn light_sensing_scenes_keep_their_event_logs() {
         std::fs::write(&path, &lines).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    // A Windows checkout made before .gitattributes kept these LF may still hold CRLF.
+    let expected = std::fs::read_to_string(&path)
+        .expect("the golden file is missing; run with BLESS_GOLDEN=1")
+        .replace("\r\n", "\n");
     assert_eq!(expected, lines, "light sensing event logs changed");
 }

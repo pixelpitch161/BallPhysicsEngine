@@ -5,6 +5,7 @@ pub mod draw;
 pub mod foci;
 pub mod sim;
 
+use bpe_core::maths::Maths;
 pub use foci::foci;
 pub use sim::{ShapeSim, ShapeState, place_on_edge, side_of, side_on};
 
@@ -188,7 +189,7 @@ impl ShapeSettings {
     /// A hollow `width` × `height` rectangle: a moulded 4-corner outline. Its Size is a power of
     /// two at least half its diagonal, so the corners scale back to exactly these numbers.
     pub fn rectangle(width: f32, height: f32, thickness: f32) -> Self {
-        let size = (width.hypot(height) * 0.5).max(1.0).log2().ceil().exp2();
+        let size = (width.det_hypot(height) * 0.5).max(1.0).det_log2().ceil().det_exp2();
         let (a, b) = (width * 0.5 / size, height * 0.5 / size);
         let path = ShapePath { points: vec![[-a, -b], [a, -b], [a, b], [-a, b]], bends: vec![None; 4] };
         Self { start: ShapeStart::Polygon, sides: 4, size, thickness, path, ..Self::default() }

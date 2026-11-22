@@ -5,6 +5,7 @@
 //! cut to bands or wedges through their convex clips, and coloured through their style
 //! (`bpe_gfx::PathStyle`). Pure in time; drawing only.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::{PI, TAU};
 
 use bpe_core::{ResolvedSlot, Settings, Target, ThingId};
@@ -285,7 +286,7 @@ impl FxCx<'_> {
         }
         let settles = finite(settles, 0.4).max(0.01) as f64;
         match hit_age(self, target, 8.0 * settles) {
-            Some(age) => harder * (-age / settles).exp() as f32,
+            Some(age) => harder * (-age / settles).det_exp() as f32,
             None => 0.0,
         }
     }

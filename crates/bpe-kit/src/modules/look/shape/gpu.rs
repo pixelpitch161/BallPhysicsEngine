@@ -4,6 +4,7 @@
 
 use crate::modules::look::layers::gives_light::{Emit, gpu_of, unlit_if_lamp};
 use crate::paint::{Placing, form_gpu};
+use bpe_core::maths::Maths;
 use std::borrow::Cow;
 
 use bpe_core::{Blend, Gradient, GradientForm, LayerId, Params, Repeat, ResolvedSlot, Settings};
@@ -329,7 +330,7 @@ impl ShapeStack {
         let flag = |from: ColourFrom| if from == ColourFrom::SameAsBody { LayerGpu::FLAG } else { 0 };
         let across = |direction: f32| {
             let a = if direction.is_finite() { direction } else { 90.0 }.to_radians();
-            let dir = Vec2::new(a.cos(), a.sin());
+            let dir = Vec2::new(a.det_cos(), a.det_sin());
             let (lo, hi) = geometry.extent(dir);
             [dir.x, dir.y, lo, hi]
         };

@@ -1,5 +1,6 @@
 //! Picture tests for the balls' Colours paint on the software GPU.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Color, Gradient, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{kit, scenes};
@@ -54,7 +55,7 @@ fn solid_paint_matches_plain_colour() {
     let before = saved("one-ball.png");
     let off_the_wall = |i: usize| {
         let (x, y) = ((i / 4) as u32 % W, (i / 4) as u32 / W);
-        let d = ((x as f32 + 0.5 - W as f32 / 2.0).hypot(y as f32 + 0.5 - H as f32 / 2.0) - 127.0).abs();
+        let d = ((x as f32 + 0.5 - W as f32 / 2.0).det_hypot(y as f32 + 0.5 - H as f32 / 2.0) - 127.0).abs();
         d > 12.0
     };
     let worst = pixels
