@@ -98,6 +98,31 @@ impl Host {
     pub fn step_ms(&self) -> f32 {
         self.body.as_ref().map_or(0.0, |b| b.step_ms())
     }
+
+    /// What the status line says of the liquid.
+    pub fn reading(&self) -> Reading {
+        Reading {
+            drops: self.count_hint(),
+            step_ms: self.step_ms(),
+            substeps: self.body.as_ref().map_or(0, |b| b.substeps()),
+            on_card: self.body.is_some(),
+        }
+    }
+}
+
+/// What the status line says of the liquid (faster liquid).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reading {
+    /// How many drops the card last said there were.
+    pub drops: u32,
+    /// How long the last liquid step took, in milliseconds: on the card itself where the card can
+    /// time its own work, else from when the step was sent to when its count came back.
+    pub step_ms: f32,
+    /// How many small steps that liquid step took (1 to 64: more the faster the liquid moves and
+    /// the finer its Detail).
+    pub substeps: u32,
+    /// Whether there is a graphics card to move the liquid on.
+    pub on_card: bool,
 }
 
 /// A Liquid thing's state.
