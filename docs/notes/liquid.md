@@ -620,8 +620,10 @@ picture and the Pour's births changed, nothing in the solver. One new setting: L
 film's) come `line`, the node's signed distance from its wall's line exactly as the walls band has it, and
 `band` (0 off the band, 1 a filled wall, 2 + its half thickness a hollow one). `wall_at(q)` (the same
 function in `liquid_drops.wgsl` and `liquid.wgsl`) reads them between a point's four nodes and is only valid
-when all four are in the band and all filled or all hollow; the face distance is `line` for a filled wall
-and `|line| − half` for a hollow one, on the point's own side. Do not use `face`/`side` for anything but the
+when all four are in the band, all filled or all hollow, and one wall's (`line` steps by at most 1 from a
+node to the next along one wall; each node keeps its nearer wall, and between two walls the blend would read
+as a face in the middle of the liquid); the face distance is `line` for a filled wall and `|line| − half`
+for a hollow one, on the point's own side. Do not use `face`/`side` for anything but the
 film: `side` is a coin toss two or three cells inside the liquid, which is what notched every curved wall.
 
 **Drops are mirrored a quarter cell off the face** (`liquid_drops.wgsl`, `MIRROR_OFF` 0.25, the plane the
@@ -629,7 +631,9 @@ physics mirrors them in, `WALL_GAP`). Drops stop half a cell off a face and rest
 mirrored in the face itself a row was missing and the field at the wall was only just over the Edge level: a
 pale scalloped edge along every wall. The wall's normal is the slope of `line` between the drop's own four
 nodes (no neighbours needed), so drops up to `reach + 0.5` cells off the face find it. A drop and its mirror
-are splatted up to `SPILL` 3 px past the face, not cut at it, and the surface pass makes the cut
+are splatted up to `SPILL` 3 px past the face, not cut at it (through a hollow wall thinner than that, only
+its thickness less half a pixel, `DropOut.spill`: past its far face the surface pass could not tell the
+spill from liquid there), and the surface pass makes the cut
 (`liquid.wgsl::wall_cover`: whole half a pixel outside the face, gone a pixel inside it). The field has no
 edge of its own at a wall, so there is no rim, highlight or lit bevel there.
 
@@ -650,10 +654,11 @@ rim near it: pale patches along the floor.
 **Thin liquid is drawn as streaks** (`liquid_drops.wgsl::drop_out`). By the liquid round a drop (`vd = 1 / j`):
 under `THIN_END` 0.65 of full (wholly under `THIN` 0.35) its splat is stretched along its velocity by the
 distance it goes in Streaks / 120 s over a droplet's width (at most `MOST_STRETCH` 6 times) and narrowed by
-that to the power −0.4. Liquid at rest and the inside of a body are round as ever. The lone-drop boost has
-no blind band now: under `SPARSE` 0.38 of full the splat is lifted to `SPARSE_TO` 0.9 of full, fading out
-by `SPARSE_END` 0.54 (the Edge level is half of full and a flat surface's own drops read about half, so the
-lift has to be over by there). **Streaks** (`LookSettings::streaks`, default 1, 0 draws round drops) rides
+that to the power −0.4. Liquid at rest and the inside of a body are round as ever (a body's own surface
+drops are half thin, so a surface that moves smears a little). The lone-drop boost has no blind band now:
+under `SPARSE` 0.38 of full the splat is lifted to `SPARSE_TO` 0.9 of full, fading out by `SPARSE_END` 0.54
+(the Edge level is half of full and a flat surface's own drops read about half, where an eighth of the lift
+is left: every free surface sits a fraction of a pixel further out than it did). **Streaks** (`LookSettings::streaks`, default 1, 0 draws round drops) rides
 in the style's `c.w`; it only draws, so it restarts nothing, and the stains' flat style sets it to 0.
 
 **Pinholes close** (`liquid.wgsl::pinhole_fill`, full looks only): where the coarse field (the 13 × 13 px

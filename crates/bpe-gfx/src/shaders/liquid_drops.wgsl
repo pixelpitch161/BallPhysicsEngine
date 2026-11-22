@@ -87,8 +87,8 @@ fn wall_node(x: i32, y: i32) -> vec2<f32> {
 }
 
 // The wall at grid point `q` (between its four nodes): x the signed distance from its line, y its
-// half thickness (below 0 for a filled wall), z 1 when all four nodes are in the walls band and
-// are all filled or all hollow (else 0: no wall is known here).
+// half thickness (below 0 for a filled wall), z 1 when all four nodes are in the walls band, are
+// all filled or all hollow and are one wall's (else 0: no wall is known here).
 fn wall_at(q: vec2<f32>) -> vec3<f32> {
     let i = floor(q);
     let f = q - i;
@@ -101,6 +101,13 @@ fn wall_at(q: vec2<f32>) -> vec3<f32> {
     let least = min(min(a.y, b.y), min(c.y, d.y));
     let most = max(max(a.y, b.y), max(c.y, d.y));
     if least < 0.5 || (least < 1.5) != (most < 1.5) {
+        return vec3<f32>(0.0);
+    }
+    // Nodes of two different walls (each node keeps its nearer wall's distance, and one wall's
+    // inside is another's outside): a distance changes by at most 1 from a node to the next, so a
+    // bigger step is two walls, and between them there is no one distance to read.
+    let jump = max(max(abs(b.x - a.x), abs(d.x - c.x)), max(abs(c.x - a.x), abs(d.x - b.x)));
+    if jump > 1.5 {
         return vec3<f32>(0.0);
     }
     let v = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
@@ -170,6 +177,8 @@ struct DropOut {
     // at the face (liquid.wgsl, `wall_cover`).
     @location(4) world: vec2<f32>,
     @location(5) @interpolate(flat) face: vec4<f32>,
+    // How far past the face it is splatted (picture pixels): SPILL, less for a thin hollow wall.
+    @location(6) @interpolate(flat) spill: f32,
 };
 
 @vertex
@@ -187,6 +196,8 @@ fn vs_mirror(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 
 // How far past a wall's face a drop and its mirror image are still splatted (picture pixels): the
 // surface pass reads the field a pixel either side for its slope and 3 either side for Mixing shows.
+// A hollow wall thinner than that takes its own thickness less half a pixel (`DropOut.spill`), so
+// nothing reaches its far side, where the surface pass has no way to tell it from liquid there.
 const SPILL: f32 = 3.0;
 // Liquid look (walls and streams): liquid thinner than this share of full is lifted to SPARSE_TO of
 // full (so it is over the Edge level whatever its density), fading out by SPARSE_END. The Edge
@@ -213,10 +224,16 @@ fn drop_out(vi: u32, ii: u32, mirror: bool) -> DropOut {
     let wall = wall_face(x, r / cell);
     // How fast it moves (world units a second).
     var v = vec2<f32>(drops[at + 2u], drops[at + 3u]) * st.e.z;
-    v = select(vec2<f32>(0.0), v, v.x == v.x && v.y == v.y);
+    v = select(vec2<f32>(0.0), v, v.x == v.x && v.y == v.y && abs(v.x) < 1e30 && abs(v.y) < 1e30);
     out.face = vec4<f32>(0.0);
+    out.spill = SPILL;
     if wall.z != 0.0 || wall.w != 0.0 {
         out.face = vec4<f32>(st.e.xy + wall.xy * cell, wall.zw);
+        // Never through a hollow wall to its far side: there the surface pass would draw it.
+        let half = wall_at(x).y;
+        if half >= 0.0 {
+            out.spill = min(SPILL, max(2.0 * half * cell / max(g.view.z, 1e-4) - 0.5, 0.0));
+        }
         if mirror {
             x = x - 2.0 * max(dot(x - wall.xy, wall.zw) - MIRROR_OFF, 0.0) * wall.zw;
             v = v - 2.0 * dot(v, wall.zw) * wall.zw;
@@ -226,14 +243,16 @@ fn drop_out(vi: u32, ii: u32, mirror: bool) -> DropOut {
     // Alone (the volume round it, 1 / j, low: spray, a thin stream), it reaches the level by
     // itself: a lone drop's peak is 1.6 times the level (st.a.x), so it draws as a droplet about
     // half its reach across, and liquid between "alone" and "enough to reach the level" is lifted
-    // to most of full. Inside the liquid (about 1) and at its surface (about 0.5) nothing changes.
+    // to most of full. Inside the liquid (about 1) nothing changes; at a flat surface (about 0.5)
+    // the lift is nearly over (an eighth more).
     let j = drops[at + 12u];
     let vd = select(1.0, 1.0 / max(j, 1e-3), j == j && j > 0.0);
     let sparse = 1.0 - smoothstep(SPARSE, SPARSE_END, vd);
     out.boost = mix(1.0, clamp(SPARSE_TO / max(vd, 1e-3), 1.0, max(1.6 * st.a.x, 1.0)), sparse);
     // Streaks: thin liquid is smeared along its way by how far it goes in the shutter's time
     // (Streaks / 120 s) against a droplet's width, and narrowed a little, as a camera sees a
-    // falling stream. Liquid at rest and the inside of a body are round, as ever.
+    // falling stream. Liquid at rest and the inside of a body are round, as ever (a body's own
+    // surface drops are half thin, so a moving surface smears a little).
     let thin = 1.0 - smoothstep(THIN, THIN_END, vd);
     let across = max(0.76 * r, 1e-6);
     var stretch = 1.0;
@@ -288,7 +307,7 @@ fn fs_drop(in: DropOut) -> Fields {
     // makes the cut at the face itself.
     if in.face.z != 0.0 || in.face.w != 0.0 {
         let past = dot(in.world - in.face.xy, in.face.zw) / max(g.view.z, 1e-4);
-        keep = clamp(past + SPILL + 0.5, 0.0, 1.0);
+        keep = clamp(past + in.spill + 0.5, 0.0, 1.0);
         if keep <= 0.0 {
             discard;
         }

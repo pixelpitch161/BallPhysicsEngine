@@ -331,12 +331,13 @@ fn streaks_smear_a_falling_stream_and_leave_still_water_alone() {
     let smeared = draw(&mut gpu, &streaks(&stream, 4.0), 0.5, "stream-smeared");
     let moved = differing(&round, &smeared, (-40.0, -380.0), (40.0, -200.0));
     assert!(moved >= 6, "Streaks changes how the stream is drawn: {moved} pixels differ");
-    // Water at rest is the same picture whatever Streaks says (its body: half a second in, a thin
-    // film is still running down the ring above the waterline, and that does smear).
+    // Water at rest is the same picture whatever Streaks says: its body, below the waterline at
+    // y = -200 (half a second in the top is still settling and a thin film is running down the
+    // ring above it, and those do smear a little).
     let still = deep(false, false);
     let round = draw(&mut gpu, &streaks(&still, 0.0), 0.5, "still-round");
     let smeared = draw(&mut gpu, &streaks(&still, 4.0), 0.5, "still-smeared");
-    let moved = differing(&round, &smeared, (-400.0, -260.0), (400.0, 300.0));
+    let moved = differing(&round, &smeared, (-360.0, -150.0), (360.0, 300.0));
     assert_eq!(moved, 0, "still water does not smear: {moved} pixels differ");
 }
 

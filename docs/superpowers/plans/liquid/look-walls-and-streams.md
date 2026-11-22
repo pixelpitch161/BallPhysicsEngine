@@ -224,5 +224,11 @@ What changed while building, found by looking at the owner's scene at 1:1 after 
   a body's own surface drops are only partly thin.
 - **Tests** as listed in `docs/notes/liquid.md`; the streak test compares Streaks 0 and 4 on the falling
   stream and on still water instead of measuring one drop.
+- **From the review** (one, before the pull request): the spill is cut to a thin hollow wall's own thickness
+  (it showed as a fringe on the wall's dry side when the wall is under 3 px in the picture: small previews,
+  a zoomed-out camera); `wall_at` gives no wall between the nodes of two different walls (the blend of their
+  distances read as a face through the liquid); a drop with an endless speed is not stretched; the still
+  water test looks only below the waterline. Left as it is: `wall_lift` runs for every pixel of a drops
+  liquid's surface pass before the cheap way out (four buffer reads for a pixel off the walls band).
 - **Not done**: the lit scenes' own dullness (the scene's lamp and the lighting mix, not the liquid), the
   paler column under a hole in the body (the depth starts again under it), and the solver's items above.

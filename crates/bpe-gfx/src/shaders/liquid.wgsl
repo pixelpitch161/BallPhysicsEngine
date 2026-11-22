@@ -691,8 +691,8 @@ fn wall_node(x: i32, y: i32) -> vec2<f32> {
 }
 
 // The wall at grid point `q`: x the signed distance from its line, y its half thickness (below 0
-// for a filled wall), z 1 when all four nodes round `q` are in the band and all filled or all
-// hollow (else 0).
+// for a filled wall), z 1 when all four nodes round `q` are in the band, all filled or all hollow
+// and one wall's (else 0).
 fn wall_at(q: vec2<f32>) -> vec3<f32> {
     let i = floor(q);
     let f = q - i;
@@ -705,6 +705,13 @@ fn wall_at(q: vec2<f32>) -> vec3<f32> {
     let least = min(min(a.y, b.y), min(c.y, d.y));
     let most = max(max(a.y, b.y), max(c.y, d.y));
     if least < 0.5 || (least < 1.5) != (most < 1.5) {
+        return vec3<f32>(0.0);
+    }
+    // Nodes of two different walls (each node keeps its nearer wall's distance, and one wall's
+    // inside is another's outside): a distance changes by at most 1 from a node to the next, so a
+    // bigger step is two walls, and between them there is no one distance to read.
+    let jump = max(max(abs(b.x - a.x), abs(d.x - c.x)), max(abs(c.x - a.x), abs(d.x - b.x)));
+    if jump > 1.5 {
         return vec3<f32>(0.0);
     }
     let v = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
@@ -727,8 +734,8 @@ fn wall_cover(xy: vec2<f32>, dims: vec2<f32>, unit: f32) -> f32 {
 }
 
 // How far off a wall's face a gap under a body of liquid is closed from (grid units), and how much
-// further off (picture pixels) the body must be whole: half the coarse field's window, so the gap
-// and the wall are out of it.
+// further off (picture pixels) the body must be whole: most of half the coarse field's 13 px
+// window, so little of the gap and the wall is in it.
 const LIFT: f32 = 1.5;
 const LIFT_FAR: f32 = 5.0;
 // How many cells on from there the liquid must carry on for the gap to be closed.
