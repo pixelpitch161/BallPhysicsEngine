@@ -1,4 +1,4 @@
-# GPU picture-checks runner (Windows)
+﻿# GPU picture-checks runner (Windows)
 
 This folder sets up the GitHub Actions runner that runs Ball Studio's picture tests on the owner's graphics card
 (AMD Radeon RX 9070 XT). The design is `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`.
@@ -21,7 +21,7 @@ Windows service running as bpe-gpu, and there's no logon task. bpe-gpu is locked
 | cargo-nextest 0.9.152 | `F:\bpe-gpu\cargo\bin` |
 | MinGW (copy of the owner's WinLibs) and ffmpeg | `F:\bpe-gpu\mingw64`, `F:\bpe-gpu\bin` |
 | GitHub Actions runner `bpe-gpu-1`, labels `self-hosted, Windows, X64, bpe-gpu` | `F:\bpe-gpu\runner` |
-| Windows service `actions.runner.pixelpitch161-BallPhysicsEngine.bpe-gpu-1`, runs as bpe-gpu, starts with Windows, below-normal priority | Services |
+| Windows service `actions.runner.pixelpitch161-BallPhysicsEngine.bpe-gpu-1`, runs as bpe-gpu, starts with Windows, normal priority (below-normal starved it while the WSL checks built) | Services |
 | Job checkouts / build files | `F:\bpe-gpu\work` / `F:\bpe-gpu\target` |
 | Logs of every setup run, results of the checks | `F:\bpe-gpu\logs`, `F:\bpe-gpu\probe` |
 

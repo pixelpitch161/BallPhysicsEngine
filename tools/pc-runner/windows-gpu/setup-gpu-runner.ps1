@@ -5,7 +5,7 @@
 #                  (session 0, like a service) can see the graphics card.     -> probe\vulkaninfo.txt
 #   -Step Lock   : keep bpe-gpu out of everything on D:, E: and F: except F:\bpe-gpu.
 #   -Step Smoke  : run bpe-gfx's tests once as bpe-gpu in the background.     -> probe\smoke.log
-#   -Step Runner : register the GitHub Actions runner as a Windows service running as bpe-gpu.
+#   -Step Runner : register the GitHub Actions runner as a Windows service running as bpe-gpu (normal priority).
 #   -Step All    : Probe, Lock, then Runner.
 #
 # The bpe-gpu password is random, made fresh on every run, and handed straight to Windows (the user account, the
@@ -181,11 +181,13 @@ function Install-Runner {
     }
     $pw = $null
 
-    # Below-normal priority for the runner and, through inheritance, every build and test it starts.
+    # Normal priority, on purpose. Below-normal was tried first (2026-11-22), but builds at normal priority on the same
+    # CPU (the WSL test machine's, or anyone's) starved the runner: a job's worker started so slowly that it missed the
+    # runner's 30-second handoff, and GitHub reported "lost communication". So any priority setting from that first
+    # setup is removed here.
     foreach ($exe in 'Runner.Listener.exe', 'Runner.Worker.exe') {
-        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exe\PerfOptions"
-        New-Item -Path $k -Force | Out-Null
-        New-ItemProperty -Path $k -Name CpuPriorityClass -Value 5 -PropertyType DWord -Force | Out-Null   # 5 = below normal
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exe"
+        if (Test-Path $k) { Remove-Item -Path $k -Recurse -Force; Write-Host "  removed the priority setting for $exe" }
     }
 
     Set-Service $ServiceName -StartupType Automatic
