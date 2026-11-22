@@ -1117,7 +1117,8 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
         return;
     }
     let mut open = true;
-    egui::Window::new("Own curve").collapsible(false).resizable(false).open(&mut open).show(ui.ctx(), |ui| {
+    let window = egui::Window::new("Own curve").collapsible(false).resizable(false).open(&mut open);
+    style::window(ui.ctx(), window, |ui| {
         ui.label(RichText::new("The curve from this key to the next, through two control points.").small());
         if ease::curve_editor(ui, &mut ease) {
             studio.scene.set_ease(&a, i, ease);

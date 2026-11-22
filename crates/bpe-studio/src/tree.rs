@@ -235,12 +235,16 @@ pub fn show(
                                 ui.close();
                             }
                             ui.menu_button("Looks", |ui| {
-                                for look in LOOKS {
-                                    if ui.button(look.name()).on_hover_text(look.help()).clicked() {
-                                        action = Some(Action::AddText(look));
-                                        ui.close();
+                                // Two dozen looks: the list scrolls in the menu, not past the window's bottom edge.
+                                let tall = (ui.ctx().content_rect().height() * 0.6).max(120.0);
+                                egui::ScrollArea::vertical().max_height(tall).show(ui, |ui| {
+                                    for look in LOOKS {
+                                        if ui.button(look.name()).on_hover_text(look.help()).clicked() {
+                                            action = Some(Action::AddText(look));
+                                            ui.close();
+                                        }
                                     }
-                                }
+                                });
                             });
                             continue;
                         }
@@ -304,6 +308,14 @@ pub fn show(
                     let rect = row(ui, tree, scene, thing, &cx, &mut action);
                     rows.push((id, rect));
                     visible.push(id);
+                }
+                if rows.is_empty() && !filter.is_empty() {
+                    // An empty tree would look as if the scene were gone.
+                    let words = format!("Nothing here matches \u{201c}{}\u{201d}.", tree.filter.trim());
+                    ui.label(RichText::new(words).small().color(style::MUTED));
+                    if ui.button("Clear filter").clicked() {
+                        tree.filter.clear();
+                    }
                 }
                 drop_target(ui, scene, &rows, &mut action);
             });
@@ -1391,6 +1403,27 @@ mod tests {
     }
 
     #[test]
+    fn the_looks_submenu_scrolls_in_a_low_window() {
+        // The review's find: two dozen looks ran past the window's bottom edge.
+        let mut h = harness();
+        h.set_size(egui::vec2(900.0, 500.0));
+        h.run();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Looks").hover();
+        h.run();
+        let last = bpe_kit::things::text::looks::LOOKS.last().unwrap().name();
+        h.get_by_label(last).scroll_to_me();
+        h.run();
+        let rect = h.get_by_label(last).rect();
+        assert!(rect.bottom() <= 500.0, "{last} can be brought inside the window: {rect:?}");
+        h.get_by_label(last).click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.things[&s.selection.primary.unwrap()].name, last);
+    }
+
+    #[test]
     fn particles_are_added_empty_or_with_a_starting_look() {
         use bpe_kit::things::particles::{BornFrom, KIND, ParticlesSettings};
         let mut h = harness();
@@ -1532,6 +1565,21 @@ mod tests {
         h.run();
         assert!(h.query_by_label("Shape").is_some());
         assert!(h.query_by_label("Ball").is_none());
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_says_so_and_can_be_cleared() {
+        let mut h = harness();
+        h.get_by_label("Filter").click();
+        h.run();
+        h.get_by_label("Filter").type_text("zzz");
+        h.run();
+        assert!(h.query_by_label("Ball").is_none());
+        assert!(h.query_by_label("Nothing here matches \u{201c}zzz\u{201d}.").is_some());
+        h.get_by_label("Clear filter").click();
+        h.run();
+        assert!(h.query_by_label("Ball").is_some(), "the rows are back");
+        assert!(h.query_by_label("Clear filter").is_none());
     }
 
     #[test]

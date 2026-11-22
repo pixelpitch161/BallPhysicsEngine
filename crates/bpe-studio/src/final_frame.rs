@@ -110,12 +110,12 @@ impl FinalFrame {
             return;
         }
         let mut open = self.open;
-        egui::Window::new("Final frame")
+        let window = egui::Window::new("Final frame")
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| self.contents(ui, ctx));
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO);
+        style::window(ctx, window, |ui| self.contents(ui, ctx));
         self.open = open;
         if !open && self.working.is_some() {
             self.stop.store(true, Ordering::Relaxed);

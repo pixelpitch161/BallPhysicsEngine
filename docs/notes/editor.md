@@ -325,3 +325,34 @@ with sound, and the buses whenever anything has a voice. `widgets::target_picker
 px/s (a ball's Launch, a Gobo drift) shows as **speed** and **angle** (`speed_and_angle`; written back as x/y only
 when changed, a still pair's angle remembered in egui memory), and its words read "500 px/s at -53°". Every angle
 unit is "°" or "°/s" (`tests::angles_say_degrees_one_way`). A shape's Look card has a **Moves** list.
+
+## Small fixes from the hands-on review (2026-11-22)
+
+The review drove the installed editor on the owner's PC as a person would (findings:
+https://claude.ai/artifact/8cEo1csHZBwPLL9EMFhvUc). Its clear bugs, as fixed:
+
+- **Floating windows** go through `style::window(ctx, window, add)`, never `Window::show`. egui paints the front
+  window's title bar with `widgets.open.weak_bg_fill`, which this design sets to the light fill of an open menu
+  button, under a light title and close cross: the bar was a blank light strip (Export video, Final frame, Own
+  curve, the big gradient editor). The helper makes that fill `RAISED` while the window's own frame begins and puts
+  the usual one back for the contents and after (`a_window_s_title_bar_is_dark_under_its_light_title`).
+- **`RichText::strong()` is dark** in this design (it reads `widgets.active.fg_stroke`, the text on a light fill):
+  use `.color(style::TEXT_STRONG)`. The Export window's file name was the one place that used it.
+- **Export window**: Escape closes it as the cross does, when the key is for nothing else (no list or menu open
+  anywhere, no text box being left, no question on top; egui drops a text box's focus on Escape before the frame
+  is drawn, so the window remembers `typing` from the frame before); "Checking your graphics card…" asks for a
+  repaint, as the answer comes from another thread; for the video the window has just made the "already exists"
+  warning reads "Exporting again replaces the video you just made."
+- **The Rules view is its own bottom panel** (`Studio::bottom_panel`, id "rules" beside "timeline"): it opens
+  340 px tall, room for a rule that branches, and each view keeps the height it was left at. The cause of the cut
+  blocks: an egui panel shrinks to its contents, the Rules view with no rules is one line of words, and the panel
+  stayed that low when a rule came; `bottom_panel` now sets the contents' least height to the panel's
+  (`the_rules_view_opens_tall_enough_for_a_branched_rule`).
+- **Scenes window**: Open scene and Cancel sit at the foot of the preview column, outside its scroll area
+  (`open_scene_stays_in_the_window_under_the_longest_description`).
+- **Tree filter** with no match says "Nothing here matches …" with a Clear filter button.
+- **Knobs** can grow for a long label (`Knob::grow_to`): the Sound tab's knobs do, up to 2.4 times their width, so
+  "Min strength" and "Muffled under liquid" read whole; the Mixer's strip knobs still cut theirs.
+- **Save as names the scene** after the file just chosen (`Studio::save_to(path, chosen)`, its own undo step); a
+  plain Save keeps a name typed in the box.
+- **Add thing → Text → Looks** scrolls inside the menu (at most 0.6 of the window's height).
