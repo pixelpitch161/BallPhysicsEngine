@@ -51,7 +51,8 @@ pub struct LiquidStyle {
     /// (0 to 1, Glass).
     pub b: [f32; 4],
     /// Rim light (0 to 1), opacity (0 to 1), how much it bends lamp light (its index of
-    /// refraction, glass and light part 3: above 1 it is free glass), w spare.
+    /// refraction, glass and light part 3: above 1 it is free glass), Streaks (drops on the card:
+    /// how far thin, fast liquid is smeared along its way, in 120ths of a second; 0 round drops).
     pub c: [f32; 4],
     /// Chrome's sky: top and bottom colours (linear rgb, w spare).
     pub sky_top: [f32; 4],
@@ -175,6 +176,9 @@ struct Placed {
     /// field, wet grid), when it draws them.
     dots: Option<wgpu::BindGroup>,
     wet: Option<wgpu::BindGroup>,
+    /// Drops on the card: its surface pass's group, with its body's wet grid (the walls its
+    /// surface is cut at). The others share [`LiquidPass::group`].
+    surface: Option<wgpu::BindGroup>,
 }
 
 pub(crate) struct LiquidPass {
@@ -193,6 +197,9 @@ pub(crate) struct LiquidPass {
     /// The splat pass's group: the style alone (the field is its target).
     splat_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// What the shared surface group binds as its wet grid (a liquid of blobs has none and never
+    /// reads it).
+    no_walls: wgpu::Buffer,
     uniforms: Option<wgpu::Buffer>,
     blobs: GrowableBuffer,
     /// The field, and the drops' colour weights.
@@ -232,7 +239,19 @@ impl LiquidPass {
                     count: None,
                 },
                 util::float_texture_entry(4, S::FRAGMENT),
+                // The wet grid (the walls the surface is cut at) and the coarse field (pinholes).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
                 util::float_texture_entry(6, S::FRAGMENT),
+                util::float_texture_entry(7, S::FRAGMENT),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -514,7 +533,14 @@ impl LiquidPass {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
+        let no_walls = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("liquid no walls"),
+            size: 64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         Self {
+            no_walls,
             splat,
             splat_drops,
             splat_mirror,
@@ -584,6 +610,7 @@ impl LiquidPass {
                     drops: None,
                     dots: None,
                     wet: None,
+                    surface: None,
                 },
             );
             if let Some(d) = on_card {
@@ -663,18 +690,24 @@ impl LiquidPass {
             layout: &self.splat_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: style() }],
         }));
-        self.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("liquid"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: style() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(field) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(behind) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(weights) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth_map) },
-            ],
-        }));
+        // The surface pass's group, reading `walls` as its wet grid.
+        let surface = |walls: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("liquid"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: style() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(field) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(behind) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(weights) },
+                    wgpu::BindGroupEntry { binding: 5, resource: walls.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(depth_map) },
+                    wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(coarse_map) },
+                ],
+            })
+        };
+        self.group = Some(surface(&self.no_walls));
         self.coarse_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("liquid coarse"),
             layout: &self.coarse_layout,
@@ -728,6 +761,7 @@ impl LiquidPass {
                 p.drops = Some((group, d.counts.clone()));
                 p.dots = dots;
                 p.wet = wet;
+                p.surface = Some(surface(&d.wet));
             }
         }
     }
@@ -806,7 +840,7 @@ impl LiquidPass {
         let mut pass = crate::begin_pass(encoder, target, "liquid surface", wgpu::LoadOp::Load);
         pass.set_pipeline(&self.surface);
         pass.set_bind_group(0, globals, &[]);
-        pass.set_bind_group(1, group, &[p.offset]);
+        pass.set_bind_group(1, p.surface.as_ref().unwrap_or(group), &[p.offset]);
         pass.draw(0..3, 0..1);
         if let (Some(dots), Some((_, counts))) = (&p.dots, &p.drops) {
             pass.set_pipeline(&self.dots);

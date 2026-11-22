@@ -608,3 +608,78 @@ not mirrored as walls are, so liquid still packs a little round a sunk ball. A c
 wall. Bigger time steps (`CFL` 0.2: a quarter fewer substeps) were measured and left alone:
 still water simmers at about twice the energy and creeps up. Speed and look: parts 2 and 3 of the plan.
 
+
+## The look at walls, thin streams, pinholes and the pour, as built (2026-11-22)
+
+Plan: `docs/superpowers/plans/liquid/look-walls-and-streams.md` (what was wrong at full size, the decisions,
+and an "As built" list of what changed while building). Part 3 of the owner's liquid review; only the
+picture and the Pour's births changed, nothing in the solver. One new setting: Look, **Streaks**.
+
+**The picture's walls come from the wet grid, with no guessed side.** The wet grid is 6 numbers a node now
+(`liquid_wet.wgsl`, `wet.rs::WET_FLOATS`): after the two halves of wetness, `face` and `side` (still the wet
+film's) come `line`, the node's signed distance from its wall's line exactly as the walls band has it, and
+`band` (0 off the band, 1 a filled wall, 2 + its half thickness a hollow one). `wall_at(q)` (the same
+function in `liquid_drops.wgsl` and `liquid.wgsl`) reads them between a point's four nodes and is only valid
+when all four are in the band and all filled or all hollow; the face distance is `line` for a filled wall
+and `|line| − half` for a hollow one, on the point's own side. Do not use `face`/`side` for anything but the
+film: `side` is a coin toss two or three cells inside the liquid, which is what notched every curved wall.
+
+**Drops are mirrored a quarter cell off the face** (`liquid_drops.wgsl`, `MIRROR_OFF` 0.25, the plane the
+physics mirrors them in, `WALL_GAP`). Drops stop half a cell off a face and rest half a cell apart, so
+mirrored in the face itself a row was missing and the field at the wall was only just over the Edge level: a
+pale scalloped edge along every wall. The wall's normal is the slope of `line` between the drop's own four
+nodes (no neighbours needed), so drops up to `reach + 0.5` cells off the face find it. A drop and its mirror
+are splatted up to `SPILL` 3 px past the face, not cut at it, and the surface pass makes the cut
+(`liquid.wgsl::wall_cover`: whole half a pixel outside the face, gone a pixel inside it). The field has no
+edge of its own at a wall, so there is no rim, highlight or lit bevel there.
+
+**A gap under a body of liquid at a wall closes** (`liquid.wgsl::wall_lift`, `whole_near`, in `fs_surface`).
+Drops rest up to a cell or so off a wall, unevenly, and sloshing liquid lifts off the floor in pockets. For a
+pixel within `LIFT` 1.5 cells of a face, the liquid is looked at `LIFT` cells off the face straight out
+(twice over in a corner). By as much as there is a body there, the pixel is covered and flat, with that
+liquid's colour if it has none of its own and its depth read from there. A body: the coarse field `LIFT_FAR`
+5 px further out is 0.5 to 0.75 of full, and the field is over the Edge level 1, 2 and 3 cells further out
+(`LIFT_DEEP`). The smooth coarse field decides how much on purpose: read off the field alone, every hole and
+edge near a wall was extruded into a hard-edged block. The three probes are there for streams: one a cell or
+two wide running down a side wall is not a body, and filling between it and the wall drew frayed blocks.
+
+**The picture behind is never read from inside a wall** (`liquid.wgsl::wall_bend`): the bent step stops
+`BEND_OFF` 0.4 cells short of a face. Glass (and any clear look with Bend) read the white wall through every
+rim near it: pale patches along the floor.
+
+**Thin liquid is drawn as streaks** (`liquid_drops.wgsl::drop_out`). By the liquid round a drop (`vd = 1 / j`):
+under `THIN_END` 0.65 of full (wholly under `THIN` 0.35) its splat is stretched along its velocity by the
+distance it goes in Streaks / 120 s over a droplet's width (at most `MOST_STRETCH` 6 times) and narrowed by
+that to the power −0.4. Liquid at rest and the inside of a body are round as ever. The lone-drop boost has
+no blind band now: under `SPARSE` 0.38 of full the splat is lifted to `SPARSE_TO` 0.9 of full, fading out
+by `SPARSE_END` 0.54 (the Edge level is half of full and a flat surface's own drops read about half, so the
+lift has to be over by there). **Streaks** (`LookSettings::streaks`, default 1, 0 draws round drops) rides
+in the style's `c.w`; it only draws, so it restarts nothing, and the stains' flat style sets it to 0.
+
+**Pinholes close** (`liquid.wgsl::pinhole_fill`, full looks only): where the coarse field (the 13 × 13 px
+mean) is nearly whole (`hi = clamp(1 − 0.003 × cell_px², 0.8, 0.97)`, from `hi − 0.12`), the pixel is
+covered and flat. Voids smaller than a cell, which the physics cannot see, drew as dark dots with a bright
+rim. A straight free edge reads a half and a hole a cell across reads under it: neither is touched.
+
+**A Pour under Rate 1 is a narrower, solid stream** (`births::pour_width`: Width × min(Rate, 1)). As many
+drops as before, born at resting density. Over the whole Width it was a curtain of spray three times too
+wide for the water in it, drawn only by the lone-drop boost. Rate 1 and above are unchanged.
+
+**Wiring** (`liquid.rs`): the surface pass's group has the wet grid (binding 5) and the coarse field
+(binding 7); each Liquid thing gets its own surface group with its body's wet grid (`Placed.surface`), the
+Particles Liquid layer's shared one binds a small empty buffer (its `st.v.x` is 0, so it is never read).
+
+**Looking at it**: `full_size_look.rs` takes `LOOK_FILE=<a saved scene file>` with `LOOK_ONLY=file` and
+`LOOK_TIMES=2,4,6` (seconds), which is how the owner's own scene was checked at 1:1.
+
+**Tests**: `the_wet_grid_keeps_each_wall_nodes_line_and_band` (bpe-gfx),
+`a_pour_under_rate_1_is_a_narrower_stream_not_a_curtain_of_spray` (bpe-kit unit), and in
+`liquid_look_pictures.rs`
+`the_liquid_meets_the_ring_all_the_way_round_with_no_pale_line_or_notch` (fails with the old shaders),
+`a_thin_falling_stream_draws_whole_not_as_beads` and
+`streaks_smear_a_falling_stream_and_leave_still_water_alone`.
+
+**Left** (the solver's, which the speed part is changing): balls are not mirrored, so liquid packs a little
+round a sunk ball; liquid climbs a ring's wall in a hard pour; a Fill's first-second jolt. In the picture:
+under a hole in the body the depth colour starts again (a paler column), and the wet film is brighter than a
+lit body beside it.

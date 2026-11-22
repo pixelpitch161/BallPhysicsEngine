@@ -62,7 +62,7 @@ pub fn style_of(
     let mut style = LiquidStyle {
         a: [look.level * inside, look.softness, look.roundness, code],
         b: [look.light_angle.to_radians(), look.shine, look.bend, look.tint],
-        c: [look.own_rim, look.opacity, 0.0, 0.0],
+        c: [look.own_rim, look.opacity, 0.0, look.streaks],
         sky_top: sky(look.sky_top),
         sky_bottom: sky(look.sky_bottom),
         d: real.map_or([0.0; 4], |r| [r.lit.max(0.0), r.stamp, r.blocks.clamp(0.0, 1.0), r.link]),
@@ -184,6 +184,7 @@ impl ThingDraw for LiquidDraw {
                 thin_film: 0.0,
                 outline: 0.0,
                 glow: 0.0,
+                streaks: 0.0,
                 softness: look.softness.max(1.0),
                 opacity: look.opacity * s.stain_strength,
                 ..look.clone()

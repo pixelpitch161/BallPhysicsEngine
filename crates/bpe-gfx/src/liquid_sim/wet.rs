@@ -18,6 +18,8 @@ const DRIP_PER_SECOND: f32 = 6.0;
 /// drops of volume 1/4), and the grid's fixed-point scale for mass (`S_M` in liquid_sim.wgsl).
 const WETS_FROM: f32 = 0.05;
 const S_M: f32 = 1048576.0;
+/// How many floats a node the wet grid keeps (liquid_wet.wgsl).
+const WET_FLOATS: u64 = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -83,8 +85,9 @@ impl WetPipeline {
     }
 }
 
-/// A body's wet grid: `4 × cells` floats on the card (two halves of wetness, each node's face
-/// distance and its side; see liquid_wet.wgsl) and its small uniform.
+/// A body's wet grid: `6 × cells` floats on the card (two halves of wetness, each node's face
+/// distance and its side, then its signed distance from its wall's line and its band, which the
+/// picture finds the drops' walls by; see liquid_wet.wgsl) and its small uniform.
 pub(super) struct WetGrid {
     pub(super) buffer: wgpu::Buffer,
     uniform: wgpu::Buffer,
@@ -115,7 +118,7 @@ impl WetGrid {
     /// A dry grid of `cells` nodes.
     pub(super) fn new(device: &wgpu::Device, cells: u32) -> WetGrid {
         // New buffers are zeroed: dry.
-        WetGrid { buffer: grid_buffer(device, (cells as u64 * 4 * 4).max(256)), uniform: uniform(device) }
+        WetGrid { buffer: grid_buffer(device, (cells as u64 * WET_FLOATS * 4).max(256)), uniform: uniform(device) }
     }
 
     /// A copy (queued on `encoder`).
@@ -164,5 +167,29 @@ impl WetGrid {
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups((cols * rows).div_ceil(256).max(1), 1, 1);
+    }
+}
+
+impl super::Body {
+    /// Each node's distance from its wall's line and its band (the wet grid's last two numbers a
+    /// node, liquid_wet.wgsl), row by row, waiting for the card. For tests.
+    pub fn read_walls(&self) -> (Vec<f32>, Vec<f32>) {
+        let device = &self.gpu.device;
+        let cells = (self.cols * self.rows) as u64;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("liquid walls read"),
+            size: 2 * cells * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid walls read") });
+        encoder.copy_buffer_to_buffer(&self.wet.buffer, 4 * cells * 4, &staging, 0, 2 * cells * 4);
+        self.gpu.queue.submit([encoder.finish()]);
+        staging.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let both = bytemuck::cast_slice::<u8, f32>(&staging.slice(..).get_mapped_range().expect("mapped")).to_vec();
+        let (line, band) = both.split_at(cells as usize);
+        (line.to_vec(), band.to_vec())
     }
 }

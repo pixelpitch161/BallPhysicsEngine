@@ -269,3 +269,91 @@ fn the_liquid_never_shadows_its_own_body() {
         }
     }
 }
+
+/// How many of the samples down the line x = `x` from y0 to y1 (world, every 4) are not liquid:
+/// within `near` of the background's colour beside them (200 to the left).
+fn gaps_down(pixels: &[u8], x: f32, (y0, y1): (f32, f32), near: f32) -> (usize, usize) {
+    let (mut gaps, mut all) = (0, 0);
+    let mut y = y0;
+    while y <= y1 {
+        let here = mean(pixels, (x, y), (x, y));
+        let beside = mean(pixels, (x - 200.0, y), (x - 200.0, y));
+        gaps += usize::from(distance(here, beside) < near);
+        all += 1;
+        y += 4.0;
+    }
+    (gaps, all)
+}
+
+#[test]
+fn a_thin_falling_stream_draws_whole_not_as_beads() {
+    let mut gpu = gpu();
+    // Water poured at Rate 0.3 from 380 above the middle onto a plate (its top 130 above it): half
+    // a second in, the stream is falling between them. It drew as a pitted curtain of beads.
+    let scene = bpe_kit::scenes::liquid_pour_on_a_shape(&bpe_kit::registry());
+    let px = draw(&mut gpu, &scene, 0.5, "stream");
+    let (gaps, all) = gaps_down(&px, 0.0, (-350.0, -260.0), 12.0);
+    assert_eq!(gaps, 0, "{gaps} of {all} samples down the stream's middle show the background");
+    // And it is a stream a third of the spout's 60 wide, not a curtain over all of it: the
+    // background shows 24 to either side of its middle (above where it spreads over the plate).
+    for x in [-24.0, 24.0] {
+        let (gaps, all) = gaps_down(&px, x, (-350.0, -290.0), 12.0);
+        assert!(gaps * 10 >= all * 9, "background at x {x}: {gaps} of {all} samples");
+    }
+}
+
+/// How many pixels of the box from (x0, y0) to (x1, y1) (world) differ between two pictures.
+fn differing(a: &[u8], b: &[u8], (x0, y0): (f32, f32), (x1, y1): (f32, f32)) -> usize {
+    let mut n = 0;
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            n += usize::from(distance(mean(a, (x, y), (x, y)), mean(b, (x, y), (x, y))) > 10.0);
+            x += 4.0;
+        }
+        y += 4.0;
+    }
+    n
+}
+
+#[test]
+fn streaks_smear_a_falling_stream_and_leave_still_water_alone() {
+    let mut gpu = gpu();
+    let streaks = |scene: &Scene, k: f32| {
+        let mut s = scene.clone();
+        set_look(&mut s, |l| l.streaks = k);
+        s
+    };
+    // The falling stream (see above) is drawn longer and thinner with Streaks than as round drops.
+    let stream = bpe_kit::scenes::liquid_pour_on_a_shape(&bpe_kit::registry());
+    let round = draw(&mut gpu, &streaks(&stream, 0.0), 0.5, "stream-round");
+    let smeared = draw(&mut gpu, &streaks(&stream, 4.0), 0.5, "stream-smeared");
+    let moved = differing(&round, &smeared, (-40.0, -380.0), (40.0, -200.0));
+    assert!(moved >= 6, "Streaks changes how the stream is drawn: {moved} pixels differ");
+    // Water at rest is the same picture whatever Streaks says (its body: half a second in, a thin
+    // film is still running down the ring above the waterline, and that does smear).
+    let still = deep(false, false);
+    let round = draw(&mut gpu, &streaks(&still, 0.0), 0.5, "still-round");
+    let smeared = draw(&mut gpu, &streaks(&still, 4.0), 0.5, "still-smeared");
+    let moved = differing(&round, &smeared, (-400.0, -260.0), (400.0, 300.0));
+    assert_eq!(moved, 0, "still water does not smear: {moved} pixels differ");
+}
+
+#[test]
+fn the_liquid_meets_the_ring_all_the_way_round_with_no_pale_line_or_notch() {
+    let mut gpu = gpu();
+    // Deep still water in the ring (its inner face 502 from the middle, the water's top at
+    // y = -200): at every angle under the water, the liquid just inside the face is the body's own
+    // colour a little further in. A scalloped pale edge and notches once ran along the wall.
+    let px = draw(&mut gpu, &deep(false, false), 0.5, "deep-wall");
+    for k in 0..=24 {
+        let a = (10.0 + 160.0 * k as f32 / 24.0).to_radians();
+        let at = |r: f32| {
+            let (x, y) = (r * a.cos(), r * a.sin());
+            mean(&px, (x - 2.0, y - 2.0), (x + 2.0, y + 2.0))
+        };
+        let (wall, body) = (at(500.0), at(468.0));
+        assert!(distance(wall, body) < 14.0, "at {:.0}°: {wall:?} at the wall, {body:?} in the body", a.to_degrees());
+    }
+}
