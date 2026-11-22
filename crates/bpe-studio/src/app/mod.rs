@@ -823,8 +823,15 @@ pub fn particles_readout(count: usize, ms: f32) -> String {
     format!("· Particles: {}, {ms:.1} ms", grouped(count))
 }
 
-/// The status line's liquid readout: "· Liquid: 120,000 drops, 3.2 ms" (how long the last liquid
-/// step took on the graphics card).
-pub fn liquid_readout(count: usize, ms: f32) -> String {
-    format!("· Liquid: {} drops, {ms:.1} ms", grouped(count))
+/// The status line's liquid readout: "· Liquid: 120,000 drops, 3.2 ms a step (38 small steps)":
+/// how long the last liquid step took on the graphics card (there are 240 a second of playback),
+/// and how many small steps it was cut into. Before the first step is back it says the drops only.
+pub fn liquid_readout(count: usize, ms: f32, substeps: u32) -> String {
+    let drops = grouped(count);
+    match substeps {
+        0 => format!("· Liquid: {drops} drops"),
+        _ if ms <= 0.0 => format!("· Liquid: {drops} drops"),
+        1 => format!("· Liquid: {drops} drops, {ms:.1} ms a step (1 small step)"),
+        n => format!("· Liquid: {drops} drops, {ms:.1} ms a step ({n} small steps)"),
+    }
 }

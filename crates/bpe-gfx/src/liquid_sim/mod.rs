@@ -68,6 +68,10 @@ pub const DROP_VOLUME: f32 = 0.25;
 /// Liquid steps submitted and not yet done before the stepping thread waits.
 const IN_FLIGHT: usize = 3;
 const WORKGROUP: u32 = 256;
+/// The grid pass's workgroup is one tile of this many nodes each way (`TILE` in liquid_sim.wgsl).
+const TILE: u32 = 16;
+/// Bytes of one pass's number (`Tick` in liquid_sim.wgsl).
+const TICK_BYTES: u64 = 16;
 /// The fewest drops a body's buffers hold.
 const LEAST_ROOM: u32 = 1024;
 
@@ -503,11 +507,18 @@ const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
     min_binding_size: None,
 };
 
-/// The bindings: 0 the step, 1 drops, 2 births, 3 counts, 4 grid, 5 solid, 6 words, 7 flags, 8
-/// sums, 9 items, 10 spare, 11 mixout, 12 feel.
+/// The bindings: 0 the step, 1 drops, 2 births, 3 counts, 4 the grid's sums being added to (or
+/// read by the grid pass), 5 solid, 6 words, 7 flags, 8 sums, 9 items, 10 spare, 11 mixout, 12
+/// feel, 13 to 15 Un-mix's samples, 16 nodes, 17 the grid's other sums, 18 the tiles' stamps, 19
+/// the pass's number (one entry of [`LiquidCard::ticks`], at a dynamic offset).
 fn binding_type(b: u32) -> wgpu::BindingType {
     match b {
         0 => UNIFORM,
+        19 => wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: std::num::NonZeroU64::new(TICK_BYTES),
+        },
         2 | 6 | 14 | 15 => storage(true),
         _ => storage(false),
     }
@@ -519,10 +530,10 @@ const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_births_done", &[0, 3]),
     ("cs_clear_solid", &[0, 5]),
     ("cs_put_solid", &[0, 5, 6]),
-    ("cs_clear_grid", &[0, 4]),
-    ("cs_p2g", &[0, 1, 3, 4, 5]),
-    ("cs_grid", &[0, 4, 5]),
-    ("cs_g2p", &[0, 1, 3, 4, 5, 6, 12]),
+    ("cs_p2g", &[0, 1, 3, 4, 5, 18, 19]),
+    ("cs_grid", &[0, 4, 5, 16, 17, 18, 19]),
+    ("cs_g2p", &[0, 1, 3, 5, 6, 12, 16, 19]),
+    ("cs_g2p2g", &[0, 1, 3, 4, 5, 6, 12, 16, 18, 19]),
     ("cs_scan_cells", &[0, 3]),
     ("cs_scan_drops", &[0, 3]),
     ("cs_bin_clear", &[0, 7]),
@@ -536,8 +547,7 @@ const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_flag", &[0, 1, 3, 7, 10]),
     ("cs_scatter", &[0, 1, 3, 7, 8, 10]),
     ("cs_packed", &[3]),
-    ("cs_feel", &[0, 3, 4, 6, 12]),
-    ("cs_tick", &[3]),
+    ("cs_feel", &[0, 3, 6, 12, 16, 19]),
     ("cs_record", &[0, 1, 3, 13]),
     ("cs_rewind", &[0, 1, 3, 6, 14, 15]),
     ("cs_rewind_done", &[0, 3, 14, 15]),
@@ -549,10 +559,10 @@ enum E {
     BirthsDone,
     ClearSolid,
     PutSolid,
-    ClearGrid,
     P2g,
     Grid,
     G2p,
+    G2p2g,
     ScanCells,
     ScanDrops,
     BinClear,
@@ -567,7 +577,6 @@ enum E {
     Scatter,
     Packed,
     Feel,
-    Tick,
     Record,
     Rewind,
     RewindDone,
@@ -582,6 +591,10 @@ pub struct LiquidCard {
     wet: Arc<wet::WetPipeline>,
     /// The stats pass (part 5).
     stats: stats::Pipe,
+    /// The numbers 0 to [`MOST_SUBSTEPS`], `tick_stride` bytes apart: a pass is told which of a
+    /// liquid step's passes it is by the offset this is bound at.
+    ticks: wgpu::Buffer,
+    tick_stride: u32,
     /// Dropped bodies' scratch, by grid nodes, for the next copy to step with: the editor copies
     /// its body about once a picture (a snapshot shares it), and a new grid each time was most of
     /// a copy's cost.
@@ -667,7 +680,18 @@ impl LiquidCard {
             .collect();
         let wet = Arc::new(wet::WetPipeline::new(&device));
         let stats = stats::pipe(&device);
-        LiquidCard { device, queue, pipelines, wet, stats, spares: Mutex::new(Vec::new()) }
+        let tick_stride = device.limits().min_uniform_buffer_offset_alignment.max(TICK_BYTES as u32);
+        let mut numbers = vec![0u8; tick_stride as usize * (MOST_SUBSTEPS as usize + 1)];
+        for n in 0..=MOST_SUBSTEPS {
+            let at = (n * tick_stride) as usize;
+            numbers[at..at + 4].copy_from_slice(&n.to_le_bytes());
+        }
+        let ticks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("liquid pass numbers"),
+            contents: &numbers,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        LiquidCard { device, queue, pipelines, wet, stats, ticks, tick_stride, spares: Mutex::new(Vec::new()) }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -705,13 +729,38 @@ impl Grows {
     }
 }
 
+/// The entry points a liquid step runs (the first ones of [`E`]): those [`Bound`] keeps groups for.
+const STEP_ENTRIES: usize = E::Record as usize;
+
+/// The bind groups of a body's liquid steps, kept from step to step: they change only when a
+/// buffer they name is replaced (the drops grow, a bigger batch of births or balls, another
+/// body's scratch), and making them all every liquid step was most of what the processor did.
+struct Bound {
+    /// The buffers they were made from.
+    key: Vec<wgpu::Buffer>,
+    /// By entry point ([`E`]), then by which of the grid's two buffers of sums is at binding 4
+    /// (the other is at 17). Entry points that name neither have the same group twice.
+    groups: Vec<[wgpu::BindGroup; 2]>,
+}
+
 /// What only stepping uses (the walls band is here too: a copy uploads it again).
 struct Scratch {
     uniform: wgpu::Buffer,
     births: Grows,
     words: Grows,
-    grid: wgpu::Buffer,
+    /// The grid's sums, twice: the drops scatter into one while the grid pass that read the
+    /// other has already cleared it for the scatter after.
+    grids: [wgpu::Buffer; 2],
+    /// Which of `grids` is all zero: the one the next scatter adds to.
+    clean: usize,
+    /// Each node's speeds, volume and walls' share, as the last grid pass left them.
+    nodes: wgpu::Buffer,
+    /// Each tile's stamp: the number of the last scatter that added liquid to it.
+    stamps: wgpu::Buffer,
+    /// The number of the last scatter (they count on from step to step, wrapping).
+    stamp: u32,
     solid: wgpu::Buffer,
+    bound: Option<Bound>,
     flags: Grows,
     sums: Grows,
     items: Grows,
@@ -741,8 +790,21 @@ impl Scratch {
             }),
             births: Grows::new("liquid births", STORE),
             words: Grows::new("liquid words", STORE),
-            grid: fixed("liquid grid", cells as u64 * 16),
+            // (New buffers are zeroed: both are clean.)
+            grids: [fixed("liquid grid", cells as u64 * 16), fixed("liquid grid", cells as u64 * 16)],
+            clean: 0,
+            nodes: fixed("liquid nodes", cells as u64 * 16),
+            // One a tile. A grid is at least 8 nodes each way, so it has under a tile to 16 nodes.
+            stamps: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("liquid tiles"),
+                size: ((cells as u64 / 16 + 16) * 4).max(256),
+                // (Read back by a test, to see that tiles are skipped.)
+                usage: STORE.union(wgpu::BufferUsages::COPY_SRC),
+                mapped_at_creation: false,
+            }),
+            stamp: 0,
             solid: fixed("liquid walls", cells as u64 * 32),
+            bound: None,
             flags: Grows::new("liquid flags", STORE),
             sums: Grows::new("liquid sums", STORE),
             items: Grows::new("liquid bins", STORE),
@@ -757,7 +819,9 @@ const WAITING: u8 = 0;
 const MAPPED: u8 = 1;
 const FAILED: u8 = 2;
 
-/// The small map-read that brings the count back late, and when the step it belongs to was sent.
+/// The small map-read that brings the count back late (its first 32 bytes), with how long the
+/// step it belongs to took: on the card when the device can time (the two timestamps after the
+/// count), or else from when it was sent to when the answer was noticed.
 struct CountReader {
     staging: wgpu::Buffer,
     busy: bool,
@@ -766,6 +830,52 @@ struct CountReader {
     sent: Instant,
     /// When the card answered (micros since `sent`).
     took: Arc<AtomicU32>,
+    /// The substeps of the step it belongs to.
+    substeps: u32,
+    timer: Option<StepTimer>,
+}
+
+/// Times a liquid step's passes on the card itself: a timestamp as they start and one as they
+/// end. Only on a device made with timestamps (the editor asks for them where the card has them).
+struct StepTimer {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    /// Nanoseconds a tick.
+    period: f32,
+}
+
+impl CountReader {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> CountReader {
+        let timer = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| StepTimer {
+            set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("liquid step timer"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            }),
+            resolve: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("liquid step timer"),
+                size: 16,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            period: queue.get_timestamp_period(),
+        });
+        CountReader {
+            staging: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("liquid count"),
+                size: 48,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            busy: false,
+            answer: Arc::new(AtomicU8::new(WAITING)),
+            after: 0,
+            sent: Instant::now(),
+            took: Arc::new(AtomicU32::new(0)),
+            substeps: 0,
+            timer,
+        }
+    }
 }
 
 /// The drops of every Liquid thing of a world, on the card, and the grid they move on.
@@ -786,6 +896,8 @@ pub struct Body {
     ms: Arc<AtomicU32>,
     in_flight: VecDeque<wgpu::SubmissionIndex>,
     steps: u32,
+    /// The substeps of the last answered liquid step (the one [`Body::step_ms`] timed).
+    substeps: u32,
     /// How wet each node near a wall is (liquid part 3, Wet walls).
     wet: wet::WetGrid,
     /// Un-mix's samples of the drops, oldest first. Never changed once written, so copies share
@@ -894,6 +1006,7 @@ impl Clone for Body {
             ms: Arc::new(AtomicU32::new(self.ms.load(Ordering::Relaxed))),
             in_flight: VecDeque::new(),
             steps: self.steps,
+            substeps: self.substeps,
             history: self.history.clone(),
             into: self.into,
             wet,
@@ -903,7 +1016,9 @@ impl Clone for Body {
 
 impl std::ops::Drop for Body {
     fn drop(&mut self) {
-        if let Some(scratch) = self.scratch.take() {
+        if let Some(mut scratch) = self.scratch.take() {
+            // (Its bind groups name this body's drops: kept, they would keep the drops' memory.)
+            scratch.bound = None;
             self.gpu.give_spare(self.cols * self.rows, scratch);
         }
     }
@@ -937,6 +1052,7 @@ impl Body {
             ms: Arc::new(AtomicU32::new(0)),
             in_flight: VecDeque::new(),
             steps: 0,
+            substeps: 0,
             history: VecDeque::new(),
             into: 0,
             wet,
@@ -962,10 +1078,17 @@ impl Body {
         self.hint.load(Ordering::Relaxed)
     }
 
-    /// How long the last answered liquid step took on the card, in milliseconds (with the wait in
-    /// its queue).
+    /// How long the last answered liquid step took, in milliseconds: its passes on the card
+    /// itself when the device can time them, or else from when it was sent to when its answer
+    /// was noticed (which counts the wait behind the steps queued before it).
     pub fn step_ms(&self) -> f32 {
         f32::from_bits(self.ms.load(Ordering::Relaxed))
+    }
+
+    /// How many substeps the last answered liquid step took (the step [`Body::step_ms`] timed): 0
+    /// until the first answer is back.
+    pub fn substeps(&self) -> u32 {
+        self.substeps
     }
 
     /// Bytes the drops take on the card (and what a copy of them takes).
@@ -1048,7 +1171,7 @@ impl Body {
         step.flags[2] = ball_count;
         step.words_at = [walls_at, wall_count, balls_at, starts_at];
         step.ball_grid = [ball_cols, ball_rows, BALL_CELL.to_bits(), items_at];
-        step.feel = [u32::from(input.feel && ball_count > 0), RING, 0, 0];
+        step.feel = [u32::from(input.feel && ball_count > 0), RING, scratch.stamp, 0];
         queue.write_buffer(&scratch.uniform, 0, bytemuck::bytes_of(&step));
 
         let drop_size = std::mem::size_of::<Drop>() as u64;
@@ -1066,145 +1189,172 @@ impl Body {
         let mixout = scratch.mixout.at_least(device, room * 48);
         let felt = if input.feel { ball_count } else { 0 };
         let feel = scratch.feel.at_least(device, (felt.max(1) as usize * FEEL_WORDS * 4) as u64);
-        let buffers: [&wgpu::Buffer; 13] = [
-            &scratch.uniform,
-            &self.drops,
-            &births_buffer,
-            &self.counts,
-            &scratch.grid,
-            &scratch.solid,
-            &words_buffer,
-            &flags,
-            &sums,
-            &items,
-            &spare,
-            &mixout,
-            &feel,
+        // The buffers by binding (0 to 12, the grid's first sums at 4), then the grid's second
+        // sums, the nodes and the tiles' stamps.
+        let key = vec![
+            scratch.uniform.clone(),
+            self.drops.clone(),
+            births_buffer,
+            self.counts.clone(),
+            scratch.grids[0].clone(),
+            scratch.solid.clone(),
+            words_buffer,
+            flags,
+            sums,
+            items,
+            spare,
+            mixout,
+            feel.clone(),
+            scratch.grids[1].clone(),
+            scratch.nodes.clone(),
+            scratch.stamps.clone(),
         ];
-        let group = |e: E| {
-            let (_, layout) = gpu.pipeline(e);
-            let bindings = ENTRIES[e as usize].1;
-            let entries: Vec<wgpu::BindGroupEntry> = bindings.iter().map(|&b| entry(b, buffers[b as usize])).collect();
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("liquid step"),
-                layout,
-                entries: &entries,
-            })
-        };
-        let all = [
-            E::Births,
-            E::BirthsDone,
-            E::ClearSolid,
-            E::PutSolid,
-            E::ClearGrid,
-            E::P2g,
-            E::Grid,
-            E::G2p,
-            E::ScanCells,
-            E::ScanDrops,
-            E::BinClear,
-            E::BinCount,
-            E::ScanLocal,
-            E::ScanSums,
-            E::BinZero,
-            E::BinPlace,
-            E::Mix,
-            E::MixApply,
-            E::Flag,
-            E::Scatter,
-            E::Packed,
-            E::Feel,
-            E::Tick,
-        ];
-        let groups: Vec<wgpu::BindGroup> = all.iter().map(|e| group(*e)).collect();
+        if scratch.bound.as_ref().is_none_or(|b| b.key != key) {
+            // Binding `b` with sums `a` the ones being added to.
+            let at = |b: u32, a: usize| match (b, a) {
+                (4, 1) | (17, 0) => &key[13],
+                (4, _) | (17, _) => &key[4],
+                (16, _) => &key[14],
+                (18, _) => &key[15],
+                _ => &key[b as usize],
+            };
+            let tick = wgpu::BindGroupEntry {
+                binding: 19,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &gpu.ticks,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(TICK_BYTES),
+                }),
+            };
+            let groups = ENTRIES[..STEP_ENTRIES]
+                .iter()
+                .zip(&gpu.pipelines)
+                .map(|((_, bindings), (_, layout))| {
+                    let make = |a: usize| {
+                        let entries: Vec<wgpu::BindGroupEntry> =
+                            bindings.iter().map(|&b| if b == 19 { tick.clone() } else { entry(b, at(b, a)) }).collect();
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("liquid step"),
+                            layout,
+                            entries: &entries,
+                        })
+                    };
+                    let first = make(0);
+                    let second = if bindings.iter().any(|b| matches!(b, 4 | 17)) { make(1) } else { first.clone() };
+                    [first, second]
+                })
+                .collect();
+            scratch.bound = Some(Bound { key, groups });
+        }
+        let bound_groups = &scratch.bound.as_ref().expect("just made").groups;
         let drop_groups = bound.max(1).div_ceil(WORKGROUP);
         let cell_groups = cells.div_ceil(WORKGROUP);
+        // The count comes back late, and with it how long the card took, when the last asked for
+        // has been taken.
+        let ask = self.reader.as_ref().is_none_or(|r| !r.busy);
+        let reader = self.reader.get_or_insert_with(|| CountReader::new(device, queue));
+        let timer = reader.timer.as_ref().filter(|_| ask);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid step") });
         if input.feel && input.fresh {
             encoder.clear_buffer(&feel, 0, None);
         }
+        // The sums the drops scatter into next: the clean ones first.
+        let mut a = scratch.clean;
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("liquid step"),
-                timestamp_writes: None,
+                timestamp_writes: timer.map(|t| wgpu::ComputePassTimestampWrites {
+                    query_set: &t.set,
+                    beginning_of_pass_write_index: Some(0),
+                    end_of_pass_write_index: Some(1),
+                }),
             });
-            let mut run = |e: E, n: u32| {
+            // Runs entry point `e` over `n` workgroups (`n.0` × `n.1`), with sums `a` at binding 4
+            // and, for the passes that are told their number, as pass `number`.
+            let mut run_as = |e: E, a: usize, n: (u32, u32), number: u32| {
                 pass.set_pipeline(&gpu.pipeline(e).0);
-                pass.set_bind_group(0, &groups[e as usize], &[]);
-                pass.dispatch_workgroups(n.max(1), 1, 1);
+                let offset = [number * gpu.tick_stride];
+                let numbered = ENTRIES[e as usize].1.contains(&19);
+                pass.set_bind_group(0, &bound_groups[e as usize][a], if numbered { &offset[..] } else { &[] });
+                pass.dispatch_workgroups(n.0.max(1), n.1.max(1), 1);
             };
-            run(E::Births, births.max(1).div_ceil(WORKGROUP));
-            run(E::BirthsDone, 1);
+            let mut run = |e: E, _: usize, n: u32| run_as(e, 0, (n, 1), 0);
+            run(E::Births, 0, births.max(1).div_ceil(WORKGROUP));
+            run(E::BirthsDone, 0, 1);
             if put_walls {
-                run(E::ClearSolid, cell_groups);
+                run(E::ClearSolid, 0, cell_groups);
                 if wall_count > 0 {
-                    run(E::PutSolid, wall_count.div_ceil(WORKGROUP));
+                    run(E::PutSolid, 0, wall_count.div_ceil(WORKGROUP));
                 }
             }
-            for _ in 0..step.grid[2] {
-                run(E::ClearGrid, cell_groups);
-                run(E::P2g, drop_groups);
-                run(E::Grid, cell_groups);
-                run(E::G2p, drop_groups);
-                run(E::Tick, 1);
+            // Two passes a substep: the grid pass works out the nodes from sums `a` and clears the
+            // other sums, and one pass over the drops gathers from the nodes, moves each drop and
+            // scatters it into those cleared sums for the next substep. Only the first scatter and
+            // the last gather stand alone (the drops are born, mixed and packed between them).
+            // Pass 0 is the first scatter; grid pass n and the drops' pass after it are pass n.
+            let substeps = step.grid[2];
+            let tiles = (self.cols.div_ceil(TILE), self.rows.div_ceil(TILE));
+            run_as(E::P2g, a, (drop_groups, 1), 0);
+            for n in 1..=substeps {
+                run_as(E::Grid, a, tiles, n);
+                if n < substeps {
+                    a = 1 - a;
+                    run_as(E::G2p2g, a, (drop_groups, 1), n);
+                } else {
+                    run_as(E::G2p, a, (drop_groups, 1), n);
+                }
             }
+            let mut run = |e: E, _: usize, n: u32| run_as(e, 0, (n, 1), substeps);
             if felt > 0 {
-                run(E::Feel, felt.div_ceil(WORKGROUP));
+                run(E::Feel, 0, felt.div_ceil(WORKGROUP));
             }
             if step.flags[0] == 1 {
-                run(E::BinClear, cell_groups);
-                run(E::BinCount, drop_groups);
-                run(E::ScanCells, 1);
-                run(E::ScanLocal, cell_groups);
-                run(E::ScanSums, 1);
-                run(E::BinZero, cell_groups);
-                run(E::BinPlace, drop_groups);
-                run(E::Mix, drop_groups);
-                run(E::MixApply, drop_groups);
+                run(E::BinClear, 0, cell_groups);
+                run(E::BinCount, 0, drop_groups);
+                run(E::ScanCells, 0, 1);
+                run(E::ScanLocal, 0, cell_groups);
+                run(E::ScanSums, 0, 1);
+                run(E::BinZero, 0, cell_groups);
+                run(E::BinPlace, 0, drop_groups);
+                run(E::Mix, 0, drop_groups);
+                run(E::MixApply, 0, drop_groups);
             }
-            run(E::Flag, drop_groups);
-            run(E::ScanDrops, 1);
-            run(E::ScanLocal, drop_groups);
-            run(E::ScanSums, 1);
-            run(E::Scatter, drop_groups);
-            run(E::Packed, 1);
+            run(E::Flag, 0, drop_groups);
+            run(E::ScanDrops, 0, 1);
+            run(E::ScanLocal, 0, drop_groups);
+            run(E::ScanSums, 0, 1);
+            run(E::Scatter, 0, drop_groups);
+            run(E::Packed, 0, 1);
         }
+        // Sums `a` are the last substep's, and the last grid pass cleared the other. Each substep
+        // scattered once.
+        scratch.clean = 1 - a;
+        scratch.stamp = scratch.stamp.wrapping_add(step.grid[2]);
         // How wet the walls are, after the last substep's grid (liquid part 3).
         let dt = input.step.time[0] * step.grid[2] as f32;
-        let grids = (&scratch.grid, &scratch.solid);
+        let grids = (&scratch.grids[a], &scratch.solid);
         self.wet.run(device, queue, &gpu.wet, &mut encoder, (self.cols, self.rows), self.steps % 2, dt, grids);
-        let ask = self.reader.as_ref().is_none_or(|r| !r.busy);
         if ask {
-            let reader = self.reader.get_or_insert_with(|| CountReader {
-                staging: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("liquid count"),
-                    size: 32,
-                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-                busy: false,
-                answer: Arc::new(AtomicU8::new(WAITING)),
-                after: 0,
-                sent: Instant::now(),
-                took: Arc::new(AtomicU32::new(0)),
-            });
             encoder.copy_buffer_to_buffer(&self.counts, 0, &reader.staging, 0, 32);
+            if let Some(t) = timer {
+                encoder.resolve_query_set(&t.set, 0..2, &t.resolve, 0);
+                encoder.copy_buffer_to_buffer(&t.resolve, 0, &reader.staging, 32, 16);
+            }
         }
         let index = queue.submit([encoder.finish()]);
         self.in_flight.push_back(index);
-        if let Some(reader) = self.reader.as_mut() {
-            if ask {
-                reader.busy = true;
-                reader.after = 0;
-                reader.sent = Instant::now();
-                let (answer, took, sent) = (reader.answer.clone(), reader.took.clone(), reader.sent);
-                reader.staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-                    took.store(sent.elapsed().as_micros().min(u32::MAX as u128) as u32, Ordering::Relaxed);
-                    answer.store(if r.is_ok() { MAPPED } else { FAILED }, Ordering::Release);
-                });
-            } else {
-                reader.after = reader.after.saturating_add(births);
-            }
+        if ask {
+            reader.busy = true;
+            reader.after = 0;
+            reader.substeps = step.grid[2];
+            reader.sent = Instant::now();
+            let (answer, took, sent) = (reader.answer.clone(), reader.took.clone(), reader.sent);
+            reader.staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                took.store(sent.elapsed().as_micros().min(u32::MAX as u128) as u32, Ordering::Relaxed);
+                answer.store(if r.is_ok() { MAPPED } else { FAILED }, Ordering::Release);
+            });
+        } else {
+            reader.after = reader.after.saturating_add(births);
         }
         let _ = device.poll(wgpu::PollType::Poll);
         self.walls_ready = true;
@@ -1225,15 +1375,24 @@ impl Body {
         let Some(reader) = self.reader.as_mut().filter(|r| r.busy) else { return };
         match reader.answer.swap(WAITING, Ordering::Acquire) {
             MAPPED => {
+                let mut ms = reader.took.load(Ordering::Relaxed) as f32 / 1000.0;
                 if let Ok(view) = reader.staging.slice(..).get_mapped_range() {
                     let words: &[u32] = bytemuck::cast_slice(&view);
                     let count = words[1];
                     self.hint.store(count, Ordering::Relaxed);
                     self.bound = self.bound.min(count.saturating_add(reader.after));
+                    if let Some(timer) = &reader.timer {
+                        let tick = |at: usize| u64::from(words[at]) | (u64::from(words[at + 1]) << 32);
+                        let on_card = tick(10).wrapping_sub(tick(8)) as f64 * timer.period as f64 / 1e6;
+                        // (A span of a minute or more is a counter that started again.)
+                        if on_card > 0.0 && on_card < 60_000.0 {
+                            ms = on_card as f32;
+                        }
+                    }
                 }
                 reader.staging.unmap();
                 reader.busy = false;
-                let ms = reader.took.load(Ordering::Relaxed) as f32 / 1000.0;
+                self.substeps = reader.substeps;
                 self.ms.store(ms.to_bits(), Ordering::Relaxed);
             }
             FAILED => reader.busy = false,

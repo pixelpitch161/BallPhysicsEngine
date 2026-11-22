@@ -279,7 +279,7 @@ jobs:
           $out
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Timings on the owner's graphics card"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-          $out | Where-Object { "$_" -match 'card:|ms per second|ms a frame' } | ForEach-Object { "$_" } |
+          $out | Where-Object { "$_" -match '# card|# scene|\t(Normal|Fine)\t|card:|ms a frame' } | ForEach-Object { "$_" } |
             Add-Content -Path $env:GITHUB_STEP_SUMMARY
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
 
