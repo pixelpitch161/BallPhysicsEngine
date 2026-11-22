@@ -72,6 +72,11 @@ slow-timeout = { period = "120s" }
 failure-output = "immediate-final"
 final-status-level = "slow"
 
+# As on the pc profile: the sound job's tests time themselves against real time, so each runs alone.
+[[profile.gpu.overrides]]
+filter = "package(bpe-studio) & test(/^sound_job::tests::/)"
+threads-required = "num-test-threads"
+
 [[profile.gpu.overrides]]
 filter = """
 binary(golden_liquid) | binary(liquid_sound) | binary(ready_look_pictures) | binary(liquid_look_pictures)

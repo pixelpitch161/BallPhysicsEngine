@@ -86,7 +86,9 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   library, which the sound's oscillators still use; the physics goldens run here too, `bpe_core::maths`), then `unlit_pictures`, `lit_flat_pinned` and `golden_liquid` in
   release, then the liquid and light timings into the job summary. The Linux test machines set
   `BPE_SKIP_GPU_TESTS=1`, so every test that draws ends there as passed at `test_device()` (under nextest it exits
-  the test's process with 0; under plain `cargo test` it returns an error).
+  the test's process with 0; under plain `cargo test` it returns an error). The sound job's tests
+  (`sound_job::tests`) each run alone there, as on the `pc` profile: they time themselves against real time, and
+  beside seven other tests on a processor the Linux checks share they failed now and then (2026-11-22).
 - **No fallback**: while the PC is off this job waits in the queue and the "Tests" gate stays pending (GitHub cancels
   a job queued 24 hours; re-run it once the PC is back). A fork's pull request never runs there, so its gate fails.
 - **Pictures pinned to the card**: `crates/bpe-kit/tests/golden-unlit*.txt`, `golden-lit-flat*.txt`,
