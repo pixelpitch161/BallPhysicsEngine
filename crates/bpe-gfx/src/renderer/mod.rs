@@ -531,6 +531,25 @@ impl Renderer {
         let (width, height) = self.size();
         read_rgba8(device, queue, &self.targets.output, width, height)
     }
+
+    /// DIAGNOSTIC: the lighting surface or field picture (Rgba16Float) as f32s, with its width.
+    pub fn debug_read_lighting(&self, device: &wgpu::Device, queue: &wgpu::Queue, which: &str) -> (u32, Vec<f32>) {
+        let (tex, w, h) = self.lighting.as_ref().unwrap().debug_texture(which).unwrap();
+        let bytes = read_bytes(device, queue, tex, w, h, 8).unwrap();
+        let f16 = |b: u16| -> f32 {
+            let s = if b >> 15 == 1 { -1.0 } else { 1.0 };
+            let e = ((b >> 10) & 31) as i32;
+            let m = (b & 1023) as f32;
+            if e == 0 {
+                s * m * 2f32.powi(-24)
+            } else if e == 31 {
+                s * f32::INFINITY
+            } else {
+                s * (1.0 + m / 1024.0) * 2f32.powi(e - 15)
+            }
+        };
+        (w, bytes.chunks(2).map(|c| f16(u16::from_le_bytes([c[0], c[1]]))).collect())
+    }
 }
 
 /// Copies an `Rgba8Unorm` texture `width` × `height` back to the CPU as tightly packed RGBA bytes.
@@ -541,7 +560,18 @@ pub(crate) fn read_rgba8(
     width: u32,
     height: u32,
 ) -> anyhow::Result<Vec<u8>> {
-    let row = width as usize * 4;
+    read_bytes(device, queue, texture, width, height, 4)
+}
+
+pub(crate) fn read_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    bpp: usize,
+) -> anyhow::Result<Vec<u8>> {
+    let row = width as usize * bpp;
     let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
