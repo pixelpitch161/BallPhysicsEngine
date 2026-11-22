@@ -310,7 +310,9 @@ pub const CARD_GOLDENS_REQUIRED: &str = "BPE_CARD_GOLDENS_REQUIRED";
 
 /// The decision of [`card_golden`], from the file's text and this card's name.
 pub fn card_golden_compare(text: &str, here: &str) -> CardGolden {
-    let (first, expected) = text.split_once('\n').unwrap_or((text, ""));
+    // A Windows checkout may turn the file's line ends into CRLF.
+    let text = text.replace("\r\n", "\n");
+    let (first, expected) = text.split_once('\n').unwrap_or((&text, ""));
     let made_on = first.strip_prefix(MADE_ON).unwrap_or("an unnamed card").trim();
     let card = |s: &str| s.split(" (").next().unwrap_or(s).trim().to_string();
     if card(made_on) != card(here) {
@@ -339,6 +341,9 @@ mod test_device_tests {
         let newer = card_golden_compare(file, "AMD Radeon RX 9070 XT (AMD proprietary driver, 26.12.1)");
         let CardGolden::Compare { driver_note: Some(note), .. } = newer else { panic!("{newer:?}") };
         assert!(note.contains("26.12.1") && note.contains("Refresh GPU pictures"));
+        let crlf =
+            card_golden_compare(&file.replace('\n', "\r\n"), "AMD Radeon RX 9070 XT (AMD proprietary driver, 26.11.2)");
+        assert_eq!(crlf, CardGolden::Compare { expected: "scene\t1\tabc\n".into(), driver_note: None });
         let other = card_golden_compare(file, "llvmpipe (LLVM 19.1.1, 256 bits) (llvmpipe, Mesa 25.2)");
         assert!(matches!(other, CardGolden::NotCompared(why) if why.contains("RX 9070 XT")));
     }
