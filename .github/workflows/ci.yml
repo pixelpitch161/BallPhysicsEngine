@@ -263,7 +263,13 @@ jobs:
         run: vulkaninfo --summary | Select-String -Pattern 'deviceName|driverName|driverInfo'
       # Below normal (the tests inherit it), so the Linux checks running beside this job on the same processor, some
       # of which time themselves against real time, aren't crowded out. The runner itself stays at normal priority.
+      - name: TEMPORARY exit-crash diagnosis
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          STRESS_RUNS: "150"
+        run: .github/scripts/exit-crash-diag.ps1
       - name: Tests on the card
+        if: github.event_name != 'workflow_dispatch'
         run: |
           (Get-Process -Id $PID).PriorityClass = 'BelowNormal'
           cargo nextest run --workspace --profile gpu --no-tests=pass -E '${{ needs.changes.outputs.filter }}'
