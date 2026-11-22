@@ -34,3 +34,9 @@ binary(golden_liquid) | binary(liquid_sound) | binary(ready_look_pictures) | bin
 | test(/^things::liquid::tests_sound::/) | (package(bpe-sound) & binary(alloc))
 """
 priority = 100
+
+# A test that compares two timings of its own needs the machine to itself: at 12 at a time "Osc B off" once measured
+# slower than on.
+[[profile.pc.overrides]]
+filter = "package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing)"
+threads-required = "num-test-threads"

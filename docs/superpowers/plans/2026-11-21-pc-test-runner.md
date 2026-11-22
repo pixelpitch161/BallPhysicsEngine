@@ -111,3 +111,37 @@ Verify: `actionlint` if available (else careful read); push the branch and watch
 - Don't mount Windows drives or enable interop in `bpe-ci`.
 - Don't route `fmt` or the gate job to the PC.
 - Don't build or install the Ball Studio exe.
+
+## As built (2026-11-22)
+
+What changed from the plan while building it on the PC:
+
+- **WSL install**: Virtual Machine Platform reported Enabled, but its files (vmcompute.exe, vmwp.exe) were never
+  put in place, because Windows kept deferring the change ("Deferring shutdown processing at users request" in
+  CBS.log) while a .NET update was waiting, and the Start menu had no "Update and restart". A restart through
+  `InitiateShutdownW` with `SHUTDOWN_INSTALL_UPDATES` applied it. `wsl --install` then failed on TLS errors, so the
+  Ubuntu 24.04.5 image was downloaded with a resuming curl loop, checked against Microsoft's published SHA-256 and
+  installed with `wsl --install --from-file`.
+- **This PC's network damages downloads now and then** (TLS "bad record mac", apt hash mismatches), so apt, curl,
+  rustup and cargo all retry (`Acquire::Retries`, `--retry-all-errors`, `RUSTUP_MAX_RETRIES`, `CARGO_NET_RETRY`).
+- **gh** comes from GitHub's apt repository: Ubuntu's 2.45 gives up on the device login with `slow_down`.
+- **Users**: jobs run as `runner`; the GitHub login lives with user `beat` (heartbeat, registration), whose home the
+  jobs can't read (review finding). The heartbeat checks that GitHub lists a `bpe-pc` runner online, not just that
+  the services run.
+- **Runner environment**: the runner's own `.path` didn't reach the jobs, so PATH and the `.env` file are set in
+  `bpe-runner@.service`; `KillMode=control-group` (with `process`, a restart left old listeners taking jobs).
+- **Four runners**, one per heavy job, so the release goldens don't wait for a free runner.
+- **Build files**: one folder per job (`/home/runner/target/<job>`, a `ci.yml` step), not per runner: a job lands on
+  any runner, and per-runner folders meant rebuilding whenever it changed runner. The weekly sweep timer became a
+  job-start hook (`job-started.sh`, the name must end in `.sh`) that empties them past 150 GB when no other job runs.
+- **Toolchain and nextest** are installed once by `setup-wsl.sh`; CI's `rustup toolchain install` runs under
+  `flock` (three jobs installing at once broke ~/.rustup on the first run) and the nextest install is skipped on
+  the PC.
+- **Lavapipe**: the ICD file is `lvp_icd.json`, and Ubuntu's Mesa 25.2 has no `dzn` driver, so only llvmpipe is
+  seen anyway. `LP_NUM_THREADS=2` and 12 tests at a time (bpe-gfx unit tests: 160 s at 8 x all threads, 127 s at
+  12 x 2, 123 s at 16 x 1). The slowest tests start first (nextest `priority`).
+- **The VM priority** can't be lowered from Windows (access denied, even elevated), so keep-alive only starts the
+  distro; the runners' `Nice=10` applies inside.
+- **Manual runs** can tick "Run on GitHub's machines" (`github_machines` input), the way to move a run off the PC.
+- **Timings**: first cold run 41 min, then 37 min (rebuilds on runner changes), 23.5 min with the tests' build
+  files warm; GitHub's machines took about 54 min.

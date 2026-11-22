@@ -19,7 +19,9 @@ $cfg = Join-Path $env:USERPROFILE '.wslconfig'
 if (Test-Path $cfg) {
     Write-Output ".wslconfig already exists, left as it is: $(Get-Content $cfg -Raw)"
 } else {
-    Set-Content -Path $cfg -Encoding ascii -Value @('[wsl2]', 'memory=44GB', 'swap=16GB', 'processors=16', 'vmIdleTimeout=-1')
+    # dropCache: Linux's file cache goes back to Windows once the machine is idle, so VmmemWSL shrinks between runs.
+    Set-Content -Path $cfg -Encoding ascii -Value @('[wsl2]', 'memory=44GB', 'swap=16GB', 'processors=16',
+        'vmIdleTimeout=-1', '', '[experimental]', 'autoMemoryReclaim=dropCache')
 }
 
 # 3. The keep-alive task, from a fixed copy so it doesn't depend on the checkout's branch.
