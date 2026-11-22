@@ -2,6 +2,7 @@
 //! is lit by its Light things, with soft shadows, flat or on a 3D stage; without it the picture is
 //! exactly as it always was.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, Color, KindId, LightingScene, ModuleKind, SettingDef, Settings, SlotId, Target};
 
 use super::light_scenes::{SceneOrder, ScenesPlay};
@@ -690,7 +691,7 @@ impl LightingSettings {
             Floor::UnderTheLowestShape => lowest_shape.map_or((2.0, 0.0), |y| (1.0, y)),
             Floor::AtAHeight => (1.0, self.floor_at),
         };
-        let k = if floor_kind > 0.0 { self.looking_down.clamp(0.0, 89.0).to_radians().tan() } else { 0.0 };
+        let k = if floor_kind > 0.0 { self.looking_down.clamp(0.0, 89.0).to_radians().det_tan() } else { 0.0 };
         let back = self.wall_depth.max(0.0);
         LightingGpu {
             ambient: [a[0] * ambient, a[1] * ambient, a[2] * ambient, self.background_lit],
@@ -800,7 +801,7 @@ impl LightingSettings {
             HazeMoves::Still => glam::Vec2::ZERO,
             HazeMoves::Drifting | HazeMoves::Swirling => {
                 let d = finite(self.drift_direction).to_radians();
-                glam::Vec2::new(d.cos(), d.sin()) * speed * (time.max(0.0) * 100.0) as f32
+                glam::Vec2::new(d.det_cos(), d.det_sin()) * speed * (time.max(0.0) * 100.0) as f32
             }
             HazeMoves::WithTheAir => air.unwrap_or(glam::Vec2::ZERO) * speed,
         };
@@ -887,7 +888,7 @@ mod tests {
         assert_eq!(g.stage[0], 1.0);
         assert_eq!(g.stage[1], stage.wall_depth);
         assert_eq!(g.stage[2], stage.shape_depth - stage.wall_depth, "the shapes' front, 0 the picture plane");
-        assert!((g.stage[3] - stage.looking_down.to_radians().tan()).abs() < 1e-6);
+        assert!((g.stage[3] - stage.looking_down.to_radians().det_tan()).abs() < 1e-6);
         assert_eq!((g.floor[0], g.floor[1]), (1.0, 500.0), "under the lowest shape");
         assert_eq!(g.floor[2], 1.0, "glossy");
         // No shape: the floor falls back to the picture's bottom.

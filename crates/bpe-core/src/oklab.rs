@@ -1,13 +1,15 @@
 //! OKLab and OKLCH (Björn Ottosson's perceptual colour space), for gradients that mix Even,
 //! Round the wheel or the long way round. Everything here works in linear-light sRGB.
 
+use crate::maths::Maths;
+
 /// Linear-light RGB to OKLab (L about 0 to 1, a and b about -0.4 to 0.4).
 pub fn linear_to_oklab(c: [f32; 3]) -> [f32; 3] {
     let [r, g, b] = c;
     let l = 0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b;
     let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
     let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
-    let (l, m, s) = (l.cbrt(), m.cbrt(), s.cbrt());
+    let (l, m, s) = (l.det_cbrt(), m.det_cbrt(), s.det_cbrt());
     [
         0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
         1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
@@ -33,14 +35,14 @@ pub fn oklab_to_linear(lab: [f32; 3]) -> [f32; 3] {
 /// OKLab to OKLCH: lightness, chroma, and hue in turns (0 to 1, from +a towards +b).
 pub fn oklab_to_lch(lab: [f32; 3]) -> [f32; 3] {
     let [l, a, b] = lab;
-    let hue = b.atan2(a) / std::f32::consts::TAU;
-    [l, a.hypot(b), hue - hue.floor()]
+    let hue = b.det_atan2(a) / std::f32::consts::TAU;
+    [l, a.det_hypot(b), hue - hue.floor()]
 }
 
 /// OKLCH (hue in turns) to OKLab.
 pub fn lch_to_oklab(lch: [f32; 3]) -> [f32; 3] {
     let [l, c, h] = lch;
-    let (s, co) = (h * std::f32::consts::TAU).sin_cos();
+    let (s, co) = (h * std::f32::consts::TAU).det_sin_cos();
     [l, c * co, c * s]
 }
 

@@ -8,6 +8,7 @@
 //! against the same scene with the blocker not blocking. `BPE_SAVE_RENDERS=1` saves the pictures
 //! into `target/pictures/through-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::{ShapeFill, ShapeSettings, add_thing, kit, scenes};
@@ -60,7 +61,7 @@ fn light(pixels: &[u8], x: f32, y: f32) -> f32 {
     let i = (py * W as usize + px) * 4;
     let linear = |v: u8| {
         let c = v as f32 / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
     };
     (linear(pixels[i]) + linear(pixels[i + 1]) + linear(pixels[i + 2])) / 3.0
 }

@@ -2,6 +2,7 @@
 //! Shatter piece, each copy clipped to its piece's cell (`PathInstance::clip`,
 //! `LayeredInstance::clip`).
 
+use bpe_core::maths::Maths;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -239,7 +240,7 @@ impl BallRemains<'_> {
         let spin = Vec2::from_angle(bpe_core::dice::unit24(own) * std::f32::consts::TAU);
         let start = Start {
             centre,
-            turn: ball.stretch[1].atan2(ball.stretch[0]),
+            turn: ball.stretch[1].det_atan2(ball.stretch[0]),
             scale: radius,
             velocity: r.ball.map_or(Vec2::ZERO, |b| b.velocity),
             from: Start::from_of(centre, r.point, reach * radius),

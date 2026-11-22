@@ -3,6 +3,7 @@
 //! is wet through while it is in the liquid and dries after it comes out. The events are logged
 //! only by a liquid in the main world (one that pushes balls), so only such a liquid wets balls.
 
+use bpe_core::maths::Maths;
 use std::collections::BTreeMap;
 
 use bpe_core::ThingId;
@@ -44,7 +45,7 @@ pub fn wetness(log: &Log, rate: u32, time: f64, liquid: ThingId, dries: f32) -> 
     let dries = dries.max(0.05) as f64;
     last.into_iter()
         .filter_map(|(ball, (inside, at))| {
-            let wet = if inside { 1.0 } else { (-(time - at).max(0.0) / dries).exp() as f32 };
+            let wet = if inside { 1.0 } else { (-(time - at).max(0.0) / dries).det_exp() as f32 };
             (wet >= DRY).then_some((ball, wet))
         })
         .collect()

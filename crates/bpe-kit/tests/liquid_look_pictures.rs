@@ -5,6 +5,7 @@
 //!
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/liquid-look-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::swarm::{SwarmGpu, use_on_this_thread};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
@@ -351,7 +352,7 @@ fn the_liquid_meets_the_ring_all_the_way_round_with_no_pale_line_or_notch() {
     for k in 0..=24 {
         let a = (10.0 + 160.0 * k as f32 / 24.0).to_radians();
         let at = |r: f32| {
-            let (x, y) = (r * a.cos(), r * a.sin());
+            let (x, y) = (r * a.det_cos(), r * a.det_sin());
             mean(&px, (x - 2.0, y - 2.0), (x + 2.0, y + 2.0))
         };
         let (wall, body) = (at(500.0), at(468.0));

@@ -3,6 +3,7 @@
 //! half its advance along the line), the straight layout's x being how far along the path it is,
 //! the text's middle (x = 0) at the path's start. Not cached: paths move.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::{PI, TAU};
 
 use glam::Vec2;
@@ -67,7 +68,7 @@ pub fn arrange(layout: &TextLayout, path: &PathAt) -> Vec<Placed> {
                     let sign = if inside { -1.0 } else { 1.0 };
                     let r = (radius - sign * line_of(l) * layout.line_step).max(1e-3);
                     let theta = start + sign * mid(l) / r;
-                    let base = Vec2::new(theta.sin(), -theta.cos()) * r;
+                    let base = Vec2::new(theta.det_sin(), -theta.det_cos()) * r;
                     let turn = if inside { theta + PI } else { theta };
                     Placed { at: base - Vec2::from_angle(turn) * (l.advance * 0.5), turn }
                 })
@@ -83,8 +84,8 @@ pub fn arrange(layout: &TextLayout, path: &PathAt) -> Vec<Placed> {
                 .map(|l| {
                     let x = mid(l);
                     let phase = TAU * (x / wavelength + shift);
-                    let base = Vec2::new(x, l.origin.y + height * phase.sin());
-                    let turn = if follow { (height * TAU / wavelength * phase.cos()).atan() } else { 0.0 };
+                    let base = Vec2::new(x, l.origin.y + height * phase.det_sin());
+                    let turn = if follow { (height * TAU / wavelength * phase.det_cos()).det_atan() } else { 0.0 };
                     Placed { at: base - Vec2::from_angle(turn) * (l.advance * 0.5), turn }
                 })
                 .collect()
@@ -100,7 +101,7 @@ pub fn arrange(layout: &TextLayout, path: &PathAt) -> Vec<Placed> {
                     let (p, dir) = edge.at(start * edge.length + mid(l));
                     let out = Vec2::new(dir.y, -dir.x);
                     let base = p + out * (gap - line_of(l) * layout.line_step);
-                    let turn = dir.y.atan2(dir.x);
+                    let turn = dir.y.det_atan2(dir.x);
                     Placed { at: base - dir * (l.advance * 0.5), turn }
                 })
                 .collect()
@@ -206,7 +207,7 @@ mod tests {
         // The middle of the text sits at Starts at: halfway between the two middle letters.
         let (a, b) = (middle(&l.letters[4], ps[4]), middle(&l.letters[5], ps[5]));
         let at = ((a + b) * 0.5).normalize();
-        assert!((at - Vec2::new(start.sin(), -start.cos())).length() < 0.02, "{at}");
+        assert!((at - Vec2::new(start.det_sin(), -start.det_cos())).length() < 0.02, "{at}");
         // A letter at the top faces out: its up (−y) points away from the middle.
         let p = ps[4];
         let up = Vec2::from_angle(p.turn).rotate(Vec2::NEG_Y);
@@ -250,9 +251,9 @@ mod tests {
             let x = letter.origin.x + letter.advance * 0.5;
             let phase = TAU * (x / wavelength + shift);
             assert!((m.x - x).abs() < 1e-3);
-            assert!((m.y - (letter.origin.y + height * phase.sin())).abs() < 1e-3);
-            let slope = height * TAU / wavelength * phase.cos();
-            assert!((p.turn - slope.atan()).abs() < 1e-5);
+            assert!((m.y - (letter.origin.y + height * phase.det_sin())).abs() < 1e-3);
+            let slope = height * TAU / wavelength * phase.det_cos();
+            assert!((p.turn - slope.det_atan()).abs() < 1e-5);
         }
         let flat = arrange(&l, &PathAt::Wave { height, wavelength, shift, follow: false });
         assert!(flat.iter().all(|p| p.turn == 0.0));

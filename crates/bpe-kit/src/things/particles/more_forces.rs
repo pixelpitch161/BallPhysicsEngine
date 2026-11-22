@@ -3,6 +3,7 @@
 //! only its particle and what the step gathered beforehand ([`Ready`]), so chunks on any number
 //! of threads give the same particles.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::{PI, TAU};
 
 use bpe_core::{Choice, Settings, Target};
@@ -471,7 +472,7 @@ pub fn pull(s: &mut Speck, p: &Pulling, amount: f32, dt: f32, ready: &Ready, fr:
 pub fn spring(s: &mut Speck, f: &SpringForce, amount: f32, dt: f32, ready: &Ready) {
     let home = ready.homes.home_of(s);
     s.velocity += (home - s.place) * fin(f.stiffness).max(0.0) * amount * dt;
-    s.velocity *= (-fin(f.damping).max(0.0) * amount * dt).exp();
+    s.velocity *= (-fin(f.damping).max(0.0) * amount * dt).det_exp();
 }
 
 /// Flock: particle `index` of the step's snapshot.
@@ -505,7 +506,7 @@ pub fn flock(s: &mut Speck, index: usize, f: &FlockForce, amount: f32, dt: f32, 
         s.velocity = Vec2::from_angle(unit(s.seed, 75) * TAU) * want * blend;
     }
     if s.velocity.length_squared() > 1e-12 {
-        s.turn = s.velocity.y.atan2(s.velocity.x);
+        s.turn = s.velocity.y.det_atan2(s.velocity.x);
     }
 }
 
@@ -551,7 +552,7 @@ pub fn magnetic(s: &mut Speck, f: &MagneticForce, amount: f32, dt: f32, ready: &
     }
     let strength = field.length().min(1.0);
     if strength > 1e-4 {
-        let want = field.y.atan2(field.x);
+        let want = field.y.det_atan2(field.x);
         // A needle: either end may point along the field.
         let mut gap = (want - s.turn + PI).rem_euclid(TAU) - PI;
         if gap.abs() > PI * 0.5 {
@@ -576,7 +577,7 @@ pub fn flow(s: &mut Speck, f: &FlowForce, amount: f32, dt: f32, ready: &Ready) {
         Pattern::Waves => {
             let base = fin(f.angle).to_radians();
             let across = s.place.dot(Vec2::from_angle(base).perp());
-            let sway = fin(f.sway).to_radians() * (TAU * (across / size - t * fin(f.changes))).sin();
+            let sway = fin(f.sway).to_radians() * (TAU * (across / size - t * fin(f.changes))).det_sin();
             Vec2::from_angle(base + sway)
         }
         Pattern::Spiral | Pattern::Vortex => {
@@ -588,13 +589,13 @@ pub fn flow(s: &mut Speck, f: &FlowForce, amount: f32, dt: f32, ready: &Ready) {
             let round = off.perp() / d;
             if f.pattern == Pattern::Spiral {
                 let a = fin(f.pull_in).to_radians();
-                round * a.cos() - off / d * a.sin()
+                round * a.det_cos() - off / d * a.det_sin()
             } else {
                 round * if d < size { d / size } else { size / d }
             }
         }
     };
-    let take = 1.0 - (-fin(f.grip).max(0.0) * amount * dt).exp();
+    let take = 1.0 - (-fin(f.grip).max(0.0) * amount * dt).det_exp();
     s.velocity += (way * fin(f.speed) - s.velocity) * take;
 }
 
@@ -607,8 +608,8 @@ pub fn pen_at(s: &Speck, f: &SpirographForce, age: f32) -> Vec2 {
     let theta = TAU * (fin(f.speed) * age + unit(s.seed, 73));
     let k = (big - small) / small;
     Vec2::new(
-        (big - small) * theta.cos() + pen * (k * theta).cos(),
-        (big - small) * theta.sin() - pen * (k * theta).sin(),
+        (big - small) * theta.det_cos() + pen * (k * theta).det_cos(),
+        (big - small) * theta.det_sin() - pen * (k * theta).det_sin(),
     )
 }
 
@@ -630,7 +631,7 @@ fn kick_share(since: f64, dt: f64, decay: f64) -> f64 {
         } else if decay <= 0.0 {
             1.0
         } else {
-            1.0 - (-x / decay).exp()
+            1.0 - (-x / decay).det_exp()
         }
     };
     f(since) - f(since - dt)
@@ -652,10 +653,10 @@ pub fn pulse_share(b: &Beats, dt: f64, decay: f64) -> f64 {
     }
     if m < b.count && decay > 0.0 && b.every > 0.0 {
         let x = b.since + m as f64 * b.every;
-        let r = (-b.every / decay).exp();
+        let r = (-b.every / decay).det_exp();
         let left = (b.count - m) as f64;
-        let series = if r < 1.0 { (1.0 - r.powf(left)) / (1.0 - r) } else { left };
-        share += ((-(x - dt) / decay).exp() - (-x / decay).exp()) * series;
+        let series = if r < 1.0 { (1.0 - r.det_powf(left)) / (1.0 - r) } else { left };
+        share += ((-(x - dt) / decay).det_exp() - (-x / decay).det_exp()) * series;
     }
     share
 }

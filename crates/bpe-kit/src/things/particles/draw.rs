@@ -9,6 +9,7 @@
 //! Soft smoke are shaded by the real lights (W15): a liquid through its own Surface (its table
 //! entry from [`ThingDraw::light`]), smoke by the slope of its density.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::TAU;
 
 use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
@@ -250,7 +251,7 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         let t = s.life_at(now);
         let Some(grow) = c.size_curve.at(t) else { continue };
         let age = s.age(now);
-        let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * TAU * age + unit(s.seed, 67) * TAU).sin());
+        let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * TAU * age + unit(s.seed, 67) * TAU).det_sin());
         let alpha = (c.opacity * c.fade.at(t) * flicker * s.rest_fade(now)).max(0.0);
         if alpha <= 0.0 {
             continue;
@@ -426,7 +427,7 @@ fn parent_particle_colour(cx: &DrawCx, parent: &[LookLayer], s: &Speck) -> Optio
 fn alpha_of(c: &Common, it: &Item) -> f32 {
     let twinkle = c.twinkle.clamp(0.0, 1.0);
     let tau = std::f32::consts::TAU;
-    let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * tau * it.age + unit(it.seed, 67) * tau).sin());
+    let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * tau * it.age + unit(it.seed, 67) * tau).det_sin());
     (c.opacity * c.fade.at(it.life) * flicker * it.rest).max(0.0)
 }
 
@@ -687,7 +688,7 @@ fn pointing(s: &Speck, along: PointAlong, by: f32) -> f32 {
     let v = s.velocity;
     let base = match along {
         PointAlong::OwnTurn => s.turn,
-        PointAlong::WayItGoes if v.length() > 1e-3 => v.y.atan2(v.x),
+        PointAlong::WayItGoes if v.length() > 1e-3 => v.y.det_atan2(v.x),
         PointAlong::WayItGoes => s.turn,
     };
     base + by.to_radians()
@@ -709,7 +710,7 @@ pub fn sprite(
     // Flutter: a flat thing flipping over shows edge on, and darker on its back.
     let flutter = |p: &mut Particle| {
         if flutters {
-            let face = s.flip.cos();
+            let face = s.flip.det_cos();
             p.place[3] = size * face.abs().max(0.12);
             p.style[1] = 0.7 + 0.3 * face;
         }
@@ -731,7 +732,7 @@ pub fn sprite(
         Drawn::Streaks { stretch, least, width } => {
             let half_width = (size * width).max(0.0);
             let length = (speed * stretch).max(*least).max(0.0);
-            let angle = if speed > 1e-3 { s.velocity.y.atan2(s.velocity.x) } else { s.turn };
+            let angle = if speed > 1e-3 { s.velocity.y.det_atan2(s.velocity.x) } else { s.turn };
             let mut p = Particle::new(ShapeMadeOf::Streaks.as_ball().code(), s.place, angle, half_width, colour);
             p.style[0] = (length * 0.5).max(half_width);
             (p, None)
@@ -781,7 +782,7 @@ fn shape_sprite(
     p.style[2] = l.softness.clamp(0.0, 1.0);
     if matches!(l.shape, MoreShape::Birds | MoreShape::Fish) {
         let age = (now - s.born as f32 * super::step::DT).max(0.0);
-        let pose = (age * l.flap_speed * TAU + unit(s.seed, 73) * TAU).sin();
+        let pose = (age * l.flap_speed * TAU + unit(s.seed, 73) * TAU).det_sin();
         p.shape[1] = ((pose * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0) as u32;
     }
     flutter(&mut p);
@@ -791,8 +792,8 @@ fn shape_sprite(
 /// How brightly glitter particle `s`'s facet flashes at `time`, 0 to 1.
 pub fn glint(l: &GlitterLayer, s: &Speck, time: f32) -> f32 {
     let facet = s.turn + unit(s.seed, 71) * TAU + l.shimmer * time * TAU * signed(s.seed, 72);
-    let facing = (facet - l.light_from.to_radians()).cos().max(0.0);
-    facing.powf(l.sharpness.max(1.0))
+    let facing = (facet - l.light_from.to_radians()).det_cos().max(0.0);
+    facing.det_powf(l.sharpness.max(1.0))
 }
 
 /// Glitter's facet for `s`, and the star of its flash.
@@ -913,11 +914,11 @@ fn draw_web(cx: &DrawCx, layer: &LookLayer, w: &WebLayer, seen: &[Seen], hit: Hi
     let half_width = (w.line_width * 0.5).max(0.0);
     let line_alpha = |d: f32, of: f32| {
         let near = (1.0 - d / of).clamp(0.0, 1.0);
-        w.line_opacity.clamp(0.0, 1.0) * if w.fade_power > 0.0 { near.powf(w.fade_power) } else { 1.0 }
+        w.line_opacity.clamp(0.0, 1.0) * if w.fade_power > 0.0 { near.det_powf(w.fade_power) } else { 1.0 }
     };
     let line = |a: Vec2, b: Vec2, colour: [f32; 4]| {
         let along = b - a;
-        let mut p = Particle::new(9, (a + b) * 0.5, along.y.atan2(along.x), half_width, colour);
+        let mut p = Particle::new(9, (a + b) * 0.5, along.y.det_atan2(along.x), half_width, colour);
         p.style[0] = (along.length() * 0.5).max(half_width);
         p
     };

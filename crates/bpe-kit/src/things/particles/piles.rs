@@ -5,6 +5,7 @@
 //! steeper than the Angle of repose, and pours off a ledge as a particle again. Balls cut through
 //! piles and throw the sand back up (and, two-way, rest on them: `two_way.rs`).
 
+use bpe_core::maths::Maths;
 use std::collections::BTreeMap;
 
 use bpe_runtime::World;
@@ -293,7 +294,7 @@ pub fn add_sand(
     let Some(p) = piles.list.get_mut(n) else { return spilled };
     let Some(k) = p.index(i) else { return spilled };
     p.height[k] = (p.height[k] + amount.max(0.0)).min(MOST_HEIGHT);
-    let allowed = repose.clamp(0.0, 1.55).tan() * COLUMN;
+    let allowed = repose.clamp(0.0, 1.55).det_tan() * COLUMN;
     let grain = grain.max(1e-3);
     // Columns to look at again: one that gave sand away may now stand too far below its other
     // neighbour, and one that took sand too far above its own.

@@ -18,6 +18,7 @@
 //! - `LOOK_FILE`: a saved scene file drawn as well (pictures named `file-...`), at `LOOK_TIMES` (a comma list of
 //!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::things::balls::BallsSettings;
@@ -701,7 +702,7 @@ fn grading_things(reg: &Registry) -> Scene {
         points: (0..=40)
             .map(|i| {
                 let t = i as f32 / 40.0;
-                [-450.0 + 900.0 * t, 250.0 * (t * std::f32::consts::PI * 2.0).sin()]
+                [-450.0 + 900.0 * t, 250.0 * (t * std::f32::consts::PI * 2.0).det_sin()]
             })
             .collect(),
         size: 140.0,

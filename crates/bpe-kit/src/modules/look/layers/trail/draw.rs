@@ -5,6 +5,7 @@
 //! first two) or over (the last) its own.
 
 use bpe_core::Blend;
+use bpe_core::maths::Maths;
 use bpe_gfx::{DrawCx, Frame, Particle, StreakStyle, push_trail};
 use bpe_runtime::{Bodies, History};
 use glam::Vec2;
@@ -256,7 +257,7 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     let tol = if cx.resolved.screen {
         kinds::LINE_TOLERANCE
     } else {
-        kinds::LINE_TOLERANCE / cx.world.camera.zoom.abs().clamp(1.0 / 64.0, 64.0).log2().floor().exp2()
+        kinds::LINE_TOLERANCE / cx.world.camera.zoom.abs().clamp(1.0 / 64.0, 64.0).det_log2().floor().det_exp2()
     };
     // Dots and puffs share the particles' cap.
     let full = |pieces: &Pieces| pieces.particles[OWN].len() >= MAX_PARTICLES;
@@ -441,7 +442,7 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
                             *c /= fill as f32;
                         }
                     } else {
-                        colour[3] = 1.0 - (1.0 - colour[3].min(1.0)).powf(1.0 / fill as f32);
+                        colour[3] = 1.0 - (1.0 - colour[3].min(1.0)).det_powf(1.0 / fill as f32);
                     }
                     ball_cx.particle(at, size, ago / reach, colour, SMOKE, softness, &mut pieces);
                 }
@@ -630,6 +631,7 @@ pub fn ghost_extras(
 mod tests {
     use crate::modules::look::layers::{SUB_GLOW, SUB_OUTLINE, SUB_RECOLOUR, SUB_SHADOW, TRAIL};
     use crate::{kit, new_scene};
+    use bpe_core::maths::Maths;
     use bpe_core::{LayerId, Scene, SlotId, ThingId, Value, layered_key};
     use bpe_gfx::{Frame, build_frame};
     use bpe_runtime::Playback;
@@ -796,7 +798,7 @@ mod tests {
                 // that went.
                 let (a, b) = (path.points[m + 2], path.points[m + 1]);
                 let turn = (b - a).normalize().dot((touch - b).normalize());
-                assert!(turn > 0.999, "the way in turns {:.1}° before the bounce", turn.acos().to_degrees());
+                assert!(turn > 0.999, "the way in turns {:.1}° before the bounce", turn.det_acos().to_degrees());
                 // And the trail goes out of the bounce away from the wall.
                 assert!((path.points[k - 1] - path.points[k]).dot(e.normal) > 0.0);
             }

@@ -9,6 +9,7 @@
 //! straight line. A ball launched in the Spawn stage of step `L` first moves in step `L`: it sets
 //! off from the moment [`now`]`(L)`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{SlotId, ThingId};
 use bpe_runtime::World;
 use glam::Vec2;
@@ -85,7 +86,7 @@ impl FocusTrack {
     pub fn at(&self, ahead: f64, dt: f32) -> Vec2 {
         let t = (ahead * dt as f64) as f32;
         let size = if self.keep < 1.0 && self.scale > self.floor && ahead > 0.0 {
-            (self.scale * self.keep.max(0.0).powf(ahead as f32)).max(self.floor)
+            (self.scale * self.keep.max(0.0).det_powf(ahead as f32)).max(self.floor)
         } else {
             self.scale
         };

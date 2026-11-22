@@ -47,26 +47,22 @@ threads-required = "num-test-threads"
 
 [profile.gpu]
 # The owner's graphics card (an AMD RX 9070 XT on Windows; job "Pictures (owner's graphics card)",
-# docs/notes/checks.md). Every test runs here natively except the goldens pinned to Ubuntu's maths library, which
-# Windows' rounds a hair differently: the CPU physics goldens and the sound goldens stay on the Linux machines.
+# docs/notes/checks.md). Every test runs here natively except the sound goldens, pinned to Ubuntu's maths library,
+# which Windows' rounds a hair differently (the sound's own oscillators still use it). The physics uses
+# `bpe_core::maths`, which rounds the same everywhere, so the CPU physics goldens run here too.
 # KNOWN ON THE CARD (owner's choice 2026-11-22, "switch now, fix after"): tests that fail only on the owner's
 # card or Windows are left out here until each is fixed in its own change (docs/notes/checks.md lists them). Take
-# each one out of this list in the change that fixes it. The CPU one still runs on the Linux machines; the
-# drawing one runs nowhere until fixed.
+# each one out of this list in the change that fixes it. The drawing one runs nowhere until fixed.
 #   - swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does: Pull toward its ball 87 px off on the card.
-#   - library every_scene_plays_its_full_length_and_lands_its_payoff: Windows' maths moves stem-battle's payoff.
 # (golden_liquid draws, so it runs here, with its golden made on the card.) Also left out: osc_b_off_costs_nothing,
 # which times the machine against itself and runs on the Linux machines, while the Linux checks share this PC's
 # processor with this job.
 default-filter = """
 not (
-  (package(bpe-kit) & (binary(golden) | binary(golden_health) | binary(/^golden_particles/) | binary(golden_rules)
-    | binary(golden_text)))
-  | (package(bpe-sound) & test(/golden/))
+  (package(bpe-sound) & test(/golden/))
   | (package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing))
   | (
     (package(bpe-kit) & test(=things::particles::swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does))
-    | (package(bpe-kit) & binary(library) & test(=every_scene_plays_its_full_length_and_lands_its_payoff))
   )
 )
 """

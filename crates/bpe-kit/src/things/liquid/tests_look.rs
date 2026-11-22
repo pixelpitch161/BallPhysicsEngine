@@ -1,5 +1,6 @@
 //! Tests of liquid part 3: the Liquid's look (its Surface, layers, real lighting and wet balls).
 
+use bpe_core::maths::Maths;
 use std::sync::{Arc, OnceLock};
 
 use bpe_core::{Scene, SlotId, ThingId, resolve};
@@ -174,7 +175,7 @@ fn wet_balls_are_wet_inside_and_dry_after_they_come_out() {
     assert!(wetness(&log, rate, 0.5, liquid, 3.0).is_empty(), "dry before it goes in");
     assert_eq!(wetness(&log, rate, 1.5, liquid, 3.0)[&(ball, 2)], 1.0, "wet through while in");
     let after = wetness(&log, rate, 5.0, liquid, 3.0)[&(ball, 2)];
-    assert!((after - (-1.0f32).exp()).abs() < 1e-4, "{after}");
+    assert!((after - (-1.0f32).det_exp()).abs() < 1e-4, "{after}");
     assert!(wetness(&log, rate, 60.0, liquid, 3.0).is_empty(), "dry at last");
     assert!(wetness(&log, rate, 1.5, ThingId(8), 3.0).is_empty(), "another liquid's events");
 }

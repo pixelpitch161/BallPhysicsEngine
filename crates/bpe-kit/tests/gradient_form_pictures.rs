@@ -6,6 +6,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/form-*.png`.
 
 use bpe_core::gradient_form::{Layout, area_colour};
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, Color, Gradient, GradientForm, Mix, Scene, SettingValue, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device, wgpu};
 use bpe_kit::{Kit, kit, new_scene};
@@ -208,7 +209,7 @@ fn biggest_step_round(pixels: &[u8], r: f32) -> u8 {
     let n = (std::f32::consts::TAU * r).ceil() as usize;
     let at = |k: usize| {
         let a = std::f32::consts::TAU * k as f32 / n as f32;
-        let (x, y) = (W as f32 / 2.0 + r * a.cos(), H as f32 / 2.0 + r * a.sin());
+        let (x, y) = (W as f32 / 2.0 + r * a.det_cos(), H as f32 / 2.0 + r * a.det_sin());
         px(pixels, x.round() as u32, y.round() as u32)
     };
     (0..n).map(|k| off(at(k), at((k + 1) % n))).max().unwrap()

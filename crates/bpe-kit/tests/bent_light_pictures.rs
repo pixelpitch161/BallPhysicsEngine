@@ -9,6 +9,7 @@
 //! against the same scene with the glass not there (or not bending). `BPE_SAVE_RENDERS=1` saves
 //! the pictures into `target/pictures/bent-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Params, Registry, Scene, Settings, ShapePath, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::modules::look::surface::SurfaceKind as Surface;
@@ -65,7 +66,7 @@ fn draw_at(gpu: &mut Gpu, scene: &Scene, name: &str, t: f64) -> Vec<u8> {
 
 fn linear(v: u8) -> f32 {
     let c = v as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
 }
 
 /// The light reaching world point (x, y), per channel in linear light, the mean of the 3 × 3
@@ -115,8 +116,8 @@ fn disc(r: f32) -> ShapeSettings {
 
 /// A filled outline through `points` (world units round the shape's place).
 fn outline(points: &[[f32; 2]]) -> ShapeSettings {
-    let far = points.iter().map(|p| p[0].hypot(p[1])).fold(1.0f32, f32::max);
-    let size = far.log2().ceil().exp2();
+    let far = points.iter().map(|p| p[0].det_hypot(p[1])).fold(1.0f32, f32::max);
+    let size = far.det_log2().ceil().det_exp2();
     let path = ShapePath {
         points: points.iter().map(|p| [p[0] / size, p[1] / size]).collect(),
         bends: vec![None; points.len()],

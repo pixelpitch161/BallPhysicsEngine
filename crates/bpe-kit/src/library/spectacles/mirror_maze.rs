@@ -2,6 +2,7 @@
 //! mirrors, and each one shatters after a few hits, so the beam keeps finding a new path. When the last one
 //! breaks the laser turns white, and the prism fans it into a rainbow (a red laser has only red to split).
 
+use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, SlotId, ThingId, Value};
 use glam::Vec2;
 
@@ -136,7 +137,7 @@ fn build(reg: &Registry) -> Scene {
     }
 
     let laser = lib.light("Laser", LightType::Laser, LASER_AT, |l| {
-        l.direction = line.y.atan2(line.x).to_degrees();
+        l.direction = line.y.det_atan2(line.x).to_degrees();
         l.colour = hex(RED);
         l.strength = 3.0;
         l.laser_width = 6.0;

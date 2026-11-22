@@ -4,6 +4,7 @@
 //! Wind, Drag, Swirl, Wander, Rise, Sway and flutter; part 2's: Follow the air (and Rise heating
 //! the air, Wind's gust waves); part 3's are in `more_forces.rs`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, LayerSection, ModuleKind, ResolvedSlot, SettingDef, Settings, SlotId};
 use glam::Vec2;
 
@@ -180,7 +181,7 @@ force_settings!(
 impl RiseForce {
     /// How much of its strength is left `age` seconds into a particle's life.
     pub fn cool(&self, age: f32) -> f32 {
-        if self.cools > 0.0 { (-age / self.cools).exp() } else { 1.0 }
+        if self.cools > 0.0 { (-age / self.cools).det_exp() } else { 1.0 }
     }
 }
 
@@ -327,10 +328,10 @@ impl Forces {
                     let way = Vec2::from_angle(fin(w.direction).to_radians());
                     let gust = gust_factor(fin(w.gusts), w.gust_every, fin(w.waves), cx.time, s.place, way);
                     let wind = way * fin(w.speed) * gust;
-                    let take = 1.0 - (-fin(w.grip).max(0.0) * amount * dt).exp();
+                    let take = 1.0 - (-fin(w.grip).max(0.0) * amount * dt).det_exp();
                     s.velocity += (wind - s.velocity) * take;
                 }
-                Force::Drag(d) => s.velocity *= (-fin(d.drag).max(0.0) * amount * dt).exp(),
+                Force::Drag(d) => s.velocity *= (-fin(d.drag).max(0.0) * amount * dt).det_exp(),
                 Force::Swirl(w) => {
                     let size = w.size.max(1.0);
                     let at = (s.place + Vec2::new(0.0, fin(w.drift) * cx.time)) / size;
@@ -347,7 +348,7 @@ impl Forces {
                 }
                 Force::Air(a) => {
                     if let Some(air) = cx.air {
-                        let take = 1.0 - (-fin(a.grip).max(0.0) * amount * dt).exp();
+                        let take = 1.0 - (-fin(a.grip).max(0.0) * amount * dt).det_exp();
                         s.velocity += (air.at(s.place) - s.velocity) * take;
                     }
                 }
@@ -355,11 +356,11 @@ impl Forces {
                     // A sideways sway of Sway pixels either way: its velocity's change this step.
                     let omega = std::f32::consts::TAU * fin(w.sway_speed).max(0.0);
                     let phase0 = bpe_core::dice::unit24(hash(&[s.seed, 0x5a7])) * std::f32::consts::TAU;
-                    let v = |t: f32| fin(w.sway) * omega * (omega * t + phase0).cos();
+                    let v = |t: f32| fin(w.sway) * omega * (omega * t + phase0).det_cos();
                     s.velocity.x += (v(age) - v((age - dt).max(0.0))) * amount;
                     if w.flutter > 0.0 {
                         s.flip += std::f32::consts::TAU * fin(w.flutter) * amount * dt;
-                        s.velocity.x += fin(w.flutter_drift) * s.flip.sin() * amount * dt * 4.0;
+                        s.velocity.x += fin(w.flutter_drift) * s.flip.det_sin() * amount * dt * 4.0;
                     }
                 }
                 Force::Pull(p) => more::pull(s, &p.into(), amount, dt, ready, ready.of(k)),

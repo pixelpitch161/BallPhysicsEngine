@@ -1,6 +1,7 @@
 //! A rig's pattern, worked out from the moment drawn: which step it is on, and what each fixture
 //! does in it. Pure: the same moment (and log) always gives the same light.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Gradient, ThingId};
 use bpe_runtime::{EventKind, Log};
 
@@ -260,7 +261,8 @@ impl Prepared {
             }
             Pattern::Sweep => {
                 let x = k as f64 + if phase.is_finite() { phase as f64 } else { 0.0 };
-                let wave = (std::f64::consts::PI * x + std::f64::consts::TAU * p as f64 * s.offset as f64).sin() as f32;
+                let wave =
+                    (std::f64::consts::PI * x + std::f64::consts::TAU * p as f64 * s.offset as f64).det_sin() as f32;
                 (1.0, pick(p), wave)
             }
             Pattern::AlternateColours => (1.0, pick(p + k), 0.0),

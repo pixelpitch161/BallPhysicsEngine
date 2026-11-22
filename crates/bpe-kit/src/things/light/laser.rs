@@ -680,6 +680,7 @@ fn pair(a: &Path, b: &Path, c: [f32; 4], d: [f32; 4], most: usize, out: &mut Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bpe_core::maths::Maths;
 
     fn wall_scenery(a: Vec2, b: Vec2, half: f32) -> Scenery {
         Scenery { walls: vec![(ThingId(7), vec![(a, b)], half, false)], balls: Vec::new() }
@@ -759,12 +760,12 @@ mod tests {
     fn way_out(p: &Path) -> f32 {
         let n = p.points.len();
         let d = p.points[n - 1] - p.points[n - 2];
-        d.y.atan2(d.x).to_degrees()
+        d.y.det_atan2(d.x).to_degrees()
     }
 
     /// From the left at the least-deviation incidence for index 1.5, aimed at the left face's middle.
     fn least_deviation() -> (Vec2, Vec2) {
-        let dir = Vec2::from_angle((30.0f32 - 0.75f32.asin().to_degrees()).to_radians());
+        let dir = Vec2::from_angle((30.0f32 - 0.75f32.det_asin().to_degrees()).to_radians());
         (Vec2::new(-50.0, 0.0) - dir * 300.0, dir)
     }
 
@@ -948,7 +949,7 @@ mod tests {
         assert_eq!(split.colours.len(), 2, "what goes through, then what is thrown back");
         let (through, back) = (&split.colours[0], &split.colours[1]);
         assert!(!through.reflected && back.reflected);
-        let cos = 0.2f32.mul_add(-0.2, 1.0).sqrt();
+        let cos = 0.2f32.det_mul_add(-0.2, 1.0).sqrt();
         let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|c| (a[c] - b[c]).abs() < 1e-4);
         assert!(near(through.share, d.through(cos)), "{:?}", through.share);
         assert!(near(back.share, d.bounced(cos)), "{:?}", back.share);

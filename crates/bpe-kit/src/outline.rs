@@ -2,6 +2,7 @@
 //! share of the way round it, and whether a point is inside. Every thing that reads a wall's outline
 //! (lights, particles, texts, the camera, sensing) uses these, so they all agree.
 
+use bpe_core::maths::Maths;
 use bpe_runtime::Outline;
 use glam::Vec2;
 
@@ -20,7 +21,7 @@ pub fn points(outline: &Outline) -> Vec<Vec2> {
         (0..ROUND_POINTS)
             .map(|k| {
                 let t = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * k as f32 / ROUND_POINTS as f32;
-                center + turn.rotate(Vec2::new(half.x * t.cos(), half.y * t.sin()))
+                center + turn.rotate(Vec2::new(half.x * t.det_cos(), half.y * t.det_sin()))
             })
             .collect()
     };

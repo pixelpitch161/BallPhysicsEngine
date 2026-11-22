@@ -1,6 +1,7 @@
 //! Stained glass: a lamp ball bounces through a rose window of coloured glass, and the panes throw coloured
 //! shadows that sweep round the dark room as it moves.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, SlotId, ThingId};
 use glam::Vec2;
 
@@ -73,7 +74,7 @@ fn build(reg: &Registry) -> Scene {
     for (k, (colour, note)) in PETALS.iter().enumerate() {
         let turn = k as f32 / PETALS.len() as f32 * std::f32::consts::TAU;
         let pane = lib.add("shape", window, &format!("Pane {}", k + 1));
-        lib.at(pane, WINDOW + Vec2::new(turn.sin(), -turn.cos()) * 320.0);
+        lib.at(pane, WINDOW + Vec2::new(turn.det_sin(), -turn.det_cos()) * 320.0);
         lib.scene.things.get_mut(&pane).expect("a pane").transform.rotation = turn;
         lib.params(pane, |s: &mut ShapeSettings| {
             *s = ShapeSettings { fill: ShapeFill::Filled, ..ShapeSettings::ellipse(130.0, 250.0, 4.0) }
