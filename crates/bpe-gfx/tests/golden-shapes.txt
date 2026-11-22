@@ -1,0 +1,2 @@
+# made on: AMD Radeon RX 9070 XT (AMD proprietary driver, 26.11.2 (LLPC))
+shapes	44ac0825556b11b7

@@ -149,9 +149,10 @@ The physics is deterministic, and goldens pin it: `crates/bpe-kit/tests/golden*.
 
 Any change that moves balls changes golden lines. Re-bless with `BLESS_GOLDEN=1`, **once in debug and once with
 `--release`**. Then diff against main: only the lines you meant to change may differ. The pictures pinned to the
-owner's graphics card (`golden-unlit*`, `golden-lit-flat*`, `golden-liquid*`, first line "made on") can only be
-made there: start the **"Refresh GPU pictures"** workflow on your branch instead, then check its commit's diff. The
-tests that draw run only on that card in CI (`docs/notes/checks.md`); a container still runs them on lavapipe.
+owner's graphics card (`golden-unlit*`, `golden-lit-flat*`, `golden-liquid*`, bpe-gfx's `golden-shapes`, first
+line "made on") can only be made there: start the **"Refresh GPU pictures"** workflow on your branch instead, then
+check its commit's diff. The tests that draw run only on that card in CI (`docs/notes/checks.md`); a container
+still runs them on lavapipe.
 The CPU goldens differ slightly on native Windows (libm trig) and on newer Linux (glibc after 2.39), known gaps: CI
 runs them on Ubuntu 24.04 to match the containers.
 

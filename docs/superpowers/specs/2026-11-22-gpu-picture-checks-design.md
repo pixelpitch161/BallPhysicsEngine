@@ -128,7 +128,7 @@ so every download retries.
 
 - New workflow `.github/workflows/gpu-pictures.yml`, `workflow_dispatch` with input `branch`. Runs on `bpe-gpu`,
   `permissions: contents: write, actions: write`. Checks out the branch, runs the device-pinned tests with
-  `BLESS_GOLDEN=1` in debug and in release, and if any of the six files changed commits them ("Refresh the expected
+  `BLESS_GOLDEN=1` in debug and in release, and if any of the pinned files changed commits them ("Refresh the expected
   pictures on the owner's graphics card", the device line in the message) and pushes to that branch. It refuses
   `main` (a refresh goes through a pull request). Then, because a push made with the workflow's own token starts no
   workflow, it starts CI on that branch with a `workflow_dispatch` (allowed with that token). The step summary shows
@@ -155,7 +155,7 @@ Unchanged: it tracks the WSL runners. The Windows job always targets the card; i
 ## Verification
 
 - Linux run with `BPE_SKIP_GPU_TESTS=1`: all green, no drawing test panics.
-- Windows run on the card: all green after the pinned files are made there; the six files carry the RX 9070 XT line.
+- Windows run on the card: all green after the pinned files are made there; the pinned files carry the RX 9070 XT line.
 - Debug and release refresh through the workflow on a scratch branch: second run changes nothing (determinism on the
   card; two runs give the same hashes).
 - A deliberately changed pinned line fails the Windows job with the right message; then restored.

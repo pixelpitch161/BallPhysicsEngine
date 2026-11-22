@@ -234,6 +234,15 @@ jobs:
       # Build files stay between runs, outside the checkout (BPE_GPU_TARGET comes from the runner's .env).
       - name: Build files folder
         run: Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\${{ github.job }}"
+      # The build files are kept between runs; past 100 GB they are emptied (the next build starts cold).
+      - name: Keep the build files under 100 GB
+        run: |
+          if (Test-Path $env:CARGO_TARGET_DIR) {
+            $gb = (Get-ChildItem $env:CARGO_TARGET_DIR -Recurse -File -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum / 1GB
+            "Build files: {0:N1} GB" -f $gb
+            if ($gb -gt 100) { Remove-Item -Recurse -Force $env:CARGO_TARGET_DIR }
+          }
       - name: Which card
         run: vulkaninfo --summary | Select-String -Pattern 'deviceName|driverName|driverInfo'
       - name: Tests on the card
