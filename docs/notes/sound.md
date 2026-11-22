@@ -285,3 +285,15 @@ runs a 12 dB low-pass (`Muffle`, per note, retuned in Mono) at 20 kHz × (cutoff
 **Liquid modulator** (`mod.liquid`, `LiquidModSettings`, `mods/liquid.rs`, `Src::Liquid`) reads `stats_of` once a
 block: Slosh (mean speed / Full at), Mix amount, Level or Amount, of the liquids its target names. Follow sound
 reads it unsmoothed (`control.rs`). None of it allocates (`alloc.rs`). Defaults leave every existing sound as it was.
+
+## No memory taken while a block plays (2026-11-22)
+
+`alloc::render_does_not_allocate` failed now and then on the owner's PC ("a block allocated", 2). The counting
+allocator sees every thread, and the cause was not the sound path: the engine's own physics pool (`on_own_threads`
+in `engine.rs`, threads "sound physics N") was built on the first `step_physics` but rayon doesn't wait for its
+threads to start, so a thread the system was slow to start (a busy Windows machine; once on a loaded Linux runner
+too) took its start-up memory (its name, stack guard, thread-locals; on Windows more) inside a counted block. The
+pool now runs one empty `broadcast` when it is built, so every thread is up before the first step returns, and
+nothing starts while the sound plays. The test checks that first (100 ms counted right after the first step) and,
+when any check fails, prints the first counted allocation's size and backtrace.
+

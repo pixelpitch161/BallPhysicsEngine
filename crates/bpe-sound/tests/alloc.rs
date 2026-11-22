@@ -14,10 +14,35 @@ struct Counting;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+/// Where the first allocation counted came from (its size and a backtrace), printed when a check
+/// fails. Only the first is recorded, so recording (which allocates itself) never recurses.
+static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static RECORDED: AtomicBool = AtomicBool::new(false);
+
+fn note(size: usize) {
+    if !RECORDED.swap(true, Ordering::SeqCst) {
+        let trace = std::backtrace::Backtrace::force_capture();
+        let seen = format!("{size} bytes\n{trace}");
+        SEEN.lock().unwrap().push(seen);
+    }
+}
+
+/// Prints where the first allocation counted came from, if one was.
+fn report() {
+    COUNTING.store(false, Ordering::SeqCst);
+    let seen = std::mem::take(&mut *SEEN.lock().unwrap());
+    if ALLOCATIONS.load(Ordering::SeqCst) != 0 {
+        for seen in seen {
+            eprintln!("allocated: {seen}");
+        }
+    }
+}
+
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            note(layout.size());
         }
         unsafe { System.alloc(layout) }
     }
@@ -27,6 +52,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            note(new_size);
         }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -43,6 +69,15 @@ fn render_does_not_allocate() {
     scene.things.get_mut(&shape).unwrap().tags.insert("test-tone".into());
     let resolved = resolve_scene(&scene, &kit.registry);
     let mut e = Engine::new(&scene, &resolved, &kit);
+    // The first step starts the engine's own physics threads, and every one is up when it
+    // returns: none is still starting (which takes memory) while the sound plays. A thread the
+    // system is slow to start, as on a busy Windows machine, used to land in a block below.
+    e.step_physics();
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    COUNTING.store(true, Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    report();
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a physics thread was still starting");
     let mut block = [0.0f32; BLOCK * 2];
     for _ in 0..200 {
         e.render(&mut block);
@@ -56,6 +91,7 @@ fn render_does_not_allocate() {
         COUNTING.store(true, Ordering::SeqCst);
         e.render_prepared(&mut block);
         COUNTING.store(false, Ordering::SeqCst);
+        report();
         assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block allocated");
         heard |= block.iter().any(|&v| v != 0.0);
     }
