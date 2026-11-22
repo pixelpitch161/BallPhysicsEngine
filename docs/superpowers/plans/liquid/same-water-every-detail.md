@@ -97,8 +97,9 @@ alone.
 
 ## Part 1: the squeeze each drop carries (this thread)
 
-Four changes, all in `crates/bpe-gfx/src/shaders/liquid_sim.wgsl`, plus one new number on each drop. No
-setting, no file format change, nothing in the inspector.
+Six changes (four planned, two found through the code review: see "As built"), all in
+`crates/bpe-gfx/src/shaders/liquid_sim.wgsl`, plus one new number on each drop. No setting, no file format
+change, nothing in the inspector.
 
 ### 1. `fixed()` rounds to nearest
 
@@ -139,23 +140,68 @@ drop as a droplet, and `alive()` checks it. It no longer drives the pressure.
   - The asymmetry matters: over-packing must be answered fast (it is what bursts), while "less liquid than I
     think" is the normal state of any drop near an edge the estimate gets wrong, and answering it fast was
     what made the corners simmer.
-- Balls are not walls here: a drop beside a sunk ball reads a flat edge (`full` corrects it), so the liquid no
-  longer packs round sunk balls (the first quirk the spray fix left).
+- Balls are not walls here: the liquid round a sunk ball is short of drops on the ball's side just as it
+  was at a wall before change 5, and no node is held there, so it should still pack a little round sunk balls
+  (the first quirk the spray fix left). Reasoned, not measured: part 3 should look at it, and mirroring drops
+  in a ball as in a wall is the likely cure.
 
 ### 3. Nodes across a thin wall from the liquid move along the wall with it
 
 A drop within a cell and a half of a hollow shape's wall (a band, `t.z >= 0`) spreads onto nodes on the far
 side of the wall. `cs_grid` treated those as ordinary wall nodes (speed into the wall removed, speed away
 kept), so they moved "away from the wall" on their own side, which is toward nothing, and fed that back to the
-drop: the cause of the creep by wall position. Now, in `cs_grid`, for a band node: look two cells along the
-wall's normal each way (`pa`, `pb`), compare the mass there; if the heavier side is not the node's own side,
-the node is a **ghost**: all of its speed along the normal (relative to the wall) is removed, both ways, and
-the speed along the wall is kept. Other wall nodes keep the old rule. Filled shapes (`t.z < 0`) are unchanged.
+drop. Such a node is a **ghost**: all of its speed along the normal (relative to the wall) is removed, both
+ways, and the speed along the wall is kept. Other wall nodes keep the old rule. Filled shapes (`t.z < 0`) are
+unchanged.
+
+Which nodes are ghosts (corrected after the code review, see "As built"): only a band node near enough the
+wall's line to hold weight from across it, `|s.z| < 1.5 (|n.x| + |n.y|) - 0.5 - t.z` (drops stop half a cell
+short of the face and reach a cell and a half each way along x and y). For those, `cs_grid` reads the liquid's
+volume `GHOST_LOOK` 1.5 cells off each face of the wall, straight out from the node's nearest point on the
+wall's line; the node is a ghost when the other side holds more than `GHOST_MORE` 4 times its own.
 
 ### 4. "Holes close" only where liquid is missing
 
 In `cs_g2p`: `hole = 1 − smoothstep(HOLE_BELOW − 0.15, HOLE_BELOW, vd)` with `HOLE_BELOW` 0.95 multiplies the
 move (cause 3). `CLOSE_RATE`, `CLOSE_ACROSS` and its rules at walls stay as they are.
+
+### 5. A wall pushes back as the liquid would (added after the code review)
+
+The pressure force on a node is a sum over the drops round it. Within two cells of a wall that sum is short
+of drops on the wall's side (drops stop half a cell off the face), so the node is pushed at the wall by the
+drops on its other side with nothing to answer them, and only nodes within 0.75 of a cell of the face are
+stopped from moving into the wall. The liquid therefore packed against every wall until that layer was
+squeezed enough to hold the nodes (measured: half as many drops again in the half cell next to a wall), and a
+layer squeezed more than its depth asks is lighter than the liquid beside it: it rose up every side wall at
+140 to 190 px/s and came back down the middle, for good. Read off the grid, the old pressure hid this (it
+ironed the density flat again), and the thin-wall rule as first built hid it by accident (see "As built").
+
+So each drop near a wall is **mirrored** in it (`cs_p2g`, after its own nine nodes): the mirror is the plane
+`WALL_GAP` (a quarter cell) short of where drops stop, so drops at rest and their mirrors are evenly spaced.
+A drop within a cell and a half of the plane scatters once more from its mirrored place: only to nodes on the
+liquid's side of the plane, only the push along the wall's normal, with the drop's own pressure plus what the
+depth between drop and mirror adds (`weight * g . n * 2 * off`, so a floor carries the liquid's weight).
+Loose drops (no pressure) have no mirror; a mirror off the grid's edge is skipped.
+
+It has to be the drops' own sum, mirrored. A smooth stand-in (the walls' share as a force: the integral of the
+same kernel over the wall's place) was built first and is a hundredth or two out against the real drops' sum,
+depending on where the nodes fall; at the bottom of a pool thirty cells deep a hundredth of the pressure is a
+third of gravity, and the wall layer then sank at 70 to 190 px/s instead of rising.
+
+Not done: only the nearest wall is mirrored (a drop in a corner has one mirror); with liquid on both sides of
+a thin wall both sides are mirrored in full although the far liquid already pushes (measured calm: 8 px²/s²
+with a hollow box standing in a pool); the picture's edges need none (drops there stop on the nodes that stop
+them, which is the ordinary arrangement and balanced as it is: measured 8 px²/s²); balls are not mirrored.
+
+### 6. A drop a wall stops is squeezed by it (added after the code review)
+
+The grid's flow carries a drop into a wall's margin and `cs_g2p` puts it back on the line; the carried squeeze
+goes by the grid's flow and knew nothing of that, so drops collected on the line unsqueezed (with 36 px walls
+the liquid within a cell and a half of the wall read 12 to 17 % over-full, the safety net kept answering it
+and stirred the pool: 2,300 px²/s² and rising at 5 s). Now a drop moving into the wall when it is put back is
+squeezed by `WALL_SQUEEZE` 2 times how far it was put back, in cells (its own room is half a cell), and never
+by more than twice what it is moving into the wall in that substep, so a drop two walls pass between them in
+a corner is not squeezed for that (squeezed by the bare distance, three drops were shot through a 3 px wall).
 
 ### Measured with the scratch copy of this model (before building it properly)
 
@@ -169,11 +215,12 @@ move (cause 3). `CLOSE_RATE`, `CLOSE_ACROSS` and its rules at walls stay as they
 ### Tests (written first, in `crates/bpe-kit/src/things/liquid/tests.rs`)
 
 1. `a_slosh_in_a_box_keeps_swinging`: the still box at Normal, gravity pulled sideways 250 px/s² for 0.4 s,
-   the centre of mass's x read every 0.05 s to 4.5 s. Each of the first three half swings must keep more than
-   0.75 of the one before (they kept 0.66, 0.59 and 0.46), and a half swing takes 0.6 to 0.86 s.
-2. `still_water_rests_wherever_the_walls_sit_on_the_grid`: the still box at widths 594, 598, 604 and wall
-   thickness 3, and at wall thickness 36 with width 600: after 3.5 s rms speed under 25 px/s, no drop thrown
-   80 px above the level, stacked under 0.5 %.
+   the centre of mass's x read every 0.05 s to 4.5 s. It must turn at least five times, a half swing takes
+   0.6 to 0.86 s, each of the first four half swings keeps more than 0.7 of the one before (they kept 0.66,
+   0.59, 0.46 and 0.15) and the fifth is still more than 0.4 of the first.
+2. `still_water_rests_wherever_the_walls_sit_on_the_grid`: the still box at widths 594 and 604 with 3 px
+   walls, and at width 600 with 36 px walls: after 5 s more than 1,000 drops, rms speed under 25 px/s, no drop
+   thrown 120 px above the level, stacked under 0.5 %.
 3. The existing `still_water_in_a_box_...` and `water_poured_onto_a_shape_...` keep passing unchanged.
 4. `bpe-gfx/src/liquid_sim/tests.rs` as it is (it checks the solver on the card directly), plus
    `a_lone_drop_falls_as_fast_as_gravity_says`: one drop, gravity 60 cells/s² (Size Pool at Normal), 32
@@ -193,7 +240,10 @@ at 1:1. CI runs everything else.
 - Do not let "holes close" act on sound liquid again (cause 3), and do not turn it off (the pool under a pour
   fills with holes).
 - `BULK` and `CFL` are not changed here. Part 2 may try a bigger `CFL` (see there).
-- Do not make the dead band (`TOL`) narrow or the upward relax fast: both bring the wall-position simmer back.
+- Do not make the dead band (`CARRY_SLACK`) narrow or the upward relax fast: both bring the simmer back.
+- Do not swap the mirrored drops for anything smooth or cheaper without measuring every still box (change 5):
+  the walls' push has to match the drops' own to a small part of a hundredth.
+- Do not calm liquid near walls by taking speed off grid nodes: that was the accident (see "As built").
 - Do not feed `p.j` to the pressure again, and do not change what `p.j` holds (the picture depends on it).
 - Do not remove the walls' share from the gather in `cs_g2p`: `jref` and "holes close" still need it.
 
@@ -275,6 +325,29 @@ even when that is squeezed (`min(jref − 1, tear)`); never letting it join sque
 measured in the owner's scene and made no difference at Normal or Extreme, so the first was kept. Numbers and
 the full description: `docs/notes/liquid.md`, "The same water at every Detail, as built".
 
-Also measured with part 1 as built, for part 2: `CFL` 0.2 leaves the still box at 280 to 330 px²/s² at 600 px
+**After the code review** (2026-11-21, the one review of this part). It found that the thin-wall rule as first
+built (commit 047ae49: probes two cells either side of the node itself, masses compared, no limit on how far
+from the wall) also fired on nodes 2 to 3.25 cells inside the liquid, taking all their speed along the normal
+at random. That was calming still water by accident: with the rule corrected (change 3 as it now reads) the
+still box simmered again at two of four wall positions (594 px wide 93 px²/s² at 5 s, 604 px 334, 600 px 4,272,
+36 px walls 4,495), with the motion in bands up both side walls. Followed drop by drop (the squeeze each drop
+carries and what changed it, by distance from the wall), that led to changes 5 and 6, which are the real
+cause: the walls did not hold the liquid's pressure. The review's other findings, also fixed: a drop was
+"torn" at its liquid's own tear, which Spray takes down to a hundredth, so drops in sound liquid came loose
+and joined again all the time, each time taking the grid's noisy reading (now loose only at `CARRY_LOOSE` 0.3
+or the tear if that is more, and what it takes on joining is kept in [-0.9, loose]); `q()` (the mixing sums)
+truncated like `fixed()` did (now rounds); this plan's tests section did not match the tests. The names in
+change 2 are the plan's; in the code `TOL` is `CARRY_SLACK`, `RELAX_DOWN` and `RELAX_UP` are `CARRY_DOWN` and
+`CARRY_UP`, and "torn" is "loose".
+
+Measured with all six changes (release, software Vulkan, Normal): still water at 5 s 30 px²/s² (594 px wide),
+106 (600), 74 (604), 71 (36 px walls; 50 to 112 out to 8 s), 32 (40 px walls), fastest drop 14 to 44 px/s;
+shallow water (27 px deep) 0 to 2; a liquid filling the picture 8; a hollow box standing in a pool 8. Slosh
+half-swing ratios 0.89, 0.86, 0.96, 0.94, 0.93. The owner's scene, mean speed² a drop at 6 s: Normal 533k.
+Tried and dropped on the way: taking the squeeze's reference from the liquid alone near a wall (worse:
+8,000), the smooth wall push at 0.6 and 0.8 strength (still grows), squeezing a stopped drop by the bare
+distance (shoots drops through thin walls).
+
+Also measured with part 1 as first built (before the review), for part 2: `CFL` 0.2 leaves the still box at 280 to 330 px²/s² at 600 px
 wide (creeping up over 6 s) and 280 to 400 with 36 px walls, against 75 and 224 at 0.15; `CFL` 0.3 gives 370 to
 500 and 1,071 and rising.

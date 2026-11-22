@@ -517,15 +517,15 @@ flows meet along a wall, or where Surface pull draws the top rows of perfectly s
 
 Plan: `docs/superpowers/plans/liquid/same-water-every-detail.md` (what was measured, what was tried and
 dropped, and parts 2 (speed) and 3 (look), which are not built yet). The owner's complaint: at Normal the
-liquid was "viscous, like sludge", at Extreme it was water. Three causes, four changes, all in
-`liquid_sim.wgsl` plus one new number on each drop. No setting changed.
+liquid was "viscous, like sludge", at Extreme it was water. Six changes, all in `liquid_sim.wgsl` plus one
+new number on each drop. No setting changed.
 
 **The grid's sums round to nearest** (`fixed()`). `i32(x * scale)` rounds toward zero, so every one of a
 drop's 36 adds a substep lost up to a unit in the direction that slows it: a dry friction (the same bite
 however slowly the liquid moves; 8 % of the liquid's gravity at Normal, Bucket, and a lone drop under gentle
 gravity hung in the air), stronger the more substeps, so every Detail level had its own. The mass sum was
 biased low too, which fed fast liquid (+11 % a second at Normal, +26 % at Extreme). Any new fixed-point sum
-must use `fixed()`.
+must use `fixed()` (the mixing sums' `q()` rounds the same way now).
 
 **Each drop carries its squeeze** (`Drop.more[0]`, J − 1: 0 at rest, below 0 squeezed, above 0 stretched; the
 drop is 112 bytes now, `DROP_FLOATS` 28). The pressure (`cs_p2g`) goes by it and no longer by `p.j`. `cs_g2p`
@@ -535,21 +535,50 @@ a drop's reach inside the liquid at a flat open edge, so the surface, a thin she
 about 1. Within `CARRY_SLACK` (15 %) of `jref` nothing happens; a drop that thinks itself less packed than
 the grid says is moved to that edge at `CARRY_DOWN` 30 a second (over-packing is what bursts), one that thinks
 itself more packed at `CARRY_UP` 4 a second (the normal state near an edge the estimate gets wrong: answered
-fast, corners simmered). At its liquid's tear or beyond a drop is torn off (no pressure, no pull) and takes
-`jref` again as soon as that is under the tear. Drops are born at 0 (`Drop::new`; Un-mix's `cs_rewind` too).
+fast, corners simmered). Stretched to `CARRY_LOOSE` 0.3 (or its liquid's tear, if that is more) a drop is
+loose: it carries nothing and takes `jref` again as soon as that is under it, kept in [-0.9, loose]. That is
+well past the slack on purpose: Spray takes a liquid's tear down to a hundredth, and at that drops inside
+sound liquid came loose and joined again all the time, each time taking the grid's noisy reading. Between its
+tear and loose a drop has no pressure and no pull, as before. Drops are born at 0 (`Drop::new`; Un-mix's
+`cs_rewind` too).
 Why: read straight off the grid, the pressure heard the grid's sampling noise, which depends on where each
 wall's face falls between nodes (the still test box simmered at 5,000 px²/s² at 594 px wide and rested at
 600; Detail moves the grid, so each Detail had its own calm and restless scenes), and the top two cells of any
 liquid, or a whole sheet thinner than four cells, carried no pressure at all (at Normal that is a 30 px
 sheet). `p.j` is unchanged (1 / the liquid alone): the picture still draws lone drops by it. `cs_p2g` no
 longer gathers the walls' share (it took back the 8 % a step that cost); `cs_g2p` still does, for `jref`
-and "holes close". A drop beside a sunk ball reads a flat edge, so the liquid no longer packs round balls.
+and "holes close".
 
-**Nodes across a thin wall move along it** (`cs_grid`, `GHOST_LOOK`). A drop beside a hollow shape's wall
-spreads onto nodes on the wall's far side. Those were ordinary wall nodes (speed into the wall removed, speed
-away kept), and "away" on their side is toward nothing, which they fed back to the drop. Now a band node
-whose liquid (the heavier of the nodes two cells along the normal each way) is on the other side loses all
-of its speed along the normal and keeps its speed along the wall. Filled shapes are unchanged.
+**Nodes across a thin wall move along it** (`cs_grid`, `GHOST_LOOK`, `GHOST_MORE`). A drop beside a hollow
+shape's wall spreads onto nodes on the wall's far side. Those were ordinary wall nodes (speed into the wall
+removed, speed away kept), and "away" on their side is toward nothing, which they fed back to the drop. Now
+such a node loses all of its speed along the normal and keeps its speed along the wall. Which nodes: band
+nodes near enough the wall's line to hold weight from across it (`|s.z| < 1.5 (|n.x| + |n.y|) - 0.5 - t.z`)
+whose other side, read 1.5 cells off the wall's face straight out from the node's nearest point on the line,
+holds more than 4 times the liquid of its own. Filled shapes are unchanged. (As first built it probed two
+cells either side of the node itself and also fired on nodes 2 to 3 cells inside the liquid: see the plan's
+"As built". Never calm liquid by taking speed off nodes inside it.)
+
+**A wall pushes back as the liquid would** (`cs_p2g`, after a drop's own nine nodes). The pressure force on
+a node is a sum over the drops round it, and within two cells of a wall that sum is short of drops on the
+wall's side (drops stop half a cell off the face) while only nodes within 0.75 of a cell of the face are held.
+So the liquid packed against every wall until that layer was squeezed enough to hold the rest (half as many
+drops again in the half cell by the wall), and a layer squeezed more than its depth asks is lighter than the
+liquid beside it: it rose up every side wall at 140 to 190 px/s, for good. Now each drop within a cell and a
+half of a wall's mirror plane (`WALL_GAP`, a quarter cell, short of where drops stop: drops at rest and their
+mirrors are evenly spaced) scatters once more from its mirrored place: only to nodes on the liquid's side of
+the plane, only the push along the wall's normal, with its own pressure plus what the depth between it and
+its mirror adds (so a floor carries the liquid's weight). It must be the drops' own sum again: a smooth
+stand-in for the wall was 1 to 3 % out, and at the bottom of a pool thirty cells deep a hundredth of the
+pressure is a third of gravity. Only the nearest wall is mirrored; balls and the picture's edges are not (the
+edges need none: drops there stop on the very nodes that stop them).
+
+**A drop a wall stops is squeezed by it** (`cs_g2p`, `WALL_SQUEEZE` 2). The grid's flow carries drops into a
+wall's margin and they are put back on the line; the squeeze they carry goes by the grid's flow and knew
+nothing of that, so drops collected by walls unsqueezed until the safety net noticed and stirred the pool (36
+px walls: 2,300 px²/s² and rising). A drop moving into the wall when it is put back is squeezed by twice how
+far it was put back (its own room is half a cell), never by more than twice what it moves into the wall in
+that substep (so a drop two walls pass between them in a corner is not squeezed for that).
 
 **"Holes close" only where liquid is missing** (`cs_g2p`, `HOLE_BELOW` 0.95): it acts fully where the liquid
 round the drop reads under 0.8 of full and not at all above 0.95. The pressure used to iron the density flat
@@ -557,12 +586,13 @@ to a hundredth, so in sound liquid its slope was nothing; with the carried squee
 tenth of full by how the drops lie, and "holes close" stirred that for good (6,000 px²/s² and rising in the
 600 px box). Turned off altogether, the pool under a pour is full of holes.
 
-**Measured** (release, software Vulkan). A slosh in the test box: each half swing keeps 0.75, 0.90, 0.93,
-0.91, 0.88 of the last (it kept 0.66, 0.59, 0.46, 0.15 and stopped); the period is 1.5 s (theory 1.46).
-Still water at 5 s: 124 to 233 px²/s² (11 to 15 px/s rms) at widths 594 and 600 and walls 3, 36 and 40 px
-thick, no stacked drops. The owner's scene, mean speed² a drop at 6 s: Normal 518k px²/s² (it was 436k), Extreme 773k (884k: the old
-rounding fed fast liquid). At Normal the pool now covers the whole floor by 4 s, rolling back off each wall,
-where it stood in a stepped heap under the pour; no drop shares a spot (Extreme: 112 of 43,444).
+**Measured** (release, software Vulkan, Normal). A slosh in the test box: each half swing keeps 0.89, 0.86,
+0.96, 0.94, 0.93 of the last (it kept 0.66, 0.59, 0.46, 0.15 and stopped); the period is 1.55 s (theory 1.46).
+Still water at 5 s: 30 to 106 px²/s² (5 to 10 px/s rms) at widths 594, 600 and 604 and walls 3, 36 and 40 px
+thick, fastest drop 14 to 44 px/s, at most 16 of 9,768 drops stacked; shallow water, a liquid filling the
+picture and a hollow box standing in a pool rest at under 10. The owner's scene, mean speed² a drop at 6 s:
+Normal 533k px²/s² (it was 436k). At Normal the pool now covers the whole floor by 6 s, sloshing and rolling
+back off each wall, where it stood in a stepped heap under the pour.
 
 **Tests**: `a_lone_drop_falls_as_fast_as_gravity_says` (bpe-gfx: it fell 0.05 cells of 30),
 `a_slosh_in_a_box_keeps_swinging` and `still_water_rests_wherever_the_walls_sit_on_the_grid` (bpe-kit).
@@ -572,8 +602,9 @@ a layer about 15 px thick runs along the floor to the walls and rolls back over;
 across it and Normal two, and a grid smears anything under about three cells into the liquid above. So Normal
 shows the same flow, slower. Very fine and Extreme also hit the 64-substep cap, which caps their stiffness.
 
-**Known gaps.** A Fill starts with a jolt (30 to 60 px/s rms for the first second, a drop or two thrown up to
-50 px): its lattice does not know where the walls' margins are, so the first rows by a wall start a little
-over- or under-packed. Bigger time steps (`CFL` 0.2: a quarter fewer substeps) were measured and left alone:
+**Known gaps.** A Fill starts with a jolt (30 to 45 px/s rms for the first second): its lattice does not
+know where the walls' margins are, so the first rows by a wall start up to half a cell off them. Balls are
+not mirrored as walls are, so liquid still packs a little round a sunk ball. A corner mirrors only its nearer
+wall. Bigger time steps (`CFL` 0.2: a quarter fewer substeps) were measured and left alone:
 still water simmers at about twice the energy and creeps up. Speed and look: parts 2 and 3 of the plan.
 
