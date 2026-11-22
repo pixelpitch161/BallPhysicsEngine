@@ -1,9 +1,0 @@
-[Unit]
-Description=Weekly sweep of the bpe-pc runners' build files
-
-[Timer]
-OnCalendar=weekly
-Persistent=true
-
-[Install]
-WantedBy=timers.target

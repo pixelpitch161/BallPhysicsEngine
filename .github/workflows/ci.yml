@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      github_machines:
+        description: Run on GitHub's machines even when the owner's PC is on
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -62,6 +67,7 @@ jobs:
         id: where
         env:
           BEAT: ${{ vars.BPE_PC_HEARTBEAT }}
+          FORCE_GITHUB: ${{ inputs.github_machines || false }}
           EVENT: ${{ github.event_name }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPO: ${{ github.repository }}
@@ -69,7 +75,9 @@ jobs:
           now=$(date +%s)
           case "$BEAT" in ''|*[!0-9]*) beat=0 ;; *) beat=$BEAT ;; esac
           age=$((now - beat))
-          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
+          if [ "$FORCE_GITHUB" = true ]; then
+            why="asked for when the run was started"; pc=false
+          elif [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
             why="a pull request from a fork"; pc=false
           elif [ "$age" -lt 180 ]; then
             why="the PC was last seen ${age}s ago"; pc=true
@@ -116,6 +124,11 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      - name: Build files folder (owner's PC)
+        if: runner.environment == 'self-hosted'
+        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -153,14 +166,22 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      - name: Build files folder (owner's PC)
+        if: runner.environment == 'self-hosted'
+        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
           prefix-key: v2-ubuntu-24.04
           # The four machines build the same thing, so one saving the cache is enough.
           save-if: ${{ matrix.shard == 1 }}
-      # After the cache, so a cached ~/.cargo/bin can't swap in another version. Pinned: move it on purpose.
+      # After the cache, so a cached ~/.cargo/bin can't swap in another version. Pinned: move it on purpose, together
+      # with tools/pc-runner/setup-wsl.sh, which installs it once on the PC (three jobs writing one ~/.cargo/bin at
+      # the same time collide).
       - uses: taiki-e/install-action@v2
+        if: runner.environment == 'github-hosted'
         with:
           tool: cargo-nextest@0.9.152
       - name: Tests
@@ -214,6 +235,11 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      - name: Build files folder (owner's PC)
+        if: runner.environment == 'self-hosted'
+        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -246,6 +272,11 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs three jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the three runners, and
+      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      - name: Build files folder (owner's PC)
+        if: runner.environment == 'self-hosted'
+        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:

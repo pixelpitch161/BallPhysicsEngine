@@ -1,7 +1,0 @@
-# Deletes the runners' build files when they pass 150 GB (the next run rebuilds them).
-[Unit]
-Description=Sweep the bpe-pc runners' build files
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/bpe-target-sweep

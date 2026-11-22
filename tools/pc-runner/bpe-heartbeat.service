@@ -1,8 +1,9 @@
-# Tells the checks the PC is on: sets the repository variable BPE_PC_HEARTBEAT to the current time.
+# Tells the checks the PC is on: sets the repository variable BPE_PC_HEARTBEAT to the current time (user beat,
+# whose GitHub login the jobs can't read).
 [Unit]
 Description=Checks heartbeat for the bpe-pc runners
 
 [Service]
 Type=oneshot
-User=runner
+User=beat
 ExecStart=/usr/local/bin/bpe-heartbeat

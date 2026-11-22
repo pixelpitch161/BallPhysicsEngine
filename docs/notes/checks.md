@@ -41,28 +41,38 @@ machines). A pull request runs only what its changes can affect; a push to main 
 
 ## On the owner's PC
 
-Design `docs/superpowers/specs/2026-11-21-pc-test-runner-design.md`, plan `docs/superpowers/plans/2026-11-21-pc-test-runner.md`,
-setup scripts `tools/pc-runner/`.
+Design `docs/superpowers/specs/2026-11-21-pc-test-runner-design.md`, plan
+`docs/superpowers/plans/2026-11-21-pc-test-runner.md`, setup scripts `tools/pc-runner/`.
 
 - **Where the jobs run**: "What changed" also picks the machines. When the repository variable `BPE_PC_HEARTBEAT`
   is under 180 seconds old and the change isn't a pull request from a fork, Clippy, the tests, Goldens (release) and
   the Windows cross-build run on the owner's PC (`runs-on: [self-hosted, bpe-pc]`) and the tests are one job
-  (`Tests 1/1`) with the `pc` nextest profile. Otherwise they run on GitHub's machines as above. Format, "What
-  changed" and the gate always run on GitHub's machines. The step summary of "What changed" says which and why.
+  (`Tests 1/1`) with the `pc` nextest profile (8 at a time, the slowest tests first). Otherwise they run on GitHub's
+  machines as above. Format, "What changed" and the gate always run on GitHub's machines. The step summary of "What
+  changed" says which and why. A manual run (Actions, CI, "Run workflow") can tick "Run on GitHub's machines".
 - **The PC side**: WSL2 distro `bpe-ci` (Ubuntu 24.04, on `D:\WSL\bpe-ci`, `.wslconfig` 44 GB / 16 threads) with
-  three runners `bpe-pc-1..3` as systemd services `bpe-runner@1..3` (user `runner`, low priority). Same glibc and
-  Mesa lavapipe as GitHub's machines (each runner's `.env` forces lavapipe; WSL's real-GPU driver `dzn` is never
-  used), so the goldens and pinned pictures match. Windows drives aren't mounted and Windows programs can't be
-  started from it. Build files stay in `/home/runner/target/bpe-pc-<n>` between runs (swept weekly past 150 GB).
-  `bpe-heartbeat.timer` sets `BPE_PC_HEARTBEAT` every minute with the `runner` user's own `gh` login. The Windows
-  task "BPE checks (WSL)" starts the distro at logon and lowers the VM's priority.
+  three runners `bpe-pc-1..3` as systemd services `bpe-runner@1..3` (user `runner`, `Nice=10`). Same glibc and Mesa
+  lavapipe as GitHub's machines (each runner's `.env` forces lavapipe), so the goldens and pinned pictures match.
+  Windows drives aren't mounted and Windows programs can't be started from it. Build files stay in
+  `/home/runner/target/<job>` between runs (one folder per job, set by a `ci.yml` step, since a job can land on any
+  runner); a job-start hook (`job-started.sh`) empties them past 150 GB when no other job is running. nextest and the pinned Rust are installed once by `setup-wsl.sh` (move nextest's version there and in
+  `ci.yml` together). `bpe-heartbeat.timer` sets `BPE_PC_HEARTBEAT` every minute while GitHub lists a `bpe-pc` runner
+  online, as user `beat`, whose `gh` login the jobs can't read. The Windows task "BPE checks (WSL)" starts the
+  distro at logon.
 - **Steps skipped on the PC** (`if: runner.environment == 'github-hosted'`): Free disk space, the apt action (the
-  packages are installed once by `setup-wsl.sh`) and rust-cache.
+  packages are installed once by `setup-wsl.sh`), rust-cache and the nextest install. `rustup toolchain install`
+  runs under `flock`, since the three runners share one `~/.rustup`.
+- **Fork pull requests**: their workflows need the owner's approval (repository setting "Require approval for all
+  outside collaborators"). A fork can edit `ci.yml` to name the PC's label, and the runners keep their files between
+  jobs, so **never approve a fork's run without reading its workflow changes**.
 - **If the PC switches off mid-run**, its picked jobs stay queued until it is back (GitHub cancels them after 24
-  hours). Re-run the run to send them to GitHub's machines.
+  hours). Cancel the run and use "Re-run all jobs" once the PC has been off 3 minutes ("Re-run failed jobs" keeps
+  the old pick), or start a manual run with "Run on GitHub's machines".
 - **Looking after it** (from Windows): `wsl -d bpe-ci -u root -- systemctl status 'bpe-runner@*'`; stop with
-  `systemctl stop bpe-heartbeat.timer 'bpe-runner@*'` (the next run picks GitHub's machines after 3 minutes); remove
-  each runner with `./config.sh remove` in `/home/runner/actions-runner-<n>` and `wsl --unregister bpe-ci`.
+  `systemctl stop bpe-heartbeat.timer 'bpe-runner@*'` (the next run picks GitHub's machines after 3 minutes);
+  `bpe-register` (as root) registers any runner GitHub dropped (it deletes runners offline for 14 days). Remove each
+  runner with `./config.sh remove` in `/home/runner/actions-runner-<n>` and `wsl --unregister bpe-ci`.
+- **Timings** (November 2026, all tests): see the PR that added this; cold start 41 minutes.
 
 ## Running only the tests a change needs
 

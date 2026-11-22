@@ -1,8 +1,4 @@
-# Keeps the bpe-ci WSL machine (the checks' runners) running while the owner is logged in, at low priority so music
-# and games come first. Started at logon by the "BPE checks (WSL)" scheduled task; see docs/notes/checks.md.
-$ErrorActionPreference = 'Continue'
+# Keeps the bpe-ci WSL machine (the checks' runners) running while the owner is logged in. Started at logon by the
+# "BPE checks (WSL)" scheduled task; see docs/notes/checks.md. (Windows won't let even an elevated task change the
+# VM process's priority, so the runners' low priority is set inside the machine, in bpe-runner@.service.)
 Start-Process -FilePath wsl.exe -ArgumentList '-d', 'bpe-ci', '--exec', '/bin/sleep', 'infinity' -WindowStyle Hidden
-Start-Sleep -Seconds 20
-Get-Process -Name 'vmmem*' -ErrorAction SilentlyContinue | ForEach-Object {
-    try { $_.PriorityClass = 'BelowNormal' } catch { }
-}
