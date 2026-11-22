@@ -9,6 +9,12 @@
 // (`face`, grid units: below 0 inside the wall or past it). Only a node on the liquid's side gets
 // wet, so a thin wall the drops' weights reach across stays dry on its far side, and the draw
 // shows the film only near the face (a smooth line along the wall, not the grid's steps).
+//
+// Liquid look (walls and streams): two more numbers a node, for the drops' walls in the picture
+// (liquid_drops.wgsl, liquid.wgsl), which must not depend on a guessed side: `line`, the node's
+// signed distance from its wall's line exactly as the walls band has it (grid units, below 0
+// inside the outline: smooth straight through a thin wall), and `band`: 0 off the band (and in a
+// new, zeroed grid), 1 for a filled wall, 2 + its half thickness (grid units) for a hollow one.
 
 struct Wet {
     // cols, rows, the half written (0 or 1), 0
@@ -22,7 +28,7 @@ struct Wet {
 @group(0) @binding(1) var<storage, read> grid: array<i32>;
 // per node: (normal xy, distance, in the band), (wall speed xy, half thickness, 0)
 @group(0) @binding(2) var<storage, read> solid: array<vec4<f32>>;
-// two halves of wetness, then each node's face distance, then each node's side
+// two halves of wetness, then each node's face distance, its side, its `line` and its `band`
 @group(0) @binding(3) var<storage, read_write> wet: array<f32>;
 
 // How far an off-band node counts as from a wall's face (past where the film shows).
@@ -49,9 +55,13 @@ fn cs_wet(@builtin(global_invocation_id) id: vec3<u32>) {
         wet[to + n] = 0.0;
         wet[2u * cells + n] = FAR;
         wet[3u * cells + n] = 0.0;
+        wet[4u * cells + n] = 0.0;
+        wet[5u * cells + n] = 0.0;
         return;
     }
     let half = solid[2u * n + 1u].z;
+    wet[4u * cells + n] = s.z;
+    wet[5u * cells + n] = select(2.0 + half, 1.0, half < 0.0);
     // The liquid's side: a filled wall keeps it on its normal's side; a hollow one, the side with
     // more liquid two cells off the wall, else what it knew (only its own: another node's side is
     // written in this same pass).

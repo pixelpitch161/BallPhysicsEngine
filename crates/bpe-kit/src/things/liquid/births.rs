@@ -416,6 +416,11 @@ pub fn level_moved(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<
     Vec::new()
 }
 
+/// How wide pour `p`'s stream is born: its Width, times its Rate under 1.
+pub fn pour_width(p: &PourLayer) -> f32 {
+    p.width * p.rate.clamp(0.0, 1.0)
+}
+
 /// Pour `k`'s drops for one liquid step of `dt` seconds (its share owed carried in `st.owed`).
 pub fn pour(
     st: &mut LiquidState,
@@ -451,12 +456,15 @@ pub fn pour(
     let across = way.perp();
     let time = step as f32 * dt;
     let mut dice = Stream::new(st.id.0.wrapping_mul(0x9e37_79b9) ^ k as u32, step);
+    // Under Rate 1 the stream is that much narrower (a tap half open), so it is born whole, at its
+    // resting density: spread over the whole Width it was a curtain of spray.
+    let width = pour_width(&p);
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
         let u = (i as f32 + dice.unit()) / n as f32 - 0.5;
         // Spread along the way it travels this step too, so drops don't come out in rows.
         let along = dice.unit() * speed * dt;
-        let at = spout + across * (u * p.width) + way * along;
+        let at = spout + across * (u * width) + way * along;
         let turn = (p.spread * dice.signed()).to_radians();
         let v = Vec2::from_angle(aim + turn) * speed;
         let c = colour(&p.colour, world, at, i as usize, n as usize, time, p.strength);
