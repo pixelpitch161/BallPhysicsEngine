@@ -2,7 +2,7 @@
 #
 #   -Part Copy  (the owner's normal account, no administrator needed). Copies, nothing is run from F:\bpe-gpu:
 #       WinLibs MinGW from the owner's winget install -> F:\bpe-gpu\mingw64   (bpe-gpu can only read it)
-#       ffmpeg.exe from the owner's winget install    -> F:\bpe-gpu\bin       (bpe-gpu can only read it)
+#       ffmpeg.exe and ffprobe.exe from winget         -> F:\bpe-gpu\bin       (bpe-gpu can only read it)
 #
 #   -Part Rust  (runs AS bpe-gpu: setup-gpu-runner.ps1 -Step Tools starts it through a one-off background task).
 #       Rust 1.97.0 (x86_64-pc-windows-gnu, clippy, rustfmt) -> F:\bpe-gpu\rustup, F:\bpe-gpu\cargo
@@ -27,11 +27,14 @@ if ($Part -eq 'Copy') {
     if ($LASTEXITCODE -ge 8) { throw "Copying MinGW failed (robocopy $LASTEXITCODE)" }
     & "$MingwDir\bin\gcc.exe" --version | Select-Object -First 1
 
-    Write-Step 'ffmpeg'
+    Write-Step 'ffmpeg and ffprobe'
+    # Both from the same winget package. bpe-cli's export tests use ffprobe to read back what ffmpeg wrote.
     $ffmpeg = (Get-Item "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ffmpeg.exe").Target
     if (-not $ffmpeg) { $ffmpeg = (Get-Command ffmpeg.exe).Source }
-    Copy-Item $ffmpeg "$BinDir\ffmpeg.exe" -Force
-    & "$BinDir\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+    foreach ($exe in 'ffmpeg.exe', 'ffprobe.exe') {
+        Copy-Item (Join-Path (Split-Path $ffmpeg) $exe) "$BinDir\$exe" -Force
+        & "$BinDir\$exe" -hide_banner -version | Select-Object -First 1
+    }
 } else {
     if ((whoami) -notlike "*\$RunnerUser") { throw "-Part Rust runs as $RunnerUser (setup-gpu-runner.ps1 -Step Tools)" }
     $env:RUSTUP_HOME = $RustupHome

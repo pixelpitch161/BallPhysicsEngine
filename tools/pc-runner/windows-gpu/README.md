@@ -19,7 +19,7 @@ drives let every signed-in user in by default; the owner agreed to that.
 | Everything the runner uses or writes | `F:\bpe-gpu` (see "Who may change what") |
 | Rust 1.97.0 for `x86_64-pc-windows-gnu` with clippy and rustfmt | `F:\bpe-gpu\rustup`, `F:\bpe-gpu\cargo` |
 | cargo-nextest 0.9.152 | `F:\bpe-gpu\cargo\bin` |
-| MinGW (copy of the owner's WinLibs) and ffmpeg | `F:\bpe-gpu\mingw64`, `F:\bpe-gpu\bin` |
+| MinGW (copy of the owner's WinLibs), ffmpeg and ffprobe | `F:\bpe-gpu\mingw64`, `F:\bpe-gpu\bin` |
 | GitHub Actions runner `bpe-gpu-1`, labels `self-hosted, Windows, X64, bpe-gpu` | `F:\bpe-gpu\runner` |
 | Windows service `actions.runner.pixelpitch161-BallPhysicsEngine.bpe-gpu-1`, runs as bpe-gpu, starts with Windows, normal priority (below-normal starved it while the WSL checks built) | Services |
 | Job checkouts / build files | `F:\bpe-gpu\work` / `F:\bpe-gpu\target` |
@@ -55,7 +55,7 @@ the runner's environment, do it as bpe-gpu (a `probe.ps1` mode), not as the owne
 2. `setup-gpu-runner.ps1 -Step Lock` (administrator): keeps bpe-gpu out of everything on D:, E: and F:. Windows copies
    the rule onto every folder, which takes about 15 minutes on F:. Don't close its window, or run it hidden. It
    stops with an error if the rule didn't take.
-3. `install-tools.ps1 -Part Copy` (owner's normal account): copies MinGW and ffmpeg from the owner's winget installs.
+3. `install-tools.ps1 -Part Copy` (owner's normal account): copies MinGW, ffmpeg and ffprobe from the owner's winget installs.
 4. `setup-gpu-runner.ps1 -Step Tools` (administrator): installs Rust, cargo-nextest and a scratch clone **as bpe-gpu**
    (`-ScratchBranch` picks the branch, default `main`). The result goes to `probe\tools.log`.
 5. `setup-gpu-runner.ps1 -Step Smoke` (administrator): runs `cargo nextest run -p bpe-gfx --lib` once as bpe-gpu in
