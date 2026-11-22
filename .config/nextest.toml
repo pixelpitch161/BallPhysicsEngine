@@ -23,3 +23,12 @@ fail-fast = false
 slow-timeout = { period = "120s" }
 failure-output = "immediate-final"
 final-status-level = "slow"
+
+# On the PC the run ends when its slowest test does, so the known long ones (several minutes each on the software
+# driver) start first instead of trailing at the end.
+[[profile.pc.overrides]]
+filter = """
+binary(golden_liquid) | binary(liquid_sound) | binary(ready_look_pictures) | binary(liquid_look_pictures)
+| test(/^things::liquid::tests_sound::/) | (package(bpe-sound) & binary(alloc))
+"""
+priority = 100
