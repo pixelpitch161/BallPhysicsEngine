@@ -18,7 +18,8 @@ CPUWeight=50
 IOWeight=50
 Restart=always
 RestartSec=10
-KillMode=process
+# Stop everything the runner started (with KillMode=process a restart left old listeners taking jobs).
+KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=5min
 
