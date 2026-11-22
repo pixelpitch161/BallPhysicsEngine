@@ -134,16 +134,20 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
-      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners).
+      # Outside the checkout, which actions/checkout cleans. Two runs of the same job (two pull requests) take turns
+      # on the folder through BUILD_LOCK: cargo locks it only while building, so one run's build could replace the
+      # test programs another is running ("failed to exec").
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
-        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+        run: |
+          echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+          echo "BUILD_LOCK=$HOME/target/${{ github.job }}.lock" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
           prefix-key: v1-ubuntu-24.04
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: flock "${BUILD_LOCK:-/tmp/bpe-build.lock}" cargo clippy --workspace --all-targets -- -D warnings
 
   # On GitHub's machines the tests are split across four machines that run at the same time. cargo-nextest's slice
   # partition lines up the tests of every test binary together and deals them out, so the long binaries (bpe-kit's
@@ -180,11 +184,15 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
-      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners).
+      # Outside the checkout, which actions/checkout cleans. Two runs of the same job (two pull requests) take turns
+      # on the folder through BUILD_LOCK: cargo locks it only while building, so one run's build could replace the
+      # test programs another is running ("failed to exec").
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
-        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+        run: |
+          echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+          echo "BUILD_LOCK=$HOME/target/${{ github.job }}.lock" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -204,13 +212,13 @@ jobs:
         # How many at a time and no stopping at the first failure come from the ci or pc profile in
         # .config/nextest.toml.
         run: >-
-          cargo nextest run --workspace --profile ${{ needs.changes.outputs.profile }}
+          flock "${BUILD_LOCK:-/tmp/bpe-build.lock}" cargo nextest run --workspace --profile ${{ needs.changes.outputs.profile }}
           --partition slice:${{ matrix.shard }}/${{ strategy.job-total }} --no-tests=pass
           -E '${{ needs.changes.outputs.filter }}'
       - name: Doc-tests
         # nextest doesn't run doc-tests, so one machine runs them with cargo test (there are none yet).
         if: matrix.shard == 1 && !cancelled()
-        run: cargo test --workspace --doc --no-fail-fast
+        run: flock "${BUILD_LOCK:-/tmp/bpe-build.lock}" cargo test --workspace --doc --no-fail-fast
 
   # The tests that draw, on the owner's graphics card (an AMD RX 9070 XT, native Windows): every test except the
   # goldens pinned to Ubuntu's maths library (the gpu profile in .config/nextest.toml), then the pictures pinned to
@@ -318,11 +326,15 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
-      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners).
+      # Outside the checkout, which actions/checkout cleans. Two runs of the same job (two pull requests) take turns
+      # on the folder through BUILD_LOCK: cargo locks it only while building, so one run's build could replace the
+      # test programs another is running ("failed to exec").
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
-        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+        run: |
+          echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+          echo "BUILD_LOCK=$HOME/target/${{ github.job }}.lock" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -331,12 +343,12 @@ jobs:
       - name: Physics goldens
         if: needs.changes.outputs.goldens_kit == 'true'
         run: >-
-          cargo test --release -p bpe-kit --test golden --test golden_health --test golden_particles
+          flock "${BUILD_LOCK:-/tmp/bpe-build.lock}" cargo test --release -p bpe-kit --test golden --test golden_health --test golden_particles
           --test golden_particles_meeting --test golden_particles_motion --test golden_rules --test golden_text
       - name: Sound goldens
         if: needs.changes.outputs.goldens_sound == 'true' && !cancelled()
         # Only the goldens: the release-only speed checks in these files measure the machine, not the code.
-        run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix golden
+        run: flock "${BUILD_LOCK:-/tmp/bpe-build.lock}" cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix golden
 
   windows:
     name: Windows cross-build
@@ -358,14 +370,18 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
-      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners, and
-      # cargo locks a folder while it builds). Outside the checkout, which actions/checkout cleans.
+      # The PC keeps build files between runs, one folder per job (a job can land on any of the four runners).
+      # Outside the checkout, which actions/checkout cleans. Two runs of the same job (two pull requests) take turns
+      # on the folder through BUILD_LOCK: cargo locks it only while building, so one run's build could replace the
+      # test programs another is running ("failed to exec").
       - name: Build files folder (owner's PC)
         if: runner.environment == 'self-hosted'
-        run: echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+        run: |
+          echo "CARGO_TARGET_DIR=$HOME/target/${{ github.job }}" >> "$GITHUB_ENV"
+          echo "BUILD_LOCK=$HOME/target/${{ github.job }}.lock" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
           prefix-key: v1-ubuntu-24.04
       - name: Build the editor and the renderer for Windows
-        run: cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio -p bpe-cli
+        run: flock "${BUILD_LOCK:-/tmp/bpe-build.lock}" cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio -p bpe-cli
