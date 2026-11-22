@@ -322,7 +322,8 @@ fn pull_from(m: ptr<function, Main>, f: Force, centre: vec2<f32>, at0: f32, reac
     if (reach > 0.0 && d > reach) || d < 1e-6 || !(d == d && d < 3.0e38) {
         return false;
     }
-    let inward = off / d;
+    // Fades to nothing inside 4 px, as the exact engine's (`pull_from`).
+    let inward = off / max(d, 4.0);
     let soft = max(max(d, 4.0), swallow);
     let at = max(at0, 1e-3);
     var factor = 1.0;

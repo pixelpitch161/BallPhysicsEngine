@@ -1,10 +1,10 @@
 # scene	second	particles	hash
-Galaxy round a ball	1	900	10577a768040740f
-Galaxy round a ball	2	900	70ab329724d90fd5
-Galaxy round a ball	3	900	0050bf2df6047b95
-Galaxy round a ball	4	896	77c99e5e2532f2cf
-Galaxy round a ball	5	898	e0366dcac274f6cc
-Galaxy round a ball	6	899	a414e75de22cf2c7
+Galaxy round a ball	1	900	088cf5b470e753b1
+Galaxy round a ball	2	900	95bd1dc158f4b906
+Galaxy round a ball	3	900	a8e4e06535101c92
+Galaxy round a ball	4	896	c084740a78f245d6
+Galaxy round a ball	5	898	6f7cc80e5c64ee9f
+Galaxy round a ball	6	899	4cc383f105665a05
 Flow lines	1	4000	a8d329a1ed84f564
 Flow lines	2	4000	361aa32ce892fde9
 Flow lines	3	4000	cac6518f5a403ea3
@@ -19,10 +19,10 @@ Form a word	5	3586	1b541e1aed1ddc70
 Form a word	6	3586	7d3aa32bec03c52b
 Flock	1	180	32d2c25cac9d2bc1
 Flock	2	180	560bf4879dcfaf0f
-Flock	3	180	7e0e96f0145b6d2f
-Flock	4	180	9b664a4923fce965
-Flock	5	180	29cf50c20b1931d4
-Flock	6	180	b4f8ad9bdc745492
+Flock	3	180	a9875932fd706c40
+Flock	4	180	c44499e94599dd55
+Flock	5	180	61b30bd6e116c376
+Flock	6	180	f04cf5c66bda6334
 Shockwaves	1	1500	d70fc229279977cb
 Shockwaves	2	1500	d4f657f7c46cb798
 Shockwaves	3	1500	5fe79f4948fed8a0
