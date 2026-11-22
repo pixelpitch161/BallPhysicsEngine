@@ -69,7 +69,6 @@ not (
   | (
     (package(bpe-kit) & test(=things::particles::swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does))
     | (package(bpe-kit) & binary(shadow_quality) & test(=a_shadow_edge_moves_on_smoothly))
-    | (package(bpe-sound) & binary(alloc) & test(=render_does_not_allocate))
     | (package(bpe-kit) & binary(library) & test(=every_scene_plays_its_full_length_and_lands_its_payoff))
   )
 )

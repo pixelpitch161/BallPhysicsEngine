@@ -14,10 +14,28 @@ struct Counting;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+// TEMPORARY diagnostics (to be removed before merging): where the first allocations came from.
+static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+fn note(size: usize) {
+    if COUNTING.swap(false, Ordering::SeqCst) {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let name = std::thread::current().name().map(|s| s.to_string());
+        SEEN.lock().unwrap().push(format!("size {size} thread {name:?}\n{bt}"));
+        COUNTING.store(true, Ordering::SeqCst);
+    }
+}
+fn report() {
+    COUNTING.store(false, Ordering::SeqCst);
+    for s in SEEN.lock().unwrap().iter() {
+        eprintln!("ALLOC {s}");
+    }
+}
+
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            note(layout.size());
         }
         unsafe { System.alloc(layout) }
     }
@@ -27,6 +45,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            note(new_size);
         }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -56,6 +75,9 @@ fn render_does_not_allocate() {
         COUNTING.store(true, Ordering::SeqCst);
         e.render_prepared(&mut block);
         COUNTING.store(false, Ordering::SeqCst);
+        if ALLOCATIONS.load(Ordering::SeqCst) != 0 {
+            report();
+        }
         assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block allocated");
         heard |= block.iter().any(|&v| v != 0.0);
     }
