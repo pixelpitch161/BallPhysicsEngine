@@ -33,7 +33,9 @@ jobs:
     timeout-minutes: 60
     defaults:
       run:
-        shell: powershell
+        # Windows PowerShell with the script policy lifted for this step only (the runner account's default policy
+        # refuses the step scripts the runner writes).
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
     steps:
       - name: Not main
         env:
