@@ -56,9 +56,11 @@ so every download retries.
 
 ### Which tests run where
 
-- **WSL / GitHub's machines** run the whole workspace as now, with `BPE_SKIP_GPU_TESTS=1` set on the test job. Every
-  drawing test returns early at `test_device()`. The 13 call sites that `.expect()` a device are changed to the skip
-  form, so they skip too (a helper's `.ok()?` already returns `None`; callers are checked to skip, not panic).
+- **WSL / GitHub's machines** run the whole workspace as now, with `BPE_SKIP_GPU_TESTS=1` set on the test job.
+  `test_device()` then makes no device: under nextest (one process per test, `NEXTEST` set) it ends the test there
+  as passed with `std::process::exit(0)`, so every drawing test skips the same way whatever it does with the result
+  (some `.expect()` the device, some sit in `OnceLock` helpers); under plain `cargo test` it returns the error as
+  before.
 - **Windows ("Pictures (owner's graphics card)")** runs the workspace's tests natively with the nextest profile
   `gpu`, whose `default-filter` leaves out only the tests pinned to Ubuntu's maths library: the CPU golden binaries
   (`golden`, `golden_health`, `golden_particles*`, `golden_rules`, `golden_text`) and bpe-sound's golden tests.

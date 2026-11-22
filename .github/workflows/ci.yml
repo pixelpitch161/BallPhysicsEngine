@@ -1,5 +1,5 @@
-# Checks every pull request and every push to main: formatting, lint, the tests on a software graphics driver, the
-# release goldens and the Windows cross-build. A pull request runs only what its changes can affect (the "What
+# Checks every pull request and every push to main: formatting, lint, the tests (the ones that draw on the owner's
+# graphics card, the rest on Linux), the release goldens and the Windows cross-build. A pull request runs only what its changes can affect (the "What
 # changed" job); a push to main and a manual run check everything. See docs/notes/checks.md.
 name: CI
 
@@ -38,6 +38,7 @@ jobs:
       code: ${{ steps.pick.outputs.code }}
       filter: ${{ steps.pick.outputs.filter }}
       goldens_kit: ${{ steps.pick.outputs.goldens_kit }}
+      fork: ${{ steps.where.outputs.fork }}
       goldens_sound: ${{ steps.pick.outputs.goldens_sound }}
       windows: ${{ steps.pick.outputs.windows }}
       runner: ${{ steps.where.outputs.runner }}
@@ -84,6 +85,9 @@ jobs:
           else
             why="the PC was last seen ${age}s ago (off)"; pc=false
           fi
+          fork=false
+          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then fork=true; fi
+          echo "fork=$fork" >> "$GITHUB_OUTPUT"
           if $pc; then
             echo 'runner=["self-hosted","bpe-pc"]' >> "$GITHUB_OUTPUT"
             echo 'shards=[1]' >> "$GITHUB_OUTPUT"
@@ -96,6 +100,8 @@ jobs:
             where="GitHub's machines"
           fi
           echo "Heavy jobs run on $where: $why." | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "The tests that draw always run on the owner's graphics card (they wait while the PC is off)." \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
   fmt:
     name: Format
@@ -140,12 +146,16 @@ jobs:
   # 1,091 unit tests took 36 minutes on one machine) are shared out too. Each machine still runs only two at a time:
   # the picture tests on the software driver need the memory. See docs/superpowers/plans/2026-11-21-faster-checks.md.
   # On the owner's PC one job runs every test, more at a time (the pc profile).
+  # The tests that draw don't run here: BPE_SKIP_GPU_TESTS=1 ends each one as passed at bpe_gfx::test_device(), and
+  # the gpu-pictures job runs them on the owner's graphics card instead.
   test-shard:
-    name: Tests ${{ matrix.shard }}/${{ strategy.job-total }} (debug, software GPU)
+    name: Tests ${{ matrix.shard }}/${{ strategy.job-total }} (debug, no drawing)
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.runner) }}
     timeout-minutes: 90
+    env:
+      BPE_SKIP_GPU_TESTS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -198,11 +208,57 @@ jobs:
         if: matrix.shard == 1 && !cancelled()
         run: cargo test --workspace --doc --no-fail-fast
 
-  # The one name to look for: green only when every test machine passed.
+  # The tests that draw, on the owner's graphics card (an AMD RX 9070 XT, native Windows): every test except the
+  # goldens pinned to Ubuntu's maths library (the gpu profile in .config/nextest.toml), then the pictures pinned to
+  # the card in release, then timings. There is no fallback: while the PC is off this job waits in the queue.
+  # The pinned pictures are refreshed with the "Refresh GPU pictures" workflow (gpu-pictures.yml).
+  # See docs/notes/checks.md, "The owner's graphics card".
+  gpu-pictures:
+    name: Pictures (owner's graphics card)
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.fork == 'false'
+    runs-on: [self-hosted, Windows, bpe-gpu]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      # Build files stay between runs, outside the checkout (BPE_GPU_TARGET comes from the runner's .env).
+      - name: Build files folder
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$env:BPE_GPU_TARGET\${{ github.job }}"
+      - name: Which card
+        run: vulkaninfo --summary | Select-String -Pattern 'deviceName|driverName|driverInfo'
+      - name: Tests on the card
+        run: >-
+          cargo nextest run --workspace --profile gpu --no-tests=pass
+          -E '${{ needs.changes.outputs.filter }}'
+      - name: Pictures pinned to the card (release)
+        if: needs.changes.outputs.goldens_kit == 'true' && !cancelled()
+        run: cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
+      - name: Timings on the card
+        if: needs.changes.outputs.goldens_kit == 'true' && !cancelled()
+        continue-on-error: true
+        run: |
+          # Through cmd, so the timings printed to stderr join the output without PowerShell treating them as errors.
+          $out = cmd /c "cargo test --release -p bpe-kit --test liquid_speed --test light_speed -- --ignored --nocapture --test-threads=1 2>&1"
+          $out
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Timings on the owner's graphics card"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+          $out | Where-Object { "$_" -match 'card:|ms per second|ms a frame' } | ForEach-Object { "$_" } |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+
+  # The one name to look for: green only when every test machine and the card passed.
   test:
-    name: Tests (debug, software GPU)
+    name: Tests
     if: always()
-    needs: [changes, test-shard]
+    needs: [changes, test-shard, gpu-pictures]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -212,6 +268,14 @@ jobs:
           test "${{ needs.changes.result }}" = success
           test "${{ needs.test-shard.result }}" = success ||
             { test "${{ needs.test-shard.result }}" = skipped && test "${{ needs.changes.outputs.code }}" = false; }
+      - name: The tests that draw passed on the owner's graphics card
+        run: |
+          if [ "${{ needs.changes.outputs.fork }}" = true ] && [ "${{ needs.changes.outputs.code }}" = true ]; then
+            echo "A pull request from a fork: the tests that draw run only on the owner's PC, never for a fork."
+            exit 1
+          fi
+          test "${{ needs.gpu-pictures.result }}" = success ||
+            { test "${{ needs.gpu-pictures.result }}" = skipped && test "${{ needs.changes.outputs.code }}" = false; }
 
   release-goldens:
     name: Goldens (release)
@@ -226,12 +290,12 @@ jobs:
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@v5
-      - name: System packages (Mesa's software Vulkan driver for the pinned pictures)
+      - name: System packages
         if: runner.environment == 'github-hosted'
         uses: ./.github/actions/apt
         with:
           cache-name: goldens
-          packages: libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers
+          packages: libasound2-dev pkg-config libudev-dev
       - name: Rust (the version in rust-toolchain.toml)
         # One at a time: the owner's PC runs four jobs side by side sharing one ~/.rustup.
         run: flock "$HOME/.rustup-install.lock" rustup toolchain install
@@ -244,9 +308,12 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           prefix-key: v1-ubuntu-24.04
-      - name: Physics goldens and pinned pictures
+      # golden_liquid and the pinned pictures draw, so they run on the owner's card (gpu-pictures) instead.
+      - name: Physics goldens
         if: needs.changes.outputs.goldens_kit == 'true'
-        run: cargo test --release -p bpe-kit --test 'golden*' --test unlit_pictures --test lit_flat_pinned
+        run: >-
+          cargo test --release -p bpe-kit --test golden --test golden_health --test golden_particles
+          --test golden_particles_meeting --test golden_particles_motion --test golden_rules --test golden_text
       - name: Sound goldens
         if: needs.changes.outputs.goldens_sound == 'true' && !cancelled()
         # Only the goldens: the release-only speed checks in these files measure the machine, not the code.

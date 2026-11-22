@@ -40,3 +40,32 @@ priority = 100
 [[profile.pc.overrides]]
 filter = "package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing)"
 threads-required = "num-test-threads"
+
+[profile.gpu]
+# The owner's graphics card (an AMD RX 9070 XT on Windows; job "Pictures (owner's graphics card)",
+# docs/notes/checks.md). Every test runs here natively except the goldens pinned to Ubuntu's maths library, which
+# Windows' rounds a hair differently: the CPU physics goldens and the sound goldens stay on the Linux machines.
+# (golden_liquid draws, so it runs here, with its golden made on the card.)
+default-filter = """
+not (
+  (package(bpe-kit) & (binary(golden) | binary(golden_health) | binary(/^golden_particles/) | binary(golden_rules)
+    | binary(golden_text)))
+  | (package(bpe-sound) & test(/golden/))
+)
+"""
+test-threads = 8
+fail-fast = false
+slow-timeout = { period = "120s" }
+failure-output = "immediate-final"
+final-status-level = "slow"
+
+[[profile.gpu.overrides]]
+filter = """
+binary(golden_liquid) | binary(liquid_sound) | binary(ready_look_pictures) | binary(liquid_look_pictures)
+| test(/^things::liquid::tests_sound::/) | (package(bpe-sound) & binary(alloc))
+"""
+priority = 100
+
+[[profile.gpu.overrides]]
+filter = "package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing)"
+threads-required = "num-test-threads"

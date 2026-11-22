@@ -1,13 +1,13 @@
-//! No Lighting card, no change: every test scene draws exactly the picture it drew before the
-//! lighting work. The hashes in `tests/golden-unlit*.txt` were made on main before any renderer
-//! change for lighting, on the cloud's software GPU (lavapipe); another GPU draws a few bits
-//! differently, so there the test only checks that every scene still draws.
+//! No Lighting card, no change: every test scene keeps drawing exactly the picture it draws. The
+//! hashes in `tests/golden-unlit*.txt` are made on the owner's graphics card, named on the file's
+//! first line (`bpe_gfx::card_golden`); another card draws a few bits differently, so there the
+//! test only checks that every scene still draws.
 //!
-//! Bless with `BLESS_GOLDEN=1`, once in debug and once with `--release` (the frames are built
-//! from the physics, whose trig differs a hair between the two), and only when a change is meant
-//! to move unlit pictures.
+//! Bless on the owner's card with the "Refresh GPU pictures" workflow (debug and `--release`: the
+//! frames are built from the physics, whose trig differs a hair between the two), and only when a
+//! change is meant to move unlit pictures.
 
-use bpe_gfx::{Frame, Renderer, build_frame, test_device};
+use bpe_gfx::{CardGolden, Frame, Renderer, build_frame, card_golden, test_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
@@ -52,23 +52,21 @@ fn scenes_without_a_lighting_card_draw_as_they_always_did() {
     }
     let file = if cfg!(debug_assertions) { "tests/golden-unlit-debug.txt" } else { "tests/golden-unlit.txt" };
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-    if std::env::var_os("BLESS_GOLDEN").is_some() {
-        std::fs::write(&path, &lines).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
-    let software = std::env::var_os("BPE_ANY_GPU").is_none();
+    let (expected, driver_note) = match card_golden(&path, &lines) {
+        CardGolden::Blessed => return,
+        CardGolden::NotCompared(why) => return eprintln!("{why}"),
+        CardGolden::Compare { expected, driver_note } => (expected, driver_note),
+    };
     let differ: Vec<_> = expected
         .lines()
         .zip(lines.lines())
         .filter(|(a, b)| a != b)
         .map(|(a, b)| format!("  was  {a}\n  now  {b}"))
         .collect();
-    if software {
-        assert!(
-            differ.is_empty() && expected.lines().count() == lines.lines().count(),
-            "unlit pictures changed:\n{}",
-            differ.join("\n")
-        );
-    }
+    assert!(
+        differ.is_empty() && expected.lines().count() == lines.lines().count(),
+        "unlit pictures changed:\n{}\n{}",
+        differ.join("\n"),
+        driver_note.unwrap_or_default()
+    );
 }

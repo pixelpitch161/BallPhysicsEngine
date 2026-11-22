@@ -206,10 +206,11 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
     Ok((device, queue))
 }
 
-/// Set to `1` to let picture tests skip on a machine without a graphics adapter.
+/// Set to `1` to skip every picture test on purpose. CI sets it on the Linux test machines, because the picture tests
+/// run on the owner's own graphics card instead (docs/notes/checks.md).
 pub const SKIP_GPU_TESTS: &str = "BPE_SKIP_GPU_TESTS";
 
-/// What a test does when no graphics device can be made.
+/// What a test does without a graphics device.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NoGpu {
     /// Skipping was asked for: the test returns early.
@@ -230,24 +231,106 @@ pub fn no_gpu(skip_asked: bool, why: &str) -> NoGpu {
     }
 }
 
-/// The graphics device for a test. Same as [`headless_device`], but without a device the test fails loudly unless
-/// `BPE_SKIP_GPU_TESTS=1` is set, when the error comes back and the test skips. Every test that draws uses this.
+/// The graphics device for a test. Same as [`headless_device`], but without a device the test fails loudly.
+///
+/// With `BPE_SKIP_GPU_TESTS=1` no device is made: under cargo-nextest (one process per test) the test ends there as
+/// passed, whatever it does with the result, and under `cargo test` the error comes back and the test skips. Every
+/// test that draws uses this.
 pub fn test_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
+    let skip = std::env::var(SKIP_GPU_TESTS).is_ok_and(|v| v == "1");
+    if skip {
+        if std::env::var_os("NEXTEST").is_some() {
+            eprintln!("{SKIP_GPU_TESTS}=1: this test draws, so it runs on the picture machine instead");
+            std::process::exit(0);
+        }
+        anyhow::bail!("{SKIP_GPU_TESTS}=1");
+    }
     match headless_device() {
         Ok(pair) => Ok(pair),
-        Err(e) => {
-            let skip = std::env::var(SKIP_GPU_TESTS).is_ok_and(|v| v == "1");
-            match no_gpu(skip, &e.to_string()) {
-                NoGpu::Skip => Err(e),
-                NoGpu::Fail(message) => panic!("{message}"),
-            }
-        }
+        Err(e) => match no_gpu(false, &e.to_string()) {
+            NoGpu::Skip => Err(e),
+            NoGpu::Fail(message) => panic!("{message}"),
+        },
     }
+}
+
+/// The graphics card tests draw on, as `name (driver, driver info)`: what the first line of a card golden names.
+pub fn test_device_name() -> String {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    })) {
+        Ok(adapter) => {
+            let info = adapter.get_info();
+            format!("{} ({}, {})", info.name.trim(), info.driver.trim(), info.driver_info.trim())
+        }
+        Err(e) => format!("no graphics device ({e})"),
+    }
+}
+
+/// The start of a card golden's first line.
+pub const MADE_ON: &str = "# made on: ";
+
+/// What a test does with a golden made on one graphics card (the owner's; docs/notes/checks.md).
+#[derive(Debug, PartialEq, Eq)]
+pub enum CardGolden {
+    /// `BLESS_GOLDEN` was set: the file was written, with this card on its first line.
+    Blessed,
+    /// Made on another card: the pictures can't be compared here (the reason, to print).
+    NotCompared(String),
+    /// Same card: compare against `expected` (the lines after the first). `driver_note` is set when the driver
+    /// differs from the one the file was made with, for the failure message.
+    Compare { expected: String, driver_note: Option<String> },
+}
+
+/// Opens (or with `BLESS_GOLDEN` writes) a golden pinned to a graphics card. `lines` is what the test made now. The
+/// file's first line names the card it was made on; only the same card is compared, since another card or driver
+/// draws a few bits differently. Refresh the files on the owner's card with the "Refresh GPU pictures" workflow.
+pub fn card_golden(path: &std::path::Path, lines: &str) -> CardGolden {
+    let here = test_device_name();
+    if std::env::var_os("BLESS_GOLDEN").is_some() {
+        std::fs::write(path, format!("{MADE_ON}{here}\n{lines}")).unwrap();
+        return CardGolden::Blessed;
+    }
+    let text = std::fs::read_to_string(path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    card_golden_compare(&text, &here)
+}
+
+/// The decision of [`card_golden`], from the file's text and this card's name.
+pub fn card_golden_compare(text: &str, here: &str) -> CardGolden {
+    let (first, expected) = text.split_once('\n').unwrap_or((text, ""));
+    let made_on = first.strip_prefix(MADE_ON).unwrap_or("an unnamed card").trim();
+    let card = |s: &str| s.split(" (").next().unwrap_or(s).trim().to_string();
+    if card(made_on) != card(here) {
+        return CardGolden::NotCompared(format!(
+            "not compared: these pictures were made on {made_on}, this is {here}; the owner's PC checks them"
+        ));
+    }
+    let driver_note = (made_on != here).then(|| {
+        format!(
+            "the driver changed since these pictures were made ({made_on}, now {here}): if the pictures are meant to \
+             be the same, refresh them with the \"Refresh GPU pictures\" workflow"
+        )
+    });
+    CardGolden::Compare { expected: expected.to_string(), driver_note }
 }
 
 #[cfg(test)]
 mod test_device_tests {
     use super::*;
+
+    #[test]
+    fn a_card_golden_is_compared_only_on_its_own_card() {
+        let file = "# made on: AMD Radeon RX 9070 XT (AMD proprietary driver, 26.11.2)\nscene\t1\tabc\n";
+        let same = card_golden_compare(file, "AMD Radeon RX 9070 XT (AMD proprietary driver, 26.11.2)");
+        assert_eq!(same, CardGolden::Compare { expected: "scene\t1\tabc\n".into(), driver_note: None });
+        let newer = card_golden_compare(file, "AMD Radeon RX 9070 XT (AMD proprietary driver, 26.12.1)");
+        let CardGolden::Compare { driver_note: Some(note), .. } = newer else { panic!("{newer:?}") };
+        assert!(note.contains("26.12.1") && note.contains("Refresh GPU pictures"));
+        let other = card_golden_compare(file, "llvmpipe (LLVM 19.1.1, 256 bits) (llvmpipe, Mesa 25.2)");
+        assert!(matches!(other, CardGolden::NotCompared(why) if why.contains("RX 9070 XT")));
+    }
 
     #[test]
     fn a_missing_gpu_fails_unless_skipping_was_asked_for() {

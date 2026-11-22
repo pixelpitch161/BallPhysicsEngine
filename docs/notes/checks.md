@@ -13,9 +13,10 @@ machines). A pull request runs only what its changes can affect; a push to main 
 | What changed | `.github/scripts/affected.py`: the changed crates plus every crate that depends on them | seconds |
 | Format | `cargo fmt --all --check` | under 1 min |
 | Clippy | `cargo clippy --workspace --all-targets -- -D warnings` | 1-2 min |
-| Tests 1/4 ... 4/4 | every test in the workspace, split four ways by cargo-nextest, two at a time per machine | see the PR |
-| Tests (debug, software GPU) | green only when all four test machines passed: the one name to look for | seconds |
-| Goldens (release) | physics goldens, pinned pictures and sound goldens in `--release` | 10-15 min |
+| Tests 1/4 ... 4/4 (debug, no drawing) | every test in the workspace, split four ways by cargo-nextest, two at a time per machine; the tests that draw end at once as passed (`BPE_SKIP_GPU_TESTS=1`) | see the PR |
+| Pictures (owner's graphics card) | the tests that draw (and every other test but the Ubuntu-pinned goldens) on the owner's AMD card, native Windows; then the card-pinned pictures in release and timings | see the PR |
+| Tests | green only when all the test machines and the card passed: the one name to look for | seconds |
+| Goldens (release) | physics goldens and sound goldens in `--release` | 10-15 min |
 | Windows cross-build | the editor and the renderer for Windows | 3-10 min |
 
 - **Splitting**: `cargo nextest run --workspace --profile ci --partition slice:<k>/4`. The slice partition lines up
@@ -74,6 +75,34 @@ Design `docs/superpowers/specs/2026-11-21-pc-test-runner-design.md`, plan
   runner with `./config.sh remove` in `/home/runner/actions-runner-<n>` and `wsl --unregister bpe-ci`.
 - **Timings** (November 2026, all tests): see the PR that added this; cold start 41 minutes.
 
+## The owner's graphics card
+
+Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
+`docs/superpowers/plans/2026-11-22-gpu-picture-checks.md`, setup scripts `tools/pc-runner/windows-gpu/`.
+
+- **What runs there**: job "Pictures (owner's graphics card)" (`gpu-pictures` in `ci.yml`), on the native Windows
+  runner `bpe-gpu-1` (labels `self-hosted, Windows, bpe-gpu`), an AMD Radeon RX 9070 XT. It runs the workspace with
+  the nextest `gpu` profile, whose `default-filter` leaves out only the goldens pinned to Ubuntu's maths library (the
+  CPU physics goldens and the sound goldens), then `unlit_pictures`, `lit_flat_pinned` and `golden_liquid` in
+  release, then the liquid and light timings into the job summary. The Linux test machines set
+  `BPE_SKIP_GPU_TESTS=1`, so every test that draws ends there as passed at `test_device()` (under nextest it exits
+  the test's process with 0; under plain `cargo test` it returns an error).
+- **No fallback**: while the PC is off this job waits in the queue and the "Tests" gate stays pending (GitHub cancels
+  a job queued 24 hours; re-run it once the PC is back). A fork's pull request never runs there, so its gate fails.
+- **Pictures pinned to the card**: `crates/bpe-kit/tests/golden-unlit*.txt`, `golden-lit-flat*.txt`,
+  `golden-liquid*.txt`. Their first line names the card and driver they were made on (`bpe_gfx::card_golden`). On
+  another card (a cloud container's lavapipe) the tests draw and check what they can, print "not compared" and pass;
+  on the same card a difference fails, and says so when the driver changed.
+- **Refreshing them**: Actions, "Refresh GPU pictures" (`gpu-pictures.yml`), "Run workflow", naming the branch (not
+  main). It blesses the six files on the card in debug and release, checks a second run matches, commits them to
+  the branch, and starts CI there (a push with the workflow's token starts nothing by itself). Threads use it when a
+  change is meant to move those pictures and after a driver update; the owner runs nothing.
+- **The runner**: a Windows service running as the standard local user `bpe-gpu` (session 0 reaches the card; checked
+  with `vulkaninfo`). Everything lives in `F:\bpe-gpu` (runner, `rustup`, `cargo`, MinGW, ffmpeg, build files in
+  `F:\bpe-gpu\target\<job>`). Its `.env` turns off the overlay Vulkan layers installed on the PC
+  (`VK_LOADER_LAYERS_DISABLE=~implicit~`), so OBS or Steam can't change a picture.
+- **Timings**: the job summary's "Timings on the owner's graphics card" (`tests/liquid_speed.rs`, `light_speed.rs`).
+
 ## Running only the tests a change needs
 
 Project rule: test what the change touches, CI runs the rest. In the cloud container (4 cores, 15 GB) keep picture
@@ -104,4 +133,5 @@ cargo nextest run --workspace --profile ci --partition slice:1/4   # what CI sha
 - Slowest test binaries (CI, November 2026): bpe-kit lib (~36 min alone), bpe-gfx lib (~18 min), `liquid_sound`
   (~9 min), `golden_liquid` (~7 min, one test), `ready_look_pictures` (~6 min, one test). Avoid running them unless
   the change touches them.
-- Goldens: re-bless with `BLESS_GOLDEN=1`, once in debug and once with `--release` (CLAUDE.md).
+- Goldens: re-bless with `BLESS_GOLDEN=1`, once in debug and once with `--release` (CLAUDE.md). The pictures pinned to
+  the owner's card can't be blessed in a container: use the "Refresh GPU pictures" workflow.
