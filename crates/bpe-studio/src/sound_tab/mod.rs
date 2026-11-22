@@ -251,6 +251,7 @@ impl TabCx<'_> {
             .bipolar(bipolar)
             .log(log)
             .width(KNOB_W)
+            .grow_to(KNOB_W * 2.4)
             .step((def.ty == ValueType::Int).then_some(1.0))
             .rings(&rings)
             .colour(self.colour)

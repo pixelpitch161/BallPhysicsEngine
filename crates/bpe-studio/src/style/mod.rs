@@ -118,6 +118,26 @@ pub fn raised<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     .inner
 }
 
+/// Shows a floating window whose title bar reads. egui paints the front window's title bar in the fill of an open
+/// menu button, which in this design is light, under a title and a close cross that are light too; here the bar is
+/// raised grey, and everything inside the window keeps the usual look.
+pub fn window<R>(
+    ctx: &egui::Context,
+    window: egui::Window<'_>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<egui::InnerResponse<Option<R>>> {
+    let usual = ctx.global_style().visuals.widgets.open.weak_bg_fill;
+    ctx.global_style_mut(|style| style.visuals.widgets.open.weak_bg_fill = RAISED);
+    // The window's own frame took the look above when it began; its contents and their menus get the usual one.
+    let shown = window.show(ctx, |ui| {
+        ui.ctx().global_style_mut(|style| style.visuals.widgets.open.weak_bg_fill = usual);
+        ui.visuals_mut().widgets.open.weak_bg_fill = usual;
+        add(ui)
+    });
+    ctx.global_style_mut(|style| style.visuals.widgets.open.weak_bg_fill = usual);
+    shown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +152,47 @@ mod tests {
         let want = Color32::from_rgb(mix(0x28, pink.r()), mix(0x28, pink.g()), mix(0x28, pink.b()));
         assert_eq!(track::mix_over_panel(pink), want);
         assert_eq!(want, Color32::from_rgb(0x57, 0x38, 0x44));
+    }
+
+    /// Every fill a frame's shapes paint with.
+    fn fills(shapes: &[egui::epaint::ClippedShape]) -> Vec<Color32> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<Color32>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Rect(rect) => out.push(rect.fill),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        shapes.iter().for_each(|s| walk(&s.shape, &mut out));
+        out
+    }
+
+    #[test]
+    fn a_window_s_title_bar_is_dark_under_its_light_title() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        // No fading in: the fills are the tokens themselves.
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let mut inside = None;
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut open = true;
+                window(ui.ctx(), egui::Window::new("Export video").open(&mut open), |ui| {
+                    let open = (ui.visuals().widgets.open, ui.ctx().global_style().visuals.widgets.open);
+                    inside = Some((open.0.weak_bg_fill, open.1.weak_bg_fill));
+                    ui.label("Inside");
+                });
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let fills = fills(&shapes);
+        assert!(fills.contains(&RAISED), "the title bar is raised grey");
+        assert!(!fills.contains(&TEXT), "and nothing is filled with the text's own colour");
+        assert_eq!(inside, Some((TEXT, TEXT)), "an open menu inside is light as anywhere");
+        assert_eq!(ctx.global_style().visuals.widgets.open.weak_bg_fill, TEXT, "and so is one after the window");
     }
 
     #[test]

@@ -45,6 +45,8 @@ pub struct ExportWindow {
     remember_in: Option<PathBuf>,
     /// The choices as last written there.
     remembered: Option<Remembered>,
+    /// Whether a text box had the keyboard as the last frame ended (Escape then leaves the box, no more).
+    typing: bool,
 }
 
 /// How an export ended, for the status line.
@@ -123,6 +125,7 @@ impl Default for ExportWindow {
             news: None,
             remember_in: None,
             remembered: None,
+            typing: false,
         }
     }
 }
@@ -314,24 +317,35 @@ impl ExportWindow {
                 self.finish(ended);
             }
         }
+        // egui takes the keyboard from a text box on Escape before the frame is drawn, so what the key was for is
+        // what held the keyboard a frame ago.
+        let was_typing = std::mem::replace(&mut self.typing, ctx.text_edit_focused());
         if !self.open {
             return;
         }
         self.check_encoders();
         let mut open = self.open;
-        egui::Window::new("Export video")
+        // Escape closes the window only when the key is for nothing else: not a list or menu that is open (asked
+        // before the window is drawn, as the list is shut by then), a text box being left, or a question on top.
+        let escape_is_free =
+            !egui::Popup::is_any_open(ctx) && !was_typing && ctx.memory(|m| m.top_modal_layer().is_none());
+        let window = egui::Window::new("Export video")
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .default_width(460.0)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_width(460.0);
-                let busy = self.job.is_some();
-                ui.add_enabled_ui(!busy, |ui| self.settings(ui, scene, settings, base_dir, kit));
-                ui.add_space(10.0);
-                self.progress(ui, ctx, scene, settings, base_dir, kit);
-            });
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO);
+        style::window(ctx, window, |ui| {
+            ui.set_width(460.0);
+            let busy = self.job.is_some();
+            ui.add_enabled_ui(!busy, |ui| self.settings(ui, scene, settings, base_dir, kit));
+            ui.add_space(10.0);
+            self.progress(ui, ctx, scene, settings, base_dir, kit);
+        });
+        // Escape closes the window as its cross does.
+        if escape_is_free && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
         self.open = open;
         self.remember_if_changed();
     }
@@ -348,7 +362,8 @@ impl ExportWindow {
         ui.label(RichText::new("SAVE AS").size(12.0).color(style::MUTED));
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new(path.file_name().unwrap_or_default().to_string_lossy()).strong());
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                ui.label(RichText::new(name).color(style::TEXT_STRONG));
                 let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
                 ui.label(RichText::new(format!("in {folder}")).small().color(style::MUTED));
             });
@@ -365,9 +380,14 @@ impl ExportWindow {
             });
         });
         if path.exists() {
-            ui.label(
-                RichText::new("A video with this name already exists and will be replaced.").small().color(style::TEXT),
-            );
+            // The video this window has just made is no surprise: say what exporting again does, without the alarm.
+            let just_made = matches!(&self.finished, Some(Ok(done)) if done.path == path);
+            let words = if just_made {
+                RichText::new("Exporting again replaces the video you just made.").small().color(style::MUTED)
+            } else {
+                RichText::new("A video with this name already exists and will be replaced.").small().color(style::TEXT)
+            };
+            ui.label(words);
         }
 
         ui.add_space(8.0);
@@ -401,6 +421,8 @@ impl ExportWindow {
             match self.gpu_encoders() {
                 None if self.ffmpeg.is_some() => {
                     ui.label(RichText::new("Checking your graphics card…").small().color(style::MUTED));
+                    // The answer comes from another thread: look again soon, or this line stays until the mouse moves.
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
                 }
                 found => {
                     let mut choices = vec![Encoder::Auto, Encoder::Cpu];
@@ -408,7 +430,7 @@ impl ExportWindow {
                     if !choices.contains(&self.encoder) {
                         self.encoder = Encoder::Auto;
                     }
-                    egui::ComboBox::from_id_salt("export-encoder")
+                    let list = egui::ComboBox::from_id_salt("export-encoder")
                         .selected_text(self.encoder.name())
                         .width(240.0)
                         .show_ui(ui, |ui| {
@@ -416,6 +438,8 @@ impl ExportWindow {
                                 ui.selectable_value(&mut self.encoder, encoder, encoder.name());
                             }
                         });
+                    // A list has no name of its own for screen readers and tests.
+                    ui.ctx().accesskit_node_builder(list.response.id, |node| node.set_label("Encoder list"));
                 }
             }
             ui.end_row();
@@ -785,6 +809,43 @@ mod tests {
         assert!(!window.options(Path::new("a.mp4"), "ffmpeg".into()).midi, "off by default");
         window.midi = true;
         assert!(window.options(Path::new("a.mp4"), "ffmpeg".into()).midi);
+    }
+
+    #[test]
+    fn escape_closes_the_window_but_first_a_list_that_is_open() {
+        use egui_kittest::kittest::Queryable;
+        let studio = crate::app::Studio::headless();
+        // No ffmpeg: nothing is run to ask about the graphics card.
+        let window = ExportWindow { open: true, ffmpeg: None, ..Default::default() };
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 900.0))
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                move |ui, window: &mut ExportWindow| {
+                    let ctx = ui.ctx().clone();
+                    window.show(&ctx, &studio.scene, &studio.settings(), None, &studio.kit);
+                },
+                window,
+            );
+        h.run();
+        h.get_by_label("Encoder list").click();
+        h.run();
+        assert!(h.query_by_label("CPU (x264)").is_some(), "the list is open");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().open, "the first Escape shuts the list only");
+        // Escape in a number box leaves the box.
+        let typed = h.query_all_by_role(egui::accesskit::Role::SpinButton).next().expect("the compression number");
+        typed.click();
+        h.run();
+        assert!(h.ctx.text_edit_focused(), "the number is being typed");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().open, "Escape left the number box only");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(!h.state().open, "the next one closes the window");
     }
 
     #[test]

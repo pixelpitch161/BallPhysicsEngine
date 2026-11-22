@@ -73,46 +73,46 @@ pub fn window(ctx: &egui::Context, label: &str, bar: egui::Id, g: &mut Gradient)
     }
     let name = format!("{label} editor");
     let at = ctx.data(|d| d.get_temp::<Pos2>(bar.with("big editor at"))).unwrap_or(Pos2::new(WIDTH + 40.0, 80.0));
-    egui::Window::new(format!("{label}: gradient"))
+    let window = egui::Window::new(format!("{label}: gradient"))
         .pivot(egui::Align2::RIGHT_TOP)
         .default_pos(at - Vec2::new(12.0, 0.0))
         .id(bar.with("big editor window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(WIDTH)
-        .show(ctx, |ui| {
-            out.changed |= bar_in(ui, bar.with("big"), bar, g, &name, false).changed();
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Mix").color(style::MUTED));
-                out.changed |= mix_chips(ui, g, &name);
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Loop").color(style::MUTED));
-                out.changed |= loop_switch(ui, g, &name);
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Tools").color(style::MUTED));
-                out.merge(gradient_tools::tools(ui, g, bar, &name));
-            });
-            style::divider(ui);
-            out.changed |= table(ui, g, bar, &name);
-            let add = ui.button("Add colour");
-            name_it(ui, &add, format!("{name} add colour"));
-            if add.on_hover_text("Add a colour halfway along the selected colour's gap").clicked() {
-                let i = selected_stop(ui.ctx(), bar, g);
-                let k = gradient_tools::add_colour(g, i);
-                select_stop(ui.ctx(), bar, k);
-                out.changed = true;
-            }
-            style::divider(ui);
-            ui.horizontal(|ui| {
-                ball(ui, g, label);
-                ui.add_space(16.0);
-                ring(ui, g, label);
-            });
+        .default_width(WIDTH);
+    style::window(ctx, window, |ui| {
+        out.changed |= bar_in(ui, bar.with("big"), bar, g, &name, false).changed();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Mix").color(style::MUTED));
+            out.changed |= mix_chips(ui, g, &name);
         });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Loop").color(style::MUTED));
+            out.changed |= loop_switch(ui, g, &name);
+        });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Tools").color(style::MUTED));
+            out.merge(gradient_tools::tools(ui, g, bar, &name));
+        });
+        style::divider(ui);
+        out.changed |= table(ui, g, bar, &name);
+        let add = ui.button("Add colour");
+        name_it(ui, &add, format!("{name} add colour"));
+        if add.on_hover_text("Add a colour halfway along the selected colour's gap").clicked() {
+            let i = selected_stop(ui.ctx(), bar, g);
+            let k = gradient_tools::add_colour(g, i);
+            select_stop(ui.ctx(), bar, k);
+            out.changed = true;
+        }
+        style::divider(ui);
+        ui.horizontal(|ui| {
+            ball(ui, g, label);
+            ui.add_space(16.0);
+            ring(ui, g, label);
+        });
+    });
     set_open(ctx, bar, open);
     out
 }

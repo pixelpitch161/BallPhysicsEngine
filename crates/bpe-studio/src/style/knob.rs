@@ -51,6 +51,7 @@ pub struct Knob<'a> {
     colour: Color32,
     log: bool,
     width: f32,
+    widest: f32,
     step: Option<f64>,
 }
 
@@ -85,6 +86,7 @@ impl<'a> Knob<'a> {
             colour: TEXT,
             log: false,
             width: WIDTH,
+            widest: 0.0,
             step: None,
         }
     }
@@ -123,6 +125,13 @@ impl<'a> Knob<'a> {
     /// the Sound tab.
     pub fn width(mut self, width: f32) -> Self {
         self.width = width.max(DIAL);
+        self
+    }
+
+    /// Lets the knob grow up to `widest` for a label longer than its width, so the name reads whole ("Min
+    /// strength", not "Min stre…"). Without it a long label is cut short, as in the Mixer's narrow strips.
+    pub fn grow_to(mut self, widest: f32) -> Self {
+        self.widest = widest;
         self
     }
 
@@ -170,11 +179,14 @@ impl<'a> Knob<'a> {
 
     pub fn show(self, ui: &mut Ui) -> KnobResponse {
         let before = *self.value;
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let needs = ui.painter().layout_no_wrap(self.label.to_owned(), small, MUTED).size().x.ceil() + 2.0;
+        let width = needs.min(self.widest).max(self.width);
         let inner = ui.allocate_ui_with_layout(
-            Vec2::new(self.width, DIAL + 36.0),
+            Vec2::new(width, DIAL + 36.0),
             egui::Layout::top_down(egui::Align::Center),
             |ui| {
-                ui.set_width(self.width);
+                ui.set_width(width);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 let label = ui.add(
                     egui::Label::new(egui::RichText::new(self.label).small().color(MUTED)).selectable(false).truncate(),
@@ -250,7 +262,7 @@ impl<'a> Knob<'a> {
                             egui::TextEdit::singleline(&mut text)
                                 .hint_text(self.text(*self.value))
                                 .font(mono(11.0))
-                                .desired_width(self.width - 6.0),
+                                .desired_width(width - 6.0),
                         );
                         let name = format!("Type {}", self.label);
                         ui.ctx().accesskit_node_builder(edit.id, |node| node.set_label(name));
@@ -516,6 +528,32 @@ mod tests {
         assert_eq!(*h.state(), -6.0);
         assert!(h.query_by_label("Type Input").is_none(), "the box closes");
         assert!(h.query_by_label("-6.0 dB").is_some());
+    }
+
+    #[test]
+    fn a_long_label_reads_whole_on_a_knob_let_to_grow() {
+        let show = |grow: bool| {
+            let mut h = Harness::builder()
+                .with_size(egui::vec2(400.0, 200.0))
+                .allow_missing_glyphs()
+                .with_context_setup(super::super::apply)
+                .build_ui_state(
+                    move |ui, v: &mut f64| {
+                        ui.horizontal(|ui| {
+                            let knob = Knob::new(v, 0.0..=1.0, 0.0, "Muffled under liquid").width(54.0);
+                            ui.add(if grow { knob.grow_to(130.0) } else { knob });
+                            ui.label("after");
+                        });
+                    },
+                    0.0,
+                );
+            h.run();
+            h.get_by_label("after").rect().left()
+        };
+        // What follows the knob starts where the knob ends: 54 wide when cut, as wide as its name when let to grow.
+        let (cut, whole) = (show(false), show(true));
+        assert!(cut < 54.0 + 20.0, "cut to the knob's width without it: {cut}");
+        assert!(whole > cut + 40.0 && whole < 130.0 + 20.0, "room for the whole name with it: {whole}");
     }
 
     #[test]
