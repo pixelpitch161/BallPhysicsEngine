@@ -153,8 +153,9 @@ owner's graphics card (`golden-unlit*`, `golden-lit-flat*`, `golden-liquid*`, bp
 line "made on") can only be made there: start the **"Refresh GPU pictures"** workflow on your branch instead, then
 check its commit's diff. The tests that draw run only on that card in CI (`docs/notes/checks.md`); a container
 still runs them on lavapipe.
-The CPU goldens differ slightly on native Windows (libm trig) and on newer Linux (glibc after 2.39), known gaps: CI
-runs them on Ubuntu 24.04 to match the containers.
+The physics goldens match on every platform, because the physics uses `bpe_core::maths` (below). The sound goldens
+still differ slightly on native Windows and on newer Linux (the oscillators use the platform's maths): CI runs them on
+Ubuntu 24.04 to match the containers.
 
 ## egui / kittest pitfalls
 
@@ -169,6 +170,10 @@ runs them on Ubuntu 24.04 to match the containers.
 - The default fonts lack glyphs like ◉ ○ ♭ ♯ ▶. Paint icons or use plain words.
 
 ## Engine pitfalls
+
+- Physics code (bpe-core, bpe-runtime, bpe-kit) never calls `f32::sin`, `exp`, `powf`, `atan2`, `mul_add` and the
+  like: they round differently on Windows, and the chaotic physics grows that into a different video. Use
+  `bpe_core::maths::Maths` (`x.det_sin()`); each crate's `clippy.toml` refuses the platform ones.
 
 - Card sim states are `MotionState { settings }` and `BounceState { settings }` (in
   `bpe-kit/src/modules/{motion,bounce}/sim.rs`). `downcast_ref::<BasicBounce>()` compiles but silently returns

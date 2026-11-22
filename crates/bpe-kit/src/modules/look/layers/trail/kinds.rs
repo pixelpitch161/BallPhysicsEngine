@@ -2,6 +2,7 @@
 //! length, its speed and its last bounce), how wide it is along it, how it wobbles, and where
 //! a Ribbon twists, Dots sit, Smoke puffs and Ghosts stand.
 
+use bpe_core::maths::Maths;
 use bpe_runtime::History;
 use glam::Vec2;
 
@@ -424,7 +425,7 @@ pub fn wobble(path: &mut Path, amount: f32, waves: f32, speed: f32, time: f32) {
         let Some(side) = *side else { continue };
         let s = path.arc[k] / length;
         let grow = (s / 0.2).min(1.0);
-        let wave = (std::f32::consts::TAU * (waves * s + speed * time)).sin();
+        let wave = (std::f32::consts::TAU * (waves * s + speed * time)).det_sin();
         path.points[k] += side * amount * grow * wave;
     }
 }
@@ -432,7 +433,7 @@ pub fn wobble(path: &mut Path, amount: f32, waves: f32, speed: f32, time: f32) {
 /// A Ribbon's width share and side at each point: `|cos θ|`, and whether its back shows
 /// (`cos θ < 0`), θ being how far the ball had turned (radians) when it was there.
 pub fn twist(angle: f32) -> (f32, bool) {
-    let c = angle.cos();
+    let c = angle.det_cos();
     (c.abs(), c < 0.0)
 }
 

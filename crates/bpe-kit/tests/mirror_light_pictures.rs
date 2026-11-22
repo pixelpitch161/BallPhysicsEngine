@@ -8,6 +8,7 @@
 //! against the same scene throwing nothing. `BPE_SAVE_RENDERS=1` saves the pictures into
 //! `target/pictures/mirror-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, Color, Gradient, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::modules::look::layers::TURNING;
@@ -65,7 +66,7 @@ fn draw_as(gpu: &mut Gpu, scene: &Scene, name: &str, show: LightShow) -> Vec<u8>
 
 fn linear(v: u8) -> f32 {
     let c = v as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
 }
 
 /// The light reaching world point (x, y), grey in linear light, the mean of the 3 × 3 pixels round
@@ -308,7 +309,7 @@ fn round_the_lamps_side(on: &[u8], off: &[u8], r: f32) -> Vec<f32> {
     (90..=270)
         .map(|deg| {
             let a = (deg as f32).to_radians();
-            let (x, y) = (r * a.cos(), -r * a.sin());
+            let (x, y) = (r * a.det_cos(), -r * a.det_sin());
             (light(on, x, y) - light(off, x, y)).max(0.0)
         })
         .collect()
@@ -395,7 +396,7 @@ fn a_stage_mirror_ball_throws_spots_on_the_wall() {
     while y <= 900.0 {
         let mut x = -520.0f32;
         while x <= 520.0 {
-            if x.hypot(y) > 120.0 {
+            if x.det_hypot(y) > 120.0 {
                 let (a, b) = (light(&on, x, y), light(&off, x, y));
                 if b > 0.002 && a >= 1.5 * b {
                     spots += 1;

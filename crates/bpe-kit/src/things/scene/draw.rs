@@ -136,6 +136,7 @@ fn background_span(scene: &bpe_core::Resolved, half_height: f32) -> [f32; 2] {
 mod tests {
     use super::{SceneSettings, beat_at};
     use bpe_core::Settings;
+    use bpe_core::maths::Maths;
     use bpe_core::{ThingId, Value};
     use bpe_gfx::{Frame, build_frame};
     use bpe_runtime::{Log, World};
@@ -169,7 +170,7 @@ mod tests {
     fn along(b: &bpe_gfx::BackgroundPaint, y: f32) -> f32 {
         let [angle, span, cx, cy] = b.place;
         let a = angle.to_radians();
-        (glam::Vec2::new(0.0, y) - glam::Vec2::new(cx, cy)).dot(glam::Vec2::new(a.cos(), a.sin())) / span + 0.5
+        (glam::Vec2::new(0.0, y) - glam::Vec2::new(cx, cy)).dot(glam::Vec2::new(a.det_cos(), a.det_sin())) / span + 0.5
     }
 
     #[test]

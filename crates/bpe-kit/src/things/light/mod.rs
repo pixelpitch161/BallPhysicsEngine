@@ -12,6 +12,7 @@ pub mod draw;
 pub mod laser;
 pub mod links;
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, Color, KindId, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;
 
@@ -625,7 +626,7 @@ impl LightSettings {
             LightColour::Temperature => {
                 let enc = |c: f32| {
                     let c = c.clamp(0.0, 1.0);
-                    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+                    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.det_powf(1.0 / 2.4) - 0.055 };
                     (s * 255.0).round() as u8
                 };
                 let l = kelvin_to_linear(self.kelvin);
@@ -639,18 +640,19 @@ impl LightSettings {
 /// of the black body, clamped to 1000..40000 K).
 pub fn kelvin_to_linear(kelvin: f32) -> [f32; 3] {
     let t = kelvin.clamp(1000.0, 40000.0) / 100.0;
-    let r = if t <= 66.0 { 255.0 } else { 329.698_73 * (t - 60.0).powf(-0.133_204_76) };
-    let g = if t <= 66.0 { 99.470_8 * t.ln() - 161.119_57 } else { 288.122_16 * (t - 60.0).powf(-0.075_514_85) };
+    let r = if t <= 66.0 { 255.0 } else { 329.698_73 * (t - 60.0).det_powf(-0.133_204_76) };
+    let g =
+        if t <= 66.0 { 99.470_8 * t.det_ln() - 161.119_57 } else { 288.122_16 * (t - 60.0).det_powf(-0.075_514_85) };
     let b = if t >= 66.0 {
         255.0
     } else if t <= 19.0 {
         0.0
     } else {
-        138.517_73 * (t - 10.0).ln() - 305.044_8
+        138.517_73 * (t - 10.0).det_ln() - 305.044_8
     };
     let lin = |v: f32| {
         let c = (v / 255.0).clamp(0.0, 1.0);
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
     };
     let rgb = [lin(r), lin(g), lin(b)];
     let top = rgb.iter().cloned().fold(1e-6, f32::max);

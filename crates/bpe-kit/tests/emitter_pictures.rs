@@ -1,5 +1,6 @@
 //! Picture tests for the emitter: its marker and a wavefront put light where they should.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::things::emitter::{EmitterSettings, KIND, Marker, StartFrom};
@@ -86,7 +87,7 @@ fn a_wavefront_lights_the_line_between_the_balls_of_a_round() {
     let (mut scene, id) = scene_with(s);
     let shot = |scene: &Scene| render(scene);
     // Halfway between two balls of the ring: on the line, off both balls.
-    let between = Vec2::from_angle((-90.0f32 + 7.5).to_radians()) * 400.0 * 7.5f32.to_radians().cos();
+    let between = Vec2::from_angle((-90.0f32 + 7.5).to_radians()) * 400.0 * 7.5f32.to_radians().det_cos();
     let Some(plain) = shot(&scene) else { return };
     let reg = bpe_kit::registry();
     let layer = scene.add_layer(&reg, id, SlotId::Look, bpe_kit::modules::look::layers::wavefront::WAVEFRONT).unwrap();

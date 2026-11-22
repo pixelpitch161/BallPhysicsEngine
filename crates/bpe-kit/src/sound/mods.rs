@@ -4,6 +4,7 @@
 //! each kind.
 
 use super::voice::VOICE;
+use bpe_core::maths::Maths;
 use bpe_core::{
     CurvePoint, EditError, LayerId, LayerKind, LayerSection, ModRoute, ROUTES_KEY, Registry, Scene, SettingDef,
     Settings, Slot, SlotId, Target, ThingId, Value, layered_key,
@@ -119,7 +120,7 @@ impl LfoPreset {
                 (0..=8)
                     .map(|i| {
                         let x = i as f32 / 8.0;
-                        let y = (0.5 + 0.5 * (std::f32::consts::TAU * x).sin()).clamp(0.0, 1.0);
+                        let y = (0.5 + 0.5 * (std::f32::consts::TAU * x).det_sin()).clamp(0.0, 1.0);
                         let y = (y * 1e4).round() / 1e4;
                         p(x, y, if i < 8 { BENDS[i] } else { 0.0 })
                     })

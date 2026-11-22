@@ -8,6 +8,7 @@
 //! cools by Cool down (to about a third in that time). Nothing is kept between frames.
 
 use bpe_core::Settings;
+use bpe_core::maths::Maths;
 use bpe_gfx::DrawCx;
 use bpe_runtime::EventKind;
 
@@ -66,7 +67,7 @@ pub fn heat_at(hits: impl IntoIterator<Item = (f64, f32)>, now: f64, heat: &SubH
     for (t, strength) in hits {
         let age = now - t;
         if (0.0..=COUNTED * cool).contains(&age) {
-            sum += strength as f64 * (-age / cool).exp();
+            sum += strength as f64 * (-age / cool).det_exp();
         }
     }
     (sum as f32 * heat.per_hit).max(0.0)
@@ -125,7 +126,7 @@ mod tests {
         let one = heat_at([(1.0, 1.0)], 1.0, &heat);
         assert!((one - 1.0).abs() < 1e-6);
         let later = heat_at([(1.0, 1.0)], 3.0, &heat);
-        assert!((later - (-1.0f32).exp()).abs() < 1e-5, "a third after one cool-down: {later}");
+        assert!((later - (-1.0f32).det_exp()).abs() < 1e-5, "a third after one cool-down: {later}");
         let two = heat_at([(1.0, 1.0), (1.0, 0.5)], 1.0, &heat);
         assert!((two - 1.5).abs() < 1e-6, "hits add up");
         assert_eq!(heat_at([(5.0, 1.0)], 1.0, &heat), 0.0, "a hit still to come adds nothing");

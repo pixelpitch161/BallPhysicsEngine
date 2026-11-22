@@ -5,6 +5,7 @@
 //!
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/prism-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Choice, Color, Scene, Settings, SlotId, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::modules::look::surface::{SurfaceKind, preset_values};
@@ -92,7 +93,7 @@ fn set_light(scene: &mut Scene, key: &str, v: Value) {
 
 /// The light's aim: in at the prism's left face at its least deviation for the middle colour.
 fn aim() -> (Vec2, Vec2) {
-    let dir = Vec2::from_angle((30.0 - (INDEX * 0.5).asin().to_degrees()).to_radians());
+    let dir = Vec2::from_angle((30.0 - (INDEX * 0.5).det_asin().to_degrees()).to_radians());
     // The left face's middle, between the top corner and the bottom left one.
     let mid = (Vec2::new(0.0, -PRISM) + Vec2::new(-0.866 * PRISM, 0.5 * PRISM)) * 0.5;
     (mid - dir * 380.0, dir)
@@ -133,7 +134,7 @@ fn prism_room(kind: &str) -> Scene {
     let (from, dir) = aim();
     set_light(&mut scene, "kind", Value::Choice(kind.into()));
     set_light(&mut scene, "position", Value::Vec2([from.x, from.y]));
-    set_light(&mut scene, "direction", Value::Number(dir.y.atan2(dir.x).to_degrees() as f64));
+    set_light(&mut scene, "direction", Value::Number(dir.y.det_atan2(dir.x).to_degrees() as f64));
     set_light(&mut scene, "strength", Value::Number(3.0));
     set_light(&mut scene, "bounces", Value::Int(8));
     set_light(&mut scene, "beam_length", Value::Number(1400.0));
@@ -178,7 +179,7 @@ fn a_laser_through_a_prism_leaves_a_rainbow_behind_it() {
     let pixels = draw(&mut gpu, &scene, "laser");
     let (r, v) = (along_last(red, 420.0), along_last(violet, 420.0));
     let (rp, vp) = (pixel(r), pixel(v));
-    let apart = (rp.0 as f32 - vp.0 as f32).hypot(rp.1 as f32 - vp.1 as f32);
+    let apart = (rp.0 as f32 - vp.0 as f32).det_hypot(rp.1 as f32 - vp.1 as f32);
     assert!(apart >= 4.0, "red and violet {apart} pixels apart");
     let (rc, vc) = (at(&pixels, r), at(&pixels, v));
     assert!(rc[0] > rc[2] + 20, "red where red goes: {rc:?}");

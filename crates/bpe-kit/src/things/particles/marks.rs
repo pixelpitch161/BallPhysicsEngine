@@ -4,6 +4,7 @@
 //! ([`Mark`]), only while a Marks layer asks; each particle step's touches are noted by the move
 //! in the particle's flags and made into marks after it ([`collect`]).
 
+use bpe_core::maths::Maths;
 use bpe_core::{Blend, Color, Settings};
 use bpe_gfx::Particle;
 use glam::Vec2;
@@ -225,7 +226,7 @@ pub fn sprites_of(layer: &MarksLayer, m: &Mark, age: f32, size: f32, colour: [f3
         if length > 0.5 {
             let width = size * 0.45;
             let tip = m.place + down * length;
-            let angle = down.y.atan2(down.x);
+            let angle = down.y.det_atan2(down.x);
             let mut p =
                 Particle::new(ShapeMadeOf::Streaks.as_ball().code(), (m.place + tip) * 0.5, angle, width, colour);
             p.style[0] = (length * 0.5).max(width);

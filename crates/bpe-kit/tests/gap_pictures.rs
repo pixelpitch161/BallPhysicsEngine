@@ -4,6 +4,7 @@
 //!
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/gap-*.png`.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Scene, Settings, ThingId};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{ShapeSettings, add_thing, kit, new_studio_scene};
@@ -92,7 +93,7 @@ fn a_gap_cuts_the_band_of_every_outline() {
     let background = at(&closed, -500.0, -900.0);
     assert!(off(at(&closed, 400.0, 0.0), background) > 60, "a ring with no gaps is whole");
     // A flat-topped hexagon: the middle of its bottom side is 3.5 sides round from the top left corner.
-    let apothem = 400.0 * (std::f32::consts::PI / 6.0).cos();
+    let apothem = 400.0 * (std::f32::consts::PI / 6.0).det_cos();
     let hexagon = ShapeSettings { gap_at: 3.5 / 6.0, ..thick(ShapeSettings::polygon(6, 400.0, 30.0)) };
     check(&draw(&scene_with(hexagon, None), "hexagon"), (0.0, apothem), (0.0, -apothem), "hexagon");
     let oval = ShapeSettings { gap_at: 0.25, ..thick(ShapeSettings::ellipse(700.0, 1100.0, 30.0)) };

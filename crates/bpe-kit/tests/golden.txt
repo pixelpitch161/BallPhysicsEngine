@@ -2,18 +2,18 @@
 One ball	13	f4b74c20e1538dc3
 Reel block	10131	5fc0706bc0ca5821
 Box drop	2850	7864ddf39b710d17
-Spinning hexagon	492	c9616531c8def366
+Spinning hexagon	492	28e71419d5f84641
 Shrinking ring	71	bc56cb0f186befce
 Ball pit	2525	dc9f7e2e60bf4693
-Riders	101	c1863309578e048a
+Riders	101	23e286fb6ea106cf
 Lava ball	13	f4b74c20e1538dc3
 Confetti drop	10131	5fc0706bc0ca5821
 Spark block	2850	7864ddf39b710d17
-Kaleido hexagon	492	c9616531c8def366
+Kaleido hexagon	492	28e71419d5f84641
 Neon ring	71	bc56cb0f186befce
 Colour paints	1173	7174c2a162983b19
 Blend modes	185	ba88440c31faa0cd
 Graded sunset	617	01a67a9c600784bd
 Ellipse focus	397	230c5ef0fe773704
-Emitter rounds	480	0d52a406ba163c3f
+Emitter rounds	480	e7e4acf631381a71
 Emitter chain	14763	7325a6f2a73ffe25

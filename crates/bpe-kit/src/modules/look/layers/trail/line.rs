@@ -258,6 +258,7 @@ pub fn remembered_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bpe_core::maths::Maths;
     use bpe_runtime::HistoryWant;
 
     /// A ball going round and bouncing out every so often, for `steps` steps at 240 a second.
@@ -313,7 +314,7 @@ mod tests {
             h.note(0, 1);
             for step in 0..=4000u64 {
                 let x = step.min(3000) as f32;
-                let y = if step < 3000 { (x / 3000.0 * std::f32::consts::PI).sin() * bend } else { 0.0 };
+                let y = if step < 3000 { (x / 3000.0 * std::f32::consts::PI).det_sin() * bend } else { 0.0 };
                 h.record(step, &[Vec2::new(x, y)]);
             }
             h
@@ -330,7 +331,7 @@ mod tests {
         early.note(0, 1);
         for step in 0..=3500u64 {
             let x = step.min(3000) as f32;
-            let y = if step < 3000 { (x / 3000.0 * std::f32::consts::PI).sin() * -60.0 } else { 0.0 };
+            let y = if step < 3000 { (x / 3000.0 * std::f32::consts::PI).det_sin() * -60.0 } else { 0.0 };
             early.record(step, &[Vec2::new(x, y)]);
         }
         let carried = staying_line(&mut memo, &early, 0, head(&early), 0.0, 1.0 / 60.0, 0.15, 16);

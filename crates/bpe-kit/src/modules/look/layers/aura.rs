@@ -5,6 +5,7 @@
 //! where `log2 f × Lines − time × Flow` crosses a half step, found by marching squares on a grid
 //! round the balls, so they flow outward as time runs. Nothing is kept between frames.
 
+use bpe_core::maths::Maths;
 use std::collections::HashMap;
 
 use bpe_core::{Blend, Color, Gradient, Settings};
@@ -169,7 +170,7 @@ pub fn field_lines(a: &AuraLayer, balls: &[AuraBall], time: f32) -> Vec<FieldLin
         bins.entry(key(b.at)).or_default().push(i);
     }
     // The field's log and colour at every grid point.
-    let edge_low = -2.0 * reach.log2();
+    let edge_low = -2.0 * reach.det_log2();
     let mut level = vec![f32::NEG_INFINITY; nx * ny];
     let mut colour = vec![[0.0f32; 3]; nx * ny];
     // Lines fade out past every ball's reach, so where many balls' fields add up the outer lines
@@ -190,7 +191,7 @@ pub fn field_lines(a: &AuraLayer, balls: &[AuraBall], time: f32) -> Vec<FieldLin
             }
             let (f, c, out) = field_at(&balls, &near, p, reach);
             if f > 0.0 {
-                level[y * nx + x] = f.log2();
+                level[y * nx + x] = f.det_log2();
                 colour[y * nx + x] = c;
                 fade[y * nx + x] = 1.0 - smoothstep(0.75, 1.15, out);
             }

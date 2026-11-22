@@ -82,8 +82,8 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
 
 - **What runs there**: job "Pictures (owner's graphics card)" (`gpu-pictures` in `ci.yml`), on the native Windows
   runner `bpe-gpu-1` (labels `self-hosted, Windows, bpe-gpu`), an AMD Radeon RX 9070 XT. It runs the workspace with
-  the nextest `gpu` profile, whose `default-filter` leaves out only the goldens pinned to Ubuntu's maths library (the
-  CPU physics goldens and the sound goldens), then `unlit_pictures`, `lit_flat_pinned` and `golden_liquid` in
+  the nextest `gpu` profile, whose `default-filter` leaves out only the sound goldens (pinned to Ubuntu's maths
+  library, which the sound's oscillators still use; the physics goldens run here too, `bpe_core::maths`), then `unlit_pictures`, `lit_flat_pinned` and `golden_liquid` in
   release, then the liquid and light timings into the job summary. The Linux test machines set
   `BPE_SKIP_GPU_TESTS=1`, so every test that draws ends there as passed at `test_device()` (under nextest it exits
   the test's process with 0; under plain `cargo test` it returns an error).
@@ -101,13 +101,16 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   with `vulkaninfo`). Everything lives in `F:\bpe-gpu` (runner, `rustup`, `cargo`, MinGW, ffmpeg, build files in
   `F:\bpe-gpu\target\<job>`). Its `.env` turns off the overlay Vulkan layers installed on the PC
   (`VK_LOADER_LAYERS_DISABLE=~implicit~`), so OBS or Steam can't change a picture.
-- **Known on the card** (2026-11-22, the owner chose to switch first and fix after): four tests are left out of the
+- **Known on the card** (2026-11-22, the owner chose to switch first and fix after): four tests were left out of the
   `gpu` profile until each is fixed in its own change, which takes it out of the list there:
   `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` (Pull toward its ball ends 87 px off on the
-  card), `shadow_quality::a_shadow_edge_moves_on_smoothly` (the edge steps in a 4-frame pattern on the card),
-  `alloc::render_does_not_allocate` (a sound block allocates on Windows) and
-  `library::every_scene_plays_its_full_length_and_lands_its_payoff` (Windows' maths moves stem-battle's payoff from
-  26.5 s to 30.9 s). The last two still run on the Linux machines; the two drawing ones run nowhere until fixed.
+  card), `shadow_quality::a_shadow_edge_moves_on_smoothly` (the edge steps in a 4-frame pattern on the card) and
+  `alloc::render_does_not_allocate` (a sound block allocates on Windows; still runs on the Linux machines). The two
+  drawing ones run nowhere until fixed. Fixed: `library::every_scene_plays_its_full_length_and_lands_its_payoff`
+  (stem-battle's payoff came 26.5 s on Linux, 30.9 s on Windows): the physics called each platform's own maths
+  library for sin, cos, exp, powf and the rest, and Windows' rounds a hair differently, which the chaotic fight
+  grew into a different winner time. The physics now uses `bpe_core::maths` (the `libm` crate, plus glam's `libm`
+  feature), the same on every platform; the payoff is 30.9 s everywhere.
 - **Timings**: the job summary's "Timings on the owner's graphics card" (`tests/liquid_speed.rs`, `light_speed.rs`).
 
 ## Running only the tests a change needs

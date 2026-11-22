@@ -1,6 +1,7 @@
 //! Prism rainbow: a beam of white light through a slowly spinning glass prism fans into a rainbow that sweeps
 //! round the dark, while pearls drop onto the prism and bounce off through the colours.
 
+use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, SlotId, ThingId, Value};
 use glam::Vec2;
 
@@ -65,10 +66,10 @@ fn build(reg: &Registry) -> Scene {
 
     // In at the left face at the least turn for the middle colour, so the rainbow comes out wide.
     let turn = Vec2::from_angle(TURN.to_radians());
-    let dir = turn.rotate(Vec2::from_angle((30.0 - (INDEX * 0.5).asin().to_degrees()).to_radians()));
+    let dir = turn.rotate(Vec2::from_angle((30.0 - (INDEX * 0.5).det_asin().to_degrees()).to_radians()));
     let face = PRISM_AT + turn.rotate((Vec2::new(0.0, -PRISM) + Vec2::new(-0.866 * PRISM, 0.5 * PRISM)) * 0.5);
     lib.light("Light beam", LightType::Beam, face - dir * 420.0, |l| {
-        l.direction = dir.y.atan2(dir.x).to_degrees();
+        l.direction = dir.y.det_atan2(dir.x).to_degrees();
         l.beam_width = 46.0;
         l.strength = 3.0;
         l.bounces = 8;

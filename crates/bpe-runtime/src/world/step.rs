@@ -1,6 +1,7 @@
 //! One step: the stages in order, substeps, moving bodies, collisions and bounces.
 
 use super::*;
+use bpe_core::maths::Maths;
 
 /// How far into a wall a ball that touches it with its edge may begin a substep and still count
 /// as coming in from its own side (its bounce then carries on for the rest of the substep), in
@@ -253,7 +254,7 @@ impl World {
             if let Some(air) = air_at.get(id) {
                 for (i, (wind, grip)) in air.iter().enumerate().take(bodies.len()) {
                     if *grip > 0.0 && bodies.alive[i] && !bodies.held[i] {
-                        let take = 1.0 - (-grip * dt).exp();
+                        let take = 1.0 - (-grip * dt).det_exp();
                         let v = bodies.velocity[i];
                         bodies.velocity[i] = v + (*wind - v) * take;
                     }

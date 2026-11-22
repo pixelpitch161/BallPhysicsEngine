@@ -20,6 +20,7 @@ pub mod gradient_form;
 pub mod ids;
 pub mod layers;
 pub mod light_scenes;
+pub mod maths;
 pub mod oklab;
 pub mod registry;
 pub mod resolve;

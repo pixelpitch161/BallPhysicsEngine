@@ -2,6 +2,7 @@
 //! step's start through the thing's own sim (`ThingSim::add_ball`), at most
 //! `bpe_runtime::rules::MAX_BALLS` live balls a thing.
 
+use bpe_core::maths::Maths;
 use std::f32::consts::TAU;
 
 use bpe_core::{BlockSection, Choice, Params, Settings, ThingId, Who};
@@ -315,7 +316,7 @@ struct SpawnState {
 /// An angle (0° up, clockwise, in degrees) as a way.
 fn way_of(degrees: f32) -> Vec2 {
     let a = degrees.to_radians();
-    Vec2::new(a.sin(), -a.cos())
+    Vec2::new(a.det_sin(), -a.det_cos())
 }
 
 impl BlockSim for Spawn {
