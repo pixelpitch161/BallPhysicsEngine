@@ -43,3 +43,7 @@ required-features = ["test-tone"]
 [[test]]
 name = "buses"
 required-features = ["test-tone"]
+
+[[test]]
+name = "alloc_scratch"
+required-features = ["test-tone"]
