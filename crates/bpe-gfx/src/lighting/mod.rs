@@ -207,16 +207,6 @@ fn uniform_buffer(device: &wgpu::Device, label: &'static str, size: usize) -> wg
 }
 
 impl Lighting {
-    /// DIAGNOSTIC: the surface or field texture and its size.
-    pub(crate) fn debug_texture(&self, which: &str) -> Option<(&wgpu::Texture, u32, u32)> {
-        let t = self.targets.as_ref()?;
-        let (fw, fh) = t.field_size();
-        match which {
-            "surface" => Some((&t.surface.0, t.width, t.height)),
-            _ => Some((&t.field.0, fw, fh)),
-        }
-    }
-
     /// A lighting pass drawing with `kit`'s pipelines (built once and shared by every renderer
     /// on the device), with its own pictures and buffers.
     pub fn with_kit(device: &wgpu::Device, kit: &LightKit) -> Self {
@@ -410,7 +400,7 @@ impl Lighting {
             direct: texture(device, "direct light", full, HDR_FORMAT, true),
             air: texture(device, "light in the air", full, HDR_FORMAT, false),
             seeds: [seeds(), seeds(), seeds(), seeds()],
-            field: texture(device, "light field", small, BLOCKER_FIELD_FORMAT, true),
+            field: texture(device, "light field", small, BLOCKER_FIELD_FORMAT, false),
             gi_scene: texture(device, "light field scene", small, GI_FORMAT, false),
             gi_dist: texture(device, "light field distance", small, FIELD_FORMAT, false),
             gi: [
