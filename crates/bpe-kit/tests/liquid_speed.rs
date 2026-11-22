@@ -93,6 +93,9 @@ fn strange(reg: &Registry) -> Scene {
 #[ignore = "a timing: run it by hand"]
 fn liquid_timings() {
     let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    // Which card this is: timings from the software card (lavapipe) say little about a real one.
+    let info = device.adapter_info();
+    println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
     let _card = use_for_now(Some(SwarmGpu::for_device(&device, &queue)));
     let kit = kit();
     let reg = &kit.registry;
