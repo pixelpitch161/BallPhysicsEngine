@@ -18,8 +18,8 @@ $exe = ($json | ForEach-Object { try { $_ | ConvertFrom-Json } catch {} } |
 "=== The OpenGL check, as built (expect ok) ==="
 & $exe test_device_tests::a_test_device_does_not_load_the_opengl_driver --exact --nocapture
 "exit $LASTEXITCODE"
-"=== The OpenGL check with WGPU_BACKEND=all (expect a failure naming atio6axx) ==="
-$env:WGPU_BACKEND = 'all'
+"=== The OpenGL check with WGPU_BACKEND=vulkan,gl (expect a failure naming atio6axx) ==="
+$env:WGPU_BACKEND = 'vulkan,gl'
 & $exe test_device_tests::a_test_device_does_not_load_the_opengl_driver --exact --nocapture
 "exit $LASTEXITCODE"
 $env:WGPU_BACKEND = $null

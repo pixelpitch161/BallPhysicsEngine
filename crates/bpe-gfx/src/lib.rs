@@ -201,8 +201,8 @@ pub(crate) fn layers_source(effects: Option<&str>) -> String {
 /// code 0xc0000409, "fast fail 7"), after everything else has finished.
 pub fn headless_backends() -> Vec<wgpu::Backends> {
     match wgpu::Backends::from_env() {
-        Some(asked) => vec![asked],
-        None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
+        Some(asked) if !asked.is_empty() => vec![asked],
+        _ => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
     }
 }
 
@@ -383,16 +383,20 @@ mod test_device_tests {
     }
 
     /// On Windows a test's device leaves the card's OpenGL driver unloaded: on the owner's AMD card it sometimes
-    /// aborts the program as it closes (`headless_backends`). (`WGPU_BACKEND=all` makes it fail: OpenGL is opened.)
+    /// aborts the program as it closes (`headless_backends`). (`WGPU_BACKEND=vulkan,gl` makes it fail.)
     #[cfg(windows)]
     #[test]
     fn a_test_device_does_not_load_the_opengl_driver() {
         let Ok((device, _queue)) = test_device() else { return };
         let modules = loaded_modules();
         assert!(modules.iter().any(|m| m == "kernel32.dll"), "the module list is read: {modules:?}");
+        // The card makers' OpenGL drivers (AMD, NVIDIA, Intel). Windows' own `opengl32.dll` is always there (the
+        // editor's window library links it) and loads one of these only when OpenGL is opened.
         let opengl: Vec<&String> = modules
             .iter()
-            .filter(|m| *m == "opengl32.dll" || m.starts_with("atio6axx") || m.starts_with("atig6"))
+            .filter(|m| {
+                m.starts_with("atio6axx") || m.starts_with("nvoglv") || m.starts_with("ig") && m.contains("icd")
+            })
             .collect();
         assert!(opengl.is_empty(), "OpenGL loaded beside {:?}: {opengl:?}", device.adapter_info().backend);
     }
