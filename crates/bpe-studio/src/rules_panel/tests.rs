@@ -247,6 +247,43 @@ fn the_timeline_gets_a_rules_lane_with_the_firings() {
 }
 
 #[test]
+fn the_rules_view_opens_tall_enough_for_a_branched_rule() {
+    // The review's find: with no rules yet the view shrank to its one line of words, and stayed that low once a rule
+    // was added, its blocks cut off at the window's bottom.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1920.0, 1080.0))
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(
+            |ui, studio: &mut Studio| {
+                studio.bottom_panel(ui);
+                egui::CentralPanel::default().show(ui, |_| {});
+            },
+            rules_studio(),
+        );
+    h.run();
+    let empty_top = h.get_by_label("Timeline").rect().top();
+    let studio = h.state_mut();
+    let kit = studio.kit.clone();
+    let (rule, ids) = lane_of(studio, "Branched", &["when.hit", "do.motion"]);
+    let before = studio.scene.clone();
+    studio.scene.add_block(&kit.registry, rule, "do.break", Some(ids[0])).unwrap();
+    studio.after_separate_edit(before);
+    h.run();
+    for block in ["When Hit", "Do Break", "Do Change motion"] {
+        let rect = h.get_by_label(block).rect();
+        assert!(rect.bottom() < 1080.0 - 6.0, "{block} is whole above the window's bottom: {rect:?}");
+    }
+    let rules_top = h.get_by_label("Timeline").rect().top();
+    assert_eq!(rules_top, empty_top, "the view was as tall before it had a rule");
+    // The timeline keeps its own, lower height.
+    h.state_mut().bottom = BottomView::Timeline;
+    h.run();
+    let timeline_top = h.get_by_label("Timeline").rect().top();
+    assert!(timeline_top > rules_top + 100.0, "the timeline is lower: {timeline_top} against {rules_top}");
+}
+
+#[test]
 fn each_lane_sits_below_the_one_before() {
     // A branched rule has two rows of blocks; the lane after it starts under both.
     let mut studio = rules_studio();

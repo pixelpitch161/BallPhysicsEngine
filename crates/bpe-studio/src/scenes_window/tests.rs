@@ -50,6 +50,20 @@ fn click(h: &mut Harness<'_, Studio>, label: &str) {
 }
 
 #[test]
+fn open_scene_stays_in_the_window_under_the_longest_description() {
+    // The review's find: with a long description the two buttons were below the window's bottom edge.
+    let mut h = opened(Studio::headless());
+    for e in library::all() {
+        h.state_mut().panels.scenes.picked = Some(e.info.id);
+        h.run();
+        for button in ["Open scene", "Cancel"] {
+            let rect = h.query_all_by_label(button).next().unwrap().rect();
+            assert!(rect.bottom() <= 960.0 - 16.0, "{button} for {} is inside the window: {rect:?}", e.info.name);
+        }
+    }
+}
+
+#[test]
 fn scenes_button_opens_the_window() {
     let h = opened(Studio::headless());
     for e in library::all() {

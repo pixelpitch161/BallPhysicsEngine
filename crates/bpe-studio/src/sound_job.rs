@@ -604,8 +604,10 @@ impl Worker {
         }
     }
 
-    /// Renders blocks until the ring holds [`FILL_FRAMES`].
-    fn fill(&mut self) {
+    /// Renders blocks until the ring holds [`FILL_FRAMES`], or `asked` says after a block it rendered that a command
+    /// is waiting. An engine slower than real time (a big liquid in its physics) never gets the ring that full: the
+    /// speakers empty it as fast as it fills, and without the question the thread would never take a command again.
+    fn fill(&mut self, mut asked: impl FnMut() -> bool) {
         if self.held {
             return;
         }
@@ -616,7 +618,22 @@ impl Worker {
             self.warm_at = None;
             self.unheard_tails = false;
             self.write(&block);
+            if asked() {
+                break;
+            }
         }
+    }
+}
+
+/// Moves a command that is waiting into `batch`, to be handled next. True when one came, or the editor is gone.
+fn take_waiting(rx: &Receiver<Command>, batch: &mut Vec<Command>) -> bool {
+    match rx.try_recv() {
+        Ok(c) => {
+            batch.push(c);
+            true
+        }
+        Err(TryRecvError::Empty) => false,
+        Err(TryRecvError::Disconnected) => true,
     }
 }
 
@@ -662,7 +679,8 @@ fn run(
         // A ring left to run dry on purpose (waiting for a new engine) is no dropout.
         w.shared.set_playing(w.playing && !w.held);
         if w.playing {
-            w.fill();
+            // Gives up as soon as a command comes (it is handled next, then the filling goes on).
+            w.fill(|| take_waiting(&rx, &mut batch));
         } else {
             w.fill_paused();
             if w.tail == 0
@@ -671,14 +689,7 @@ fn run(
             {
                 // Gives up as soon as a command comes (it is handled next; still wanted, the
                 // warm-up is tried again after it).
-                let done = w.seek(at, || match rx.try_recv() {
-                    Ok(c) => {
-                        batch.push(c);
-                        true
-                    }
-                    Err(TryRecvError::Empty) => false,
-                    Err(TryRecvError::Disconnected) => true,
-                });
+                let done = w.seek(at, || take_waiting(&rx, &mut batch));
                 if !done {
                     w.prewarm = Some(at);
                 }
@@ -746,12 +757,86 @@ mod tests {
         consume(&mut feeder, 80, &mut Vec::new());
         // A far seek: four seconds of pre-roll to work out before the new sound starts.
         job.seek(20.0);
+        let asked = Instant::now();
         let mut old = Vec::new();
-        let started = Instant::now();
-        while shared.cleared() != 2 && started.elapsed() < Duration::from_secs(10) {
+        while shared.cleared() != 2 && asked.elapsed() < Duration::from_secs(10) {
             consume_real(&mut feeder, &shared, 1, &mut old);
         }
-        assert!(old.len() <= 150, "{} frames of the old sound played after the seek", old.len());
+        let stopped = asked.elapsed();
+        let mut new = Vec::new();
+        while new.is_empty() && asked.elapsed() < Duration::from_secs(30) {
+            consume_real(&mut feeder, &shared, 1, &mut new);
+        }
+        let sought = asked.elapsed();
+        assert!(!new.is_empty(), "the new sound came");
+        // At once is within 3 ms. A busy machine can keep the thread from its commands for longer than that (the
+        // card's checks share the owner's processor with the Linux ones), so there the old sound must at least have
+        // stopped early in the time the seek took (about a second here): stopping only once the seek was worked out
+        // is the fault.
+        assert!(
+            old.len() <= 150 || stopped * 8 < sought,
+            "{} frames of the old sound played after the seek (it stopped after {stopped:?}; the seek took {sought:?})",
+            old.len()
+        );
+    }
+
+    /// The freeze in a liquid scene with sound: the engine was slower than real time, the ring never got full, and
+    /// the thread never left its filling to take Home, Pause or an edit.
+    #[test]
+    fn filling_stops_for_a_command_when_the_ring_never_fills() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (scene, resolved) = toned(&kit, "test-tone");
+        let (ring_in, mut ring_out) = ring();
+        let engine = Engine::new(&scene, &resolved, &kit);
+        let mut w = Worker::new(engine, kit, Arc::new(Meters::default()), Arc::new(Shared::default()), ring_in);
+        w.playing = true;
+        // The speakers take each block as it is written; a command comes after the 200th.
+        let mut blocks = 0u64;
+        w.fill(|| {
+            let held = ring_out.slots();
+            ring_out.read_chunk(held).unwrap().commit_all();
+            blocks += 1;
+            blocks == 200
+        });
+        assert_eq!(blocks, 200, "it stopped at the command");
+        assert_eq!(w.engine.sample_position(), 200 * BLOCK as u64, "and had played up to it");
+        // Left alone it fills the ring and stops by itself.
+        w.fill(|| false);
+        assert_eq!(ring_out.slots(), FILL_FRAMES * 2);
+    }
+
+    /// Speakers that take every frame the moment it is written, so the ring never gets full: what the thread
+    /// sees when its engine is slower than real time (a big liquid in the sound's own physics).
+    fn drain_dry(feeder: &mut Feeder) {
+        feeder.poll_clear();
+        feeder.next_frame();
+        while feeder.buffered_frames() > 0 {
+            feeder.next_frame();
+        }
+    }
+
+    #[test]
+    fn a_job_that_never_gets_ahead_still_takes_a_seek() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (scene, resolved) = toned(&kit, "test-tone");
+        let (producer, consumer) = ring();
+        let shared = Arc::new(Shared::default());
+        let mut feeder = Feeder::new(consumer, shared.clone(), RATE);
+        let mut job = SoundJob::start_with_sink(&scene, &resolved, kit, producer, shared.clone());
+        job.play(0.0);
+        let started = Instant::now();
+        while shared.played() < 4800 && started.elapsed() < Duration::from_secs(10) {
+            drain_dry(&mut feeder);
+        }
+        assert!(shared.played() >= 4800, "it plays");
+        // Without the fix this fails unless the draining here is held up for long enough that the ring fills (the
+        // test above has no such luck in it).
+        job.seek(1.0);
+        let started = Instant::now();
+        while shared.cleared() != 2 && started.elapsed() < Duration::from_secs(5) {
+            drain_dry(&mut feeder);
+        }
+        assert_eq!(shared.cleared(), 2, "the thread took the seek though the ring never filled");
     }
 
     #[test]
@@ -777,14 +862,14 @@ mod tests {
         let mut w = Worker::new(engine, kit, meters, shared.clone(), ring_in);
         w.playing = true;
         w.handle(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())), &[]);
-        w.fill();
+        w.fill(|| false);
         assert_eq!(ring_out.slots(), 0, "nothing from the new world's start before the seek lands");
         shared.cleared.store(1, std::sync::atomic::Ordering::Release);
         w.handle(Command::Seek(2.0, 1), &[]);
         w.wait_build();
         assert!(w.build.is_none(), "the new engine came from the helper");
         assert_eq!(w.engine.sample_position(), 96_000, "warmed up at the seek");
-        w.fill();
+        w.fill(|| false);
         assert!(ring_out.slots() > 0);
     }
 
@@ -836,7 +921,7 @@ mod tests {
         w.handle(Command::Seek(31.0, 2), &[]);
         assert_eq!(w.engine.sample_position(), 31 * 48_000);
         assert_eq!(w.warm_at, Some(31 * 48_000));
-        w.fill();
+        w.fill(|| false);
         assert_eq!(w.warm_at, None, "played since");
     }
 
@@ -927,7 +1012,12 @@ mod tests {
             consume(&mut feeder, 1, &mut Vec::new());
         }
         assert_eq!(shared.cleared(), 2, "the ring was cleared");
-        // The new sound starts once the seek's pre-roll is worked out.
+        // The new sound starts once the seek's pre-roll is worked out. It is read once the thread has got ahead:
+        // read as it comes, a busy machine could run the ring dry, and the line's fade would drop frames below.
+        let started = Instant::now();
+        while feeder.buffered_frames() < AHEAD_FRAMES && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let mut after = Vec::new();
         let started = Instant::now();
         while after.len() < 4_000 && started.elapsed() < Duration::from_secs(10) {

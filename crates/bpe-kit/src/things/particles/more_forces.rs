@@ -432,7 +432,11 @@ fn pull_from(s: &mut Speck, p: &Pulling, centre: Vec2, at: f32, reach: f32, amou
     if (reach > 0.0 && d > reach) || d < 1e-6 || !d.is_finite() {
         return;
     }
-    let inward = off / d;
+    // Inside SOFT the pull (or push) fades to nothing at the centre itself, so it changes
+    // smoothly there: a particle passing right by the centre is not flung one way or the other
+    // by a last-bit difference in where it is (the card fuses a multiply-add that the exact
+    // engine rounds twice).
+    let inward = off / d.max(SOFT);
     let soft = d.max(SOFT).max(fin(p.swallow));
     let at = fin(at).max(1e-3);
     let factor = match p.falloff {
@@ -521,7 +525,9 @@ fn dipole(p: Vec2, centre: Vec2, m: Vec2, size: f32) -> Option<(Vec2, Vec2)> {
     let n = r / d;
     let strength = (size / d).powi(3).min(1.0);
     let b = (n * 3.0 * m.dot(n) - m).try_normalize()?;
-    Some((b * strength, -n * strength))
+    // The pull fades inside SOFT as a Pull's does (`pull_from`), so it doesn't flip at full
+    // strength as a particle crosses the magnet. The field's way doesn't flip there.
+    Some((b * strength, -r / d.max(SOFT) * strength))
 }
 
 /// Magnetic field.

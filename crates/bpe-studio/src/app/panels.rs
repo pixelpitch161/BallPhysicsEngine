@@ -40,6 +40,9 @@ pub(crate) fn side_frame() -> egui::Frame {
         .stroke(Stroke::new(1.0, style::LINE_SOFT))
 }
 
+/// How tall the Rules view opens: room for a rule that branches (two rows of blocks) under the play row.
+const RULES_HEIGHT: f32 = 340.0;
+
 /// How wide the toolbar's save status may be.
 pub(super) const SAVE_STATUS_WIDTH: f32 = 180.0;
 
@@ -274,6 +277,33 @@ impl Studio {
         }
         self.left = left;
         width
+    }
+
+    /// The timeline, or the Rules view in its place. A rule's blocks stand taller than a lane, so the Rules view
+    /// is a panel of its own id: it opens tall enough for a rule, and each view keeps the height it was left at,
+    /// however little is in it.
+    pub(crate) fn bottom_panel(&mut self, ui: &mut egui::Ui) {
+        let (id, height, tallest) = match self.bottom {
+            settings::BottomView::Timeline => ("timeline", 190.0, 520.0),
+            settings::BottomView::Rules => ("rules", RULES_HEIGHT, 700.0),
+        };
+        egui::Panel::bottom(id)
+            .frame(
+                egui::Frame::new()
+                    .fill(style::PANEL)
+                    .inner_margin(egui::Margin { left: 10, right: 10, top: 0, bottom: 6 })
+                    .stroke(Stroke::new(1.0, style::LINE_SOFT)),
+            )
+            .resizable(true)
+            .default_size(height)
+            .min_size(110.0)
+            .max_size(tallest)
+            .show(ui, |ui| {
+                // A panel shrinks to what is in it: the Rules view with no rules yet is one line of words, and it
+                // stayed that low when a rule came, its blocks cut off at the window's bottom.
+                ui.set_min_height(ui.available_height());
+                timeline::show(ui, self);
+            });
     }
 
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {

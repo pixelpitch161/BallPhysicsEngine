@@ -140,8 +140,8 @@ impl Studio {
     /// Saves, asking for a file name if the scene has none (or `choose` is set).
     /// Returns whether the scene was saved.
     pub fn save(&mut self, choose: bool) -> bool {
-        let path = match (&self.path, choose) {
-            (Some(path), false) => Some(path.clone()),
+        match (&self.path, choose) {
+            (Some(path), false) => self.save_to(path.clone(), false),
             _ => {
                 let mut dialog = rfd::FileDialog::new()
                     .add_filter("Ball Studio scene", &["ron"])
@@ -149,10 +149,24 @@ impl Studio {
                 if let Some(dir) = self.base_dir() {
                     dialog = dialog.set_directory(dir);
                 }
-                dialog.save_file()
+                dialog.save_file().is_some_and(|path| self.save_to(path, true))
             }
-        };
-        let Some(path) = path else { return false };
+        }
+    }
+
+    /// Saves to `path`. A file name just `chosen` in the dialog becomes the scene's name too, so the name box, the
+    /// "Save changes to…" question and the video's name don't go on showing the name of the file it was before.
+    pub(crate) fn save_to(&mut self, path: PathBuf, chosen: bool) -> bool {
+        let before = self.scene.name.clone();
+        if chosen
+            && let Some(name) = path.file_stem().map(|s| s.to_string_lossy().trim().to_owned())
+            && !name.is_empty()
+            && name != before
+        {
+            self.scene.name = name;
+            // Its own undo step, never part of the edit made just before.
+            self.separate_edit = true;
+        }
         // Written beside it and swapped in, keeping the version before as "<name> (backup).ron".
         match crate::files::write_safely(&path, &bpe_core::save(&self.scene), true) {
             Ok(()) => {
@@ -165,6 +179,7 @@ impl Studio {
                 true
             }
             Err(error) => {
+                self.scene.name = before;
                 self.report(ProblemKind::File, format!("Couldn't save {}: {error}", path.display()));
                 false
             }

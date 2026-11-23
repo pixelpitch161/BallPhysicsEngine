@@ -557,10 +557,15 @@ fn a_swarm_crowd_on_a_grid_fills_every_place_and_its_bound_shrinks_as_they_go() 
     let s = ParticlesSettings { life: 0.1, ..ParticlesSettings::from_params(&scene.things[&id].params) };
     scene.things.get_mut(&id).unwrap().params = s.to_params();
     set_engine(&mut scene, id, Engine::HugeSwarm);
-    let world = run(&scene, 1.5);
-    let buffers = state_of(&world, id).unwrap().swarm.as_ref().unwrap().buffers.clone().unwrap();
-    assert!(buffers.read().is_empty());
-    assert!(buffers.bound() < 5000, "the bound came down with the count: {}", buffers.bound());
+    let mut world = run(&scene, 1.5);
+    let buffers = |world: &World| state_of(world, id).unwrap().swarm.as_ref().unwrap().buffers.clone().unwrap();
+    assert!(buffers(&world).read().is_empty());
+    // The count comes back from the card a step or two late, and many steps late on a busy card (the owner's, with
+    // other checks beside this one, once had not answered in all 1.5 s). The read above waited for the card, so the
+    // answer is there: the next steps take it.
+    world.advance_to(1.6, &kit().sims, &mut Log::default());
+    let bound = buffers(&world).bound();
+    assert!(bound < 5000, "the bound came down with the count: {bound}");
 }
 
 /// How long a particle step of a million particles takes on this machine's card (gravity, wind

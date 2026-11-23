@@ -259,7 +259,25 @@ impl ScenesWindow {
             let (s, l) = column(PREVIEW_W);
             ui.allocate_ui_with_layout(s, l, |ui| {
                 ui.set_width(PREVIEW_W);
-                egui::ScrollArea::vertical().id_salt("scene preview").show(ui, |ui| self.preview(ui, shown, now, act));
+                // The buttons stay at the foot of the column: under a long description they were below the window.
+                let previewed = self.previewed(shown, now).map(|e| e.info.id);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    if let Some(id) = previewed {
+                        ui.horizontal(|ui| {
+                            if ui.add(style::primary_button("Open scene")).clicked() {
+                                *act = Some(Act::Open(id));
+                            }
+                            if ui.button("Cancel").clicked() {
+                                *act = Some(Act::Close);
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        let words = egui::ScrollArea::vertical().id_salt("scene preview").auto_shrink([false, false]);
+                        words.show(ui, |ui| self.preview(ui, shown, now));
+                    });
+                });
             });
         });
     }
@@ -380,7 +398,7 @@ impl ScenesWindow {
         if elided { response.on_hover_text(info.name) } else { response }
     }
 
-    fn preview(&mut self, ui: &mut Ui, shown: &[&'static Entry], now: f64, act: &mut Option<Act>) {
+    fn preview(&mut self, ui: &mut Ui, shown: &[&'static Entry], now: f64) {
         let Some(entry) = self.previewed(shown, now) else {
             ui.label(RichText::new("Pick a scene to see it here.").color(style::MUTED));
             return;
@@ -460,15 +478,6 @@ impl ScenesWindow {
                 .small()
                 .color(style::MUTED),
         );
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.add(style::primary_button("Open scene")).clicked() {
-                *act = Some(Act::Open(info.id));
-            }
-            if ui.button("Cancel").clicked() {
-                *act = Some(Act::Close);
-            }
-        });
     }
 }
 

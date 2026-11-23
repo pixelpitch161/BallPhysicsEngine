@@ -635,18 +635,7 @@ impl eframe::App for Studio {
             )
             .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
-        egui::Panel::bottom("timeline")
-            .frame(
-                egui::Frame::new()
-                    .fill(style::PANEL)
-                    .inner_margin(egui::Margin { left: 10, right: 10, top: 0, bottom: 6 })
-                    .stroke(Stroke::new(1.0, style::LINE_SOFT)),
-            )
-            .resizable(true)
-            .default_size(190.0)
-            .min_size(110.0)
-            .max_size(520.0)
-            .show(ui, |ui| timeline::show(ui, self));
+        self.bottom_panel(ui);
         if self.mode == crate::grade_mode::EditorMode::Grade {
             crate::grade_mode::left(ui, self);
             crate::grade_mode::right(ui, self);

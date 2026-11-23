@@ -665,6 +665,27 @@ fn an_older_copy_than_its_file_warns_and_leads_with_discard() {
 }
 
 #[test]
+fn save_as_names_the_scene_after_its_new_file() {
+    // The review's find: after Save as the name box and "Save changes to…" still showed the old file's name.
+    let dir = temp_dir("save-as-name");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut studio = Studio::blank();
+    studio.scene.name = "First take".into();
+    assert!(studio.save_to(dir.join("First take.ron"), true));
+    assert!(studio.save_to(dir.join("Second take.ron"), true));
+    assert_eq!(studio.scene.name, "Second take");
+    assert!(!studio.unsaved(), "and that is what the file holds");
+    let text = std::fs::read_to_string(dir.join("Second take.ron")).unwrap();
+    let on_disk = bpe_core::load(&text, &studio.kit.registry).unwrap();
+    assert_eq!(on_disk.name, "Second take");
+    // A plain Save keeps a name typed in the box, whatever the file is called.
+    studio.scene.name = "My own name".into();
+    assert!(studio.save_to(dir.join("Second take.ron"), false));
+    assert_eq!(studio.scene.name, "My own name");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn an_autosave_failure_is_told_and_cleared_when_a_later_one_works() {
     let dir = temp_dir("autosave-fail");
     let mut studio = Studio::blank();
