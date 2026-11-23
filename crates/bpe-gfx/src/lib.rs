@@ -207,7 +207,9 @@ pub fn headless_backends() -> Vec<wgpu::Backends> {
 }
 
 /// The best card for drawing without a window ([`headless_backends`]): `power` picks between
-/// cards of the same interface. The error is the last interface's.
+/// cards of the same interface. The error is the last interface's. A software card (lavapipe, Windows' WARP) on the
+/// first interface wins over a real card only OpenGL reaches: trying OpenGL then too would open it on every Linux
+/// test machine, where lavapipe is the card.
 pub fn headless_adapter(power: wgpu::PowerPreference) -> anyhow::Result<wgpu::Adapter> {
     let mut last = None;
     for backends in headless_backends() {
