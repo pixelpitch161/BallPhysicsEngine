@@ -104,9 +104,11 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   `F:\bpe-gpu\target\<job>`). Its `.env` turns off the overlay Vulkan layers installed on the PC
   (`VK_LOADER_LAYERS_DISABLE=~implicit~`), so OBS or Steam can't change a picture.
 - **Known on the card** (2026-11-22, the owner chose to switch first and fix after): tests are left out of the
-  `gpu` profile until each is fixed in its own change, which takes it out of the list there. Still out:
-  `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` (Pull toward its ball ends 87 px off on the
-  card); it runs nowhere until fixed.
+  `gpu` profile until each is fixed in its own change, which takes it out of the list there. All four are fixed
+  and none is left out now.
+  `swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does` was fixed (Pull toward its ball was 87 px off:
+  the card fuses `place + velocity * dt`, and a pull flung particles passing by its centre whichever way that last
+  bit said; a pull and a magnet's pull now fade to nothing inside 4 px of their centre, `docs/notes/particles.md`).
   `alloc::render_does_not_allocate` was fixed and runs on the card again (the sound's physics threads all start
   before the engine's first step returns; `docs/notes/sound.md`, "No memory taken while a block plays").
   `library::every_scene_plays_its_full_length_and_lands_its_payoff` was fixed (stem-battle's payoff came 26.5 s on

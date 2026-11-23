@@ -50,10 +50,9 @@ threads-required = "num-test-threads"
 # docs/notes/checks.md). Every test runs here natively except the sound goldens, pinned to Ubuntu's maths library,
 # which Windows' rounds a hair differently (the sound's own oscillators still use it). The physics uses
 # `bpe_core::maths`, which rounds the same everywhere, so the CPU physics goldens run here too.
-# KNOWN ON THE CARD (owner's choice 2026-11-22, "switch now, fix after"): tests that fail only on the owner's
-# card or Windows are left out here until each is fixed in its own change (docs/notes/checks.md lists them). Take
-# each one out of this list in the change that fixes it. The drawing one runs nowhere until fixed.
-#   - swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does: Pull toward its ball 87 px off on the card.
+# KNOWN ON THE CARD (owner's choice 2026-11-22, "switch now, fix after"): the four tests that failed only on the
+# owner's card or Windows are all fixed and run here (docs/notes/checks.md). A new one goes back in this filter
+# only by the owner's choice, and leaves it in the change that fixes it.
 # (golden_liquid draws, so it runs here, with its golden made on the card.) Also left out: osc_b_off_costs_nothing,
 # which times the machine against itself and runs on the Linux machines, while the Linux checks share this PC's
 # processor with this job.
@@ -61,9 +60,6 @@ default-filter = """
 not (
   (package(bpe-sound) & test(/golden/))
   | (package(bpe-sound) & binary(shape_voice) & test(=osc_b_off_costs_nothing))
-  | (
-    (package(bpe-kit) & test(=things::particles::swarm_tests::part_3_forces_move_a_swarm_as_the_exact_engine_does))
-  )
 )
 """
 test-threads = 8

@@ -322,7 +322,8 @@ fn pull_from(m: ptr<function, Main>, f: Force, centre: vec2<f32>, at0: f32, reac
     if (reach > 0.0 && d > reach) || d < 1e-6 || !(d == d && d < 3.0e38) {
         return false;
     }
-    let inward = off / d;
+    // Fades to nothing inside 4 px, as the exact engine's (`pull_from`).
+    let inward = off / max(d, 4.0);
     let soft = max(max(d, 4.0), swallow);
     let at = max(at0, 1e-3);
     var factor = 1.0;
@@ -376,7 +377,8 @@ fn dipole(p: vec2<f32>, centre: vec2<f32>, mm: vec2<f32>, size: f32) -> vec4<f32
     if all(b == vec2<f32>(0.0)) {
         return vec4<f32>(0.0);
     }
-    return vec4<f32>(b * strength, -n * strength);
+    // The pull fades inside 4 px, as the exact engine's.
+    return vec4<f32>(b * strength, -r / max(d, 4.0) * strength);
 }
 
 // Magnetic field: kind.z from (0 each ball, 1 its place), kind.w points (0 along its motion,

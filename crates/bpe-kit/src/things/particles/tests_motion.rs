@@ -413,6 +413,25 @@ fn pull_to_pulls_in_weakens_further_off_and_swallows() {
 }
 
 #[test]
+fn a_pull_fades_to_nothing_at_its_centre_so_passing_by_it_is_calm() {
+    // Particles pulled back to where they were born keep passing right by the centre; a pull
+    // that kept its full strength there flung each one whichever way a last-bit rounding put it,
+    // so the card (which fuses `place + velocity * dt`) ended 87 px from the exact engine.
+    let pull = Force::Pull(PullForce { falloff: Falloff::Even, orbit: 0.6, ..Default::default() });
+    let ready = centred(Vec2::ZERO);
+    let kick = |x: f32| {
+        let mut s = speck(Vec2::new(x, 0.0), Vec2::ZERO);
+        once(pull.clone(), &mut s, &ready);
+        s.velocity
+    };
+    let full = kick(100.0).length();
+    assert!((kick(4.0).length() - full).abs() < 1e-3, "full strength from 4 px out");
+    assert!((kick(2.0).length() * 2.0 - full).abs() < 1e-3, "half at 2 px");
+    // Either side of the centre, a hair apart: almost no difference.
+    assert!(kick(1e-3).distance(kick(-1e-3)) < full * 1e-3, "{} against {}", kick(1e-3), kick(-1e-3));
+}
+
+#[test]
 fn orbit_pulls_sideways() {
     let mut s = speck(Vec2::new(100.0, 0.0), Vec2::ZERO);
     once(
