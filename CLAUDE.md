@@ -176,6 +176,11 @@ Ubuntu 24.04 to match the containers.
   like: they round differently on Windows, and the chaotic physics grows that into a different video. Use
   `bpe_core::maths::Maths` (`x.det_sin()`); each crate's `clippy.toml` refuses the platform ones.
 
+- Make wgpu instances without a window through `bpe_gfx::headless_adapter`/`headless_device`, never
+  `wgpu::InstanceDescriptor::new_without_display_handle()` as it is: that opens OpenGL too, and AMD's OpenGL driver
+  sometimes aborts the program as it closes (`docs/notes/checks.md`). (egui's default for the editor's window opens
+  OpenGL too; left as it is, no editor crash has been seen.)
+
 - Card sim states are `MotionState { settings }` and `BounceState { settings }` (in
   `bpe-kit/src/modules/{motion,bounce}/sim.rs`). `downcast_ref::<BasicBounce>()` compiles but silently returns
   `None`.

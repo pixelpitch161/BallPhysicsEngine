@@ -193,13 +193,43 @@ pub(crate) fn layers_source(effects: Option<&str>) -> String {
     out
 }
 
+/// The graphics interfaces a device without a window is looked for on, in turn: Vulkan, DX12 and Metal first, and
+/// OpenGL only when none of those has a card. `WGPU_BACKEND` names others instead.
+///
+/// OpenGL is never opened alongside the others because opening it loads the card's OpenGL driver even when Vulkan
+/// draws: on the owner's AMD card that driver (`atio6axx.dll`) sometimes aborts the program as it closes (Windows
+/// code 0xc0000409, "fast fail 7"), after everything else has finished.
+pub fn headless_backends() -> Vec<wgpu::Backends> {
+    match wgpu::Backends::from_env() {
+        Some(asked) if !asked.is_empty() => vec![asked],
+        _ => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
+    }
+}
+
+/// The best card for drawing without a window ([`headless_backends`]): `power` picks between
+/// cards of the same interface. The error is the last interface's. A software card (lavapipe, Windows' WARP) on the
+/// first interface wins over a real card only OpenGL reaches: trying OpenGL then too would open it on every Linux
+/// test machine, where lavapipe is the card.
+pub fn headless_adapter(power: wgpu::PowerPreference) -> anyhow::Result<wgpu::Adapter> {
+    let mut last = None;
+    for backends in headless_backends() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        match pollster::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: power, ..Default::default() }),
+        ) {
+            Ok(adapter) => return Ok(adapter),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.map_or_else(|| anyhow::anyhow!("no graphics interface to look on"), anyhow::Error::from))
+}
+
 /// Creates a GPU device without a window, for exporting from the command line and for tests.
 pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))?;
+    let adapter = headless_adapter(wgpu::PowerPreference::HighPerformance)?;
     let (device, queue) = pollster::block_on(
         adapter.request_device(&wgpu::DeviceDescriptor { label: Some("bpe headless"), ..Default::default() }),
     )?;
@@ -256,11 +286,7 @@ pub fn test_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
 
 /// The graphics card tests draw on, as `name (driver, driver info)`: what the first line of a card golden names.
 pub fn test_device_name() -> String {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    })) {
+    match headless_adapter(wgpu::PowerPreference::HighPerformance) {
         Ok(adapter) => {
             let info = adapter.get_info();
             format!("{} ({}, {})", info.name.trim(), info.driver.trim(), info.driver_info.trim())
@@ -332,6 +358,50 @@ pub fn card_golden_compare(text: &str, here: &str) -> CardGolden {
 #[cfg(test)]
 mod test_device_tests {
     use super::*;
+
+    #[test]
+    fn opengl_is_looked_on_only_after_the_others() {
+        if std::env::var_os("WGPU_BACKEND").is_some() {
+            return;
+        }
+        let order = headless_backends();
+        assert_eq!(order, [wgpu::Backends::PRIMARY, wgpu::Backends::GL]);
+        assert!(!order[0].contains(wgpu::Backends::GL));
+    }
+
+    /// The names of the program files (DLLs) this test program has loaded, lower case.
+    #[cfg(windows)]
+    fn loaded_modules() -> Vec<String> {
+        let script = format!("(Get-Process -Id {}).Modules | ForEach-Object {{ $_.ModuleName }}", std::process::id());
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .expect("powershell lists the modules");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
+    /// On Windows a test's device leaves the card's OpenGL driver unloaded: on the owner's AMD card it sometimes
+    /// aborts the program as it closes (`headless_backends`). (`WGPU_BACKEND=vulkan,gl` makes it fail.)
+    #[cfg(windows)]
+    #[test]
+    fn a_test_device_does_not_load_the_opengl_driver() {
+        let Ok((device, _queue)) = test_device() else { return };
+        let modules = loaded_modules();
+        assert!(modules.iter().any(|m| m == "kernel32.dll"), "the module list is read: {modules:?}");
+        // The card makers' OpenGL drivers (AMD, NVIDIA, Intel). Windows' own `opengl32.dll` is always there (the
+        // editor's window library links it) and loads one of these only when OpenGL is opened.
+        let opengl: Vec<&String> = modules
+            .iter()
+            .filter(|m| {
+                m.starts_with("atio6axx") || m.starts_with("nvoglv") || m.starts_with("ig") && m.contains("icd")
+            })
+            .collect();
+        assert!(opengl.is_empty(), "OpenGL loaded beside {:?}: {opengl:?}", device.adapter_info().backend);
+    }
 
     #[test]
     fn a_card_golden_is_compared_only_on_its_own_card() {

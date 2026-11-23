@@ -122,6 +122,15 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
   (so nextest prints its output), pushed to the branch with CI started by hand (`workflow_dispatch`); the card job's
   log holds the prints. Compare them with the same test on lavapipe. WGSL allows a division to be 2.5 ULP off, and
   the card uses that freedom where lavapipe doesn't: never floor or ceil the result of a division meant to be whole.
+- **Aborts after "test result: ok"** (0xc0000409, 2026-11-22): a graphics test passed, then its program was killed
+  as it closed, a different test each time (about one run in nine). Windows' crash reports named AMD's OpenGL driver
+  (`atio6axx.dll`, fast fail 7, the same offset each time): wgpu's default instance opens every graphics interface,
+  OpenGL too, and that loads the card's OpenGL driver even though Vulkan draws. `bpe_gfx::headless_adapter` now looks
+  on Vulkan, DX12 and Metal first and opens OpenGL only when they find no card (`headless_backends`; `WGPU_BACKEND`
+  overrides). `a_test_device_does_not_load_the_opengl_driver` checks it on Windows. Make any new instance through it.
+- **Reading crash reports on the card**: the runner account can read the Application event log
+  (`Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000}`: faulting module, code, offset), and dumps land in
+  `C:\Users\bpe-gpu\AppData\Local\CrashDumps`. Print them from a temporary step started by `workflow_dispatch`.
 - **Timings**: the job summary's "Timings on the owner's graphics card" (`tests/liquid_speed.rs`, `light_speed.rs`).
 
 ## Running only the tests a change needs
