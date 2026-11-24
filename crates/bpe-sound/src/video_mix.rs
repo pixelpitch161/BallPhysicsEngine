@@ -47,16 +47,18 @@ pub fn video_samples(video: &Video, kit: &Kit) -> Vec<f32> {
     out
 }
 
-/// Renders the video's sound to `path` as a 32-bit float stereo WAV at 48 kHz, a second at a
+/// Renders the video's sound (up to `seconds`, or its end if sooner) to `path` as a 32-bit float stereo WAV at 48 kHz, a second at a
 /// time. `progress` hears how far it is (0 to 1); returning `false` cancels, which deletes the
 /// file and gives an error.
 pub fn render_video_sound(
     video: &Video,
     kit: &Kit,
     path: &Path,
+    seconds: f64,
     mut progress: impl FnMut(f64) -> bool,
 ) -> anyhow::Result<()> {
     let mut mix = VideoMix::new(video, kit);
+    mix.set_end(seconds);
     let total = mix.total();
     let mut out = WavOut::create(path)?;
     let mut chunk = Vec::with_capacity(CHUNK_BLOCKS * BLOCK * 2);
@@ -165,6 +167,8 @@ impl<'a> VideoMix<'a> {
                     0 if c.offset > 0.0 => Fade::Edge,
                     0 => Fade::None,
                     n if c.transition_in.sound == TransitionSound::Crossfade => Fade::Power(n),
+                    // Kept whole over the transition, but cut in partway: the edge, so it doesn't click.
+                    _ if c.offset > 0.0 => Fade::Edge,
                     _ => Fade::None,
                 };
                 let overlap_out = samples(video.overlap(i + 1));
@@ -213,6 +217,12 @@ impl<'a> VideoMix<'a> {
             end: samples(video.end()),
             end_fade: f64::from(m.end_fade.max(0.0)),
         }
+    }
+
+    /// Ends the sound at `seconds` (an export of the first frames only) when that's before the
+    /// video's end: the length and the End fade follow. Set it before the first block.
+    pub fn set_end(&mut self, seconds: f64) {
+        self.end = self.end.min(samples(seconds.max(0.0)));
     }
 
     /// Frames in the whole video's sound.
@@ -510,6 +520,38 @@ mod tests {
         let early = rms(window(&mix, 0.5, 1.0));
         let late = rms(window(&mix, 1.5, 1.99));
         assert!((late / early - 1.0).abs() < 0.01, "not faded by the scene: {late} vs {early}");
+    }
+
+    #[test]
+    fn a_shorter_end_cuts_the_sound_and_fades_there() {
+        let kit = crate::kit();
+        let mut v = video(vec![tone_scene(&kit, 440.0, 3.0)], &[(0, 0.0, 2.0, 0.0)]);
+        v.settings.master.end_fade = 0.5;
+        let mut mix = VideoMix::new(&v, &kit);
+        mix.set_end(1.0);
+        assert_eq!(mix.total(), 48_000);
+        let mut out = Vec::new();
+        mix.fill(&mut out, 48_000);
+        let before = rms(window(&out, 0.2, 0.4));
+        let fading = rms(window(&out, 0.9, 0.99));
+        assert!(fading < before * 0.3, "the End fade lands at the cut end: {fading} vs {before}");
+    }
+
+    #[test]
+    fn keep_both_cut_in_partway_fades_its_edge() {
+        let kit = crate::kit();
+        let (a, b) = (tone_scene(&kit, 440.0, 3.0), tone_scene(&kit, 1000.0, 3.0));
+        let mut v = video(vec![a, b.clone()], &[(0, 0.0, 2.0, 0.0), (1, 1.5, 2.0, 0.70025)]);
+        v.clips[1].transition_in.sound = TransitionSound::KeepBoth;
+        let both = video_samples(&v, &kit);
+        let only_a = video_samples(&video(vec![tone_scene(&kit, 440.0, 3.0)], &[(0, 0.0, 2.0, 0.0)]), &kit);
+        // B's first sample, alone: the mix less A.
+        let at = (1.5 * RATE) as usize * 2;
+        let first_b = (both[at] - only_a[at]).abs();
+        let own = bare(&b, &kit, 1.0);
+        let raw = own[(0.70025 * RATE) as usize * 2].abs();
+        assert!(raw > 0.05, "the tone is mid-wave there: {raw}");
+        assert!(first_b < raw * 0.05, "B starts faded in: {first_b} vs {raw}");
     }
 
     #[test]

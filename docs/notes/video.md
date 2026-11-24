@@ -36,7 +36,8 @@ No editor work yet. A video is made in code or by hand and exported from `bpe-re
 - `moment(video, frame) -> Moment { old, new, progress, kind }` in whole frames (`OnScreen { clip, scene_time,
   scene_frame }`); a gap or past the end has neither.
 - `cover(scene_size, video_size) -> CoverFit { draw, crop }`: drawn at the scene's shape just big enough to cover
-  (even sides), the middle cropped. Same size is untouched.
+  (even sides), the middle cropped. Same size is untouched. `within(fit, max)` shrinks a draw size past the
+  card's largest picture (same shape and crop); the export applies it with the device's limit.
 
 ### Sound (`bpe-sound::video_mix`)
 
@@ -47,7 +48,9 @@ No editor work yet. A video is made in code or by hand and exported from `bpe-re
   Fades: equal power (`sin`/`cos` of a quarter turn) over overlaps unless the incoming clip's sound is KeepBoth;
   a 5 ms linear edge at a hard end, and at a cut-in start only when the clip starts partway (offset > 0). The
   song is a `patch::Backing`. Then the video's Master (its limiter delay discarded) and its End fade.
-- `video_samples` (tests) and `render_video_sound` (WAV, cancel as `render_sound`). `video_has_sound(video, kit)`.
+- `VideoMix::set_end` cuts the sound (and moves the End fade) for an export of the first frames only.
+  A KeepBoth clip cut in partway still gets the 5 ms edge.
+- `video_samples` (tests) and `render_video_sound(video, kit, path, seconds, progress)` (WAV, cancel as `render_sound`). `video_has_sound(video, kit)`.
 
 ### Pictures (`bpe-gfx::compose`)
 
@@ -75,6 +78,13 @@ No editor work yet. A video is made in code or by hand and exported from `bpe-re
 `bpe-core` video/video_save, `bpe-kit --lib video::`, `bpe-sound --lib video_mix`, `bpe-gfx --lib compose`,
 `bpe-gfx --test compose`, `bpe-cli --test arranged` (same bytes with and without an echo memory, a crossfade mixes,
 cover fit, gap black, export with sound and silent, refusals, cancel, the command line). No golden moved.
+
+### Known small gaps (from the part 1 review, left for later)
+
+Not byte-identical at an inexact export scale (goes through compose); scene Length rounded to frames, not
+floored; the 1800 s cut can leave a clip all transition; NaN times sort last; the video's own settings (size,
+fps, tempo, time signature) aren't clamped; `VideoMix` expects tidied clips; clip ids aren't checked; a song that
+won't decode is dropped silently.
 
 ### For part 2 (Video mode: arranging)
 

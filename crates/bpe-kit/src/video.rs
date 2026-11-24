@@ -139,6 +139,18 @@ pub fn cover(scene_size: (u32, u32), video_size: (u32, u32)) -> CoverFit {
     CoverFit { draw, crop: [((1.0 - w) / 2.0) as f32, ((1.0 - h) / 2.0) as f32, w as f32, h as f32] }
 }
 
+/// `fit` drawn no bigger than `max` pixels a side (the graphics card's largest picture), at the
+/// same shape and with the same crop: a very wide or tall scene is drawn smaller and stretched.
+pub fn within(fit: CoverFit, max: u32) -> CoverFit {
+    let big = fit.draw.0.max(fit.draw.1);
+    if big <= max {
+        return fit;
+    }
+    let k = f64::from(max) / f64::from(big);
+    let even = |x: u32| (((f64::from(x) * k) as u32) / 2 * 2).max(2);
+    CoverFit { draw: (even(fit.draw.0), even(fit.draw.1)), crop: fit.crop }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +269,19 @@ mod tests {
         let wide = cover((1920, 1080), (1080, 1920));
         assert_eq!(wide.draw.1, 1920);
         assert!(wide.draw.0 >= 3412 && wide.draw.0.is_multiple_of(2));
+    }
+
+    #[test]
+    fn a_cover_too_big_for_the_card_is_drawn_smaller_with_the_same_crop() {
+        let fit = cover((7680, 1080), (1080, 1920));
+        assert!(fit.draw.0 > 8192, "{:?}", fit.draw);
+        let small = within(fit, 8192);
+        assert!(small.draw.0 <= 8192 && small.draw.1 <= 8192, "{:?}", small.draw);
+        assert!(small.draw.0.is_multiple_of(2) && small.draw.1.is_multiple_of(2));
+        let (a, b) = (fit.draw.0 as f64 / fit.draw.1 as f64, small.draw.0 as f64 / small.draw.1 as f64);
+        assert!((a - b).abs() / a < 0.01, "same shape: {a} vs {b}");
+        assert_eq!(small.crop, fit.crop);
+        assert_eq!(within(cover((270, 480), (270, 480)), 8192), cover((270, 480), (270, 480)));
     }
 
     #[test]

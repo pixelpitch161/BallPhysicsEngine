@@ -14,7 +14,7 @@ use bpe_gfx::compose::{Compose, Look, params};
 use bpe_gfx::yuv::PixelLayout;
 use bpe_gfx::{Readback, Renderer, wgpu};
 use bpe_kit::Kit;
-use bpe_kit::video::{CoverFit, clip_scene, cover, moment, scene_length};
+use bpe_kit::video::{CoverFit, clip_scene, cover, moment, scene_length, within};
 
 use crate::{
     Encoder, ExportOptions, FRAMES_IN_FLIGHT, FrameMaker, Parts, Picture, bake_for, encode_frames, export_parts,
@@ -49,7 +49,8 @@ impl<'a> ClipDraw<'a> {
     ) -> Self {
         let s = bpe_kit::video::scene_settings(scene, &kit.registry);
         // Drawn at its own shape, at the size that covers the video (at the export's scale).
-        let fit = cover((s.width, s.height), out);
+        // No bigger than the card can hold.
+        let fit = within(cover((s.width, s.height), out), device.limits().max_texture_dimension_2d);
         let mut draw = ClipDraw {
             maker: FrameMaker::new(scene, kit),
             renderer: Renderer::new(device, fit.draw.0, fit.draw.1),
@@ -234,7 +235,7 @@ fn export_arranged_with(
     export_parts(
         options,
         &parts,
-        |sound, heard| bpe_sound::render_video_sound(video, kit, sound, heard),
+        |sound, heard| bpe_sound::render_video_sound(video, kit, sound, parts.seconds, heard),
         |into, silence, done| {
             encode_frames(options, &picture, into, silence, |layout, send| {
                 let mut cancelled = false;
