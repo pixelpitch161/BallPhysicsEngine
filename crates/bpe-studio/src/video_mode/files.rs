@@ -21,7 +21,8 @@ fn file_label(path: &Path) -> String {
 impl Studio {
     /// Whether the video differs from the one last saved or opened.
     pub fn video_unsaved(&self) -> bool {
-        self.video.unsaved()
+        // A clip's scene being edited counts: it goes into the video.
+        self.video.unsaved() || (self.editing_clip() && self.scene != self.saved)
     }
 
     /// New video, asking to save the video first if it has unsaved changes.
@@ -63,9 +64,13 @@ impl Studio {
 
     /// Puts `video` (as saved at `path`) in the session in place of the one there.
     pub fn replace_video(&mut self, video: Video, path: Option<PathBuf>) {
+        self.video_stop();
         let mut session = VideoSession::with(video, path);
-        // The still frame's thread and whether it draws stay with the editor.
+        // The still frame's thread and whether it draws stay with the editor, and so do the
+        // hits' thread and Loop.
         std::mem::swap(&mut session.still, &mut self.video.still);
+        std::mem::swap(&mut session.hits, &mut self.video.hits);
+        session.playing.carry_from(&self.video.playing);
         session.revision = self.video.revision + 1;
         self.video = session;
         // The file chosen to export the video to was the last video's.

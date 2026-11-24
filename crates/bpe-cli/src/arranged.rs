@@ -100,6 +100,11 @@ fn look_of(kind: TransitionKind) -> Option<Look> {
     }
 }
 
+/// Each clip's scene copy ([`clip_scene`]), in the clips' order.
+pub fn clip_scenes(video: &Video, kit: &Kit) -> Vec<Scene> {
+    video.clips.iter().map(|c| clip_scene(video, c, &kit.registry)).collect()
+}
+
 /// The video with its clips inside their limits (as opening it does).
 pub fn tidied(video: &Video, kit: &Kit) -> Video {
     let mut video = video.clone();
@@ -129,7 +134,7 @@ pub fn arranged_frames(
     let out = output_size(s.width, s.height, scale);
     let total = max_frames.map_or(video.frame_count(), |m| m.min(video.frame_count()));
     // Each clip's scene copy, made up front so the draws can borrow them.
-    let scenes: Vec<Scene> = video.clips.iter().map(|c| clip_scene(&video, c, &kit.registry)).collect();
+    let scenes = clip_scenes(&video, kit);
     let mut draws: BTreeMap<usize, ClipDraw<'_>> = BTreeMap::new();
     let mut compose: Option<Compose> = None;
     let mut readback = Readback::with_layout(device, out.0, out.1, FRAMES_IN_FLIGHT, layout);
@@ -316,4 +321,259 @@ fn export_arranged_with(
         },
         progress,
     )
+}
+
+/// How far ahead (seconds) the editor's [`Player`] makes and runs up a clip coming on screen.
+pub const LOOKAHEAD: f64 = 4.0;
+
+/// A clip the editor's [`Player`] keeps running: its scene's run and renderer, run up to its first
+/// frame on screen with the quick run-up's rule ([`crate::run_up`]: the physics from 0, only the
+/// frames the scene remembers drawn), a piece at a time.
+struct LiveClip<'a> {
+    maker: FrameMaker<'a>,
+    renderer: Renderer,
+    fit: CoverFit,
+    /// The scene frame it is run up to: its first frame on screen.
+    first: u32,
+    /// The next scene frame to step.
+    at: u32,
+    /// The first frame the scene's memory could need.
+    earliest: u32,
+    /// The first frame the run-up draws, once read at `earliest`.
+    from: Option<u32>,
+}
+
+impl<'a> LiveClip<'a> {
+    fn new(device: &wgpu::Device, scene: &'a Scene, kit: &'a Kit, out: (u32, u32), fps: u32, first: u32) -> Self {
+        let s = bpe_kit::video::scene_settings(scene, &kit.registry);
+        let fit = within(cover((s.width, s.height), out), device.limits().max_texture_dimension_2d);
+        let time = f64::from(first) / f64::from(fps);
+        let earliest = ((time - f64::from(bpe_gfx::effects::MAX_MEMORY)).max(0.0) * f64::from(fps)).ceil() as u32;
+        LiveClip {
+            maker: FrameMaker::new(scene, kit),
+            renderer: Renderer::new(device, fit.draw.0, fit.draw.1),
+            fit,
+            first,
+            at: 0,
+            earliest: earliest.min(first),
+            from: None,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.at >= self.first
+    }
+
+    /// Runs up towards its first frame until `until` (no limit: to the end). True once there;
+    /// "stopped" once `stop` is set.
+    fn warm(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        fps: u32,
+        until: Option<std::time::Instant>,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> anyhow::Result<bool> {
+        while self.at < self.first {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                bail!("stopped");
+            }
+            if until.is_some_and(|u| std::time::Instant::now() >= u) {
+                return Ok(false);
+            }
+            let k = self.at;
+            let t = f64::from(k) / f64::from(fps);
+            if k < self.earliest || self.from.is_some_and(|from| k < from) {
+                self.maker.advance_to(t);
+            } else {
+                let frame = self.maker.frame(t);
+                if k == self.earliest {
+                    // How long the scene remembers, read at the first frame it could need.
+                    let memory = f64::from(frame.memory());
+                    let first_t = f64::from(self.first) / f64::from(fps);
+                    self.from = Some(if memory > 0.0 {
+                        (((first_t - memory).max(0.0) * f64::from(fps)).ceil() as u32).max(self.earliest)
+                    } else {
+                        self.first
+                    });
+                }
+                if self.from.is_some_and(|from| k >= from) {
+                    self.renderer.render(device, queue, &frame);
+                }
+            }
+            self.at += 1;
+        }
+        Ok(true)
+    }
+
+    /// Draws scene frame `n` (never earlier than the last).
+    fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, fps: u32, n: u32) {
+        let frame = self.maker.frame(f64::from(n) / f64::from(fps));
+        self.renderer.render(device, queue, &frame);
+        self.at = n + 1;
+    }
+
+    /// Runs the physics to scene frame `n` without drawing it.
+    fn skip(&mut self, fps: u32, n: u32) {
+        if self.ready() && n >= self.at {
+            self.maker.advance_to(f64::from(n) / f64::from(fps));
+            self.at = n + 1;
+        }
+    }
+}
+
+/// The editor's player (part 3): draws a video's frames in order, from any frame, as the still
+/// frame draws them (the quick run-up, no bake), one at a time, each read back at once as RGBA.
+/// It keeps the clips on screen running between frames, makes and runs up the next clip in the
+/// time it is given ([`Player::warm_ahead`]), and can step the physics past frames nobody will
+/// see ([`Player::skip`]). `video` must be tidied ([`tidied`]) and `scenes` its [`clip_scenes`].
+pub struct Player<'a> {
+    video: &'a Video,
+    scenes: &'a [Scene],
+    kit: &'a Kit,
+    out: (u32, u32),
+    fps: u32,
+    live: BTreeMap<usize, LiveClip<'a>>,
+    compose: Option<Compose>,
+    readback: Readback,
+    /// The last frame drawn or skipped.
+    last: Option<u32>,
+}
+
+impl<'a> Player<'a> {
+    pub fn new(device: &wgpu::Device, video: &'a Video, scenes: &'a [Scene], kit: &'a Kit, scale: f32) -> Self {
+        let s = &video.settings;
+        let out = output_size(s.width, s.height, scale);
+        Player {
+            video,
+            scenes,
+            kit,
+            out,
+            fps: s.fps.max(1),
+            live: BTreeMap::new(),
+            compose: None,
+            readback: Readback::new(device, out.0, out.1, 1),
+            last: None,
+        }
+    }
+
+    /// The frames' size.
+    pub fn size(&self) -> (u32, u32) {
+        self.out
+    }
+
+    /// How many frames the video has.
+    pub fn frame_count(&self) -> u32 {
+        self.video.frame_count()
+    }
+
+    /// The clips drawn at `frame`: the look, the old and the new.
+    fn on_screen(&self, frame: u32) -> (bpe_kit::video::Moment, Option<Look>, Option<bpe_kit::video::OnScreen>) {
+        let m = moment(self.video, frame);
+        let look = look_of(m.kind);
+        let old = m.old.filter(|_| look.is_some());
+        (m, look, old)
+    }
+
+    fn live_clip(&mut self, device: &wgpu::Device, clip: usize, first: u32) -> &mut LiveClip<'a> {
+        let (scenes, kit, out, fps) = (self.scenes, self.kit, self.out, self.fps);
+        self.live.entry(clip).or_insert_with(|| LiveClip::new(device, &scenes[clip], kit, out, fps, first))
+    }
+
+    /// Draws video frame `frame` (frames are asked in order) and gives its RGBA pixels.
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: u32,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> anyhow::Result<Vec<u8>> {
+        let (m, look, old) = self.on_screen(frame);
+        let fps = self.fps;
+        for on in [old, m.new].into_iter().flatten() {
+            let live = self.live_clip(device, on.clip, on.scene_frame);
+            live.warm(device, queue, fps, None, stop)?;
+            // Frames come in order; never ask the physics for a time it has passed.
+            let n = on.scene_frame.max(live.at.saturating_sub(1));
+            live.draw(device, queue, fps, n);
+        }
+        let out = self.out;
+        let Player { live, compose, readback, .. } = self;
+        let lone = match (old, m.new) {
+            (None, Some(new)) if live[&new.clip].fit.draw == out => Some(new.clip),
+            _ => None,
+        };
+        let pushed = match lone {
+            Some(clip) => readback.push(device, queue, &live[&clip].renderer)?,
+            None => {
+                let compose = compose.get_or_insert_with(|| Compose::new(device, queue, out.0, out.1));
+                let crop =
+                    |o: Option<bpe_kit::video::OnScreen>| o.map_or([0.0, 0.0, 1.0, 1.0], |o| live[&o.clip].fit.crop);
+                let view = |o: Option<bpe_kit::video::OnScreen>| o.map(|o| live[&o.clip].renderer.output_view());
+                let p = params(if old.is_some() { look } else { None }, m.progress, crop(old), crop(m.new));
+                compose.draw(device, queue, view(old), view(m.new), &p);
+                readback.push_texture(device, queue, compose.output_texture(), compose.output_view())?
+            }
+        };
+        let pixels = match pushed {
+            Some(pixels) => pixels,
+            None => readback.finish(device)?.pop().ok_or_else(|| anyhow::anyhow!("the frame did not come back"))?,
+        };
+        self.passed(frame);
+        Ok(pixels)
+    }
+
+    /// Steps the clips on screen at `frame` to it without drawing (the editor fell behind).
+    pub fn skip(&mut self, frame: u32) {
+        let (m, _, old) = self.on_screen(frame);
+        let fps = self.fps;
+        for on in [old, m.new].into_iter().flatten() {
+            if let Some(live) = self.live.get_mut(&on.clip) {
+                live.skip(fps, on.scene_frame);
+            }
+        }
+        self.passed(frame);
+    }
+
+    /// Frame `frame` is done: clips that have ended are dropped.
+    fn passed(&mut self, frame: u32) {
+        self.last = Some(frame);
+        let next = i64::from(frame) + 1;
+        let video = self.video;
+        self.live.retain(|&i, _| video.frames(video.clips[i].end()) > next);
+    }
+
+    /// Makes the next clip that comes on screen within [`LOOKAHEAD`] of the last frame and runs
+    /// it (and any clip not yet run up) up until `until`.
+    pub fn warm_ahead(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        until: std::time::Instant,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> anyhow::Result<()> {
+        let last = i64::from(self.last.unwrap_or(0));
+        let reach = last + (LOOKAHEAD * f64::from(self.fps)).round() as i64;
+        let video = self.video;
+        let next = video.clips.iter().enumerate().find(|(i, c)| {
+            let start = video.frames(c.start);
+            start > last && start <= reach && !self.live.contains_key(i)
+        });
+        if let Some((i, c)) = next {
+            let first = video.frames(c.offset).max(0) as u32;
+            self.live_clip(device, i, first);
+        }
+        let fps = self.fps;
+        for live in self.live.values_mut().filter(|l| !l.ready()) {
+            if !live.warm(device, queue, fps, Some(until), stop)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether nothing is waiting to be run up.
+    pub fn all_warm(&self) -> bool {
+        self.live.values().all(LiveClip::ready)
+    }
 }

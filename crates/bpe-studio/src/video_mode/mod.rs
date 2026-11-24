@@ -15,11 +15,15 @@ use eframe::egui::{self, Ui};
 use std::path::PathBuf;
 
 pub mod arrange;
+pub mod edit;
 pub mod files;
+pub mod hits;
 pub mod inspect;
 pub mod lanes;
+pub mod play;
 pub mod scenes;
 pub mod still;
+pub mod take;
 #[cfg(test)]
 mod tests;
 
@@ -135,6 +139,12 @@ pub struct VideoSession {
     pub still: still::Still,
     /// Goes up whenever the video changes, so the still frame knows it is out of date.
     pub revision: u64,
+    /// Playing the video (part 3).
+    pub playing: play::Playing,
+    /// Dragging the ruler paused the playing; it plays again when let go.
+    pub resume_after_scrub: bool,
+    /// The Scene sound lane's hits (part 3).
+    pub hits: hits::Hits,
     /// Whether the video differs from the saved one, as worked out at a revision.
     unsaved_at: std::cell::Cell<Option<(u64, bool)>>,
 }
@@ -160,6 +170,9 @@ impl VideoSession {
             clip_board: None,
             still: still::Still::default(),
             revision: 0,
+            playing: play::Playing::default(),
+            resume_after_scrub: false,
+            hits: hits::Hits::default(),
             unsaved_at: std::cell::Cell::new(None),
         }
     }
@@ -308,7 +321,7 @@ pub fn centre(ui: &mut Ui, studio: &mut Studio) {
 
 impl Studio {
     /// Video mode's keys, read first in the frame (after Save, Open and New): undo and redo of the
-    /// video, the playhead's keys, and Space (playing comes in part 3).
+    /// video, the playhead's keys, and Space (play and stop).
     pub(crate) fn video_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
@@ -319,7 +332,7 @@ impl Studio {
             self.video_undo();
         }
         if ctx.input(|i| i.key_pressed(Key::Space)) {
-            self.status = "Playing a video comes in the next update: move the playhead to see a frame.".into();
+            self.video_toggle_play();
         }
         if ctx.memory(|m| m.focused().is_some()) {
             return;

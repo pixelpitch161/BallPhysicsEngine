@@ -2,7 +2,7 @@
 //! mix the two, scenes of another shape cover the video, gaps are black, and the export has
 //! picture and sound and cleans up after itself.
 
-use bpe_cli::arranged::{NO_CLIPS, NOT_FOR_VIDEOS, arranged_frames, still_frame, tidied};
+use bpe_cli::arranged::{NO_CLIPS, NOT_FOR_VIDEOS, Player, arranged_frames, clip_scenes, still_frame, tidied};
 use bpe_cli::{Encoder, ExportOptions, FrameMaker, export_arranged, find_ffmpeg};
 use bpe_core::video::{Clip, ClipId, KeptId, KeptScene, Transition, TransitionKind, Video};
 use bpe_core::{Scene, SlotId, ThingId, TrackColour, Value, layered_key};
@@ -394,4 +394,83 @@ fn the_command_line_renders_a_video_file() {
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains(NOT_FOR_VIDEOS));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn most_off(a: &[u8], b: &[u8]) -> i32 {
+    a.iter().zip(b).map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs()).max().unwrap()
+}
+
+/// Two scenes with a crossfade: A 0 to 1.5 s, B from 1 s (0.5 s into it) for 1.5 s.
+fn two_clips(kit: &Kit) -> Video {
+    tidied(
+        &video(
+            vec![scene(kit, W, H), scene(kit, W, H)],
+            &[(0, 0.0, 1.5, 0.0, TransitionKind::Cut), (1, 1.0, 1.5, 0.5, TransitionKind::Crossfade)],
+        ),
+        kit,
+    )
+}
+
+#[test]
+fn player_draws_what_the_still_frame_draws() {
+    let kit = kit();
+    let v = two_clips(&kit);
+    let scenes = clip_scenes(&v, &kit);
+    let (device, queue) = gpu();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    // From the start through the transition, and from partway (a run-up to B's offset).
+    for from in [0, 40] {
+        let mut player = Player::new(&device, &v, &scenes, &kit, 1.0);
+        assert_eq!(player.size(), (W, H));
+        for f in from..from + 34 {
+            let got = player.draw(&device, &queue, f, &stop).unwrap();
+            if f % 6 == 0 || f == 37 {
+                let want = still(&v, &kit, f);
+                assert!(most_off(&got, &want) <= 2, "frame {f} (from {from}) is the still frame's");
+            }
+        }
+    }
+}
+
+#[test]
+fn player_skips_and_still_draws_the_right_frame() {
+    let kit = kit();
+    let v = two_clips(&kit);
+    let scenes = clip_scenes(&v, &kit);
+    let (device, queue) = gpu();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut player = Player::new(&device, &v, &scenes, &kit, 1.0);
+    player.draw(&device, &queue, 0, &stop).unwrap();
+    for f in 1..20 {
+        player.skip(f);
+    }
+    let got = player.draw(&device, &queue, 20, &stop).unwrap();
+    assert!(most_off(&got, &still(&v, &kit, 20)) <= 2, "the frame after skipping is the right one");
+    // Skipping into the transition: clip B comes on unready and is run up at once.
+    for f in 21..40 {
+        player.skip(f);
+    }
+    let got = player.draw(&device, &queue, 40, &stop).unwrap();
+    assert!(most_off(&got, &still(&v, &kit, 40)) <= 2, "the transition after skipping is the right one");
+}
+
+#[test]
+fn player_makes_the_next_clip_ahead() {
+    let kit = kit();
+    let v = two_clips(&kit);
+    let scenes = clip_scenes(&v, &kit);
+    let (device, queue) = gpu();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut player = Player::new(&device, &v, &scenes, &kit, 1.0);
+    player.draw(&device, &queue, 0, &stop).unwrap();
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    player.warm_ahead(&device, &queue, later, &stop).unwrap();
+    assert!(player.all_warm(), "the next clip is made and run up");
+    // A deadline already past makes the clip but runs nothing.
+    let mut player = Player::new(&device, &v, &scenes, &kit, 1.0);
+    player.draw(&device, &queue, 0, &stop).unwrap();
+    player.warm_ahead(&device, &queue, std::time::Instant::now(), &stop).unwrap();
+    assert!(!player.all_warm(), "a clip partway in waits to be run up");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(player.draw(&device, &queue, 1, &stop).is_ok(), "a clip already run up draws even when stopped");
 }

@@ -3,6 +3,7 @@
 //! played ([`SoundJob::clock`]).
 
 use crate::audio_out::{AudioOut, RATE, Shared};
+use crate::video_mode::take::Take;
 use bpe_core::{Resolved, Scene, ThingId};
 use bpe_kit::Kit;
 use bpe_sound::{BLOCK, Engine, Meters, SoundPatch};
@@ -48,6 +49,9 @@ pub enum Command {
     /// The physics changed: a new engine from the start.
     Rebuild(Box<Scene>, Box<Resolved>),
     Audition(Audition),
+    /// Video mode (part 3): play this take of the video's sound instead of the scene's engine
+    /// (`None`: the engine again). A take sent while one plays takes over once it has caught up.
+    Video(Option<Arc<Take>>),
     Quit,
 }
 
@@ -61,6 +65,7 @@ impl Command {
             Command::Patch(_) => "patch",
             Command::Rebuild(..) => "rebuild",
             Command::Audition(_) => "audition",
+            Command::Video(_) => "video",
             Command::Quit => "quit",
         }
     }
@@ -232,6 +237,12 @@ impl SoundJob {
         self.send(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())));
     }
 
+    /// Plays `take` (a video's sound) in place of the scene's engine, or the engine again with
+    /// `None`. Seek after it: the take plays from where the next seek lands.
+    pub fn set_video(&mut self, take: Option<Arc<Take>>) {
+        self.send(Command::Video(take));
+    }
+
     /// Plays a note on a shape now, playing or stopped.
     pub fn audition(&mut self, audition: Audition) {
         self.send(Command::Audition(audition));
@@ -380,7 +391,24 @@ struct Worker {
     unheard_tails: bool,
     /// Where the playhead rests while stopped (to warm up there again after a sound edit).
     paused_at: Option<f64>,
+    /// Video mode's take, played in place of the engine.
+    video: Option<TakeSource>,
 }
+
+/// A take of a video's sound being played, and where.
+struct TakeSource {
+    take: Arc<Take>,
+    /// A newer take, taking over once it has rendered past the playhead.
+    next: Option<Arc<Take>>,
+    /// The next frame to play.
+    pos: usize,
+    /// The take hasn't rendered this far yet: nothing is written until it is [`TAKE_AHEAD`] ahead.
+    waiting: bool,
+}
+
+/// A take that held up the playing goes on once it is this many frames ahead (0.25 s); a newer
+/// take takes over once it is this far past the playhead.
+const TAKE_AHEAD: usize = 12_000;
 
 impl Worker {
     fn new(engine: Engine, kit: Arc<Kit>, meters: Arc<Meters>, shared: Arc<Shared>, ring: Producer<f32>) -> Worker {
@@ -399,6 +427,7 @@ impl Worker {
             pending_patch: None,
             unheard_tails: false,
             paused_at: None,
+            video: None,
         }
     }
 
@@ -498,6 +527,16 @@ impl Worker {
                 self.prewarm = None;
                 self.paused_at = None;
             }
+            Command::Pause(number, at) if self.video.is_some() => {
+                self.playing = false;
+                self.tail = 0;
+                if !comes(&["seek", "pause"]) {
+                    self.clear(number);
+                }
+                if let Some(v) = &mut self.video {
+                    v.pos = seek_sample(at) as usize;
+                }
+            }
             Command::Pause(number, at) => {
                 self.playing = false;
                 if self.build.is_none() {
@@ -514,6 +553,15 @@ impl Worker {
                 // Warmed up where it stopped while nothing else is asked, Play is instant.
                 self.prewarm = Some(at);
                 self.paused_at = Some(at);
+            }
+            Command::Seek(time, number) if self.video.is_some() => {
+                if !comes(&["seek", "pause"]) {
+                    self.clear(number);
+                }
+                if let Some(v) = &mut self.video {
+                    v.pos = seek_sample(time) as usize;
+                    v.waiting = true;
+                }
             }
             Command::Seek(time, number) => {
                 // The old sound stops first (a long warm-up would otherwise let it play on);
@@ -571,6 +619,26 @@ impl Worker {
                     self.tail = TAIL_BLOCKS;
                 }
             }
+            Command::Video(Some(take)) => match &mut self.video {
+                Some(v) if self.playing => v.next = Some(take),
+                Some(v) => {
+                    v.take = take;
+                    v.next = None;
+                    v.waiting = true;
+                }
+                None => {
+                    self.engine.stop_notes();
+                    self.tail = 0;
+                    self.prewarm = None;
+                    self.video = Some(TakeSource { take, next: None, pos: 0, waiting: true });
+                }
+            },
+            Command::Video(None) => {
+                if self.video.take().is_some() {
+                    // The engine is wherever it was: the editor's seek takes it to the playhead.
+                    self.warm_at = None;
+                }
+            }
             Command::Quit => {
                 if let Some(b) = &self.build {
                     b.cancel.store(true, Ordering::Relaxed);
@@ -610,6 +678,10 @@ impl Worker {
     /// is waiting. An engine slower than real time (a big liquid in its physics) never gets the ring that full: the
     /// speakers empty it as fast as it fills, and without the question the thread would never take a command again.
     fn fill(&mut self, mut asked: impl FnMut() -> bool) {
+        if self.video.is_some() {
+            self.fill_take();
+            return;
+        }
         if self.held {
             return;
         }
@@ -624,6 +696,41 @@ impl Worker {
                 break;
             }
         }
+    }
+}
+
+impl Worker {
+    /// Video mode: copies the take into the ring up to [`FILL_FRAMES`] ahead, from where it was
+    /// sought. A newer take takes over once it is [`TAKE_AHEAD`] past the playhead; a take that
+    /// hasn't got as far as the playhead holds the playing until it is that far ahead.
+    fn fill_take(&mut self) {
+        let Some(v) = &mut self.video else { return };
+        if v.next.as_ref().is_some_and(|n| n.holds(v.pos, TAKE_AHEAD)) {
+            v.take = v.next.take().unwrap_or_else(|| v.take.clone());
+        }
+        if v.waiting && !v.take.holds(v.pos, TAKE_AHEAD) {
+            return;
+        }
+        v.waiting = false;
+        let mut block = [0.0f32; BLOCK * 2];
+        let capacity = self.ring.buffer().capacity();
+        while capacity - self.ring.slots() < FILL_FRAMES * 2 && self.ring.slots() >= BLOCK * 2 {
+            let Some(v) = &mut self.video else { return };
+            if !v.take.holds(v.pos, BLOCK) {
+                v.waiting = true;
+                return;
+            }
+            // Past its end (or a short read at the end): silence.
+            block.fill(0.0);
+            v.take.read(v.pos, &mut block);
+            v.pos += BLOCK;
+            self.write(&block);
+        }
+    }
+
+    /// Whether the take is holding up the playing.
+    fn take_waiting(&self) -> bool {
+        self.video.as_ref().is_some_and(|v| v.waiting)
     }
 }
 
@@ -679,11 +786,13 @@ fn run(
         }
         w.poll_build();
         // A ring left to run dry on purpose (waiting for a new engine) is no dropout.
-        w.shared.set_playing(w.playing && !w.held);
+        // So is a take that hasn't rendered as far as the playhead.
+        let held = if w.video.is_some() { w.take_waiting() } else { w.held };
+        w.shared.set_playing(w.playing && !held);
         if w.playing {
             // Gives up as soon as a command comes (it is handled next, then the filling goes on).
             w.fill(|| take_waiting(&rx, &mut batch));
-        } else {
+        } else if w.video.is_none() {
             w.fill_paused();
             if w.tail == 0
                 && w.build.is_none()
@@ -1082,5 +1191,99 @@ mod tests {
         consume_real(&mut feeder, &shared, 50, &mut after);
         assert!(quiet(&after), "quiet again once the note is over");
         assert_eq!(job.clock(), 1.5);
+    }
+
+    /// A take whose frame `j` is `[base + j × 1e-6, -(base + j × 1e-6)]`.
+    fn ramp(frames: usize, base: f32) -> Vec<f32> {
+        (0..frames).flat_map(|j| [base + j as f32 * 1e-6, -(base + j as f32 * 1e-6)]).collect()
+    }
+
+    /// The take frame each heard frame is, where it is one exactly (faded frames aren't).
+    fn which(heard: &[[f32; 2]], base: f32) -> Vec<Option<usize>> {
+        heard
+            .iter()
+            .map(|&[l, r]| {
+                let j = ((l - base) / 1e-6).round();
+                (j >= 0.0 && l == base + j * 1e-6 && r == -l).then_some(j as usize)
+            })
+            .collect()
+    }
+
+    fn take_job(kit: &Arc<Kit>) -> (SoundJob, Feeder, Arc<Shared>) {
+        let (scene, resolved) = toned(kit, "test-tone-decay=30");
+        let (producer, consumer) = ring();
+        let shared = Arc::new(Shared::default());
+        let feeder = Feeder::new(consumer, shared.clone(), RATE);
+        let job = SoundJob::start_with_sink(&scene, &resolved, kit.clone(), producer, shared.clone());
+        (job, feeder, shared)
+    }
+
+    #[test]
+    fn a_take_plays_from_where_it_is_sought() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (mut job, mut feeder, shared) = take_job(&kit);
+        job.set_video(Some(Take::from_samples(ramp(96_000, 0.1), true)));
+        job.play(1.0);
+        let mut heard = Vec::new();
+        consume_real(&mut feeder, &shared, 80, &mut heard);
+        let found: Vec<usize> = which(&heard, 0.1).into_iter().flatten().collect();
+        assert!(found.len() > 1_000, "the take was heard ({} exact frames)", found.len());
+        assert!((48_000..48_500).contains(&found[0]), "it starts at the seek, not {}", found[0]);
+        assert!(found.windows(2).all(|w| w[1] == w[0] + 1), "in order, nothing left out");
+    }
+
+    #[test]
+    fn a_take_not_ready_holds_the_clock() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (mut job, mut feeder, shared) = take_job(&kit);
+        let take = Take::from_samples(Vec::new(), false);
+        job.set_video(Some(take.clone()));
+        job.play(0.0);
+        consume(&mut feeder, 60, &mut Vec::new());
+        assert_eq!(job.clock(), 0.0, "the clock waits for the take");
+        assert_eq!(shared.underruns(), 0, "waiting for the take is no dropout");
+        take.push(&ramp(48_000, 0.1), true);
+        let mut heard = Vec::new();
+        consume_real(&mut feeder, &shared, 80, &mut heard);
+        assert!(job.clock() > 0.0, "it plays once the take is there");
+        assert!(which(&heard, 0.1).iter().flatten().next().is_some(), "and is heard");
+    }
+
+    #[test]
+    fn a_new_take_takes_over_at_the_same_place() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (mut job, mut feeder, shared) = take_job(&kit);
+        job.set_video(Some(Take::from_samples(ramp(96_000, 0.1), true)));
+        job.play(0.0);
+        let mut heard = Vec::new();
+        consume_real(&mut feeder, &shared, 60, &mut heard);
+        job.set_video(Some(Take::from_samples(ramp(96_000, 0.5), true)));
+        consume_real(&mut feeder, &shared, 120, &mut heard);
+        let a: Vec<usize> = which(&heard, 0.1).into_iter().flatten().filter(|&j| j < 96_000).collect();
+        let b: Vec<usize> = which(&heard, 0.5).into_iter().flatten().collect();
+        assert!(!b.is_empty(), "the new take is heard");
+        let last_a = *a.iter().filter(|&&j| j < b[0]).max().unwrap();
+        assert_eq!(b[0], last_a + 1, "it picks up where the old one was");
+    }
+
+    #[test]
+    fn going_back_to_the_scene_plays_the_engine() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (mut job, mut feeder, shared) = take_job(&kit);
+        job.set_video(Some(Take::silent()));
+        job.play(0.0);
+        let mut heard = Vec::new();
+        consume_real(&mut feeder, &shared, 40, &mut heard);
+        assert!(heard.iter().all(|f| *f == [0.0, 0.0]), "a silent take is silent");
+        job.pause(0.0);
+        job.set_video(None);
+        // At 3 s the ball's tone rings.
+        job.play(3.0);
+        let mut heard = Vec::new();
+        let started = Instant::now();
+        while !heard.iter().any(|f: &[f32; 2]| f[0].abs() > 1e-3) && started.elapsed() < Duration::from_secs(10) {
+            consume_real(&mut feeder, &shared, 20, &mut heard);
+        }
+        assert!(heard.iter().any(|f| f[0].abs() > 1e-3), "the scene's tone plays again");
     }
 }

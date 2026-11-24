@@ -271,6 +271,16 @@ fn clip(ui: &mut Ui, studio: &mut Studio, id: ClipId, merge: bool) {
     }
     ui.add_space(8.0);
     ui.horizontal(|ui| {
+        if ui
+            .button("Edit scene")
+            .on_hover_text(
+                "Open this clip's scene in Build mode (or double-click the clip); Back to video brings it back",
+            )
+            .clicked()
+        {
+            studio.edit_clip_scene(id);
+            return;
+        }
         if ui.button("Duplicate").on_hover_text("A copy just after it (Ctrl+D)").clicked() {
             let mut made = None;
             studio.video.change(false, |v| made = arrange::duplicate_clip(v, reg, id));

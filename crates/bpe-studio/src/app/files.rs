@@ -73,6 +73,11 @@ impl Studio {
 
     /// Runs `action` now, or asks to save first if there are unsaved changes.
     pub(crate) fn guard(&mut self, action: Pending, ctx: &egui::Context) {
+        if self.editing_clip() && !matches!(action, Pending::Close) {
+            // A scene or video opened while a clip's scene is edited: the edit goes into the
+            // video first, and the question is about the scene that was open before.
+            self.back_to_video();
+        }
         if self.must_ask(&action) {
             self.confirm = Some(action);
         } else {

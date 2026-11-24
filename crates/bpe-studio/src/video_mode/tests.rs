@@ -460,3 +460,245 @@ fn a_new_frame_rate_keeps_every_clip_on_whole_frames() {
     let start = clip_of(h.state(), a).start;
     assert!((start * 24.0 - (start * 24.0).round()).abs() < 1e-9, "start {start} is on a frame");
 }
+
+// ---------- part 3: playing, the Scene sound lane, Edit scene ----------
+
+use std::sync::Arc;
+use std::time::Duration;
+
+fn key(h: &mut Harness<'_, Studio>, key: egui::Key) {
+    h.input_mut().events.push(Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+}
+
+/// Ticks the playing `n` times, a quarter second apart from `t0` (no speakers: the wall clock).
+fn ticks(studio: &mut Studio, t0: Instant, from: u32, n: u32) {
+    for i in from..from + n {
+        studio.video_tick(t0 + Duration::from_millis(250 * u64::from(i)));
+    }
+}
+
+#[test]
+fn space_plays_and_stops_the_video() {
+    let (studio, _, _) = studio();
+    let mut h = harness(studio);
+    key(&mut h, egui::Key::Space);
+    assert!(h.state().video.playing.on, "Space plays");
+    let studio = h.state_mut();
+    let t0 = Instant::now();
+    ticks(studio, t0, 0, 3);
+    assert!(!studio.video.playing.starting, "without a picture or speakers it starts at once");
+    assert!((studio.video.time - 0.5).abs() < 0.05, "the playhead follows the clock: {}", studio.video.time);
+    key(&mut h, egui::Key::Space);
+    let session = &h.state().video;
+    assert!(!session.playing.on, "Space again stops");
+    let frames = session.time * f64::from(session.video.settings.fps);
+    assert!((frames - frames.round()).abs() < 1e-6, "stopped on a whole frame");
+    assert!(h.query_by_label("Play").is_some(), "the header's button says Play again");
+}
+
+#[test]
+fn playing_stops_at_the_end_or_loops() {
+    let (mut studio, _, _) = studio();
+    studio.video_play();
+    let t0 = Instant::now();
+    ticks(&mut studio, t0, 0, 40);
+    assert!(!studio.video.playing.on, "it stops at the end");
+    assert_eq!(studio.video.time, studio.video.video.end());
+    studio.video.playing.looping = true;
+    studio.video_play();
+    assert_eq!(studio.video.time, 0.0, "Play at the end starts from the start");
+    ticks(&mut studio, t0, 100, 34);
+    assert!(studio.video.playing.on, "with Loop it plays on");
+    assert!(studio.video.time < 2.0, "from the start again: {}", studio.video.time);
+}
+
+#[test]
+fn a_jump_while_playing_starts_again_there() {
+    let (mut studio, _, _) = studio();
+    studio.video_play();
+    let t0 = Instant::now();
+    ticks(&mut studio, t0, 0, 3);
+    studio.video.seek(5.0);
+    ticks(&mut studio, t0, 3, 1);
+    assert!(studio.video.playing.on);
+    assert!((studio.video.time - 5.0).abs() < 1e-9, "it went to the jump: {}", studio.video.time);
+    ticks(&mut studio, t0, 4, 2);
+    assert!((studio.video.time - 5.5).abs() < 1e-6, "and plays on from there: {}", studio.video.time);
+}
+
+#[test]
+fn switching_to_build_stops_the_video() {
+    let (mut studio, _, _) = studio();
+    studio.seen_mode = EditorMode::Video;
+    studio.video_play();
+    studio.mode = EditorMode::Build;
+    studio.follow_mode();
+    assert!(!studio.video.playing.on);
+}
+
+#[test]
+fn a_take_is_made_once_the_video_rests() {
+    let (mut studio, a, _) = studio();
+    let t0 = Instant::now();
+    studio.video_tick(t0);
+    assert!(studio.video.playing.take.is_none(), "not while the video may still be changing");
+    studio.video_tick(t0 + Duration::from_millis(500));
+    let first = studio.video.playing.take.clone().expect("a take once it rested");
+    studio.video.change(false, |v| v.clips.iter_mut().find(|c| c.id == a).unwrap().level_db = -6.0);
+    studio.video_tick(t0 + Duration::from_millis(600));
+    assert!(Arc::ptr_eq(&first, studio.video.playing.take.as_ref().unwrap()), "not straight after an edit");
+    studio.video_tick(t0 + Duration::from_millis(1_100));
+    assert!(!Arc::ptr_eq(&first, studio.video.playing.take.as_ref().unwrap()), "a new take for the edit");
+}
+
+#[test]
+fn the_picture_plays_on_the_card() {
+    let (mut studio, _, _) = studio();
+    studio.video.still.enabled = true;
+    let ctx = egui::Context::default();
+    studio.repaint = Some(ctx.clone());
+    studio.video_play();
+    let started = Instant::now();
+    while (studio.video.playing.starting || studio.video.playing.shown.is_none_or(|f| f < 10))
+        && started.elapsed() < Duration::from_secs(120)
+    {
+        let mut out = ctx.run_ui(Default::default(), |_| studio.video_tick(Instant::now()));
+        out.textures_delta.clear();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if studio.video.playing.shown.is_none() {
+        assert!(bpe_gfx::test_device().is_err(), "no frame was played with a graphics device");
+        return;
+    }
+    let shown = studio.video.playing.shown.unwrap();
+    assert!(!studio.video.playing.starting, "it got ready");
+    assert!(shown <= studio.video.frame(), "the frame on show is never ahead of the playhead");
+    studio.video_stop();
+    assert_eq!(studio.video.frame(), shown, "stopping keeps the frame that was on show");
+}
+
+#[test]
+fn hits_land_where_the_clip_plays() {
+    let (mut studio, a, b) = studio();
+    let kit = studio.kit.clone();
+    let session = &mut studio.video;
+    session.hits.enabled = true;
+    session.hits.ask(&session.video, session.revision, &kit);
+    session.hits.wait(&session.video);
+    let (ha, hb) = (&session.hits.clips[&a], &session.hits.clips[&b]);
+    assert!(!ha.is_empty(), "the ball hits something");
+    assert_eq!(ha.len(), hb.len(), "the same scene from the start hits as often");
+    for (x, y) in ha.iter().zip(hb) {
+        assert!((y - x - 4.0).abs() < 1e-3, "clip B's hits are clip A's 4 s later ({x}, {y})");
+    }
+    assert!(ha.iter().all(|&h| (0.0..4.0).contains(&h)), "only inside the clip");
+}
+
+/// A studio editing clip A's scene, its Build scene "Other" (saved, at `other.ron`) parked.
+fn editing() -> (Studio, ClipId) {
+    let (mut studio, a, _) = studio();
+    studio.scene.name = "Other".into();
+    studio.path = Some(PathBuf::from("other.ron"));
+    studio.saved = studio.scene.clone();
+    studio.seen_mode = EditorMode::Video;
+    assert!(studio.edit_clip_scene(a));
+    (studio, a)
+}
+
+fn length_of(studio: &Studio) -> Value {
+    studio.scene.things[&ThingId::ROOT].params.get("duration").cloned().unwrap()
+}
+
+#[test]
+fn double_click_edits_the_clip_scene_and_back_puts_it_in() {
+    let (studio, a, _) = studio();
+    let mut h = harness(studio);
+    let p = at(&h, 1.0);
+    h.input_mut().events.push(Event::PointerMoved(p));
+    h.step();
+    for _ in 0..2 {
+        press(&mut h, p, true, Modifiers::NONE);
+        h.step();
+        press(&mut h, p, false, Modifiers::NONE);
+        h.step();
+    }
+    let studio = h.state_mut();
+    assert!(studio.editing_clip(), "a double-click edits the clip's scene");
+    assert_eq!(studio.mode, EditorMode::Build);
+    assert_eq!(studio.scene.name, "Ring Drop");
+    assert!(studio.path.is_none(), "not a scene file of its own");
+    drop(h);
+    let (mut studio, a2) = editing();
+    assert_eq!(a, a2);
+    studio.scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(3.0));
+    assert!(studio.video_unsaved(), "the edit is the video's");
+    studio.back_to_video();
+    assert!(!studio.editing_clip());
+    assert_eq!(studio.mode, EditorMode::Video);
+    assert_eq!(studio.scene.name, "Other", "the parked scene is back");
+    assert_eq!(studio.path, Some(PathBuf::from("other.ron")));
+    assert!(!studio.unsaved(), "and as saved as it was");
+    let kept = clip_of(&studio, a).scene;
+    let duration = studio.video.video.scenes[&kept].scene.things[&ThingId::ROOT].params.get("duration").cloned();
+    assert_eq!(duration, Some(Value::Number(3.0)), "the edit is in the video");
+    assert!(clip_of(&studio, a).length <= 3.0, "the clip fits its shorter scene");
+    assert!(studio.video_undo(), "one undo step");
+    let duration = studio.video.video.scenes[&kept].scene.things[&ThingId::ROOT].params.get("duration").cloned();
+    assert_eq!(duration, Some(Value::Number(4.0)), "undo takes it back");
+}
+
+#[test]
+fn saving_while_editing_saves_the_video() {
+    let dir = temp_dir("edit-save");
+    let (mut studio, a) = editing();
+    let path = dir.join("Drop Tape.ballvideo");
+    assert!(studio.save_video_to(path.clone()));
+    studio.scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(3.0));
+    assert!(studio.save_work(false));
+    assert!(studio.editing_clip(), "still editing");
+    assert!(!studio.video_unsaved());
+    let text = std::fs::read_to_string(&path).unwrap();
+    let saved = bpe_kit::video::open_video(&text, &studio.kit.registry).unwrap();
+    let kept = clip_of(&studio, a).scene;
+    let duration = saved.scenes[&kept].scene.things[&ThingId::ROOT].params.get("duration").cloned();
+    assert_eq!(duration, Some(Value::Number(3.0)), "the file has the edit");
+    assert_eq!(length_of(&studio), Value::Number(3.0));
+}
+
+#[test]
+fn opening_a_scene_while_editing_keeps_the_edit_in_the_video() {
+    let (mut studio, a) = editing();
+    studio.scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(3.0));
+    let ctx = egui::Context::default();
+    studio.guard(crate::app::Pending::New, &ctx);
+    assert!(!studio.editing_clip());
+    assert_eq!(studio.mode, EditorMode::Build, "the new scene shows in Build mode");
+    assert_ne!(studio.scene.name, "Other", "a new scene replaced the parked one");
+    let kept = clip_of(&studio, a).scene;
+    let duration = studio.video.video.scenes[&kept].scene.things[&ThingId::ROOT].params.get("duration").cloned();
+    assert_eq!(duration, Some(Value::Number(3.0)));
+}
+
+#[test]
+fn the_video_button_goes_back_to_video() {
+    let (studio, _) = editing();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(|ui, studio: &mut Studio| studio.edit_frame_for_tests(ui), studio);
+    h.run();
+    assert!(h.query_by_label("Editing Ring Drop in the video Untitled video.").is_some(), "the bar says so");
+    h.get_by_label("Video").click();
+    h.run();
+    assert!(!h.state().editing_clip(), "the Video button went back");
+    assert_eq!(h.state().mode, EditorMode::Video);
+    assert_eq!(h.state().scene.name, "Other");
+}

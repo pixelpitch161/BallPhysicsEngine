@@ -283,6 +283,11 @@ pub struct Studio {
     pub video: crate::video_mode::VideoSession,
     /// Closing has asked about the scene already (saved or not), and asks about the video next.
     pub(crate) close_scene_answered: bool,
+    /// Build mode is editing a clip's kept scene for the video, the scene that was open parked
+    /// (part 3).
+    pub clip_edit: Option<(crate::video_mode::edit::ClipEdit, crate::video_mode::edit::ParkedScene)>,
+    /// The mode as last seen, so a change of mode (from anywhere) is followed once.
+    pub(crate) seen_mode: crate::grade_mode::EditorMode,
     /// What the bottom panel shows: the timeline or the rules (the editor's own setting).
     pub bottom: settings::BottomView,
     /// The Lights tab's soloed lights: the editor's alone, never saved or exported.
@@ -344,7 +349,7 @@ pub struct Studio {
     /// The editor is asking whether to stop a running export and close.
     pub ask_stop_export: bool,
     /// The window's context, to wake it for the next autosave.
-    repaint: Option<egui::Context>,
+    pub(crate) repaint: Option<egui::Context>,
     /// What was copied last, things or timeline keys (kept through New and Open).
     pub clipboard: crate::things::Clipboard,
     /// Words put on the system clipboard at the next frame's shortcuts, after a copy here: on
@@ -380,6 +385,7 @@ impl Studio {
         studio.listen = settings::load_listen();
         studio.bottom = settings::load_bottom_view();
         studio.video.still.enabled = true;
+        studio.video.hits.enabled = true;
         if let Some(path) = scene_path {
             if crate::video_mode::files::is_video(&path) {
                 studio.open_video_path(&path);
@@ -486,6 +492,8 @@ impl Studio {
             grade: Default::default(),
             video: Default::default(),
             close_scene_answered: false,
+            clip_edit: None,
+            seen_mode: Default::default(),
             bottom: settings::BottomView::Timeline,
             light_solo: Default::default(),
             light_show: Default::default(),
@@ -631,6 +639,11 @@ impl eframe::App for Studio {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.editing_clip() {
+            // The clip's scene goes into the video first; the questions are then about the scene
+            // and the video as usual.
+            self.back_to_video();
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
             if self.panels.export.busy() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -675,6 +688,10 @@ impl eframe::App for Studio {
             )
             .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
+        let video_mode = self.mode == crate::grade_mode::EditorMode::Video;
+        if !video_mode {
+            crate::video_mode::edit::bar(ui, self);
+        }
         let video_mode = self.mode == crate::grade_mode::EditorMode::Video;
         if video_mode {
             crate::video_mode::bottom(ui, self);
@@ -786,7 +803,8 @@ impl eframe::App for Studio {
         } else if self.history.merging {
             ctx.request_repaint_after(UNDO_MERGE);
         }
-        if self.playing {
+        self.follow_mode();
+        if self.playing || self.video.playing.on {
             ctx.request_repaint();
         }
     }
@@ -813,6 +831,56 @@ impl Studio {
         }
         self.take_toolbar_click(&ctx);
         self.confirm_dialog(&ctx);
+        self.video_tick(Instant::now());
+        self.follow_mode();
+    }
+
+    /// Build mode's frame for tests while a clip's scene is edited: the keys, the toolbar and the
+    /// bar, the toolbar's click and the question about unsaved work.
+    #[cfg(test)]
+    pub(crate) fn edit_frame_for_tests(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        if self.confirm.is_none() {
+            self.shortcuts(&ctx);
+        }
+        egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
+        if self.in_video_mode() {
+            crate::video_mode::bottom(ui, self);
+            crate::video_mode::left(ui, self);
+            crate::video_mode::right(ui, self);
+            egui::CentralPanel::default().show(ui, |ui| crate::video_mode::centre(ui, self));
+        } else {
+            crate::video_mode::edit::bar(ui, self);
+        }
+        self.take_toolbar_click(&ctx);
+        self.confirm_dialog(&ctx);
+        self.follow_mode();
+    }
+
+    /// Follows a change of mode, wherever it came from: leaving Video mode stops the video and
+    /// gives the sound back to the scene; going to Video mode while a clip's scene is edited goes
+    /// Back to video.
+    pub(crate) fn follow_mode(&mut self) {
+        use crate::grade_mode::EditorMode;
+        if self.mode == self.seen_mode {
+            return;
+        }
+        let was = std::mem::replace(&mut self.seen_mode, self.mode);
+        if was == EditorMode::Video {
+            self.leave_video_mode();
+        }
+        if self.mode == EditorMode::Video {
+            if self.editing_clip() {
+                self.back_to_video();
+            } else {
+                self.entered_video_mode();
+            }
+        }
+    }
+
+    /// Video mode came on: the Build scene stops playing.
+    pub(crate) fn entered_video_mode(&mut self) {
+        self.set_playing(false);
     }
 
     /// Whether Video mode is on.
@@ -822,6 +890,11 @@ impl Studio {
 
     /// Saves what the mode edits: the video in Video mode, else the scene.
     pub fn save_work(&mut self, choose: bool) -> bool {
+        if self.editing_clip() {
+            // Saving while a clip's scene is edited saves the video, the edit in it.
+            self.put_back_clip_scene();
+            return self.save_video(choose);
+        }
         if self.in_video_mode() { self.save_video(choose) } else { self.save(choose) }
     }
 
