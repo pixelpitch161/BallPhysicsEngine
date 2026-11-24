@@ -108,6 +108,8 @@ impl Studio {
     /// Takes the offered work back: the recovered scene, under its own file name, still unsaved.
     pub fn restore(&mut self) {
         let Some(mut offer) = self.offer.take() else { return };
+        // The work that comes back answers "what kind of scene?".
+        self.chooser = None;
         if let Some(video) = offer.video.take() {
             return self.restore_video(offer, video);
         }

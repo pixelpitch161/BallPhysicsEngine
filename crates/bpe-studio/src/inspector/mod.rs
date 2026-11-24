@@ -278,7 +278,7 @@ pub fn show(
     find::find_box(ui, inspector);
     let finding = inspector.find.trim().to_owned();
     let marked =
-        if finding.is_empty() { jump_bar(ui, inspector, id, kind, &thing) } else { marked_card(inspector, id) };
+        if finding.is_empty() { jump_bar(ui, inspector, scene.sim, kind, &thing) } else { marked_card(inspector, id) };
     inspector.card_tops.clear();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if selected.len() > 1 {
@@ -289,7 +289,11 @@ pub fn show(
         ui.add_space(6.0);
 
         let own = |key: &str| Address { thing: id, slot: None, key: key.into() };
-        let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
+        // A setting that means nothing in this kind of scene (the balls' gravity in a Water scene)
+        // is left out like one whose condition doesn't hold.
+        let applies = |d: &SettingDef| {
+            kind.offered(d, scene.sim) && d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time))
+        };
         let cx = OwnCx {
             scene,
             kit,
@@ -347,6 +351,34 @@ fn take_requests(ui: &Ui, edits: &mut Vec<Edit>) {
         Some(crate::font_picker::FontRequest::Remove(name)) => edits.push(Edit::RemoveFont(name)),
         None => {}
     }
+}
+
+/// Whether things of `kind` show a card of their own settings: not a Water scene's things, which
+/// have none (everything is on their cards).
+pub(crate) fn has_own_card(kind: &dyn bpe_core::ThingKind) -> bool {
+    !bpe_kit::things::water::KINDS.contains(&kind.id())
+}
+
+/// Whether things of `kind` show the Placement card: every thing but the root, the camera, lights
+/// and rigs (the camera's and a light's place is its own Position setting, which can be
+/// keyframed; a rig only groups lights), and a Water scene's Course and Liquids, which are not
+/// at a place.
+pub(crate) fn has_placement(kind: &dyn bpe_core::ThingKind) -> bool {
+    let id = kind.id();
+    let water = bpe_kit::things::water::KINDS.contains(&id);
+    id != "scene"
+        && id != "camera"
+        && id != bpe_kit::things::light::LIGHT
+        && id != bpe_kit::things::rig::RIG
+        && (!water || bpe_kit::things::water::is_placed(id))
+}
+
+/// Whether a Water scene's card in `slot` of a thing of `kind` stays: the cards a thing starts
+/// with, and the scene's Water, Light and Back cards, are what the thing is, so they have no
+/// Remove. (Cards added with + Add card, a Liquid's Heat, come off again.)
+pub(crate) fn water_keeps(kind: &dyn bpe_core::ThingKind, slot: SlotId) -> bool {
+    let scene = kind.id() == "scene" && matches!(slot, SlotId::Water | SlotId::WaterLight | SlotId::Back);
+    scene || (bpe_kit::things::water::KINDS.contains(&kind.id()) && kind.default_slots().contains(&slot))
 }
 
 /// The kind of a group of balls.
@@ -451,10 +483,11 @@ fn unknown_groups(defs: &[SettingDef]) -> Vec<&'static str> {
 fn jump_bar(
     ui: &mut Ui,
     inspector: &mut Inspector,
-    id: ThingId,
+    sim: bpe_core::SimKind,
     kind: &dyn bpe_core::ThingKind,
     thing: &bpe_core::Thing,
 ) -> Card {
+    let id = thing.id;
     let scrolled = ui.input(|i| i.smooth_scroll_delta.y != 0.0) && ui.rect_contains_pointer(ui.max_rect());
     if scrolled {
         inspector.jumped = None;
@@ -463,7 +496,10 @@ fn jump_bar(
     // Placement has no button: it sits just under the thing's own card. The root's own
     // settings are six cards, each with its own button.
     let own: Vec<(Card, &str)> = if id == ThingId::ROOT {
-        bpe_kit::ROOT_CARDS.into_iter().map(|name| (Card::Section(name), name)).collect()
+        bpe_kit::things::scene::root_cards(sim).iter().map(|&name| (Card::Section(name), name)).collect()
+    } else if !has_own_card(kind) {
+        // A Water thing has no settings of its own: Thing goes to Placement, when it has a place.
+        if has_placement(kind) { vec![(Card::Placement, "Thing")] } else { Vec::new() }
     } else if kind.id() == BALLS && layered_look(thing) {
         // A Balls thing with a layered Look has no card of its own: Thing goes to Placement.
         vec![(Card::Placement, "Thing")]
@@ -472,7 +508,7 @@ fn jump_bar(
     };
     // Motion and Bounce share one button, Physics, at the first of them.
     let mut cards = own;
-    for s in SlotId::ALL.into_iter().filter(|s| s.in_card_list() && thing.slots.contains_key(s)) {
+    for s in SlotId::shown_in(sim).iter().copied().filter(|s| s.in_card_list() && thing.slots.contains_key(s)) {
         let entry =
             if in_physics(kind.id(), s) { (Card::Physics, "Physics") } else { (Card::Slot(s), kind.slot_label(s)) };
         if !cards.contains(&entry) {

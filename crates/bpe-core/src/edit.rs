@@ -36,6 +36,8 @@ pub enum EditError {
     NoBlock(crate::rules::BlockId),
     /// The link would make a rule's blocks go round in a circle.
     RuleLoop,
+    /// That kind of thing doesn't go in this kind of scene (a ball in a Water scene).
+    WrongScene(KindId, crate::SimKind),
 }
 
 impl fmt::Display for EditError {
@@ -51,6 +53,7 @@ impl fmt::Display for EditError {
             EditError::WrongType => write!(f, "That kind of value doesn't fit this setting"),
             EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
             EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
+            EditError::WrongScene(k, sim) => write!(f, "A {} scene can't have a \"{k}\"", sim.name()),
             EditError::NotAccepted => write!(f, "That kind of card can't go there"),
             EditError::NoLayer(_) => write!(f, "That layer isn't there any more"),
             EditError::BaseLayer => write!(f, "The bottom layer can't be removed, moved, copied or hidden"),
@@ -68,6 +71,9 @@ impl Scene {
     /// `add_thing` gives it its kind's starting cards).
     pub fn add_thing(&mut self, reg: &Registry, kind: &str, parent: ThingId) -> Result<ThingId, EditError> {
         let k = reg.thing(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
+        if !k.in_sim(self.sim) {
+            return Err(EditError::WrongScene(kind.into(), self.sim));
+        }
         if k.single() && self.things.values().any(|t| t.kind == kind) {
             return Err(EditError::OnlyOne(kind.into()));
         }
@@ -199,7 +205,7 @@ impl Scene {
     pub fn add_slot(&mut self, reg: &Registry, id: ThingId, slot: SlotId, kind: &str) -> Result<(), EditError> {
         let thing = self.things.get(&id).ok_or(EditError::Missing(id))?;
         let tkind = reg.thing(&thing.kind).ok_or_else(|| EditError::UnknownKind(thing.kind.clone()))?;
-        if !tkind.slots().contains(&slot) {
+        if !tkind.slots().contains(&slot) || !slot.in_sim(self.sim) {
             return Err(EditError::SlotNotSupported(slot));
         }
         let card = reg.module(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
@@ -806,5 +812,31 @@ mod tests {
         s.set_slot_kind(&r, t, SlotId::Look, "look.b").unwrap();
         let back = crate::save::load(&crate::save::save(&s), &r).unwrap();
         assert_eq!(card(&back, t), card(&s, t));
+    }
+
+    #[test]
+    fn a_thing_goes_only_in_its_own_kind_of_scene() {
+        use crate::SimKind;
+        let r = testkit::registry();
+        let mut balls = Scene::empty(&r);
+        assert_eq!(
+            balls.add_thing(&r, "pool", ThingId::ROOT),
+            Err(EditError::WrongScene("pool".into(), SimKind::Balls))
+        );
+        let mut water = Scene { sim: SimKind::Water, ..Scene::empty(&r) };
+        let e = water.add_thing(&r, "balls", ThingId::ROOT).unwrap_err();
+        assert_eq!(e.to_string(), "A Water scene can't have a \"balls\"");
+        let pool = water.add_thing(&r, "pool", ThingId::ROOT).unwrap();
+        assert!(water.add_thing(&r, "folder", ThingId::ROOT).is_ok());
+        assert!(water.add_slot(&r, pool, SlotId::Feel, "feel.test").is_ok());
+        // The scene settings offer every slot, but a card goes only in a slot of this kind of scene.
+        assert_eq!(
+            water.add_slot(&r, ThingId::ROOT, SlotId::Trail, "trail.streak"),
+            Err(EditError::SlotNotSupported(SlotId::Trail))
+        );
+        assert_eq!(
+            balls.add_slot(&r, ThingId::ROOT, SlotId::Feel, "feel.test"),
+            Err(EditError::SlotNotSupported(SlotId::Feel))
+        );
     }
 }

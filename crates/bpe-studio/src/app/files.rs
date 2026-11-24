@@ -18,6 +18,11 @@ impl Studio {
         self.path = path;
         self.history = History::default();
         self.selection.clear();
+        // A new scene's stage starts on Select, holding nothing.
+        self.water_stage = Default::default();
+        // A scene is open: the chooser has its answer, however the scene came (a file dropped
+        // on the window, restored work).
+        self.chooser = None;
         // Typing into the last scene's text ends with it.
         self.typing = None;
         // Solo is the editor's alone and was the last scene's.
@@ -26,15 +31,18 @@ impl Studio {
         self.set_playing(false);
         self.recorded = true;
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        self.patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
-        self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
-        self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
-        self.particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        self.particle_job = ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), 0.0);
-        self.follow = follow_of(&self.scene, &self.resolved);
-        self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
+        // A Water scene's ball engine runs an empty stand-in ([`ball_side`]).
+        let none = self.no_balls.clone();
+        let (ball, ball_resolved) = ball_side(&self.scene, &self.resolved, &none);
+        self.fingerprint = fingerprint(ball, ball_resolved, &self.kit.sims);
+        self.sound_fingerprint = sound_fingerprint(ball, ball_resolved, &self.kit.sims);
+        self.patch_print = bpe_sound::patch_fingerprint(ball, ball_resolved);
+        self.aim_job = aim_job_for(ball, ball_resolved, &self.kit);
+        self.playback = main_playback(ball, ball_resolved, &self.kit);
+        self.particle_print = bpe_runtime::beside_fingerprint(ball, ball_resolved, &self.kit.sims);
+        self.particle_job = ParticleJob::start_if_wanted(ball, ball_resolved, self.kit.sims.clone(), 0.0);
+        self.follow = follow_of(ball, ball_resolved);
+        self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);
         self.revision += 1;
         self.snapshot = None;
         self.runs_due = None;
@@ -43,13 +51,68 @@ impl Studio {
         // The file chosen to export to was the last scene's.
         self.panels.export.path = None;
         if let Some(job) = &mut self.sound {
-            job.rebuild(&self.scene, &self.resolved);
+            job.rebuild(ball, ball_resolved);
         }
     }
 
-    pub fn new_scene(&mut self) {
-        self.replace_scene(bpe_kit::new_studio_scene(&self.kit.registry), None);
-        self.status = "Started a new scene.".into();
+    /// Starts a new scene as the chooser was answered: the blank Balls project, or a Water scene
+    /// (its settings, a camera and the course) that remembers the look it was started with.
+    pub fn new_scene(&mut self, new: crate::water_mode::NewScene) {
+        let reg = &self.kit.registry;
+        let scene = match new.sim {
+            bpe_core::SimKind::Balls => {
+                let mut scene = bpe_kit::new_studio_scene(reg);
+                if !new.name.trim().is_empty() {
+                    scene.name = new.name.trim().into();
+                }
+                scene
+            }
+            bpe_core::SimKind::Water => bpe_kit::things::water::new_water_scene(reg, new.look, &new.name),
+        };
+        self.replace_scene(scene, None);
+        self.status = match new.sim {
+            bpe_core::SimKind::Balls => "Started a new scene.".into(),
+            bpe_core::SimKind::Water => "Started a new Water scene.".into(),
+        };
+    }
+
+    /// New: asks what kind of scene (Balls or Water). The open scene stays as it is until the
+    /// chooser is answered, and then the usual question about unsaved work comes first.
+    pub(crate) fn ask_new_scene(&mut self) {
+        self.set_playing(false);
+        self.chooser = Some(crate::water_mode::Chooser::for_new());
+    }
+
+    /// Shows the New scene chooser while it is open, and does what it is answered with. It waits
+    /// behind the question about unsaved work and the offer to restore.
+    pub(crate) fn chooser_dialog(&mut self, ctx: &egui::Context) {
+        if self.confirm.is_some() || self.offer.is_some() {
+            return;
+        }
+        let Some(chooser) = &mut self.chooser else { return };
+        let Some(outcome) = crate::water_mode::chooser::show(ctx, chooser) else { return };
+        self.answer_chooser(outcome, ctx);
+    }
+
+    /// Does what the chooser was answered with.
+    pub(crate) fn answer_chooser(&mut self, outcome: crate::water_mode::ChooserOutcome, ctx: &egui::Context) {
+        use crate::water_mode::ChooserOutcome;
+        let at_start = self.chooser.as_ref().is_some_and(|c| c.at_start);
+        match outcome {
+            ChooserOutcome::Create(new) => {
+                self.chooser = None;
+                self.guard(Pending::New(new), ctx);
+            }
+            ChooserOutcome::Open => {
+                // As the app opens there is nothing to go back to: the chooser stays until a
+                // scene is open.
+                if !at_start {
+                    self.chooser = None;
+                }
+                self.ask_open(ctx);
+            }
+            ChooserOutcome::Cancel => self.chooser = None,
+        }
     }
 
     // ---------- copying things (W5) ----------
@@ -105,7 +168,7 @@ impl Studio {
     }
 
     pub(super) fn perform(&mut self, action: Pending, ctx: &egui::Context) {
-        if matches!(action, Pending::New | Pending::OpenPath(_) | Pending::OpenBuiltIn(_)) && self.in_video_mode() {
+        if matches!(action, Pending::New(_) | Pending::OpenPath(_) | Pending::OpenBuiltIn(_)) && self.in_video_mode() {
             // A scene opened from Video mode shows where it can be seen: in Build mode.
             self.mode = crate::grade_mode::EditorMode::Build;
         }
@@ -116,7 +179,7 @@ impl Studio {
             }
             Pending::NewVideo => self.new_video(),
             Pending::OpenVideoPath(path) => _ = self.open_video_path(&path),
-            Pending::New => self.new_scene(),
+            Pending::New(new) => self.new_scene(new),
             Pending::OpenPath(path) => _ = self.open_path(&path),
             Pending::OpenBuiltIn(id) => _ = self.open_built_in(id),
         }

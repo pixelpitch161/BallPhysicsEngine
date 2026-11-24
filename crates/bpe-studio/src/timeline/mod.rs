@@ -197,7 +197,7 @@ impl Ruler {
 pub fn show(ui: &mut Ui, studio: &mut Studio) {
     transport::controls(ui, studio);
     let track = transport::scrub_bar(ui, studio, LABEL_WIDTH + 8.0);
-    if studio.bottom == crate::settings::BottomView::Rules {
+    if studio.bottom_view() == crate::settings::BottomView::Rules {
         let outcome = crate::rules_panel::show(ui, studio);
         studio.separate_edit |= outcome.separate;
         if let Some(message) = outcome.message {

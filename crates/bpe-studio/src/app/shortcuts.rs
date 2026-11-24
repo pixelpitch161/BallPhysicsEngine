@@ -19,7 +19,7 @@ impl Studio {
             if self.in_video_mode() {
                 self.ask_new_video(ctx);
             } else {
-                self.guard(Pending::New, ctx);
+                self.ask_new_scene();
             }
         }
         // F11: fully fullscreen (no title bar), and back to the window.

@@ -33,6 +33,7 @@ pub mod scene_fonts;
 pub mod scene_pictures;
 pub mod settings;
 pub mod shape_path;
+pub mod sim;
 pub mod sound_values;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
@@ -74,6 +75,7 @@ pub use settings::{
     section_rank,
 };
 pub use shape_path::ShapePath;
+pub use sim::SimKind;
 pub use sound_values::{CurvePoint, MAX_CURVE_POINTS, ModRoute, NoteSlot, ROUTES_KEY, SLOTS_KEY, curve_is_valid};
 pub use value::{Params, Stroke, Strokes, Value, ValueType};
 pub use vary::{BallSpread, Vary, VaryBy, VaryEase, VaryUse};

@@ -170,6 +170,8 @@ pub fn registry() -> Registry {
     sound::register(&mut r);
     rules::register(&mut r);
     modules::grade::register(&mut r);
+    things::water::register(&mut r);
+    modules::water::register(&mut r);
     r
 }
 
@@ -210,11 +212,21 @@ pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
     scene.add_thing(reg, "camera", ThingId::ROOT).expect("kit kinds are registered")
 }
 
-/// The scene's mixer card, added to the scene settings when it has none (older files).
+/// The scene's mixer card, added to the scene settings when it has none (older files). A Water
+/// scene has no sound, so it gets none.
 pub fn ensure_mixer(scene: &mut Scene, reg: &Registry) {
+    if scene.sim != bpe_core::SimKind::Balls {
+        return;
+    }
     if scene.card(ThingId::ROOT, bpe_core::SlotId::Mixer).is_none() {
         scene.add_slot(reg, ThingId::ROOT, bpe_core::SlotId::Mixer, "sound.mixer").expect("the kit has the mixer");
     }
+}
+
+/// What every scene the editor holds has: a camera, and in a Balls scene the mixer card.
+pub fn ensure_held(scene: &mut Scene, reg: &Registry) {
+    ensure_camera(scene, reg);
+    ensure_mixer(scene, reg);
 }
 
 /// The blank project the editor opens to: Scene settings (with its mixer) and a camera,
@@ -232,6 +244,31 @@ mod tests {
     use super::*;
     use bpe_core::{Settings, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn ensure_held_gives_a_water_scene_a_camera_and_no_mixer() {
+        let reg = registry();
+        let mut water = Scene { sim: bpe_core::SimKind::Water, ..Scene::empty(&reg) };
+        ensure_held(&mut water, &reg);
+        assert!(camera_of(&water).is_some());
+        assert!(water.card(ThingId::ROOT, SlotId::Mixer).is_none(), "a Water scene has no sound");
+        let mut balls = Scene::empty(&reg);
+        ensure_held(&mut balls, &reg);
+        assert!(camera_of(&balls).is_some() && balls.card(ThingId::ROOT, SlotId::Mixer).is_some());
+        let again = balls.clone();
+        ensure_held(&mut balls, &reg);
+        assert_eq!(balls, again, "nothing is added twice");
+    }
+
+    #[test]
+    fn the_camera_hides_its_ball_settings_in_a_water_scene() {
+        use bpe_core::{SimKind, ThingKind};
+        let k = CameraKind;
+        let shown: Vec<&str> =
+            CameraSettings::defs().iter().filter(|d| k.offered(d, SimKind::Water)).map(|d| d.key).collect();
+        assert_eq!(shown, ["position", "zoom", "turn", "stay_inside", "box_size", "box_centre"]);
+        assert!(CameraSettings::defs().iter().all(|d| k.offered(d, SimKind::Balls)));
+    }
 
     #[test]
     fn the_blank_project_is_scene_settings_and_a_camera() {
@@ -329,9 +366,10 @@ mod tests {
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids"];
+        let families = ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids", "Course", "Forces"];
+        let alone = ["scene", "folder", "camera", things::water::COURSE];
         let reg = registry();
-        for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
+        for kind in reg.things().filter(|k| !alone.contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
         }
     }
@@ -358,6 +396,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A section added for a Water scene's cards must be a name no ball setting groups under:
+    /// ranking it would move that group on the ball card (sections sort by rank, unranked last).
+    #[test]
+    fn a_water_section_is_no_ball_settings_group() {
+        let reg = registry();
+        let first = bpe_core::section_rank("Course").expect("the first Water section");
+        let water_only = |group: &str| bpe_core::section_rank(group).is_some_and(|r| r >= first);
+        let things = reg.things().filter(|k| !things::water::KINDS.contains(&k.id()));
+        let cards = reg.modules().filter(|m| !modules::water::CARDS.contains(&m.id()));
+        let clashes: Vec<String> = things
+            .map(|k| (k.id().to_owned(), k.settings()))
+            .chain(cards.map(|m| (m.id().to_owned(), m.settings())))
+            .chain(reg.layers().map(|l| (l.id().to_owned(), l.settings())))
+            .flat_map(|(id, defs)| defs.iter().map(move |d| (id.clone(), d)))
+            .filter(|(_, d)| water_only(d.group))
+            .map(|(id, d)| format!("{id}.{} in {:?}", d.key, d.group))
+            .collect();
+        assert!(clashes.is_empty(), "ball settings under a Water section's name: {clashes:?}");
     }
 
     #[test]
@@ -470,7 +528,7 @@ mod tests {
     fn the_look_registry_has_a_look_for_balls_shapes_particles_and_the_old_one() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["liquid.look", "look.basic", "look.layers", "look.particles", "look.shape"]);
+        assert_eq!(looks, ["liquid.look", "look.basic", "look.layers", "look.particles", "look.shape", "water.look"]);
         for look in looks {
             assert_eq!(reg.module(look).unwrap().name(), "Look");
         }

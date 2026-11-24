@@ -324,6 +324,10 @@ impl Default for Thing {
 #[serde(default)]
 pub struct Scene {
     pub format: u32,
+    /// What the scene simulates. A file that doesn't say is a Balls scene, and a Balls scene's
+    /// file doesn't say, so it reads as it did before Water scenes.
+    #[serde(skip_serializing_if = "is_default")]
+    pub sim: crate::SimKind,
     pub name: String,
     pub things: BTreeMap<ThingId, Thing>,
     /// Every thing once, root first, each thing before its children and siblings in tree order.
@@ -357,6 +361,7 @@ impl Default for Scene {
     fn default() -> Self {
         Self {
             format: Scene::FORMAT,
+            sim: crate::SimKind::Balls,
             name: String::new(),
             things: BTreeMap::new(),
             order: Vec::new(),
@@ -372,8 +377,9 @@ impl Default for Scene {
 }
 
 impl Scene {
-    /// The save format this version writes.
-    pub const FORMAT: u32 = 12;
+    /// The save format this version writes. 13 added the kind of scene (`sim`), so that a
+    /// program from before Water scenes refuses one cleanly instead of opening it as balls.
+    pub const FORMAT: u32 = 13;
     /// The oldest format that still opens: there's no keeping old files working until the
     /// program settles, so only this version's own.
     pub const OLDEST_FORMAT: u32 = 12;

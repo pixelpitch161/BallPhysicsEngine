@@ -55,11 +55,17 @@ impl Studio {
 
     /// A new video with the scene open in Build mode as its first clip, in Video mode.
     pub fn new_video(&mut self) {
-        let video = arrange::new_video_from(&self.scene, &self.kit.registry);
+        // A Water scene can't go in a video yet: the new video starts empty.
+        let water = self.water();
+        let video = if water { Video::new() } else { arrange::new_video_from(&self.scene, &self.kit.registry) };
         self.replace_video(video, None);
         self.video.saved = Video::new();
         self.mode = EditorMode::Video;
-        self.status = "Started a new video with the open scene as its first clip.".into();
+        self.status = if water {
+            format!("Started a new video. {}", crate::app::NO_WATER_VIDEO)
+        } else {
+            "Started a new video with the open scene as its first clip.".into()
+        };
     }
 
     /// Puts `video` (as saved at `path`) in the session in place of the one there.

@@ -45,6 +45,8 @@ mod runs;
 mod shortcuts;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod water_tests;
 
 use files::file_label;
 pub(crate) use panels::side_frame;
@@ -110,10 +112,33 @@ pub struct Offer {
     pub video: Option<bpe_core::video::Video>,
 }
 
+/// Why a Water scene has no Grade mode yet.
+pub(crate) const NO_WATER_GRADE: &str = "Grading a Water scene arrives with its light and looks.";
+/// Why a Water scene can't be exported yet.
+pub(crate) const NO_WATER_EXPORT: &str = "Exporting a Water scene arrives with Make final.";
+/// Why a Water scene can't go in a video yet.
+pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
+
+/// What a picture, song or font dropped on a Water scene is told.
+pub(crate) const NO_WATER_DROPS: &str = "Water scenes don't use pictures, songs or fonts yet.";
+
+/// What a picture, song or font dropped behind the New scene chooser is told.
+pub(crate) const DROP_AFTER_CHOOSING: &str = "Choose Balls or Water first, then drop it again.";
+
+/// What the middle of the window shows: Video mode's viewer, a Water scene's stage, or the ball
+/// preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Centre {
+    Video,
+    Water,
+    Preview,
+}
+
 /// Something that would throw away unsaved changes.
 pub enum Pending {
     Close,
-    New,
+    /// A new scene, as the chooser was answered.
+    New(crate::water_mode::NewScene),
     /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
     /// A built-in scene from the Scenes window, by its id.
@@ -196,6 +221,9 @@ pub struct Studio {
     /// The scene's light as the picture reads it, while something senses light (Follow light, a
     /// Light or Shadow spread, Moths, a Light modulator). Never read by the lighting itself.
     pub light_probe: Option<std::sync::Arc<dyn bpe_runtime::LightAt>>,
+    /// The blank Balls scene the ball engine runs while the scene is a Water scene
+    /// ([`runs::ball_side`]): its playback, jobs and sound stay empty and never restart.
+    pub no_balls: Arc<(Scene, Resolved)>,
     /// Goes up whenever `resolved` or `playback` is rebuilt for a changed scene, so the
     /// preview knows its picture is out of date. The scene itself can be mid-edit during a
     /// frame, ahead of both, so the preview never compares scenes.
@@ -215,6 +243,10 @@ pub struct Studio {
     /// The preview's lighting, when it is lit: how many lights and the GPU's time on them (ms).
     pub lighting: Option<(usize, Option<f32>)>,
     pub confirm: Option<Pending>,
+    /// The New scene chooser (Balls or Water), while it is open: as the app opens, and after New.
+    pub chooser: Option<crate::water_mode::Chooser>,
+    /// A Water scene's stage: its tool and what is being dragged.
+    pub water_stage: crate::water_mode::WaterStage,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
@@ -392,14 +424,17 @@ impl Studio {
             } else {
                 studio.open_path(&path);
             }
+        } else {
+            // Opened on its own: Balls or Water? (Behind the question about restoring work, if any.)
+            studio.chooser = Some(crate::water_mode::Chooser::at_start());
         }
         // The starter sound's wavetables (Triangle, and the subs' Square), so Enable sound is
         // heard at once.
         for wave in [WaveShape::Triangle, WaveShape::Square] {
             WaveBank::ready(wave, WarpModeId::Sync);
         }
-        studio.sound =
-            AudioOut::open().and_then(|out| SoundJob::start(&studio.scene, &studio.resolved, studio.kit.clone(), out));
+        let (ball, ball_resolved) = ball_side(&studio.scene, &studio.resolved, &studio.no_balls);
+        studio.sound = AudioOut::open().and_then(|out| SoundJob::start(ball, ball_resolved, studio.kit.clone(), out));
         studio.apply_listen();
         studio
     }
@@ -408,6 +443,14 @@ impl Studio {
     pub fn blank() -> Self {
         let kit = Arc::new(bpe_sound::kit());
         let scene = bpe_kit::new_studio_scene(&kit.registry);
+        Self::with_scene(kit, scene)
+    }
+
+    /// The state without a window for tests, open on a new Water scene.
+    #[cfg(test)]
+    pub fn headless_water() -> Self {
+        let kit = Arc::new(bpe_sound::kit());
+        let scene = bpe_kit::things::water::new_water_scene(&kit.registry, Default::default(), "");
         Self::with_scene(kit, scene)
     }
 
@@ -423,16 +466,19 @@ impl Studio {
         // Every scene the editor holds has its sound's Master.
         bpe_kit::ensure_mixer(&mut scene, &kit.registry);
         let resolved = resolve_scene(&scene, &kit.registry);
-        let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
-        let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
-        let patch_print = bpe_sound::patch_fingerprint(&scene, &resolved);
+        // A Water scene's ball engine runs an empty stand-in ([`ball_side`]).
+        let no_balls = no_balls(&kit);
+        let (ball, ball_resolved) = ball_side(&scene, &resolved, &no_balls);
+        let fingerprint = fingerprint(ball, ball_resolved, &kit.sims);
+        let sound_fingerprint = sound_fingerprint(ball, ball_resolved, &kit.sims);
+        let patch_print = bpe_sound::patch_fingerprint(ball, ball_resolved);
         // Started first, so the playback's own build waits on its work instead of doing it again.
-        let aim_job = aim_job_for(&scene, &resolved, &kit);
-        let playback = main_playback(&scene, &resolved, &kit);
-        let particle_print = bpe_runtime::beside_fingerprint(&scene, &resolved, &kit.sims);
-        let particle_job = ParticleJob::start_if_wanted(&scene, &resolved, kit.sims.clone(), 0.0);
-        let follow = follow_of(&scene, &resolved);
-        let light_probe = light_probe_of(&scene, &resolved, &follow);
+        let aim_job = aim_job_for(ball, ball_resolved, &kit);
+        let playback = main_playback(ball, ball_resolved, &kit);
+        let particle_print = bpe_runtime::beside_fingerprint(ball, ball_resolved, &kit.sims);
+        let particle_job = ParticleJob::start_if_wanted(ball, ball_resolved, kit.sims.clone(), 0.0);
+        let follow = follow_of(ball, ball_resolved);
+        let light_probe = light_probe_of(ball, ball_resolved, &follow);
         let runs_things = scene.things.keys().copied().collect();
         Self {
             saved: scene.clone(),
@@ -448,6 +494,7 @@ impl Studio {
             patch_print,
             follow,
             light_probe,
+            no_balls,
             revision: 0,
             kit,
             time: 0.0,
@@ -459,6 +506,8 @@ impl Studio {
             shader_problem: None,
             lighting: None,
             confirm: None,
+            chooser: None,
+            water_stage: Default::default(),
             panels: Panels::default(),
             grid: Grid::default(),
             preview_mode: Default::default(),
@@ -530,6 +579,38 @@ impl Studio {
     }
 
     // ---------- the scene ----------
+
+    /// Whether the open scene is a Water scene: it has its own stage, and the ball engine runs
+    /// an empty stand-in ([`runs::ball_side`]).
+    pub fn water(&self) -> bool {
+        self.scene.sim == bpe_core::SimKind::Water
+    }
+
+    /// What the middle of the window shows.
+    pub(crate) fn centre_shows(&self) -> Centre {
+        if self.mode == crate::grade_mode::EditorMode::Video {
+            Centre::Video
+        } else if self.water() {
+            Centre::Water
+        } else {
+            Centre::Preview
+        }
+    }
+
+    /// What the bottom panel shows: the timeline in a Water scene, which has no rules, whatever
+    /// was last picked (the pick is kept for Balls scenes).
+    pub fn bottom_view(&self) -> settings::BottomView {
+        if self.water() { settings::BottomView::Timeline } else { self.bottom }
+    }
+
+    /// A Water scene has no Grade mode yet (nothing draws it): sends Grade mode back to Build
+    /// and says why, however it was asked for (the D key, "Open in Grade mode").
+    pub(crate) fn keep_out_of_grade(&mut self) {
+        if self.water() && self.mode == crate::grade_mode::EditorMode::Grade {
+            self.mode = crate::grade_mode::EditorMode::Build;
+            self.status = NO_WATER_GRADE.into();
+        }
+    }
 
     /// The root's settings as resolved: the video's size, length and frame rate.
     pub fn settings(&self) -> SceneSettings {
@@ -674,7 +755,7 @@ impl eframe::App for Studio {
         self.hold_runs = pointer_down && !self.panels.preview.as_ref().is_some_and(Preview::dragging);
         // The Scenes window takes the keys the panels behind it would act on, before any of them is drawn.
         self.panels.scenes.take_keys(&ctx);
-        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
+        if self.no_dialog() {
             self.shortcuts(&ctx);
         }
 
@@ -688,6 +769,7 @@ impl eframe::App for Studio {
             )
             .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
+        self.keep_out_of_grade();
         let video_mode = self.mode == crate::grade_mode::EditorMode::Video;
         if !video_mode {
             crate::video_mode::edit::bar(ui, self);
@@ -709,25 +791,31 @@ impl eframe::App for Studio {
             self.inspector_panel(ui);
             if std::mem::take(&mut self.panels.inspector.open_grade) {
                 self.mode = crate::grade_mode::EditorMode::Grade;
+                self.keep_out_of_grade();
             }
         }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);
         }
-        let outcome = if video_mode {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(style::STAGE))
-                .show(ui, |ui| crate::video_mode::centre(ui, self));
-            preview::Outcome::default()
-        } else {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(style::STAGE))
-                .show(ui, |ui| preview::show(ui, frame, self))
-                .inner
+        let centre = egui::CentralPanel::default().frame(egui::Frame::new().fill(style::STAGE));
+        let outcome = match self.centre_shows() {
+            Centre::Video => {
+                centre.show(ui, |ui| crate::video_mode::centre(ui, self));
+                preview::Outcome::default()
+            }
+            // A Water scene has its own stage: the ball preview has nothing of it to show.
+            Centre::Water => {
+                centre.show(ui, |ui| crate::water_mode::stage(ui, self));
+                preview::Outcome::default()
+            }
+            Centre::Preview => centre.show(ui, |ui| preview::show(ui, frame, self)).inner,
         };
-        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
+        if self.no_dialog() {
             self.late_shortcuts(&ctx);
+        }
+        // A scene dropped on the window opens over the chooser too.
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
             self.take_drops(&ctx);
         }
         if outcome.clicked {
@@ -772,6 +860,7 @@ impl eframe::App for Studio {
         self.panels.final_frame.show(&ctx);
         self.take_toolbar_click(&ctx);
         self.scenes_window(&ctx);
+        self.chooser_dialog(&ctx);
         self.confirm_dialog(&ctx);
         self.stop_export_dialog(&ctx);
         self.restore_dialog(&ctx);
@@ -898,11 +987,21 @@ impl Studio {
         if self.in_video_mode() { self.save_video(choose) } else { self.save(choose) }
     }
 
+    /// Whether no dialog is up, so the keys go to the editor: the question about unsaved work,
+    /// the offer to restore, stopping an export, the Scenes window, the New scene chooser.
+    fn no_dialog(&self) -> bool {
+        self.confirm.is_none()
+            && self.offer.is_none()
+            && !self.ask_stop_export
+            && !self.panels.scenes.open
+            && self.chooser.is_none()
+    }
+
     /// Does what the toolbar's button clicked this frame asks.
     pub(crate) fn take_toolbar_click(&mut self, ctx: &egui::Context) {
         match self.clicked.take() {
             Some(ToolbarClick::New) if self.in_video_mode() => self.ask_new_video(ctx),
-            Some(ToolbarClick::New) => self.guard(Pending::New, ctx),
+            Some(ToolbarClick::New) => self.ask_new_scene(),
             Some(ToolbarClick::Open) => self.ask_open(ctx),
             Some(ToolbarClick::Recent(path)) => self.ask_open_path(path, ctx),
             Some(ToolbarClick::Scenes) => self.open_scenes_window(),

@@ -62,8 +62,12 @@ impl TargetChoices {
         let things = scene.order.iter().filter_map(|id| scene.things.get(id).map(|t| (*id, t.name.clone()))).collect();
         let tags: std::collections::BTreeSet<String> =
             scene.things.values().flat_map(|t| t.tags.iter().cloned()).collect();
-        let kinds =
-            reg.things().filter(|k| k.id() != "scene").map(|k| (k.id().to_owned(), k.name().to_owned())).collect();
+        // Only the kinds this kind of scene has (a Water scene's Pour picks a Liquid, not Balls).
+        let kinds = reg
+            .things()
+            .filter(|k| k.id() != "scene" && k.in_sim(scene.sim))
+            .map(|k| (k.id().to_owned(), k.name().to_owned()))
+            .collect();
         let ball_things = scene
             .order
             .iter()

@@ -434,7 +434,7 @@ fn keeping_the_build_scene_lists_it_and_add_to_the_end_plays_it_last() {
     let (mut studio, _, b) = studio();
     let mut scene = studio.scene.clone();
     scene.name = "Second".into();
-    let kept = scenes::keep(&mut studio, scene);
+    let kept = scenes::keep(&mut studio, scene).expect("a Balls scene is kept");
     assert_eq!(studio.video.pick(), VideoPick::Scene(kept));
     assert_eq!(studio.video.video.scenes[&kept].name, "Second");
     let mut h = harness(studio);
@@ -700,7 +700,7 @@ fn opening_a_scene_while_editing_keeps_the_edit_in_the_video() {
     let (mut studio, a) = editing();
     studio.scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(3.0));
     let ctx = egui::Context::default();
-    studio.guard(crate::app::Pending::New, &ctx);
+    studio.guard(crate::app::Pending::New(crate::water_mode::NewScene::balls()), &ctx);
     assert!(!studio.editing_clip());
     assert_eq!(studio.mode, EditorMode::Build, "the new scene shows in Build mode");
     assert_ne!(studio.scene.name, "Other", "a new scene replaced the parked one");

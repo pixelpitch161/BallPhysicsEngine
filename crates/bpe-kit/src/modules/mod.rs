@@ -9,3 +9,4 @@ pub mod light_scenes;
 pub mod lighting;
 pub mod look;
 pub mod motion;
+pub mod water;

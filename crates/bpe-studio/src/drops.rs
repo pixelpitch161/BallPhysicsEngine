@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bpe_core::{Address, ThingId, Value};
 use eframe::egui;
 
-use crate::app::{Pending, ProblemKind, Studio};
+use crate::app::{DROP_AFTER_CHOOSING, NO_WATER_DROPS, Pending, ProblemKind, Studio};
 
 /// What a dropped file is, by its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +88,25 @@ impl Studio {
     }
 
     /// Keeps the font in the scene and sets the selected Texts in it.
+    /// Whether a dropped picture, song or font is let go, with the status line saying why:
+    /// behind the New scene chooser (the blank project there is not the person's yet), and in a
+    /// Water scene, which uses none of them yet. Nothing is kept in the scene, so it is no edit.
+    fn lets_go_of_drop(&mut self) -> bool {
+        let why = if self.chooser.is_some() {
+            DROP_AFTER_CHOOSING
+        } else if self.water() {
+            NO_WATER_DROPS
+        } else {
+            return false;
+        };
+        self.status = why.into();
+        true
+    }
+
     pub(crate) fn drop_font(&mut self, name: &str, bytes: Arc<[u8]>) {
+        if self.lets_go_of_drop() {
+            return;
+        }
         if !bpe_kit::text::fonts::is_font(&bytes) {
             self.report(ProblemKind::File, format!("{name} isn't a font the program can read (.ttf or .otf)."));
             return;
@@ -110,6 +128,9 @@ impl Studio {
     /// Keeps the picture in the scene and has the selected Particles things form it, or a new
     /// Particles thing when none is selected.
     pub(crate) fn drop_picture(&mut self, name: &str, bytes: Arc<[u8]>) {
+        if self.lets_go_of_drop() {
+            return;
+        }
         if !crate::picture_picker::is_png(&bytes) {
             self.report(ProblemKind::File, format!("{name} isn't a PNG picture the program can read."));
             return;
@@ -139,6 +160,9 @@ impl Studio {
 
     /// Keeps the song in the scene as the Mixer's backing track.
     pub(crate) fn drop_song(&mut self, name: &str, bytes: Arc<[u8]>) {
+        if self.lets_go_of_drop() {
+            return;
+        }
         if bpe_sound::audio::probe(&bytes).is_err() {
             self.report(ProblemKind::File, format!("{name} {}", bpe_sound::audio::NOT_A_SOUND));
             return;

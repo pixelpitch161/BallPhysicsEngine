@@ -269,7 +269,9 @@ impl Scene {
             let under_skipped = thing.parent.is_some_and(|p| skipped.contains(&p));
             let kind = reg.thing(&thing.kind);
             let one_here = kind.is_some_and(|k| k.single()) && self.things.values().any(|t| t.kind == thing.kind);
-            if under_skipped || one_here {
+            // A thing of the other kind of scene (a ball pasted into a Water scene) stays out too.
+            let wrong_scene = kind.is_some_and(|k| !k.in_sim(self.sim));
+            if under_skipped || one_here || wrong_scene {
                 skipped.insert(thing.id);
                 continue;
             }
@@ -584,5 +586,28 @@ mod tests {
         let moved = s.paste_things(&reg, &clip, folder, Some(a)).unwrap();
         assert_eq!(s.things[&moved.tops[0]].attach, Attach::Group);
         assert_eq!(s.children(folder)[1], moved.tops[0], "right after the thing it was pasted beside");
+    }
+
+    #[test]
+    fn things_of_the_other_kind_of_scene_are_not_pasted() {
+        let reg = testkit::registry();
+        let mut balls = Scene::empty(&reg);
+        let folder = balls.add_thing(&reg, "folder", ThingId::ROOT).unwrap();
+        let ball = balls.add_thing(&reg, "balls", folder).unwrap();
+        let under = balls.add_thing(&reg, "folder", ball).unwrap();
+        let mut water = Scene { sim: crate::SimKind::Water, ..Scene::empty(&reg) };
+        // A ball alone: nothing goes in.
+        let clip = balls.copy_things(&reg, &[ball]).unwrap();
+        let before = water.clone();
+        let pasted = water.paste_things(&reg, &clip, ThingId::ROOT, None).unwrap();
+        assert!(pasted.tops.is_empty());
+        assert_eq!(water, before, "nothing was pasted");
+        // A folder holding it: the folder goes in, the ball and what is under it stay out.
+        let clip = balls.copy_things(&reg, &[folder]).unwrap();
+        let pasted = water.paste_things(&reg, &clip, ThingId::ROOT, None).unwrap();
+        assert_eq!(pasted.tops.len(), 1);
+        assert!(!pasted.ids.contains_key(&ball) && !pasted.ids.contains_key(&under));
+        assert!(water.things.values().all(|t| t.kind != "balls"));
+        assert_eq!(water.things.len(), 2, "the scene settings and the folder");
     }
 }

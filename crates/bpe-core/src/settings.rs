@@ -138,6 +138,23 @@ pub const SECTION_ORDER: &[&str] = &[
     "Modulation",
     "Rule",
     "Health",
+    // A Water scene's cards (Water mode part 1).
+    "Course",
+    "Back",
+    "Material",
+    "Joint",
+    "Its colour",
+    "Its body",
+    "Its surface",
+    "Glow",
+    "Crust",
+    "Drawn",
+    "Extras",
+    "Mixing shows",
+    "Pour",
+    "Drain",
+    "Force",
+    "Lamp",
 ];
 
 /// The sections that stay folded until opened.

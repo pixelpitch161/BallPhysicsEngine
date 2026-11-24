@@ -28,7 +28,7 @@ fn rules_round_trip_through_saving() {
     s.set_block_param(&r, rule, act, "amount~times", Value::Number(0.5)).unwrap();
     s.set_rule_enabled(rule, false).unwrap();
     let text = save(&s);
-    assert!(text.contains("format: 12"));
+    assert!(text.contains("format: 13"));
     let back = load(&text, &r).unwrap();
     assert_eq!(back, s);
     assert_eq!(back.rules.list[0].blocks[2].inputs, vec![iff]);

@@ -17,10 +17,16 @@ pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
         ui.set_min_height(40.0);
         // What the panel below shows: the timeline or the scene's rules.
         use crate::settings::BottomView;
-        for (view, name, hint) in [
-            (BottomView::Timeline, "Timeline", "Keys, hits and rules over time"),
-            (BottomView::Rules, "Rules", "The scene's rules: what happens when"),
-        ] {
+        // A Water scene has no rules: its bottom panel is always the timeline, with no switch.
+        let views: &[(BottomView, &str, &str)] = if studio.water() {
+            &[]
+        } else {
+            &[
+                (BottomView::Timeline, "Timeline", "Keys, hits and rules over time"),
+                (BottomView::Rules, "Rules", "The scene's rules: what happens when"),
+            ]
+        };
+        for &(view, name, hint) in views {
             if ui.add(style::toggle_button(name, studio.bottom == view)).on_hover_text(hint).clicked() {
                 studio.set_bottom(view);
             }

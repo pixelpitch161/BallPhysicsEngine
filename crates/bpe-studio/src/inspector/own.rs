@@ -16,14 +16,19 @@ pub(super) fn kind_card(
     let (scene, kit, id, thing, time, lw) = (cx.scene, cx.kit, cx.id, cx.thing, cx.time, cx.label_width);
     if id == ThingId::ROOT {
         // The root's settings are one card per group.
-        for (i, name) in bpe_kit::ROOT_CARDS.into_iter().enumerate() {
+        for (i, &name) in bpe_kit::things::scene::root_cards(scene.sim).iter().enumerate() {
             if i > 0 {
                 ui.add_space(6.0);
             }
             root_card(ui, inspector, cx, name, edits);
         }
-        ui.add_space(6.0);
-        grade_summary(ui, inspector, cx, edits);
+        // A Water scene has no Grade mode yet.
+        if scene.sim == bpe_core::SimKind::Balls {
+            ui.add_space(6.0);
+            grade_summary(ui, inspector, cx, edits);
+        }
+    } else if !has_own_card(kind) {
+        // A Water thing has no settings of its own: everything is on its cards.
     } else if kind.id() == EMITTER {
         card(ui, |ui| {
             let title = kind.name().to_owned();
@@ -184,6 +189,8 @@ pub(super) fn own_grid(
     let follow_now = |key: &str| crate::follow::now(scene, &own(key));
     let follow_light = |key: &str| crate::follow::can_light(scene, reg, &own(key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
+    // A Water scene has no sound, ball lights or health to follow.
+    let follow = crate::follow::offered(scene).then_some(&follow);
     let vary = crate::vary::VaryCx::of(scene, reg, time, id, &own);
     // The kind leaves out choices that make no sense where the thing is (riding a shape's balls).
     let kind = reg.thing(&cx.thing.kind);
@@ -195,7 +202,7 @@ pub(super) fn own_grid(
         folded: Some(&folded),
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
-        follow: Some(&follow),
+        follow,
         vary: vary.as_ref(),
         offers: Some(&offers),
         rails: None,

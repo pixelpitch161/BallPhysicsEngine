@@ -1,6 +1,7 @@
 //! The editor's look: the Ball Studio Design System's tokens, fonts and drawn controls. This is the
 //! only place in the editor that names a colour, a font or a size.
 
+pub mod chooser;
 mod controls;
 mod fonts;
 mod knob;
