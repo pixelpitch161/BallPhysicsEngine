@@ -3,20 +3,24 @@
 use super::*;
 
 impl Studio {
-    pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+    pub(crate) fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.text_edit_focused();
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::S) {
-            self.save(true);
+            self.save_work(true);
         }
         if pressed(Modifiers::COMMAND, Key::S) {
-            self.save(false);
+            self.save_work(false);
         }
         if pressed(Modifiers::COMMAND, Key::O) {
-            self.guard(Pending::Open, ctx);
+            self.ask_open(ctx);
         }
         if pressed(Modifiers::COMMAND, Key::N) {
-            self.guard(Pending::New, ctx);
+            if self.in_video_mode() {
+                self.ask_new_video(ctx);
+            } else {
+                self.guard(Pending::New, ctx);
+            }
         }
         // F11: fully fullscreen (no title bar), and back to the window.
         if pressed(Modifiers::NONE, Key::F11) {
@@ -24,6 +28,10 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
         }
         if typing {
+            return;
+        }
+        if self.in_video_mode() {
+            self.video_shortcuts(ctx);
             return;
         }
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || pressed(Modifiers::COMMAND, Key::Y) {
@@ -45,6 +53,7 @@ impl Studio {
             self.mode = match self.mode {
                 crate::grade_mode::EditorMode::Build => crate::grade_mode::EditorMode::Grade,
                 crate::grade_mode::EditorMode::Grade => crate::grade_mode::EditorMode::Build,
+                crate::grade_mode::EditorMode::Video => crate::grade_mode::EditorMode::Video,
             };
         }
         if self.mode == crate::grade_mode::EditorMode::Grade {
@@ -103,6 +112,10 @@ impl Studio {
         let copy = pressed(Modifiers::COMMAND, Key::C) | event(|e| matches!(e, egui::Event::Copy));
         let paste = pressed(Modifiers::COMMAND, Key::V)
             | event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)));
+        if self.in_video_mode() {
+            self.video_late_shortcuts(ctx, copy, paste);
+            return;
+        }
         // Grade mode shows no things: only the timeline's keys are copied there, and nothing is
         // pasted (keys could land on settings it doesn't show).
         let building = self.mode == crate::grade_mode::EditorMode::Build;

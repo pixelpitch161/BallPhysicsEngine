@@ -180,6 +180,69 @@ pub fn arranged_frames(
     Ok(true)
 }
 
+/// The editor's still frame of a video (part 2): video frame `frame` at `scale` of the video's
+/// size, RGBA, and its size. Each clip on screen runs its scene with the quick run-up the Preview
+/// final frame uses ([`crate::run_up`]: the physics from 0, only the frames the scene remembers
+/// drawn), not the export's exact one, then the clips are put together as the export does. A gap
+/// or a frame past the end is black. Gives up with "stopped" once `stop` is set.
+pub fn still_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    video: &Video,
+    kit: &Kit,
+    frame: u32,
+    scale: f32,
+    stop: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<(Vec<u8>, (u32, u32))> {
+    let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    // Liquids use their Export detail, as the export and the Preview final frame do.
+    let _export = bpe_kit::things::liquid::exporting_for_now();
+    let video = tidied(video, kit);
+    let s = &video.settings;
+    let fps = s.fps.max(1);
+    let out = output_size(s.width, s.height, scale);
+    let m = moment(&video, frame);
+    let look = look_of(m.kind);
+    let old = m.old.filter(|_| look.is_some());
+    let on: Vec<bpe_kit::video::OnScreen> = [old, m.new].into_iter().flatten().collect();
+    let scenes: Vec<Scene> = on.iter().map(|o| clip_scene(&video, &video.clips[o.clip], &kit.registry)).collect();
+    let mut drawn: Vec<(Renderer, CoverFit)> = Vec::new();
+    for (o, scene) in on.iter().zip(&scenes) {
+        let ss = bpe_kit::video::scene_settings(scene, &kit.registry);
+        let fit = within(cover((ss.width, ss.height), out), device.limits().max_texture_dimension_2d);
+        let mut renderer = Renderer::new(device, fit.draw.0, fit.draw.1);
+        let mut maker = FrameMaker::new(scene, kit);
+        crate::run_up(device, queue, &mut maker, &mut renderer, o.scene_frame, fps, false, stop)?;
+        let samples = maker.samples(o.scene_frame as f64 / fps as f64, fps, None);
+        renderer.render_samples(device, queue, &samples);
+        drawn.push((renderer, fit));
+    }
+    let mut readback = Readback::new(device, out.0, out.1, 1);
+    let lone = drawn.len() == 1 && old.is_none() && drawn[0].1.draw == out;
+    let mut pixels = if lone {
+        readback.push(device, queue, &drawn[0].0)?
+    } else {
+        let mut compose = Compose::new(device, queue, out.0, out.1);
+        // Which of `drawn` is the old picture and which the new.
+        let (old_at, new_at) = match (old.is_some(), m.new.is_some()) {
+            (true, true) => (Some(0), Some(1)),
+            (true, false) => (Some(0), None),
+            (false, true) => (None, Some(0)),
+            (false, false) => (None, None),
+        };
+        let crop = |i: Option<usize>| i.map_or([0.0, 0.0, 1.0, 1.0], |i| drawn[i].1.crop);
+        let view = |i: Option<usize>| i.map(|i| drawn[i].0.output_view());
+        let p = params(if old.is_some() { look } else { None }, m.progress, crop(old_at), crop(new_at));
+        compose.draw(device, queue, view(old_at), view(new_at), &p);
+        readback.push_texture(device, queue, compose.output_texture(), compose.output_view())?
+    };
+    if pixels.is_none() {
+        pixels = readback.finish(device)?.pop();
+    }
+    let pixels = pixels.ok_or_else(|| anyhow::anyhow!("the frame did not come back from the graphics card"))?;
+    Ok((pixels, out))
+}
+
 /// Exports `video` to an mp4, as [`crate::export_video`] does a scene: the same encoders and CPU
 /// retry, the sound ([`bpe_sound::render_video_sound`]) beside the frames, the same bar, cancel
 /// and clean-up. Stems, MIDI and baking are refused for a video, and so is a video with no clips.

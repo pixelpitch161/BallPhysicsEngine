@@ -6,9 +6,13 @@
 //! scene's own file, or nothing) and `.lock`, which the editor holds locked for its whole life.
 //! The operating system lets go of the lock when the process ends, however it ends, so a
 //! session whose lock can be taken is an orphan.
+//!
+//! The video Video mode arranges is kept the same way beside it, in `.ballvideo` (the video) and
+//! `.vpath` (its own file), and offered back on its own.
 
 use crate::files::{sibling, write_via};
 use bpe_core::Scene;
+use bpe_core::video::Video;
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -30,11 +34,38 @@ pub fn recovery_dir() -> Option<PathBuf> {
 pub struct SessionFiles {
     pub scene: PathBuf,
     pub path: PathBuf,
+    /// The video's copy and the name of its own file.
+    pub video: PathBuf,
+    pub vpath: PathBuf,
+}
+
+/// What a recovery copy holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Work {
+    Scene,
+    Video,
 }
 
 impl SessionFiles {
     fn of(scene: PathBuf) -> Self {
-        SessionFiles { path: scene.with_extension("path"), scene }
+        SessionFiles {
+            path: scene.with_extension("path"),
+            video: scene.with_extension(bpe_core::video_save::VIDEO_EXTENSION),
+            vpath: scene.with_extension("vpath"),
+            scene,
+        }
+    }
+
+    /// Writes `video` and the name of its own file, through temporary files named with `tmp_suffix`.
+    fn write_video(&self, video: &Video, original: Option<&Path>, tmp_suffix: &str) -> std::io::Result<()> {
+        let original = original.map(|p| p.display().to_string()).unwrap_or_default();
+        write_via(&self.vpath, &original, false, tmp_suffix)?;
+        write_via(&self.video, &bpe_core::video_save::save(video), false, tmp_suffix)
+    }
+
+    fn remove_video(&self) {
+        let _ = std::fs::remove_file(&self.video);
+        let _ = std::fs::remove_file(&self.vpath);
     }
 
     /// Writes `scene` and the name of its own file, through temporary files named with
@@ -54,6 +85,8 @@ impl SessionFiles {
 enum Job {
     Write(Box<Scene>, Option<PathBuf>),
     Clear,
+    WriteVideo(Box<Video>, Option<PathBuf>),
+    ClearVideo,
     Flush(Sender<()>),
 }
 
@@ -102,6 +135,11 @@ impl Session {
                         let _ = told.send(written.map_err(|e| e.to_string()));
                     }
                     Job::Clear => worker_files.remove(),
+                    Job::WriteVideo(video, original) => {
+                        let written = worker_files.write_video(&video, original.as_deref(), ".tmp");
+                        let _ = told.send(written.map_err(|e| e.to_string()));
+                    }
+                    Job::ClearVideo => worker_files.remove_video(),
                     Job::Flush(done) => _ = done.send(()),
                 }
             }
@@ -118,6 +156,16 @@ impl Session {
     /// Deletes the copy: the work is saved, or was thrown away on purpose.
     pub fn clear(&self) {
         self.send(Job::Clear);
+    }
+
+    /// Copies `video` (whose own file is `original`) to the recovery folder, on the session's thread.
+    pub fn write_video(&self, video: Video, original: Option<PathBuf>) {
+        self.send(Job::WriteVideo(Box::new(video), original));
+    }
+
+    /// Deletes the video's copy.
+    pub fn clear_video(&self) {
+        self.send(Job::ClearVideo);
     }
 
     fn send(&self, job: Job) {
@@ -158,7 +206,9 @@ impl Drop for Session {
 /// A copy left by an editor that is gone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Orphan {
+    /// The copy: a scene (`.ron`) or a video (`.ballvideo`).
     pub scene_file: PathBuf,
+    pub kind: Work,
     /// The scene's own file, if it had one.
     pub original: Option<PathBuf>,
     /// When it was last written.
@@ -170,10 +220,17 @@ impl Orphan {
         std::fs::read_to_string(&self.scene_file)
     }
 
-    /// Deletes the copy (it was restored, or discarded).
+    /// Deletes the copy (it was restored, or discarded), and the session's lock once neither copy
+    /// is left.
     pub fn discard(&self) {
-        SessionFiles::of(self.scene_file.clone()).remove();
-        let _ = std::fs::remove_file(self.scene_file.with_extension("lock"));
+        let files = SessionFiles::of(self.scene_file.with_extension("ron"));
+        match self.kind {
+            Work::Scene => files.remove(),
+            Work::Video => files.remove_video(),
+        }
+        if !files.scene.exists() && !files.video.exists() {
+            let _ = std::fs::remove_file(self.scene_file.with_extension("lock"));
+        }
     }
 
     /// Keeps a copy that couldn't be read, renamed so it is never offered again.
@@ -190,16 +247,22 @@ pub fn orphans(dir: &Path) -> Vec<Orphan> {
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|p| {
-            p.extension().is_some_and(|e| e == "ron")
-                && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("session-"))
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("session-")))
+        .filter_map(|p| {
+            let kind = match p.extension().map(|e| e.to_string_lossy().into_owned()).as_deref() {
+                Some("ron") => Work::Scene,
+                Some(bpe_core::video_save::VIDEO_EXTENSION) => Work::Video,
+                _ => return None,
+            };
+            Some((p, kind))
         })
-        .filter(|p| !held(&p.with_extension("lock")))
-        .filter_map(|scene_file| {
+        .filter(|(p, _)| !held(&p.with_extension("lock")))
+        .filter_map(|(scene_file, kind)| {
             let saved_at = std::fs::metadata(&scene_file).and_then(|m| m.modified()).ok()?;
-            let original = std::fs::read_to_string(scene_file.with_extension("path")).unwrap_or_default();
+            let names = if kind == Work::Scene { "path" } else { "vpath" };
+            let original = std::fs::read_to_string(scene_file.with_extension(names)).unwrap_or_default();
             let original = Some(original.trim()).filter(|p| !p.is_empty()).map(PathBuf::from);
-            Some(Orphan { scene_file, original, saved_at })
+            Some(Orphan { scene_file, kind, original, saved_at })
         })
         .collect();
     found.sort_by_key(|o| std::cmp::Reverse(o.saved_at));
@@ -221,9 +284,11 @@ pub fn tidy(dir: &Path) {
             && old
             && lock.extension().is_some_and(|e| e == "lock")
             && !lock.with_extension("ron").exists()
+            && !lock.with_extension(bpe_core::video_save::VIDEO_EXTENSION).exists()
             && !held(&lock)
         {
             let _ = std::fs::remove_file(lock.with_extension("path"));
+            let _ = std::fs::remove_file(lock.with_extension("vpath"));
             let _ = std::fs::remove_file(&lock);
         }
     }
@@ -258,15 +323,23 @@ pub struct CrashCopy {
 
 pub type CrashSlot = Arc<Mutex<Option<CrashCopy>>>;
 
+/// The unsaved video a crash would save, beside the scene's.
+pub struct VideoCrashCopy {
+    pub video: Video,
+    pub original: Option<PathBuf>,
+}
+
+pub type VideoCrashSlot = Arc<Mutex<Option<VideoCrashCopy>>>;
+
 /// Makes a panic on the editor's own thread (the one that would close it) save the unsaved
 /// scene to its session, and a short crash report, before the usual panic message. Panics on
 /// other threads (an export, the sound) don't close the editor and are left alone.
-pub fn install_crash_hook(slot: CrashSlot, files: SessionFiles, report: Option<PathBuf>) {
+pub fn install_crash_hook(slot: CrashSlot, video_slot: VideoCrashSlot, files: SessionFiles, report: Option<PathBuf>) {
     let editor = std::thread::current().id();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().id() == editor
-            && crash_save(&slot, &files)
+            && (crash_save(&slot, &files) | crash_save_video(&video_slot, &files))
             && let Some(report) = &report
         {
             let when = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -294,6 +367,22 @@ pub fn crash_save(slot: &CrashSlot, files: &SessionFiles) -> bool {
     }
 }
 
+/// The crash hook's save of the video, as [`crash_save`] does the scene's.
+pub fn crash_save_video(slot: &VideoCrashSlot, files: &SessionFiles) -> bool {
+    let copy = match slot.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    match copy.as_ref() {
+        Some(copy) => {
+            let _ = files.write_video(&copy.video, copy.original.as_deref(), ".crash.tmp");
+            true
+        }
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +395,32 @@ mod tests {
 
     fn scene() -> Scene {
         bpe_kit::new_studio_scene(&bpe_kit::kit().registry)
+    }
+
+    #[test]
+    fn a_video_copy_is_an_orphan_of_its_own() {
+        let dir = temp_dir("video-orphan");
+        let session = Session::start(&dir).unwrap();
+        session.write(scene(), None);
+        session.write_video(Video::new(), Some(PathBuf::from("/videos/Tape.ballvideo")));
+        session.flush();
+        let files = session.files().clone();
+        drop(session);
+        let found = orphans(&dir);
+        assert_eq!(found.len(), 2, "the scene and the video are offered one by one");
+        let video = found.iter().find(|o| o.kind == Work::Video).unwrap();
+        assert_eq!(video.original, Some(PathBuf::from("/videos/Tape.ballvideo")));
+        assert!(bpe_core::video_save::load(&video.read().unwrap(), &bpe_kit::kit().registry).is_ok());
+        video.discard();
+        assert!(!files.video.exists());
+        assert!(files.scene.exists(), "discarding the video leaves the scene's copy");
+        let left = orphans(&dir);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].kind, Work::Scene);
+        left[0].discard();
+        assert!(orphans(&dir).is_empty());
+        assert!(!files.scene.with_extension("lock").exists(), "the lock goes with the last copy");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

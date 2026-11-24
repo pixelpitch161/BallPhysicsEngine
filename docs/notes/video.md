@@ -86,7 +86,58 @@ floored; the 1800 s cut can leave a clip all transition; NaN times sort last; th
 fps, tempo, time signature) aren't clamped; `VideoMix` expects tidied clips; clip ids aren't checked; a song that
 won't decode is dropped silently.
 
-### For part 2 (Video mode: arranging)
 
-Build on `open_video`, `Video::tidy`, `video_save::save`, `moment` and `cover`; the preview's still frame can use
-`arranged_frames` with `max_frames` or a `ClipDraw`-like run-up. The editor has nothing for videos yet.
+## Part 2: Video mode, arranging (as built)
+
+Plan: `docs/superpowers/plans/video/part2-arranging.md` (its "Design decisions" list every call made). All in
+`bpe-studio/src/video_mode/` plus `bpe_cli::arranged::still_frame`.
+
+- **Mode**: `EditorMode::Video` (Build | Grade | Video in the toolbar; D still toggles Build/Grade only). In Video
+  mode `Studio::ui` draws `video_mode::{bottom, left, right, centre}` instead of the scene's panels, and the Export
+  window gets `export_window::Subject::Video`.
+- **Session** (`mod.rs`): `Studio.video: VideoSession` always exists (an empty untitled video equals its `saved`,
+  so it isn't unsaved). It holds the video, `saved`, `path`, its own `VideoHistory` (whole videos, at most 64 steps;
+  `change(merge, f)` records one step, merged while the pointer is held or a text box is focused; `commit(before)`
+  for a drag), the pick (`VideoPick` Video / Clip / Transition / Scene; `pick()` falls back to Video when its target
+  is gone), the playhead `time`, the arrangement view, the clip clipboard, the still frame and a `revision`.
+- **Edits** (`arrange.rs`): pure functions on `Video`, each ending in `Video::tidy`: `snap` (Bar/Beat from the first
+  beat, Off or Alt free), `snap_move` (whichever end of the clip is nearer a grid line), `grid_lines`, `bar_beat`,
+  `keep_scene` (name or "Scene N", first free of `TRACK_COLOURS`), `add_clip` (whole scene, Crossfade in),
+  `add_at_end`, `move_clip`, `trim_start` (start and offset together, end kept, stops at offset 0 and one frame),
+  `trim_end`, `set_overlap`, `delete_clip`, `paste_clip`, `duplicate_clip`, `remove_scene`, `new_video_from`
+  (the scene's size, fps, tempo, time signature and first beat).
+- **Files** (`files.rs`): Open takes `.ron` or `.ballvideo` (`ask_open` → `ask_open_path` → guard by kind);
+  `open_video_path` uses `open_video` and switches to Video mode; `save_video(_to)` through `write_safely` with a
+  backup; Recent lists both; the title names the video in Video mode. `Pending::NewVideo` / `OpenVideoPath`;
+  `must_ask` / `asking_about_video` pick whose work the question is about; closing asks about the scene, then the
+  video (`close_scene_answered`). `Pending::Open` is gone (Open picks the file first, then asks).
+- **Panels**: `scenes.rs` (kept scenes: swatch, name, length, clip count or "Not in the video yet: left out when
+  saved"; a row drags an egui `DragAndDrop` payload `KeptId`, double-click or its menu adds it at the end; + Add
+  scene: the Build scene, a file, a built-in); `inspect.rs` (Video: size, fps chips, tempo, time signature, first
+  beat, snap, Master, Song with Load song…; Clip: scene menu, start, length, offset, level, follow tempo and scene
+  song with their notes, Duplicate, Delete; Transition: kind chips, colour, direction, soft edge, length in beats,
+  sound; Scene: name, colour, Add to the end, Remove); `lanes.rs` (header with Snap chips, Fit, playhead; the ruler
+  seeks; the Scenes lane draws clips in their colour, overlaps striped with the kind's name; `hit` finds edges
+  (6 px, the side the pointer is on where two clips meet), then transitions, then bodies; a drag starts from the
+  video as it was (`ClipDrag.before`) every frame and is one undo step; dropping a kept scene's payload makes a clip;
+  wheel scrolls, Ctrl+wheel zooms; the Song lane draws the waveform).
+- **Keys** (Video mode): Ctrl+S/Shift+S/O/N act on the video, Ctrl+Z/Y on its history, Home/End/Left/Right
+  (Shift: a beat) move its playhead, Delete / Ctrl+C / Ctrl+V (at the playhead, snapped) / Ctrl+D on the picked
+  clip; Space says playing comes next. A `.ballvideo` dropped on the window opens; a `.ron` dropped in Video mode is
+  kept in the video.
+- **Still frame** (`still.rs`): one worker thread with its own `headless_device` (made on the first ask, kept),
+  newest ask wins, a newer ask sets the old one's stop flag; the last frame stays with a spinner while the next is
+  drawn. `bpe_cli::arranged::still_frame` runs each clip on screen with `bpe_cli::run_up` (the Preview final frame's
+  quick run-up, now shared with `final_frame`) then composes as the export does, at `STILL_SCALE` 0.5. Off in
+  headless studios unless a test sets `still.enabled`.
+- **Export**: `Subject::{Scene, Video}`; a video hides Lighting, stems and MIDI, names the mp4 after the video,
+  remembers its own Change… path (`video_path`), greys Export with "Add a clip first" when empty, and runs
+  `export_arranged`.
+- **Recovery**: the session also writes `session-….ballvideo` + `.vpath` (`Session::write_video` / `clear_video`);
+  `Orphan.kind` (`Work::Scene` / `Work::Video`); each is offered on its own; discarding one keeps the other and the
+  lock goes with the last; `tidy` keeps a lock while a video copy is there; `VideoCrashSlot` beside the scene's.
+  `Offer.video` restores into the session and switches to Video mode.
+- **Not yet** (part 3): playing in real time, the Scene sound lane, Edit scene / Back to video.
+- Tests: `bpe-studio` `video_mode::` (arrange pure tests; session, files, drags, trims, overlap, inspector,
+  keys, closing, autosave and restore, the Export window, the still frame), `recovery::tests::a_video_copy_is_an_orphan_of_its_own`,
+  `bpe-cli --test arranged` `still_frame_*`.

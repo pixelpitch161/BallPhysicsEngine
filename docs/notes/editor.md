@@ -100,6 +100,8 @@ where each one is now.
   pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
   setting follows sound.
 
+**Video mode** (Build | Grade | Video, video arrangement part 2): `video_mode/`, described in `video.md`.
+
 ## Responsiveness (W6, 2026-11-08, plan `plans/2026-11-08-editor-responsiveness.md`)
 
 - **One picture recipe.** `preview::compose` builds every preview frame: soloed lights (`lights_panel::soloed`),

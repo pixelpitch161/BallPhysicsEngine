@@ -38,12 +38,14 @@ pub mod target;
 mod tests;
 pub mod wheel;
 
-/// The editor's two faces: building the scene, or grading its picture. Not saved.
+/// The editor's three faces: building the scene, grading its picture, or arranging scenes into a
+/// video (`video_mode`). Not saved.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditorMode {
     #[default]
     Build,
     Grade,
+    Video,
 }
 
 /// What the preview shows in Grade mode.
@@ -339,6 +341,7 @@ pub fn mode_switch(ui: &mut Ui, mode: &mut EditorMode) {
         for (m, name, help) in [
             (EditorMode::Build, "Build", "Build the scene: its things and their settings (D switches)"),
             (EditorMode::Grade, "Grade", "Grade the finished picture's colour, like Lightroom (D switches)"),
+            (EditorMode::Video, "Video", "Arrange scenes into one video on a song's beat"),
         ] {
             let on = *mode == m;
             let button = style::toggle_button(name, on).frame_when_inactive(on);

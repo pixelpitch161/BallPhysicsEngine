@@ -16,6 +16,7 @@ use crate::app::{Pending, ProblemKind, Studio};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dropped {
     Scene,
+    Video,
     Font,
     Picture,
     Sound,
@@ -27,6 +28,7 @@ pub fn what(name: &str) -> Dropped {
     let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase());
     match ext.as_deref() {
         Some("ron") => Dropped::Scene,
+        Some(bpe_core::video_save::VIDEO_EXTENSION) => Dropped::Video,
         Some("ttf" | "otf") => Dropped::Font,
         Some("png") => Dropped::Picture,
         Some(e) if bpe_sound::audio::EXTENSIONS.contains(&e) => Dropped::Sound,
@@ -37,7 +39,7 @@ pub fn what(name: &str) -> Dropped {
 /// The status line's words for a file Ball Studio can't take.
 pub fn cant_open(name: &str) -> String {
     format!(
-        "Ball Studio can't open {name}: drop a scene (.ron), a font (.ttf, .otf), a PNG picture or a song (WAV, FLAC, MP3, OGG, AIFF)."
+        "Ball Studio can't open {name}: drop a scene (.ron), a video (.ballvideo), a font (.ttf, .otf), a PNG picture or a song (WAV, FLAC, MP3, OGG, AIFF)."
     )
 }
 
@@ -56,11 +58,18 @@ impl Studio {
             }
             let bytes = || -> Arc<[u8]> { file.bytes().unwrap_or_default().into() };
             match what(&name) {
+                // In Video mode a scene dropped on the window is kept in the video.
+                Dropped::Scene if self.in_video_mode() => _ = crate::video_mode::scenes::add_file(self, &path),
                 Dropped::Scene if !opened => {
                     opened = true;
                     self.drop_scene(path, ctx);
                 }
                 Dropped::Scene => {}
+                Dropped::Video if !opened => {
+                    opened = true;
+                    self.ask_open_path(path, ctx);
+                }
+                Dropped::Video => {}
                 Dropped::Font => self.drop_font(&name, bytes()),
                 Dropped::Picture => self.drop_picture(&name, bytes()),
                 Dropped::Sound

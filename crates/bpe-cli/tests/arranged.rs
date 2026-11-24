@@ -2,7 +2,7 @@
 //! mix the two, scenes of another shape cover the video, gaps are black, and the export has
 //! picture and sound and cleans up after itself.
 
-use bpe_cli::arranged::{NO_CLIPS, NOT_FOR_VIDEOS, arranged_frames, tidied};
+use bpe_cli::arranged::{NO_CLIPS, NOT_FOR_VIDEOS, arranged_frames, still_frame, tidied};
 use bpe_cli::{Encoder, ExportOptions, FrameMaker, export_arranged, find_ffmpeg};
 use bpe_core::video::{Clip, ClipId, KeptId, KeptScene, Transition, TransitionKind, Video};
 use bpe_core::{Scene, SlotId, ThingId, TrackColour, Value, layered_key};
@@ -191,6 +191,50 @@ fn a_gap_is_black() {
         assert!(frame.chunks(4).all(|px| px == [0, 0, 0, 255]), "the gap is black");
     }
     assert!(got[14].chunks(4).any(|px| px != [0, 0, 0, 255]));
+}
+
+/// The editor's still frame of `video` at `frame`, full size.
+fn still(video: &Video, kit: &Kit, frame: u32) -> Vec<u8> {
+    let (device, queue) = gpu();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let (pixels, size) = still_frame(&device, &queue, video, kit, frame, 1.0, &stop).unwrap();
+    assert_eq!(size, (W, H));
+    pixels
+}
+
+#[test]
+fn still_frame_matches_the_export_frame_outside_a_transition() {
+    let kit = kit();
+    let v = video(
+        vec![scene(&kit, W, H), scene(&kit, W, H)],
+        &[(0, 0.0, 1.5, 0.0, TransitionKind::Cut), (1, 1.0, 1.5, 0.5, TransitionKind::Crossfade)],
+    );
+    let got = frames(&v, &kit);
+    // The scene has no Effects that remember, so the quick run-up draws the same picture.
+    for f in [0, 20, 50, 74] {
+        assert!(still(&v, &kit, f) == got[f as usize], "still frame {f} is the export's");
+    }
+    // In the transition it mixes the same two pictures the export does.
+    let mid = still(&v, &kit, 37);
+    let diff = mid.iter().zip(&got[37]).map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs()).max().unwrap();
+    assert!(diff <= 1, "the transition's still frame is the export's ({diff} off)");
+}
+
+#[test]
+fn still_frame_in_a_gap_is_black() {
+    let kit = kit();
+    let v = video(
+        vec![scene(&kit, W, H)],
+        &[(0, 0.0, 0.5, 0.0, TransitionKind::Cut), (0, 1.0, 0.5, 0.0, TransitionKind::Cut)],
+    );
+    for f in [20, 200] {
+        assert!(still(&v, &kit, f).chunks(4).all(|px| px == [0, 0, 0, 255]), "frame {f} is black");
+    }
+    assert!(still(&video(vec![], &[]), &kit, 0).chunks(4).all(|px| px == [0, 0, 0, 255]), "an empty video is black");
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    let (device, queue) = gpu();
+    let stopped = still_frame(&device, &queue, &v, &kit, 5, 1.0, &stop);
+    assert!(stopped.is_err(), "a stopped ask gives up");
 }
 
 fn probe(path: &std::path::Path) -> String {

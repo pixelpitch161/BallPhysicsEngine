@@ -106,17 +106,22 @@ pub struct Offer {
     /// The scene's own file was saved after this copy was made: restoring would bring back
     /// older work.
     pub file_newer: bool,
+    /// The copy is of the video Video mode arranges (then `scene` is not used).
+    pub video: Option<bpe_core::video::Video>,
 }
 
 /// Something that would throw away unsaved changes.
 pub enum Pending {
     Close,
-    Open,
     New,
     /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
     /// A built-in scene from the Scenes window, by its id.
     OpenBuiltIn(&'static str),
+    /// A new video (Video mode's New).
+    NewVideo,
+    /// A video file picked with Open…, from the Recent menu or dropped on the window.
+    OpenVideoPath(PathBuf),
 }
 
 /// What the panels remember between frames.
@@ -248,7 +253,7 @@ pub struct Studio {
     /// This frame's change to the scene is an undo step of its own (a rule or block added,
     /// removed or linked).
     pub separate_edit: bool,
-    closing: bool,
+    pub(crate) closing: bool,
     last_tick: Option<Instant>,
     clicked: Option<ToolbarClick>,
     /// The sound thread and the speakers; `None` without a sound device (or in tests), when
@@ -274,6 +279,10 @@ pub struct Studio {
     pub mode: crate::grade_mode::EditorMode,
     /// Grade mode's own state: the compare view, folded panels, the Histogram.
     pub grade: crate::grade_mode::GradeMode,
+    /// The video Video mode arranges, with its own file, undo and view.
+    pub video: crate::video_mode::VideoSession,
+    /// Closing has asked about the scene already (saved or not), and asks about the video next.
+    pub(crate) close_scene_answered: bool,
     /// What the bottom panel shows: the timeline or the rules (the editor's own setting).
     pub bottom: settings::BottomView,
     /// The Lights tab's soloed lights: the editor's alone, never saved or exported.
@@ -310,6 +319,18 @@ pub struct Studio {
     was_unsaved: bool,
     /// The unsaved scene a crash would save.
     crash_slot: CrashSlot,
+    /// The unsaved video a crash would save.
+    video_crash_slot: recovery::VideoCrashSlot,
+    /// When the video's crash copy was last refreshed.
+    video_crash_copied_at: Option<Instant>,
+    /// The video's revision the crash copy holds.
+    video_crash_rev: Option<u64>,
+    /// The video's revision the autosave last wrote.
+    video_autosaved_rev: Option<u64>,
+    /// When the video's autosave last wrote.
+    video_autosaved_at: Option<Instant>,
+    /// The video was unsaved at the last look, so a recovery copy of it may exist.
+    video_was_unsaved: bool,
     /// When the crash copy was last refreshed.
     crash_copied_at: Option<Instant>,
     /// Autosaved work to offer back.
@@ -358,8 +379,13 @@ impl Studio {
         studio.persist_settings = true;
         studio.listen = settings::load_listen();
         studio.bottom = settings::load_bottom_view();
+        studio.video.still.enabled = true;
         if let Some(path) = scene_path {
-            studio.open_path(&path);
+            if crate::video_mode::files::is_video(&path) {
+                studio.open_video_path(&path);
+            } else {
+                studio.open_path(&path);
+            }
         }
         // The starter sound's wavetables (Triangle, and the subs' Square), so Enable sound is
         // heard at once.
@@ -458,6 +484,8 @@ impl Studio {
             left: LeftPanel::Things,
             mode: Default::default(),
             grade: Default::default(),
+            video: Default::default(),
+            close_scene_answered: false,
             bottom: settings::BottomView::Timeline,
             light_solo: Default::default(),
             light_show: Default::default(),
@@ -474,6 +502,12 @@ impl Studio {
             autosaved_at: None,
             was_unsaved: false,
             crash_slot: Arc::default(),
+            video_crash_slot: Arc::default(),
+            video_crash_copied_at: None,
+            video_crash_rev: None,
+            video_autosaved_rev: None,
+            video_autosaved_at: None,
+            video_was_unsaved: false,
             crash_copied_at: None,
             offer: None,
             gpu_errors: Arc::default(),
@@ -581,10 +615,16 @@ impl eframe::App for Studio {
         // save"); otherwise it stays, to be offered back at the next start. A panic on the way out
         // must not write the copy back either.
         *self.crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.video_crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Some(session) = &self.recovery
             && (self.closing || !self.unsaved())
         {
             session.clear();
+        }
+        if let Some(session) = &self.recovery
+            && (self.closing || !self.video_unsaved())
+        {
+            session.clear_video();
         }
         self.recovery = None;
     }
@@ -595,7 +635,7 @@ impl eframe::App for Studio {
             if self.panels.export.busy() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.ask_stop_export = true;
-            } else if self.unsaved() {
+            } else if self.must_ask(&Pending::Close) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm = Some(Pending::Close);
             }
@@ -635,12 +675,19 @@ impl eframe::App for Studio {
             )
             .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
-        self.bottom_panel(ui);
+        let video_mode = self.mode == crate::grade_mode::EditorMode::Video;
+        if video_mode {
+            crate::video_mode::bottom(ui, self);
+            crate::video_mode::left(ui, self);
+            crate::video_mode::right(ui, self);
+        } else {
+            self.bottom_panel(ui);
+        }
         if self.mode == crate::grade_mode::EditorMode::Grade {
             crate::grade_mode::left(ui, self);
             crate::grade_mode::right(ui, self);
             crate::grade_mode::scopes_strip(ui, self);
-        } else {
+        } else if !video_mode {
             self.left_panel(ui, &before);
             self.inspector_panel(ui);
             if std::mem::take(&mut self.panels.inspector.open_grade) {
@@ -651,10 +698,17 @@ impl eframe::App for Studio {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);
         }
-        let outcome = egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(style::STAGE))
-            .show(ui, |ui| preview::show(ui, frame, self))
-            .inner;
+        let outcome = if video_mode {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(style::STAGE))
+                .show(ui, |ui| crate::video_mode::centre(ui, self));
+            preview::Outcome::default()
+        } else {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(style::STAGE))
+                .show(ui, |ui| preview::show(ui, frame, self))
+                .inner
+        };
         if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
             self.late_shortcuts(&ctx);
             self.take_drops(&ctx);
@@ -681,7 +735,14 @@ impl eframe::App for Studio {
         }
         let base_dir = self.base_dir();
         let settings = self.settings();
-        self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
+        if video_mode {
+            let subject = crate::export_window::Subject::Video { video: &self.video.video, name: self.video.name() };
+            let base_dir = self.video_dir().or(base_dir);
+            self.panels.export.show_subject(&ctx, &subject, base_dir.as_deref(), &self.kit);
+        } else {
+            let subject = crate::export_window::Subject::Scene { scene: &self.scene, settings: &settings };
+            self.panels.export.show_subject(&ctx, &subject, base_dir.as_deref(), &self.kit);
+        }
         let frames = bpe_cli::frame_count(&settings);
         let mut ask = std::mem::take(&mut self.panels.export.test_frame);
         if std::mem::take(&mut self.panels.inspector.final_frame_wanted) {
@@ -732,15 +793,50 @@ impl eframe::App for Studio {
 }
 
 impl Studio {
+    /// Video mode's frame as `ui` lays it out, for tests (which have no eframe frame): the keys, the
+    /// toolbar, the three panels and the middle, the late keys, drops, the toolbar's click and the
+    /// question about unsaved work.
+    #[cfg(test)]
+    pub(crate) fn video_frame_for_tests(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        if self.confirm.is_none() {
+            self.shortcuts(&ctx);
+        }
+        egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
+        crate::video_mode::bottom(ui, self);
+        crate::video_mode::left(ui, self);
+        crate::video_mode::right(ui, self);
+        egui::CentralPanel::default().show(ui, |ui| crate::video_mode::centre(ui, self));
+        if self.confirm.is_none() {
+            self.late_shortcuts(&ctx);
+            self.take_drops(&ctx);
+        }
+        self.take_toolbar_click(&ctx);
+        self.confirm_dialog(&ctx);
+    }
+
+    /// Whether Video mode is on.
+    pub fn in_video_mode(&self) -> bool {
+        self.mode == crate::grade_mode::EditorMode::Video
+    }
+
+    /// Saves what the mode edits: the video in Video mode, else the scene.
+    pub fn save_work(&mut self, choose: bool) -> bool {
+        if self.in_video_mode() { self.save_video(choose) } else { self.save(choose) }
+    }
+
     /// Does what the toolbar's button clicked this frame asks.
     pub(crate) fn take_toolbar_click(&mut self, ctx: &egui::Context) {
         match self.clicked.take() {
+            Some(ToolbarClick::New) if self.in_video_mode() => self.ask_new_video(ctx),
             Some(ToolbarClick::New) => self.guard(Pending::New, ctx),
-            Some(ToolbarClick::Open) => self.guard(Pending::Open, ctx),
-            Some(ToolbarClick::Recent(path)) => self.guard(Pending::OpenPath(path), ctx),
+            Some(ToolbarClick::Open) => self.ask_open(ctx),
+            Some(ToolbarClick::Recent(path)) => self.ask_open_path(path, ctx),
             Some(ToolbarClick::Scenes) => self.open_scenes_window(),
-            Some(ToolbarClick::Save) => _ = self.save(false),
-            Some(ToolbarClick::SaveAs) => _ = self.save(true),
+            Some(ToolbarClick::Save) => _ = self.save_work(false),
+            Some(ToolbarClick::SaveAs) => _ = self.save_work(true),
+            Some(ToolbarClick::Undo) if self.in_video_mode() => _ = self.video_undo(),
+            Some(ToolbarClick::Redo) if self.in_video_mode() => _ = self.video_redo(),
             Some(ToolbarClick::Undo) => _ = self.undo(),
             Some(ToolbarClick::Redo) => _ = self.redo(),
             Some(ToolbarClick::Export) => self.panels.export.open = true,

@@ -89,11 +89,12 @@ impl Studio {
         }
     }
 
-    pub(super) fn confirm_dialog(&mut self, ctx: &egui::Context) {
+    pub(crate) fn confirm_dialog(&mut self, ctx: &egui::Context) {
         if self.confirm.is_none() {
             return;
         }
-        let name = self.scene.name.clone();
+        let about_video = self.asking_about_video();
+        let name = if about_video { self.video.name() } else { self.scene.name.clone() };
         let mut choice = None;
         egui::Modal::new(egui::Id::unique("save-changes")).show(ctx, |ui| {
             ui.set_width(380.0);
@@ -110,13 +111,22 @@ impl Studio {
                 }
                 if ui.button("Cancel").clicked() {
                     self.confirm = None;
+                    self.close_scene_answered = false;
                 }
             });
         });
-        if let Some(save) = choice
-            && let Some(action) = self.confirm.take()
-            && (!save || self.save(false))
-        {
+        let Some(save) = choice else { return };
+        if save && !(if about_video { self.save_video(false) } else { self.save(false) }) {
+            // The save didn't happen (cancelled or failed): the question stays.
+            return;
+        }
+        let Some(action) = self.confirm.take() else { return };
+        if matches!(action, Pending::Close) && !about_video && self.video_unsaved() {
+            // Closing asks about the video next, when it has unsaved work too.
+            self.close_scene_answered = true;
+            self.confirm = Some(action);
+        } else {
+            self.close_scene_answered = false;
             self.perform(action, ctx);
         }
     }
