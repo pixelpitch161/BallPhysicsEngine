@@ -65,6 +65,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Colour grading (Grade card, panels, GPU grade program, Grade mode, Histogram) | `grading.md` | `specs/2026-11-09-colour-grading-design.md`, `plans/colour-grading/` |
 | Built-in scenes (library, Scenes window) | `library.md` | `specs/2026-11-10-built-in-scenes-design.md`, `plans/built-in-scenes/` |
 | Liquid thing (GPU liquid, fill and pours, colour mixing, walls band, drops drawn from the card) | `liquid.md` | `specs/2026-11-17-liquid-thing-design.md`, `plans/liquid/` |
+| Video arrangement (several scenes in one video, transitions, the mix) | `video.md` | `specs/2026-11-24-video-arrangement-design.md`, `plans/video/` |
 | Checks, picture tests, this guide | this file, `checks.md` (CI layout, focused test runs) | `plans/2026-11-08-safety-nets-lean-guide.md`, `plans/2026-11-21-faster-checks.md` |
 
 ## Crate map

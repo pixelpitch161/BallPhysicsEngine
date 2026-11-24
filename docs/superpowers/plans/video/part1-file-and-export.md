@@ -328,3 +328,22 @@ file", "How a clip plays its scene", "Sound", "Pictures and transitions", "Expor
 - [ ] **Step 3:** One review of the whole branch by an Opus subagent (project rule), fix what it finds.
 - [ ] **Step 4:** Commit, push, open the draft PR, watch CI, merge when green (project rule: threads merge their
   own PRs after checks and review). Don't build or install the exe.
+
+## As built
+
+Built as planned, with these changes (each decided while building):
+
+- `Video` gained helpers (`frames`, `seconds`, `next_kept_id`, `next_clip_id`; `VideoSettings::beat_seconds`,
+  `bar_seconds`); `tidy` also keeps the offset at least one frame inside the scene.
+- `clip_scene` also sets the scene's fps to the video's (the spec draws frames, and motion blur, at the video's fps).
+  `OnScreen` carries `scene_frame`, the exact whole-frame index.
+- Sound tests use scenes whose sound is a steady backing-track sine, run as lib tests; the crossfade and keep-both
+  tests use two different tones (equal power only sums to constant power for unrelated sounds). The 5 ms fade-in
+  is only for a clip cut in partway (offset > 0), so a clip from its scene's start stays sample-exact.
+  `video_has_sound` takes the kit. `set_bare` drops the limiter's delay; the video's own Master delay is discarded.
+- Flash's added colour peaks at the middle (the spec), not at e = 0.35. `ComposeParams` carries the output size;
+  `Compose::new` takes the queue (a 1 × 1 black picture stands in for a missing side).
+- `arranged_frames` takes the export's scale and gives back whether it ran to the end. Besides splitting
+  `draw_video` (now `encode_frames`), the sound-thread part of `export_with` became `export_parts`, so the scene
+  and video exports share it rather than copying it. A Cut over an overlap shows the new clip alone.
+- Added `the_command_line_renders_a_video_file` (the spec's command-line check).

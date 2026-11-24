@@ -17,6 +17,7 @@ pitfalls, with one line per area pointing here. Read the file for the area you t
 | `file-map.md` | Where each file is: the folders the giant files were split into (W17), old file names, where colour grading goes |
 | `grading.md` | Colour grading: the Grade card, its panels as layers, the GPU grade program, Grade mode, the Histogram |
 | `library.md` | The built-in scenes: the library in bpe-kit, its checks, the Scenes window |
+| `video.md` | Video arrangement: the `.ballvideo` file, clips and transitions, the video's sound, compose pass, export |
 | `editor.md` | bpe-studio: design system, panels, inspector cards, Look editor, emitter card, timeline, Mixer, Sound tab |
 
 ## Keeping notes
