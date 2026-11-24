@@ -73,6 +73,8 @@ pub struct Engine {
     warm_up: f64,
     /// The Mixer's backing track, added to the mix before the master at the voices' time.
     backing: Option<crate::patch::Backing>,
+    /// The master without its limiter, ceiling and End fade ([`Engine::set_bare`]).
+    bare: bool,
 }
 
 /// The End fade's gain at `t` seconds for a clip ending at `end`: 1 until the fade starts, then a
@@ -158,6 +160,19 @@ impl Engine {
             end_fade: patch.master.master_end_fade.max(0.0) as f64,
             warm_up,
             backing: patch.backing,
+            bare: false,
+        }
+    }
+
+    /// Bare: the scene's sound before its limiter, for a clip in a video, whose own Master
+    /// limits the whole mix. The Master keeps Input and Output (with their keys and rules); its
+    /// limiter, ceiling and End fade are skipped, and so is the limiter's delay. Set it before
+    /// the first block.
+    pub fn set_bare(&mut self, bare: bool) {
+        self.master.set_bare(bare);
+        self.bare = bare;
+        if self.voice_pos == 0 {
+            self.discard = self.master.latency() + self.buses.latency();
         }
     }
 
@@ -574,7 +589,7 @@ impl Engine {
     fn fade_end(&mut self, out: &mut [f32; BLOCK * 2]) {
         let rate = SAMPLE_RATE as f64;
         let first = self.out_pos as f64 / rate;
-        if self.end_fade <= 0.0 || first + BLOCK as f64 / rate < self.end - self.end_fade {
+        if self.bare || self.end_fade <= 0.0 || first + BLOCK as f64 / rate < self.end - self.end_fade {
             return;
         }
         for i in 0..BLOCK {

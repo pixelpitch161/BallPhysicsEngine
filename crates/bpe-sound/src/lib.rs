@@ -22,6 +22,7 @@ pub mod offline;
 pub mod patch;
 pub mod ruled;
 pub mod tempo;
+pub mod video_mix;
 pub mod voice;
 pub mod voices;
 mod wav;
@@ -39,6 +40,7 @@ pub use offline::{Extras, has_sound, midi_path, render_samples, render_sound, re
 pub use patch::{Backing, HELD_WARM_UP, MAX_WARM_UP, MIN_WARM_UP, SoundPatch, Tables, patch_fingerprint, warm_up_of};
 pub use ruled::{mixer_rule_keys, voice_rule_keys};
 pub use tempo::TempoMap;
+pub use video_mix::{VideoMix, render_video_sound, video_has_sound, video_samples};
 pub use voice::{BlockCx, VoiceSource};
 pub use voices::{ShapeVoice, note_hz};
 

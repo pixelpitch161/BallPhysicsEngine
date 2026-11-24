@@ -26,6 +26,9 @@ pub struct Master {
     keys: MasterKeys,
     /// Where a rule's change of Input and Output is kept (W13).
     ruled: [ChangeKey; 2],
+    /// Input and Output only, no limiter or ceiling (a scene played in a video, whose Master
+    /// limits the whole mix).
+    bare: bool,
 }
 
 impl Master {
@@ -39,6 +42,7 @@ impl Master {
             base: (settings.master_input, settings.master_output),
             keys: MasterKeys::default(),
             ruled: [crate::ruled::mixer_key("master_input"), crate::ruled::mixer_key("master_output")],
+            bare: false,
         };
         m.set(settings);
         m.input.reset(db_to_gain(settings.master_input));
@@ -82,9 +86,15 @@ impl Master {
         self.output.reset(o);
     }
 
-    /// Frames the master delays the sound by.
+    /// Bare: [`Master::process`] applies Input and Output only (still smoothed, keyed and
+    /// ruled), with no limiter and no ceiling. Off by default.
+    pub fn set_bare(&mut self, bare: bool) {
+        self.bare = bare;
+    }
+
+    /// Frames the master delays the sound by (none when bare).
     pub fn latency(&self) -> usize {
-        self.limiter.latency()
+        if self.bare { 0 } else { self.limiter.latency() }
     }
 
     /// The master's gain reduction in the last block, in dB (0 or less).
@@ -97,6 +107,14 @@ impl Master {
     /// louder Output pushes into the limiter and never past the ceiling. (A peak limiter scales:
     /// boosting then limiting at the ceiling is limiting lower then boosting.)
     pub fn process(&mut self, l: &mut [f32; BLOCK], r: &mut [f32; BLOCK]) {
+        if self.bare {
+            for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+                let g = self.input.next() * self.output.next();
+                *a *= g;
+                *b *= g;
+            }
+            return;
+        }
         let mut cut = [1.0f32; BLOCK];
         for ((a, b), c) in l.iter_mut().zip(r.iter_mut()).zip(cut.iter_mut()) {
             let o = self.output.next();
