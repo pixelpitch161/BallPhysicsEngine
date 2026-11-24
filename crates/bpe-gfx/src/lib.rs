@@ -17,6 +17,7 @@ pub mod bent_light;
 mod blend;
 #[cfg(test)]
 mod blend_tests;
+pub mod compose;
 pub mod dichroic;
 mod each;
 pub mod effects;
