@@ -102,8 +102,9 @@ Editing a clip's scene; "Parts" 3). **Earlier parts:** `docs/notes/video.md`, `p
    started at the new frame, the sound is sought there, and the session is *starting* again (decision 4). Dragging
    on the ruler while playing pauses for the drag and plays again when it is let go (as the scene's scrub bar does).
 9. **Edits while playing.** The picture job is restarted at the playhead once the video has rested `TAKE_REST` with
-   no drag held (a starting phase, so the picture shows the edit); the sound swaps to the new take as in decision 2.
-   Undo and redo count as edits.
+   no drag held, while the clock runs on (the picture catches up by skipping); the sound swaps to the new take as in
+   decision 2, so an edit never stops the sound. Undo and redo count as edits. Playing keeps liquids at the editor's
+   detail so it can keep time (the still frame and the export use the Export detail).
 10. **Stopping.** Space, the Play button, or reaching the end without Loop. The playhead stays on the frame on show
     (so the paused picture is the one just seen), the picture job is stopped (its channel dropped), the sound is
     paused there, and the still frame is told that frame is already on show (`Still::shown_from_play`), so it isn't
@@ -260,3 +261,18 @@ Editing a clip's scene; "Parts" 3). **Earlier parts:** `docs/notes/video.md`, `p
 - Don't seek the scene engine while a take is the source, and don't let a take touch the scene engine's state.
 - Don't block the editor's thread on the picture worker, the take or the hits (every receive is `try_recv`).
 - Don't open a second audio device: the one sound thread plays both.
+
+## As built
+
+Built as planned, with these differences:
+
+- Edits while playing restart only the picture, not a *starting* phase (decision 9 as now written), so the sound
+  never stops for an edit.
+- `Take` has no revision of its own; the session remembers which revision its take was made for.
+- Stopping with no picture played (tests, or before the first frame) puts the playhead on its whole frame.
+- Back to video keeps the parked scene "saved" when it was saved before (the editor adds a camera and Master to
+  every scene it holds, which would otherwise make an old headless scene look changed).
+- `Studio::edit_frame_for_tests` draws Build mode's bar for the kittest of the Video button.
+- Not measured on Aedan's card yet: how heavy scenes keep up. The player drops frames (skips) rather than letting
+  the picture drift from the sound, and the take renders ahead of the playhead, so a slow scene shows as a lower
+  frame rate, not as lag.
