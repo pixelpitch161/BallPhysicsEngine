@@ -57,7 +57,7 @@ that is exactly what was scrubbed.
 - Text in a Water scene (**My call**; asked below).
 - Real 3D. The water stays a 2D side view; depth is drawn, not simulated.
 - Checking a small spot at full detail without making the final ("spot check"). Later idea.
-- Old scene files keep no promises (project rule). The scene format goes from 12 to 13.
+- Stems, MIDI and bake for a Water scene (the Export window hides them).
 
 ## Anti-goals
 
@@ -67,7 +67,7 @@ that is exactly what was scrubbed.
 - A moving part must never make the liquid coarser, slower to step or less correct. When the two compete, the
   part gives way.
 - The editor must not stall: draft stepping, Make final, flow lines and light are all off the frame.
-- Speed and size numbers in messages to Aedan are measured on the RX 9070 XT, never guessed.
+- Speed and size numbers given to Aedan as facts are measured on the RX 9070 XT. An estimate is always called one.
 
 ## Constraints from the project
 
@@ -92,9 +92,15 @@ that is exactly what was scrubbed.
 
 ### 1. Scene type and the Water scene's things
 
-- `Scene` gains `kind: SceneKind { Balls, Water }` (format 13). **File > New** opens the chooser from the mockup:
-  two tiles, Balls and Water; Water then offers the six looks and **Plain**. The app still opens straight to a
-  blank Balls scene (**My call**; asked below).
+- `Scene` gains `sim: SimKind { Balls, Water }` (the kit already has a `SceneKind`, so not that name). The field
+  defaults to Balls when a file has none, so every saved scene, saved grade and scene kept inside a video keeps
+  loading. `Scene::FORMAT` goes to 13 only so that an older program refuses a Water scene cleanly;
+  `OLDEST_FORMAT` stays 12.
+- **File > New** opens the chooser from the mockup: two tiles, Balls and Water; Water then offers the six looks
+  and **Plain**. The app still opens straight to a blank Balls scene (**My call**; asked below).
+- The root is the same Scene settings thing with the same `SceneSettings` (Width, Height, fps, Length, tempo),
+  because export and Video mode read them from there. Settings that mean nothing without balls are hidden in a
+  Water scene; the water's gravity is on the Water card. The Camera's ball-only settings are hidden the same way.
 - A Water scene is still a tree of things that own their settings, so the inspector, right-click Copy Value /
   Paste Value / Create Keyframe, undo and save all work unchanged. Each thing kind in the kit says which scene
   kind it belongs to; the Add menu, paste and the Scenes window respect it.
@@ -102,7 +108,7 @@ that is exactly what was scrubbed.
 
 | Thing | What it is | Cards |
 | --- | --- | --- |
-| Scene settings (root) | The world and the picture as a whole | **Water** (detail, gravity, course size), **Light** (ambient, bounce, caustics, shafts, quality), **Back** (what is behind the course), Effects, Grade |
+| Scene settings (root) | The world and the picture as a whole | its own settings as today (size, fps, Length), **Water** (detail, gravity, course size), **Light** (ambient, bounce, caustics, shafts, quality), **Back** (what is behind the course), Effects, Grade |
 | Camera | Shared with Balls scenes | Camera, plus **Follow** (below) |
 | Course | The rock: one per scene | **Rock** (material and its settings), holds the carved mask |
 | Piece | A snapped-in part: ramp, funnel, pipe, sieve, basin, step, pillar, wheel, bucket, gate, float, or a custom drawn shape | **Shape**, **Material**, **Moves** (Fixed, Keyframed, Driven) |
@@ -116,8 +122,14 @@ that is exactly what was scrubbed.
 
 - Carried-over settings keep today's names where the meaning is the same (Thickness, Surface pull, Clarity, Deep
   colour, Bend, Shine, Streaks, Mix speed, Remember for Un-mix and so on), so nothing has to be relearned.
-- A setting's address stays `{ thing, slot, key }`. Keyframes work on every setting that has them today. Pulses
-  (Follow sound, light, health) and Vary across balls are not offered in a Water scene yet.
+- A setting's address stays `{ thing, slot, key }`. `SlotId` is a fixed list with one card per slot, so the Water
+  cards need new entries. Reused: `Look` (a Liquid's Look), `Shader` (Effects), the Grade slot. New: `Water`,
+  `WaterLight`, `Back` (root); `Form` (a Piece's Shape, a Wall's Line); `Material` (Course, Piece, Wall); `Moves`;
+  `Feel`, `Mixing`, `Heat` (Liquid); `Main` (the one card of a Pour, Drain, Force or Lamp).
+- Keyframes work on every setting that has them today. Pulses (Follow sound, light, health) and Vary across balls
+  are not offered in a Water scene yet.
+- Names to avoid clashes: the saved final is a `WaterTake` (Video mode already has a sound "take"), and the
+  Liquid's Look card type is `WaterLook`.
 
 ### 2. The course
 
@@ -125,8 +137,9 @@ that is exactly what was scrubbed.
   how far the nearest solid edge is and what material it is. The physics and the drawing both read that one
   field, so what blocks the water is exactly what is drawn.
 - **Carving.** The Course starts as solid rock. The carve brush digs or fills (size, hardness, round or square
-  tip, straight-line and smooth modes). The carved mask is kept inside the scene file, compressed, at 4 px per
-  sample at 1080 wide (**my call**; the edge is stored as a distance, so it draws smooth at any zoom).
+  tip, straight-line and smooth modes). Carving is saved as its brush strokes (`Value::Strokes`), and the mask is
+  rebuilt from them and kept only in memory, at 4 px per sample at 1080 wide with the edge stored as a distance so
+  it draws smooth at any zoom (**my call**). That keeps the file and each undo step small on a big course.
 - **Pieces** come from a palette on the rail, snap to the grid and to each other, and can be scaled, turned and
   flipped. A piece is a path, so its points can be edited like a Shape's. **Walls** are pen lines (straight or
   curved, with a thickness and round or square ends).
@@ -134,7 +147,8 @@ that is exactly what was scrubbed.
   cut a tunnel through rock.
 - **Size.** A course is measured in screens. One screen is 1080 x 1920. Up to 8 screens on a side and 16 screens
   in all (**my call**). Only the tiles that hold liquid are stepped and stored, so an empty stretch of a long
-  course costs nothing.
+  course costs nothing. Tiles are part of the physics from its first part, since the grid and the saved final
+  both depend on them; the editor's tools for courses over one screen come in a later part.
 - **Camera.** The stage shows the whole course beside the camera's shot, as in the mockups. The Camera's position
   and zoom are keyframed; the **Camera path** tool drops those keyframes by clicking on the course. **Follow**
   can instead keep the shot on the water's front, on a Piece, or on the busiest water, with Lead and Smoothness.
@@ -145,26 +159,33 @@ Drops carried on a grid stay (it is what gives streams, splashes and colour carr
 
 - **Its own clock.** The water picks its own step from how fast it is moving. Nothing reads it back for balls,
   nothing else replays it, and it does not have to match bit-for-bit across machines.
-- **Same card, same result.** A run must repeat exactly on the same graphics card at the same detail, so that a
-  final redone from the middle joins the part before it with no seam, and so tests can pin it.
+- **Same card, same result.** A run must repeat exactly on the same graphics card, driver and program version at
+  the same detail, so that a final redone from the middle joins the part before it with no seam. On the RX 9070 XT
+  that only holds today because sums are done in whole numbers (`liquid.md`), so the new core keeps whole-number
+  or fixed-order sums everywhere, the pressure solve included. A take records the program version, card and
+  driver it was made with and counts as out of date when any of them changes.
 - **Which pressure method** is the trial's question. Candidate A solves the pressure on the grid each step so the
   liquid cannot squash (no springy pools, no patches for packing at walls). Candidate B is today's method (the
   liquid is slightly squashy and pushes back). The trial thread compares them side by side on Aedan's card for
   speed, thin streams and openings 2, 4 and 8 cells wide, pools at rest, volume kept over 20 seconds, and feel.
-  **Its verdict is copied here before part 1 is planned.** Everything else in this design holds for either.
+  **Its verdict is copied here before part 2 is planned.** Everything else in this design holds for either.
 - **Detail.** Cell size at 1080 wide: Draft 12, 8 (default) or 6 px; Final 3, 2 (default) or 1.5 px. About four
   drops a cell. A one-screen course two thirds full is about 86,000 drops in draft and 1.4 million in the default
   final. Caps: 500,000 draft drops, 8 million final drops (**my call**, from memory on a 16 GB card).
 - **Same water at every detail** stays a rule: a setting means the same thing in draft and final (today's "the
   same water at every Detail" work carries over), so the draft is a fair preview of everything bigger than a
   couple of draft cells.
-- **Speed targets**, to be measured in part 1: draft plays at full speed on the RX 9070 XT with the default
-  course; a 30 second one-screen final at 2 px is made in under 5 minutes.
+- **Speed** is not promised here. Today about 140,000 drops at Extreme take 1.4 to 2.6 seconds per second of
+  liquid on the RX 9070 XT, so a final with ten times the drops and finer cells may take many minutes for a
+  30 second video. The trial's numbers set the real targets, and the default final detail is chosen from them.
+  The one firm target: the draft plays at full speed with the default course.
 - **Several liquids.** Each drop carries its Liquid, its colour and its heat. Feel settings (Thickness, Surface
   pull, Weight, Stickiness) are per Liquid and blend where liquids mix. Weight lets one liquid float on another
   if the chosen core supports it; otherwise it is left for later and said so in the notes.
 - **Moving solids.** Each step the solid field carries how fast each solid point is moving, so a moving part
-  pushes the water properly and a closing gate squeezes it out.
+  pushes the water properly. Liquid that cannot be squashed has nowhere to go when it is shut in completely, so:
+  a Driven part stops against trapped liquid; a Keyframed part keeps to its keyframes and the trapped drops are
+  moved to the nearest open space (with a trouble mark).
 
 ### 4. Parts that move
 
@@ -173,32 +194,46 @@ Drops carried on a grid stay (it is what gives streams, splashes and colour carr
 - A Driven part has a **Joint**: **Free** (floats, crates), **Pin** (wheels, buckets, flaps, see-saws) or
   **Slide** (gates, pistons). Settings: Weight, Drag, Spring (pulls back to rest), Stops (turn or travel limits),
   Motor (turns or slides on its own at a speed), Catches liquid (a bucket) and Tips when (how full).
-- **How it works.** Driven parts are stepped on the processor by a small rigid-body solver. The push of the water
-  on each part is added up on the graphics card and read back once a step (one step late, as today's ball "feel"
-  is). Free parts collide with the course and with each other. Up to 64 driven parts (**my call**).
+- **How it works.** Driven parts are stepped on the processor by a small rigid-body solver at a fixed 240 steps
+  a second, however small the liquid's own steps are. The push of the water on each part is added up on the
+  graphics card and read back at that rate without making the card wait. The solver counts the weight of the
+  water a part has to shove aside as part of the part (added mass), which is what keeps a light float steady when
+  it learns about the water a moment late. Free parts collide with the course and with each other. Up to 64
+  driven parts (**my call**).
 - **Liquid first, concretely.** The liquid's grid, step and method never change because a part is there. Parts
   are sampled onto the liquid's grid. A part thinner than two cells is thickened for the physics only, and gets a
-  trouble mark at draft detail. If light parts jitter, the part is damped; the liquid is not touched.
+  trouble mark at draft detail. Any steadying is done on the part's side; the liquid is not touched.
 
 ### 5. Draft, Final, flow lines and trouble marks
 
 - **Draft** steps live in the editor on its own thread and device queue. An edit that changes the physics
   restarts it, as today; an edit to a look, lamp, camera, Effects or Grade never does.
-- **Make final** runs the physics at final detail in the background and writes a **take**: every frame's drops,
-  packed small, plus a full restart point every 2 seconds. The take is a folder beside the scene file (app data
-  for an unsaved scene). It is a cache: deleting it loses nothing but time. The status bar shows its size, and
-  **Clear finals** removes it.
-- **Size** (*estimate*): about 3 bytes a drop near surfaces, far less deep inside pools (stored as filled cells
-  with a colour). Target at most 4 GB for a 30 second one-screen final at default detail. If part 6 measures more,
-  the fallback is to store every other frame and place the in-between drops from their speed. Before making, the
-  window says how much room it needs and refuses if the disk cannot hold it.
+- **Make final** runs the physics at final detail in the background and writes a **take** (`WaterTake`).
+- **What a take holds.** Sixty frames for every second, whatever the scene's or a video's fps (the water's clock
+  does not depend on fps; a frame at another rate is drawn from the nearest stored frame with its drops moved on
+  by their speed). Each frame holds the drops themselves, not finished pictures, because Smoothing, Streaks and
+  the rest of the Look must still work afterwards. A drop near a surface or where colours meet is about 5 bytes
+  (place within its cell, colour, heat, age, which Liquid). A cell deep inside a pool, full and of one colour, is
+  about 3 bytes for all its drops. Speed is stored once per cell. Every 2 seconds there is also a full restart
+  point (about 48 bytes a drop).
+- **Size** (*estimate*, not measured): 4 to 8 GB for a 30 second one-screen final at 2 px cells, restart points
+  included. The Make final part measures it on real courses and reports it to Aedan. Levers if it is too much:
+  store every other frame, a coarser default final, or fewer restart points. Before making, the window says how
+  much room is needed and refuses if the disk cannot hold it.
+- **Where takes live.** One finals folder (in app data by default, movable in Settings; **my call**), with each
+  take found by a fingerprint of the scene's physics. A scene file, a recovered copy, a Save As copy and the same
+  scene kept inside a video therefore all find the same take, and nothing is made twice. It is a cache: deleting
+  it loses nothing but time. **Clear finals** empties it, and takes unused for 30 days are removed. A take is
+  written in chunks, so a crash keeps everything up to the last whole chunk.
 - **Draft | Final switch** in the toolbar. In Final view the timeline's **Final** lane shows what is made, what
   is being made, and what is out of date (hatched). Frames can be scrubbed as soon as they are made, and Make
   final can be stopped at any time.
-- **What an edit costs.** Look, lamp, camera, Effects, Grade: nothing; the final redraws at once. A change that
-  starts at a time (a keyframe, a pour's start, a gate opening): the final is out of date from the restart point
-  before that time, and only that tail is remade. A change to the course, a Liquid's Feel or gravity: all of it.
-  The final is remade only when Aedan asks or on export (**my call**).
+- **What an edit costs.** Look, lamp, camera, Effects, Grade: nothing; the final redraws at once. A physics
+  change is out of date from the restart point before the **earliest time any value the physics reads becomes
+  different**: for a keyframe that is added, moved or removed, the time of the keyframe before it on that setting
+  (the curve between them changes too); for a Pour's start, the earlier of the old and new start; for a setting
+  with no keyframes, the course, a Liquid's Feel or gravity, the beginning. Only that tail is remade. The final is
+  remade only when Aedan asks or on export (**my call**).
 - **Flow lines.** A second draft run goes ahead of the playhead in the background and traces where the water
   travels over the whole clip. The lines are drawn on the course: thicker where more water goes, coloured by
   time. Options: whole clip, or the next few seconds from the playhead. After a final is made its own lines can be
@@ -220,14 +255,23 @@ Make final again.
 3. **Lamp light.** For each Lamp, light is followed through the scene in 2D: stopped by solids, bent where it
    enters the liquid (Bend), tinted and dimmed by how far it has travelled through liquid (Clarity, Deep colour).
    Where bent light bunches up it is brighter, which gives real light patterns under the surface instead of
-   today's noise, and visible shafts if Shafts is on. Worked out only for the camera's shot plus a margin.
+   today's noise, and visible shafts if Shafts is on. Rays go out in a fixed fan, never at random, so a frame is
+   the same every time it is drawn and nothing flickers or needs smoothing over time. Solids block light along
+   the whole way from the lamp, even off screen; liquid is only counted inside the shot plus a margin. The bent
+   light code in `bpe-gfx/src/lighting` (glass and light) is reused where it fits.
 4. **Liquid as a light.** A liquid that gives off light (Glow, Heat) spreads it to the solids and the back,
    blocked by solids, so neon and lava light the rock around them.
 5. **The liquid itself**, from its Look card: body colour by depth, what is behind it bent through it, edge
    sheen, shine from the lamps, a solid glossy body for paint, a crust, flat bands and an outline for cartoon.
 6. **Extras.** Foam, bubbles, mist and sparks are small sprites born from what the physics reports (hard hits,
    trapped air, fast surfaces), and wet marks stay on solids the liquid has touched.
-7. **Shared finish.** Effects, bloom and Grade, the same code as a Balls scene.
+7. **Shared finish.** Effects, bloom and Grade, the same code as a Balls scene. Today `Renderer::finish` reads
+   more than the finished picture: Effects read the things' object and light pictures, and the grade's Things
+   masks read silhouettes. So the water renderer hands the finish the same kinds of input: the colour picture, a
+   light picture (lamp and glow light), and silhouettes for each Liquid, the solids, the back and the extras. The
+   grade's Things masks then pick those. The light and looks part goes through every Effect and Grade mask and
+   marks it offered, offered from the water's inputs, or hidden in a Water scene; changing `finish` to take these
+   inputs must leave every Balls picture byte-identical.
 
 **Liquid > Look card** (groups): *Colour* (Colour, Colour from: its own / speed / heat / age / depth, as a
 gradient), *Body* (Clarity, Deep colour, Solid: 0 clear to 1 paint, Bend, Rainbow split), *Surface* (Smoothing,
@@ -267,28 +311,35 @@ stays linked to the look afterwards. Adding a seventh look later is adding a row
 - Toolbar: a **Water scene** chip, **Draft | Final**, **Make final**, **Export**. Status bar: draft drops, and the
   final's drops, time and disk room as measured on the last make (estimates before the first).
 - **View switches** on the stage: Flow lines, Trouble marks, Whole course / Shot only, Final lines.
-- Build | Grade | Video modes stay. Grade mode works on a Water scene unchanged, since it grades the finished
-  picture.
+- Build | Grade | Video modes stay. Grade mode works on a Water scene with the masks listed in section 6.
+- **A Water scene has its own stage in the editor.** Today the preview steps the ball `Playback` that the whole
+  editor holds and composes the picture with handles; that path is left alone. In a Water scene the water stage
+  runs instead, the ball playback stays empty and unstepped, and the jobs built from every scene today (sound,
+  aim, particles, the Follow sound sampler, the light probe) are not started. Recovery and autosave, Save As, the
+  Scenes window and Preview final frame each get a Water path in the part that first needs it.
 - **Export** uses the final. If any of the range is missing or out of date, the Export window offers **Make final
-  and export** as one button with the time it expects, and **Export the draft** for a quick look.
+  and export** as one button with the time it expects, and **Export the draft** for a quick look. Export, Preview
+  final frame, the Scenes window's clips and Video mode all get their frames through `bpe-cli`'s `FrameMaker` and
+  `LiveClip`; those gain a clip source with a ball kind and a water kind.
 - **Video mode.** A Water scene can be a clip like any other. It plays from its take when there is one and from
   the draft otherwise (the clip shows a small Draft tag). Exporting a video makes any missing finals first. The
-  take is found by a fingerprint of the kept scene's physics and lives in a folder beside the video file. A water
-  clip has no scene sound.
+  take is the same one the scene itself uses, found by fingerprint in the finals folder. A water clip has no
+  scene sound.
 
 ### 8. Where the code goes
 
-- `bpe-core`: `SceneKind`, the Water things' data (`water/`: course mask, piece and wall shapes, joints), format
-  13. No physics.
+- `bpe-core`: `SimKind`, the new `SlotId`s, the Water things' data (`water/`: carve strokes, piece and wall
+  shapes, joints). No physics.
 - **New crate `bpe-water`** (after `bpe-gfx`, before `bpe-kit`): the physics (`sim/`, WGSL compute), driven parts
   (`parts/`), takes (`take/`), flow lines and trouble marks (`preview/`), the renderer (`draw/`, `shaders/`). It
-  uses `bpe-gfx` for the device helpers and for the shared finish (Effects, bloom, Grade), which `bpe-gfx` exposes
-  as one call on a finished picture.
-- `bpe-kit`: the Water thing kinds, cards and settings (`things/water_*`, `modules/water_*`), the looks table, and
-  one **player** that both scene kinds sit behind ("the frame at time t") so the editor preview, export and
-  `bpe-kit::video` do not care which kind a scene is.
-- `bpe-studio`: `water_mode/` (tool rail, stage tools, course view, Final lane, the make-final job).
-- `bpe-cli`: export of a Water scene and of a video holding one (makes the final, then draws from it).
+  uses `bpe-gfx` for the device helpers and for the shared finish (section 6, step 7).
+- `bpe-kit`: the Water thing kinds, cards and settings (`things/water_*`, `modules/water_*`) and the looks table.
+  Each thing kind says which `SimKind` it belongs to, and the tests that walk every thing kind and build a ball
+  `World` (`restarts.rs` and the "every kind" tests) skip the Water kinds.
+- `bpe-studio`: `water_mode/` (the water stage, tool rail, stage tools, course view, Final lane, the make-final
+  job).
+- `bpe-cli`: the clip source in `FrameMaker` and `LiveClip`, so export of a Water scene, and of a video holding
+  one, makes the final and then draws from it.
 - Today's Liquid thing and `bpe-gfx/src/liquid_sim/` are not touched until the last part.
 
 ### 9. Checks
@@ -296,6 +347,8 @@ stays linked to the look afterwards. Adding a seventh look later is adding a row
 - **Physics tests** check behaviour, not exact numbers: volume kept over 20 seconds, a pool comes to rest, water
   passes an opening of 2, 4 and 8 cells at the expected rate, the same result twice on the same device, a final
   redone from a restart point equals a final made in one go.
+- **Pinned pictures are drawn from a small stored take**, not from live physics, so a driver update that moves the
+  physics' last bits does not move them.
 - **Edits**: a test changes every setting of every Water thing kind and checks it restarts the draft and marks the
   final out of date exactly when it should (the Water twin of `restarts.rs`).
 - **Pictures**: picture tests at 270 x 480 through `test_device()`; one full-size look scene per starting look in
@@ -305,38 +358,49 @@ stays linked to the look afterwards. Adding a seventh look later is adding a row
 
 ## Parts
 
-Each part is its own thread and pull request, ends with something Aedan can open, and gets one Opus review.
+Each part is its own thread and pull request, ends with something Aedan can open, and gets one Opus review. Each
+part adds its own tools to the rail.
 
-1. **Water scenes exist.** Scene kind and chooser, `bpe-water` with the chosen physics core at draft detail,
-   Course with carving, Liquid (Feel), Pour (tap and fill at the start), a plain look, the shared player, save.
-2. **Light and the six looks.** The whole renderer of section 6, materials, Back, Lamps, the looks table.
-3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, the complete tool rail.
+1. **Water scenes open.** `SimKind`, the new slots, save and load, the chooser, the Water things as data, the
+   water stage as an empty shell with the tool rail, ball-only jobs and tests gated by kind. Balls goldens and
+   pictures shown unchanged.
+2. **Water runs.** `bpe-water` with the chosen physics core at draft detail and tiles from the start, the Course
+   with carving, Liquid (Feel), Pour (tap and fill at the start), a plain look.
+3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
 4. **Everything today's liquid can do.** Mixing and Un-mix, rain, drips, bursts, drains, leaks, Forces, heat,
    freezing, drying, stains, fizz, wet marks.
 5. **Moving parts.** Keyframed and Driven, joints, floats, wheels, buckets, gates.
-6. **Make final.** Final detail, takes, the Final lane, partial remakes, flow lines, trouble marks.
-7. **Big courses.** Courses over one screen, tiles, the camera path tool and Follow.
-8. **Export, Video mode, clean-up.** Export from takes, water clips in a video, command-line export, and, once
-   Aedan agrees Water mode is at least as good, removing the old Liquid thing from Balls scenes.
+6. **Light and the six looks.** The whole renderer of section 6, materials drawn, Back, Lamps, the looks table,
+   the shared finish and its masks.
+7. **Flow lines and trouble marks**, from the draft.
+8. **Make final and export.** Final detail, takes, the Final lane, partial remakes, the clip source in
+   `bpe-cli`, export of a Water scene from the editor and the command line, Preview final frame.
+9. **Big courses.** The editor's tools for courses over one screen: whole-course view, Camera path, Follow.
+10. **Video mode and clean-up.** Water clips in a video and the Scenes window, and, once Aedan agrees Water mode
+    is at least as good, removing the old Liquid thing from Balls scenes.
 
-Parts 2 to 5 do not depend on each other and can run side by side once part 1 is merged.
+Order: 1, 2, 3 in a row. Then 4, 5, 6 and 7 side by side (the Molten look's crust from heat is finished by
+whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after part 8.
 
 ## Risks
 
 - **The pressure method's speed** at 1.4 million drops is unknown until the trial reports. If Candidate A loses,
   part 1 builds on Candidate B and the design is otherwise unchanged.
-- **Take size.** If packing cannot reach the target, finals store every other frame.
-- **Driven parts read the water one step late**, which can make light floats jitter. The part is damped, never
-  the liquid.
+- **Make final may be slow.** Nobody has timed 1.4 million drops yet. If it is too slow to be pleasant, the
+  default final becomes coarser and the finest setting stays for the last pass before a post.
+- **Take size.** If packing cannot get the size down, finals store every other frame.
+- **Driven parts learn about the water a moment late.** Added mass on the part's side is the cure; if a very
+  light part still jitters it is made heavier with a note, never by touching the liquid.
 - **2D light at full size** may be too slow at Best on a long shot. Quality steps and the shot-only margin are
   the levers, and the editor already drops to Draft while dragging.
-- **Two scene kinds behind one player** touches the editor preview, export and Video mode in part 1. That part
-  must show Balls goldens and pictures unchanged before anything else lands.
+- **The editor assumes a ball playback everywhere** (about 90 uses). Part 1 leaves that path alone and gates the
+  ball-only jobs by kind; it must show Balls goldens and pictures unchanged before anything else lands.
 
 ## Questions for Aedan
 
-1. Finals use real disk room while a scene is being worked on, around 4 GB for a 30 second video (estimate), in a
-   folder that is safe to delete. Is that all right?
-2. The app still opens to a blank Balls scene, and File > New shows the Balls or Water chooser. Or should the
+1. The app still opens to a blank Balls scene, and File > New shows the Balls or Water chooser. Or should the
    chooser be the first thing shown?
-3. Text is left out of Water scenes for now. Is that all right, or is text over the water wanted from the start?
+2. Text is left out of Water scenes for now. Is that all right, or is text over the water wanted from the start?
+
+To know, not to answer yet: finals will use several GB of disk while a scene is being worked on, and how long
+Make final takes is not known. Both are measured and reported before anything is built on them.
