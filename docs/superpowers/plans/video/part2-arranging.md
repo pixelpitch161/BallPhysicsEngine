@@ -160,12 +160,12 @@ Build mode edits is untouched by Video mode. Every change to the video goes thro
 - `pub fn new_video_from(scene: &Scene, reg) -> Video` (decision 10).
 
 **Steps**
-- [ ] Write tests first in the same file: snap to bar/beat/off/free and with a first beat; keep_scene names and
+- [x] Write tests first in the same file: snap to bar/beat/off/free and with a first beat; keep_scene names and
   colours (ninth wraps); add_clip plays the whole scene; move then tidy (`moving_a_clip_past_its_neighbour_reorders_them`);
   trim_start keeps the end picture (`end - offset` unchanged) and stops at offset 0; trim_end stops at the scene's
   length; set_overlap clamps to half the shorter clip; duplicate lands after; paste of a clip whose scene is gone is
   refused; new_video_from takes size/fps/tempo.
-- [ ] Implement. Run `cargo test -p bpe-studio --lib video_mode::arrange`. Expected: all pass.
+- [x] Implement. Run `cargo test -p bpe-studio --lib video_mode::arrange`. Expected: all pass.
 
 ### Task 2: The session, its history and files (`video_mode/mod.rs`, `video_mode/files.rs`)
 
@@ -180,10 +180,10 @@ Build mode edits is untouched by Video mode. Every change to the video goes thro
   `save_video(choose) -> bool`, `save_video_to(path) -> bool`, `video_undo()`, `video_redo()`.
 
 **Steps**
-- [ ] Tests: `a_fresh_video_is_not_unsaved`, `new_video_keeps_the_open_scene_as_its_first_clip`,
+- [x] Tests: `a_fresh_video_is_not_unsaved`, `new_video_keeps_the_open_scene_as_its_first_clip`,
   `save_then_open_gives_the_same_video` (temp folder), `undo_and_redo_walk_the_video_steps`,
   `a_broken_video_file_is_a_file_problem`.
-- [ ] Implement. Run `cargo test -p bpe-studio --lib video_mode::`.
+- [x] Implement. Run `cargo test -p bpe-studio --lib video_mode::`.
 
 ### Task 3: The mode, the toolbar, keys, dialogs and drops (`app/*`, `grade_mode::mode_switch`)
 
@@ -199,10 +199,10 @@ Build mode edits is untouched by Video mode. Every change to the video goes thro
 - `Pending::NewVideo`, `Pending::OpenVideoPath`; confirm dialog by whose work (decision 12); `drops::Dropped::Video`.
 
 **Steps**
-- [ ] Tests: `the_toolbar_switches_to_video_mode`, `ctrl_z_in_video_mode_undoes_the_video_not_the_scene`,
+- [x] Tests: `the_toolbar_switches_to_video_mode`, `ctrl_z_in_video_mode_undoes_the_video_not_the_scene`,
   `closing_asks_about_the_scene_then_the_video`, `dropping_a_video_opens_it_in_video_mode`,
   `opening_a_video_switches_to_video_mode`.
-- [ ] Implement, run those tests.
+- [x] Implement, run those tests.
 
 ### Task 4: The panels: scenes list, inspector, arrangement (`scenes.rs`, `inspect.rs`, `lanes.rs`)
 
@@ -231,12 +231,12 @@ Build mode edits is untouched by Video mode. Every change to the video goes thro
   time is (`x_of`, `time_of`).
 
 **Steps**
-- [ ] Tests (kittest, the whole `Studio::ui` in Video mode at 1440 × 900): `adding_the_build_scene_lists_it`,
+- [x] Tests (kittest, the whole `Studio::ui` in Video mode at 1440 × 900): `adding_the_build_scene_lists_it`,
   `add_to_the_end_makes_a_clip`, `dragging_a_clip_moves_it_by_whole_bars`, `alt_drags_free`,
   `dragging_the_right_edge_trims`, `dragging_the_left_edge_keeps_the_end_picture`, `a_drag_is_one_undo_step`,
   `overlapping_makes_a_transition_and_clicking_it_picks_it`, `the_transition_inspector_changes_the_kind`,
   `the_video_inspector_changes_the_tempo`, `delete_copy_paste_duplicate_a_clip`.
-- [ ] Implement, run `cargo test -p bpe-studio --lib video_mode::`.
+- [x] Implement, run `cargo test -p bpe-studio --lib video_mode::`.
 
 ### Task 5: The still frame (`bpe-cli::arranged::still_frame`, `video_mode/still.rs`)
 
@@ -252,11 +252,11 @@ Build mode edits is untouched by Video mode. Every change to the video goes thro
   (compared by a cheap key: the video's revision counter on the session and the frame).
 
 **Steps**
-- [ ] Test in `bpe-cli/tests/arranged.rs`: `still_frame_matches_the_export_frame_outside_a_transition` (a scene with
+- [x] Test in `bpe-cli/tests/arranged.rs`: `still_frame_matches_the_export_frame_outside_a_transition` (a scene with
   no memory: same bytes as `arranged_frames`' frame), `still_frame_in_a_gap_is_black`.
-- [ ] Test in `video_mode/tests.rs`: `the_still_frame_comes_back` (worker returns a texture within 60 s with a test
+- [x] Test in `video_mode/tests.rs`: `the_still_frame_comes_back` (worker returns a texture within 60 s with a test
   device; skipped like `a_final_frame_comes_back_and_shows` without one).
-- [ ] Implement, run them.
+- [x] Implement, run them.
 
 ### Task 6: Export window and recovery for the video
 
@@ -269,18 +269,30 @@ Build mode edits is untouched by Video mode. Every change to the video goes thro
   holds or an empty video) and switches to Video mode.
 
 **Steps**
-- [ ] Tests: `export_window` `a_video_hides_stems_midi_and_lighting` (kittest on the window), recovery
+- [x] Tests: `export_window` `a_video_hides_stems_midi_and_lighting` (kittest on the window), recovery
   `a_video_copy_is_an_orphan_of_its_own`, app `an_unsaved_video_is_autosaved_and_offered_back`.
-- [ ] Implement, run them.
+- [x] Implement, run them.
 
 ### Task 7: Notes, checks, review, pull request
 
-- [ ] `docs/notes/video.md`: "Part 2: Video mode, arranging (as built)". `docs/notes/editor.md`: one line pointing
+- [x] `docs/notes/video.md`: "Part 2: Video mode, arranging (as built)". `docs/notes/editor.md`: one line pointing
   to it. This plan's "As built".
-- [ ] `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, the tests above.
-- [ ] One Opus review of the whole part; fix what it finds.
-- [ ] Draft PR, CI green, merge; project memory `multi-scene-video`.
+- [x] `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, the tests above.
+- [x] One Opus review of the whole part; fix what it finds.
+- [x] Draft PR, CI green, merge; project memory `multi-scene-video`.
 
 ## As built
 
-(Filled in when the part lands.)
+Built as planned in `crates/bpe-studio/src/video_mode/` (mod, arrange, files, scenes, inspect, lanes, still,
+tests) with `bpe_cli::arranged::still_frame` and `bpe_cli::run_up`. The summary for later parts is in
+`docs/notes/video.md` ("Part 2 as built"). Changes from the plan, mostly from the review:
+
+- Dragging a clip snaps its head, or its tail when the tail is nearer a line and within about 8 points
+  (`snap_move`'s `reach`), so a far tail never pulls the clip.
+- A frame rate change tidies every clip onto whole frames in the same undo step.
+- New, Open and built-in scenes picked while in Video mode switch to Build, where the scene shows.
+- The video's autosave and crash copy compare the session's revision, not the whole video (it holds whole
+  scenes); the restore offer names the bare file name.
+- The still frame uses the Export liquid detail, as the export does.
+- Closing the window asks about the scene, then about the video when it is unsaved too.
+- Deferred to part 3: real-time playing, the Scene sound lane, Edit scene / Back to video.

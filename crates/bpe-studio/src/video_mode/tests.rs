@@ -428,3 +428,35 @@ fn the_still_frame_comes_back() {
         assert!(bpe_gfx::test_device().is_err(), "no still frame came back with a graphics device");
     }
 }
+
+#[test]
+fn keeping_the_build_scene_lists_it_and_add_to_the_end_plays_it_last() {
+    let (mut studio, _, b) = studio();
+    let mut scene = studio.scene.clone();
+    scene.name = "Second".into();
+    let kept = scenes::keep(&mut studio, scene);
+    assert_eq!(studio.video.pick(), VideoPick::Scene(kept));
+    assert_eq!(studio.video.video.scenes[&kept].name, "Second");
+    let mut h = harness(studio);
+    assert!(h.query_all_by_label("Scene Second").next().is_some(), "the kept scene is listed");
+    h.get_by_label("Add to the end").click();
+    h.run();
+    let VideoPick::Clip(c) = h.state().video.pick() else { panic!("the new clip is picked") };
+    let (last, before) = (clip_of(h.state(), c), clip_of(h.state(), b));
+    assert_eq!(last.scene, kept);
+    assert_eq!(last.start, before.start + before.length);
+    assert!(h.state_mut().video_undo());
+    assert_eq!(h.state().video.video.clips.len(), 2);
+}
+
+#[test]
+fn a_new_frame_rate_keeps_every_clip_on_whole_frames() {
+    let (mut studio, a, _) = studio();
+    studio.video.change(false, |v| v.clips[0].start = 0.01);
+    let mut h = harness(studio);
+    h.get_by_label("24").click();
+    h.run();
+    assert_eq!(h.state().video.video.settings.fps, 24);
+    let start = clip_of(h.state(), a).start;
+    assert!((start * 24.0 - (start * 24.0).round()).abs() < 1e-9, "start {start} is on a frame");
+}

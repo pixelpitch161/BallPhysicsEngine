@@ -133,7 +133,12 @@ fn video(ui: &mut Ui, studio: &mut Studio, merge: bool) {
         number(ui, "End fade", &mut m.end_fade, 0.0..=30.0, 0.02, " s", "Fades the whole video out at its end.");
     });
     if s != studio.video.video.settings {
-        studio.video.change(merge, |v| v.settings = s);
+        let kit = studio.kit.clone();
+        studio.video.change(merge, |v| {
+            v.settings = s;
+            // A new frame rate puts every clip on its frames again.
+            arrange::tidy(v, &kit.registry);
+        });
     }
     song(ui, studio, merge);
 }

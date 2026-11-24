@@ -37,12 +37,14 @@ pub fn snap(time: f64, settings: &VideoSettings, free: bool) -> f64 {
     if snapped < 0.0 { snapped + step * (-snapped / step).ceil() } else { snapped }
 }
 
-/// Where a clip `length` long dragged to `start` lands: whichever of its two ends is nearer a grid
-/// line goes onto it, so a clip can be lined up by its tail as well as its head.
-pub fn snap_move(start: f64, length: f64, settings: &VideoSettings, free: bool) -> f64 {
+/// Where a clip `length` long dragged to `start` lands: its head snaps, unless its tail is nearer a
+/// grid line and within `reach` seconds of one (about 8 points on screen), so a clip can be lined
+/// up by its tail as well.
+pub fn snap_move(start: f64, length: f64, settings: &VideoSettings, free: bool, reach: f64) -> f64 {
     let head = snap(start, settings, free);
     let tail = snap(start + length, settings, free) - length;
-    if (tail - start).abs() < (head - start).abs() && tail >= 0.0 { tail } else { head }
+    let by_tail = (tail - start).abs();
+    if by_tail < (head - start).abs() && by_tail <= reach && tail >= 0.0 { tail } else { head }
 }
 
 /// The beat lines between `from` and `to` seconds: each one's time and whether a bar starts there.
@@ -269,8 +271,10 @@ mod tests {
     fn a_move_snaps_by_its_nearer_end() {
         let s = VideoSettings::default();
         // A clip 3 s long dragged to 2.9: its head is 0.9 off bar 2, its tail (5.9) 0.1 off bar 6.
-        assert_eq!(snap_move(2.9, 3.0, &s, false), 3.0);
-        assert_eq!(snap_move(2.1, 3.0, &s, false), 2.0);
+        assert_eq!(snap_move(2.9, 3.0, &s, false, 0.2), 3.0);
+        assert_eq!(snap_move(2.1, 3.0, &s, false, 0.2), 2.0);
+        // The tail is nearer but too far away to pull: the head lands on its bar.
+        assert_eq!(snap_move(0.6, 3.0, &s, false, 0.16), 0.0);
     }
 
     #[test]

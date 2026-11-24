@@ -100,6 +100,10 @@ impl Studio {
     }
 
     pub(super) fn perform(&mut self, action: Pending, ctx: &egui::Context) {
+        if matches!(action, Pending::New | Pending::OpenPath(_) | Pending::OpenBuiltIn(_)) && self.in_video_mode() {
+            // A scene opened from Video mode shows where it can be seen: in Build mode.
+            self.mode = crate::grade_mode::EditorMode::Build;
+        }
         match action {
             Pending::Close => {
                 self.closing = true;

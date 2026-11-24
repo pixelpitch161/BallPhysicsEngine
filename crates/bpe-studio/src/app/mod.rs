@@ -323,8 +323,10 @@ pub struct Studio {
     video_crash_slot: recovery::VideoCrashSlot,
     /// When the video's crash copy was last refreshed.
     video_crash_copied_at: Option<Instant>,
-    /// The video as last sent to the autosave, while it is unsaved.
-    autosaved_video: Option<bpe_core::video::Video>,
+    /// The video's revision the crash copy holds.
+    video_crash_rev: Option<u64>,
+    /// The video's revision the autosave last wrote.
+    video_autosaved_rev: Option<u64>,
     /// When the video's autosave last wrote.
     video_autosaved_at: Option<Instant>,
     /// The video was unsaved at the last look, so a recovery copy of it may exist.
@@ -502,7 +504,8 @@ impl Studio {
             crash_slot: Arc::default(),
             video_crash_slot: Arc::default(),
             video_crash_copied_at: None,
-            autosaved_video: None,
+            video_crash_rev: None,
+            video_autosaved_rev: None,
             video_autosaved_at: None,
             video_was_unsaved: false,
             crash_copied_at: None,
@@ -632,7 +635,7 @@ impl eframe::App for Studio {
             if self.panels.export.busy() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.ask_stop_export = true;
-            } else if self.unsaved() {
+            } else if self.must_ask(&Pending::Close) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm = Some(Pending::Close);
             }

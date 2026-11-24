@@ -70,7 +70,7 @@ impl Studio {
                     .original
                     .as_ref()
                     .and_then(|p| p.file_stem())
-                    .map_or("Untitled video".to_owned(), |s| format!("the video {}", s.to_string_lossy()));
+                    .map_or("Untitled video".to_owned(), |s| s.to_string_lossy().into_owned());
                 let scene = bpe_core::Scene::empty(&self.kit.registry);
                 self.offer = Some(Offer { name, scene, orphan, when, file_newer, video: Some(video) });
             }
@@ -95,7 +95,7 @@ impl Studio {
         if let Some(session) = &self.recovery {
             session.write_video(self.video.video.clone(), self.video.path.clone());
             session.flush();
-            self.autosaved_video = Some(self.video.video.clone());
+            self.video_autosaved_rev = Some(self.video.revision);
             self.video_autosaved_at = Some(Instant::now());
             self.video_was_unsaved = true;
             if !matches!(session.outcome(), Some(Err(_))) {
@@ -167,7 +167,8 @@ impl Studio {
         if !self.video_unsaved() {
             if std::mem::take(&mut self.video_was_unsaved) {
                 session.clear_video();
-                self.autosaved_video = None;
+                self.video_autosaved_rev = None;
+                self.video_crash_rev = None;
                 *self.video_crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 self.video_crash_copied_at = None;
             }
@@ -179,22 +180,24 @@ impl Studio {
         let since_copy = self.video_crash_copied_at.map_or(recovery::CRASH_COPY_EVERY, |t| now.duration_since(t));
         {
             let mut slot = self.video_crash_slot.lock().unwrap_or_else(|e| e.into_inner());
-            let stale = slot.as_ref().is_none_or(|c| c.video != self.video.video || c.original != self.video.path);
+            // Compared by revision: a video holds whole scenes, too big to compare every tick.
+            let stale = slot.is_none() || self.video_crash_rev != Some(self.video.revision);
             if stale && since_copy >= recovery::CRASH_COPY_EVERY {
                 *slot = Some(recovery::VideoCrashCopy {
                     video: self.video.video.clone(),
                     original: self.video.path.clone(),
                 });
                 self.video_crash_copied_at = Some(now);
+                self.video_crash_rev = Some(self.video.revision);
             } else if stale {
                 soon(recovery::CRASH_COPY_EVERY - since_copy);
             }
         }
         let since_save = self.video_autosaved_at.map_or(recovery::AUTOSAVE_EVERY, |t| now.duration_since(t));
-        if self.autosaved_video.as_ref() != Some(&self.video.video) {
+        if self.video_autosaved_rev != Some(self.video.revision) {
             if since_save >= recovery::AUTOSAVE_EVERY {
                 session.write_video(self.video.video.clone(), self.video.path.clone());
-                self.autosaved_video = Some(self.video.video.clone());
+                self.video_autosaved_rev = Some(self.video.revision);
                 self.video_autosaved_at = Some(now);
             } else {
                 soon(recovery::AUTOSAVE_EVERY - since_save);

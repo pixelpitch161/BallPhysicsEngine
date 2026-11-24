@@ -349,7 +349,8 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
             let s = &drag.before.settings;
             match drag.part {
                 Part::Body => {
-                    let start = arrange::snap_move(clip.start + delta, clip.length, s, free);
+                    let reach = f64::from(EDGE + 2.0) / f64::from(view.px_per_second.max(1e-3));
+                    let start = arrange::snap_move(clip.start + delta, clip.length, s, free, reach);
                     arrange::move_clip(&mut video, reg, drag.clip, start);
                 }
                 Part::Left => {

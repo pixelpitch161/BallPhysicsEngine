@@ -195,6 +195,8 @@ pub fn still_frame(
     stop: &std::sync::atomic::AtomicBool,
 ) -> anyhow::Result<(Vec<u8>, (u32, u32))> {
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    // Liquids use their Export detail, as the export and the Preview final frame do.
+    let _export = bpe_kit::things::liquid::exporting_for_now();
     let video = tidied(video, kit);
     let s = &video.settings;
     let fps = s.fps.max(1);
