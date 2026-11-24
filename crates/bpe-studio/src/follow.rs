@@ -62,6 +62,12 @@ pub struct Following {
     pub words: String,
 }
 
+/// Whether settings in `scene` can follow anything: not in a Water scene, which has no sound, ball
+/// lights or health yet.
+pub fn offered(scene: &Scene) -> bool {
+    scene.sim == bpe_core::SimKind::Balls
+}
+
 /// What the settings grids need for Follow sound and Follow light: the menu, what each setting
 /// (by key) follows now, and whether it may follow light.
 pub struct FollowCx<'a> {

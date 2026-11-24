@@ -13,12 +13,11 @@ pub(super) fn show(
     edits: &mut Vec<Edit>,
 ) {
     let (scene, kit, id, thing, lw) = (cx.scene, cx.kit, cx.id, cx.thing, cx.label_width);
-    if id != ThingId::ROOT
-        && kind.id() != "camera"
-        && kind.id() != bpe_kit::things::light::LIGHT
-        && kind.id() != bpe_kit::things::rig::RIG
-    {
-        ui.add_space(6.0);
+    if id != ThingId::ROOT && has_placement(kind) {
+        // Nothing rides in a Water scene, so its first card needs no gap above it.
+        if has_own_card(kind) {
+            ui.add_space(6.0);
+        }
         card(ui, |ui| {
             let header = ui.horizontal(|ui| {
                 let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, "placement"), "Placement");
@@ -143,6 +142,10 @@ pub(super) fn position_rows(
     }
     ui.end_row();
 
+    // Nothing rides in a Water scene: its things have a place and a turn, and that is all.
+    if scene.sim == bpe_core::SimKind::Water {
+        return;
+    }
     let parent = thing.parent.unwrap_or(ThingId::ROOT);
     let rides = thing.rides();
     grid_label(ui, lw, "Attach").on_hover_text("Grouped things keep their own place; a rider follows its parent");

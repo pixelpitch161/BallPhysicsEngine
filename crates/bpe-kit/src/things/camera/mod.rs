@@ -199,7 +199,9 @@ impl ThingKind for CameraKind {
     /// A Water scene has no balls to follow, no hits and no Stage lighting: only where the
     /// camera looks and its world box are offered there.
     fn offered(&self, def: &SettingDef, sim: bpe_core::SimKind) -> bool {
-        sim == bpe_core::SimKind::Balls || WATER_GROUPS.contains(&def.group)
+        // By key: the inspector may blank a def's group.
+        let group = CameraSettings::defs().iter().find(|d| d.key == def.key).map(|d| d.group);
+        sim == bpe_core::SimKind::Balls || group.is_some_and(|g| WATER_GROUPS.contains(&g))
     }
 }
 

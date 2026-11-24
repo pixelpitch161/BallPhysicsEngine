@@ -16,7 +16,7 @@ pub(super) fn cards(
 ) {
     let (resolved, id, thing) = (cx.resolved, cx.id, cx.thing);
     let physics = physics_slots(thing);
-    for slot in SlotId::ALL.into_iter().filter(|s| s.in_card_list()) {
+    for slot in SlotId::shown_in(cx.scene.sim).iter().copied().filter(|s| s.in_card_list()) {
         if in_physics(&thing.kind, slot) {
             if physics.first() == Some(&slot) {
                 ui.add_space(6.0);
@@ -81,7 +81,12 @@ fn slot_header(
             .labelled_by(label.id)
             .on_hover_text("What kind of settings fill this card");
         }
+        // The cards a Water thing is made of stay on it.
+        let stays = cx.scene.sim == bpe_core::SimKind::Water && water_keeps(kind, slot);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if stays {
+                return;
+            }
             let remove = egui::Button::new(RichText::new("Remove").small()).frame(false);
             let remove = ui.add(remove).on_hover_text(format!("Take {title} off this thing"));
             remove.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Remove {title}")));
@@ -228,6 +233,8 @@ pub(super) fn slot_grid_of(
     let follow_now = |key: &str| crate::follow::now(scene, &at(key));
     let follow_light = |key: &str| crate::follow::can_light(scene, reg, &at(key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
+    // A Water scene has no sound, ball lights or health to follow.
+    let follow = crate::follow::offered(scene).then_some(&follow);
     let vary = crate::vary::VaryCx::of(scene, reg, time, id, &at);
     let grid = GridCx {
         choices: cx.choices,
@@ -236,7 +243,7 @@ pub(super) fn slot_grid_of(
         folded: Some(&folded),
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
-        follow: Some(&follow),
+        follow,
         vary: vary.as_ref(),
         offers: None,
         rails: None,

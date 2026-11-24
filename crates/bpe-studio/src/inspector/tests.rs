@@ -1599,3 +1599,109 @@ fn a_text_cannot_add_a_particles_layer() {
     assert!(h.query_all_by_label("+ Add particles").next().is_none());
     assert!(h.query_all_by_label("+ Add layer").next().is_some(), "but paint layers, yes");
 }
+
+/// A new Water scene with one thing of `kind` added and selected (`None`: its settings).
+fn water_harness(kind: Option<&str>) -> Harness<'static, State> {
+    use bpe_kit::modules::water::StartingLook;
+    let reg = bpe_kit::registry();
+    let mut scene = bpe_kit::things::water::new_water_scene(&reg, StartingLook::Plain, "");
+    let selected = match kind {
+        Some(bpe_kit::things::water::COURSE) => bpe_kit::things::water::course_of(&scene).expect("it has a Course"),
+        Some(kind) => bpe_kit::add_thing(&mut scene, &reg, kind, ThingId::ROOT).expect("a Water thing"),
+        None => ThingId::ROOT,
+    };
+    harness_of(scene, Some(selected))
+}
+
+fn shown(h: &Harness<'_, State>, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
+}
+
+#[test]
+fn a_water_scenes_settings_show_its_own_cards_and_none_of_the_balls() {
+    let h = water_harness(None);
+    for card in ["Video", "Picture", "Sound", "Water", "Light", "Back"] {
+        assert!(shown(&h, card), "{card} shows");
+    }
+    for card in ["World", "Background", "Lighting", "Air", "Grade"] {
+        assert!(!shown(&h, card), "{card} belongs to a Balls scene");
+    }
+    assert!(shown(&h, "Screens wide") && shown(&h, "Starting look"));
+    // The scene's Water, Light and Back cards are what a Water scene is: they stay.
+    for card in ["Water", "Light", "Back"] {
+        assert!(!shown(&h, &format!("Remove {card}")), "{card} can't be removed");
+    }
+}
+
+#[test]
+fn a_balls_scenes_settings_are_as_they_were() {
+    let h = harness(Some(ThingId::ROOT));
+    for card in bpe_kit::ROOT_CARDS {
+        assert!(shown(&h, card), "{card} shows");
+    }
+    assert!(!shown(&h, "Screens wide"), "no Water card in a Balls scene");
+}
+
+#[test]
+fn a_liquid_shows_feel_look_and_mixing_and_heat_can_be_added_and_removed() {
+    let mut h = water_harness(Some(bpe_kit::things::water::LIQUID));
+    let id = h.state().selection.primary.unwrap();
+    for card in ["Feel", "Look", "Mixing"] {
+        assert!(shown(&h, card), "{card} shows");
+        assert!(!shown(&h, &format!("Remove {card}")), "{card} is what a Liquid is");
+    }
+    assert!(shown(&h, "Thickness"));
+    assert!(!shown(&h, "Position") && !shown(&h, "Attach"), "a Liquid is not at a place");
+    h.get_by_label("+ Add card").click();
+    h.run();
+    for other in ["Lighting", "Sound", "Motion", "Physics", "Health"] {
+        assert!(!shown(&h, other), "{other} is not a Water card");
+    }
+    h.get_by_label("Heat").click();
+    h.run();
+    assert_eq!(h.state().scene.things[&id].slots[&SlotId::Heat].kind, bpe_kit::modules::water::HEAT);
+    assert!(h.get_by_label("+ Add card").accesskit_node().is_disabled());
+    h.get_by_label("Remove Heat").click();
+    h.run();
+    assert!(!h.state().scene.things[&id].slots.contains_key(&SlotId::Heat));
+}
+
+#[test]
+fn a_pour_has_a_place_and_a_turn_and_nothing_to_ride() {
+    let h = water_harness(Some(bpe_kit::things::water::POUR));
+    assert!(shown(&h, "Position") && shown(&h, "Rotation"));
+    assert!(!shown(&h, "Attach") && !shown(&h, "Stick to screen"));
+    assert!(shown(&h, "Rate"), "its Pour card");
+    // Its Liquid picks from a Water scene's kinds only.
+    let kinds = TargetChoices::from_scene(&h.state().scene, &h.state().kit.registry).kinds;
+    assert!(kinds.iter().any(|(id, _)| id == bpe_kit::things::water::LIQUID));
+    assert!(!kinds.iter().any(|(id, _)| id == "balls" || id == "shape" || id == "text"));
+}
+
+#[test]
+fn the_course_shows_its_rock_and_no_placement() {
+    let h = water_harness(Some(bpe_kit::things::water::COURSE));
+    assert!(shown(&h, "Rock"));
+    assert!(!shown(&h, "Position") && !shown(&h, "Rotation") && !shown(&h, "Attach"));
+}
+
+#[test]
+fn nothing_follows_sound_light_or_health_in_a_water_scene() {
+    let mut h = water_harness(Some(bpe_kit::things::water::LIQUID));
+    menu_of(&mut h, "Thickness");
+    assert!(shown(&h, "Create Keyframe"), "the menu is open");
+    for item in ["Follow sound", "Follow light", "Follow health"] {
+        assert!(!shown(&h, item), "{item} is not offered");
+    }
+}
+
+#[test]
+fn finding_a_setting_in_a_water_scene_looks_through_its_cards() {
+    let mut h = water_harness(None);
+    find(&mut h, "screens");
+    assert!(shown(&h, "Screens wide") && shown(&h, "Screens tall"));
+    let mut h = water_harness(None);
+    find(&mut h, "gravity");
+    assert!(shown(&h, "Gravity") && shown(&h, "Water"), "the Water card's gravity");
+    assert!(!shown(&h, "Scene settings"), "not the balls' World, which a Water scene doesn't offer");
+}

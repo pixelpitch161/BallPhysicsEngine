@@ -194,7 +194,9 @@ impl ThingKind for SceneKind {
     /// water's gravity is on the Water card) and the Background card (the Back card's job)
     /// are hidden there.
     fn offered(&self, def: &SettingDef, sim: SimKind) -> bool {
-        root_cards(sim).contains(&def.group)
+        // By key: the inspector blanks a def's group when its card's title already says it.
+        let card = SceneSettings::defs().iter().find(|d| d.key == def.key).map(|d| d.group);
+        card.is_none_or(|card| root_cards(sim).contains(&card))
     }
 }
 

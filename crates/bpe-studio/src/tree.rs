@@ -141,7 +141,7 @@ fn with_looks(ui: &mut Ui, kind: &dyn bpe_core::ThingKind) -> Option<Action> {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 6] = ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids"];
+const FAMILIES: [&str; 8] = ["Bouncers", "Shapes", "Text", "Course", "Lights", "Particles", "Liquids", "Forces"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -171,8 +171,11 @@ pub fn show(
             ui.menu_button("+ Add thing", |ui| {
                 ui.set_min_width(160.0);
                 let present = |k: &str| scene.things.values().any(|t| t.kind == k);
-                let kinds: Vec<_> =
-                    reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
+                // Only the things this kind of scene has (a Water scene's menu lists no balls).
+                let kinds: Vec<_> = reg
+                    .things()
+                    .filter(|k| k.id() != "scene" && k.in_sim(scene.sim) && !(k.single() && present(k.id())))
+                    .collect();
                 let button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
                     let clicked = ui.button(kind.name()).on_hover_text(kind.help()).clicked();
                     if clicked {
@@ -1062,6 +1065,12 @@ fn icon_shape(kind: &str) -> Icon {
         bpe_kit::things::particles::KIND => Icon::Specks,
         bpe_kit::things::text::KIND => Icon::Letter,
         bpe_kit::things::liquid::KIND => Icon::Drop,
+        bpe_kit::things::water::COURSE => Icon::Square,
+        bpe_kit::things::water::PIECE | bpe_kit::things::water::WALL => Icon::Shape,
+        bpe_kit::things::water::LIQUID | bpe_kit::things::water::POUR => Icon::Drop,
+        bpe_kit::things::water::DRAIN => Icon::Emitter,
+        bpe_kit::things::water::FORCE => Icon::Specks,
+        bpe_kit::things::water::LAMP => Icon::Lamp,
         _ => Icon::Diamond,
     }
 }
@@ -1241,8 +1250,11 @@ mod tests {
     }
 
     fn harness() -> Harness<'static, State> {
+        harness_of(bpe_kit::new_scene(&bpe_kit::registry()))
+    }
+
+    fn harness_of(scene: Scene) -> Harness<'static, State> {
         let kit = bpe_kit::kit();
-        let scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
         let state = State {
             tree: Tree::default(),
@@ -1336,13 +1348,45 @@ mod tests {
         let mut h = harness();
         h.get_by_label("+ Add thing").click();
         h.run();
-        for f in FAMILIES {
+        // A Balls scene's families ("Course" and "Forces" are a Water scene's).
+        for f in ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids"] {
             assert!(h.query_by_label(f).is_some(), "{f} heading");
+        }
+        for f in ["Course", "Forces"] {
+            assert!(h.query_by_label(f).is_none(), "{f} is a Water scene's heading");
         }
         let y = |h: &Harness<'_, State>, l: &str| h.get_by_label(l).rect().min.y;
         assert!(y(&h, "Bouncers") < y(&h, "Balls"));
         assert!(y(&h, "Balls") < y(&h, "Shapes"));
         assert!(y(&h, "Shapes") < y(&h, "Folder"), "Folder comes after the families");
+    }
+
+    #[test]
+    fn a_water_scenes_add_menu_lists_water_things_and_no_ball_things() {
+        use bpe_kit::things::water;
+        let reg = bpe_kit::registry();
+        let scene = water::new_water_scene(&reg, bpe_kit::modules::water::StartingLook::Plain, "");
+        let mut h = harness_of(scene);
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        let shown = |h: &Harness<'_, State>, l: &str| h.query_all_by_label(l).next().is_some();
+        for name in ["Piece", "Wall", "Liquid", "Pour", "Drain", "Force", "Lamp", "Folder"] {
+            assert!(shown(&h, name), "{name} is offered");
+        }
+        for heading in ["Liquids", "Forces", "Lights"] {
+            assert!(shown(&h, heading), "{heading} heading");
+        }
+        for name in ["Balls", "Emitter", "Shape", "Text", "Rig", "Bouncers", "Shapes", "Particles"] {
+            assert!(!shown(&h, name), "{name} belongs to a Balls scene");
+        }
+        // The Course is there already, and there is only one. (Its heading shows above Piece.)
+        assert_eq!(h.query_all_by_label("Course").count(), 2, "the Course's row and the Course heading");
+        h.get_by_label("Pour").click();
+        h.run();
+        let s = h.state();
+        let added = s.selection.primary.expect("the new Pour is selected");
+        assert_eq!(s.scene.things[&added].kind, water::POUR);
+        assert!(s.scene.things[&added].slots.contains_key(&bpe_core::SlotId::Main));
     }
 
     #[test]

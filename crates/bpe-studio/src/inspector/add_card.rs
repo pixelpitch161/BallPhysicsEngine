@@ -13,6 +13,8 @@ pub(super) fn menu(ui: &mut Ui, cx: &OwnCx, kind: &dyn bpe_core::ThingKind, edit
         .copied()
         // Sound is turned on from the Sound tab, not added as a card.
         .filter(|s| s.in_card_list())
+        // And only the cards this kind of scene has (a Water scene's settings get no Lighting).
+        .filter(|s| s.in_sim(cx.scene.sim))
         .filter(|s| !thing.slots.contains_key(s) && reg.kinds_fitting(*s, kind).next().is_some())
         .collect();
     let mut entries: Vec<(&str, Vec<SlotId>, String)> = Vec::new();

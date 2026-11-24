@@ -79,7 +79,7 @@ pub(super) fn results(
         });
     }
 
-    for slot in SlotId::ALL.into_iter().filter(|s| s.in_card_list()) {
+    for slot in SlotId::shown_in(scene.sim).iter().copied().filter(|s| s.in_card_list()) {
         let Some(card_now) = thing.slots.get(&slot) else { continue };
         let title = kind.slot_label(slot);
         if let Some(module) = reg.module(&card_now.kind) {
