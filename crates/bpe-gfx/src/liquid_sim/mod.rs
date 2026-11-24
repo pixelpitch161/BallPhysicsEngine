@@ -26,6 +26,9 @@ use wgpu::util::DeviceExt;
 mod wet;
 pub use wet::DRY_SECONDS;
 
+mod trial;
+pub use trial::{Trial, set_trial, trial};
+
 /// The most drops a body holds: 2^20, so its biggest buffer (112 bytes a drop, 112 MiB) stays under
 /// the 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
 pub const MOST_DROPS: u32 = 1 << 20;
@@ -591,6 +594,8 @@ pub struct LiquidCard {
     wet: Arc<wet::WetPipeline>,
     /// The stats pass (part 5).
     stats: stats::Pipe,
+    /// The trial core's pipelines (the Water mode's physics trial), made when first used.
+    trial: std::sync::OnceLock<trial::TrialPipelines>,
     /// The numbers 0 to [`MOST_SUBSTEPS`], `tick_stride` bytes apart: a pass is told which of a
     /// liquid step's passes it is by the offset this is bound at.
     ticks: wgpu::Buffer,
@@ -691,7 +696,17 @@ impl LiquidCard {
             contents: &numbers,
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        LiquidCard { device, queue, pipelines, wet, stats, ticks, tick_stride, spares: Mutex::new(Vec::new()) }
+        LiquidCard {
+            device,
+            queue,
+            pipelines,
+            wet,
+            stats,
+            trial: std::sync::OnceLock::new(),
+            ticks,
+            tick_stride,
+            spares: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -905,6 +920,10 @@ pub struct Body {
     history: VecDeque<Arc<Sample>>,
     /// Liquid steps played back into the gap before the newest sample.
     into: u32,
+    /// The trial core's numbers when this body steps with it (the Water mode's physics trial), and
+    /// its buffers once it has stepped.
+    trial_numbers: Option<Trial>,
+    trial: Option<trial::TrialScratch>,
 }
 
 /// One sample of every drop, for Un-mix ([`SAMPLE_WORDS`] words a drop after a 4-word header
@@ -989,6 +1008,7 @@ impl Clone for Body {
         }
         encoder.copy_buffer_to_buffer(&self.counts, 0, &counts, 0, 32);
         let wet = self.wet.copy(device, &mut encoder);
+        let trial = self.trial.as_ref().map(|t| t.copy(device, &mut encoder, (self.cols, self.rows)));
         self.gpu.queue.submit([encoder.finish()]);
         Body {
             gpu: self.gpu.clone(),
@@ -1010,6 +1030,8 @@ impl Clone for Body {
             history: self.history.clone(),
             into: self.into,
             wet,
+            trial_numbers: self.trial_numbers,
+            trial,
         }
     }
 }
@@ -1056,7 +1078,20 @@ impl Body {
             history: VecDeque::new(),
             into: 0,
             wet,
+            trial_numbers: Some(trial()).filter(|t| t.on),
+            trial: None,
         }
+    }
+
+    /// Whether this body steps with the trial core.
+    pub fn is_trial(&self) -> bool {
+        self.trial_numbers.is_some()
+    }
+
+    /// The trial core's cells once the queued steps are done (tests): `which` 0 the pressure
+    /// records, 1 the speeds the drops gather, 2 the faces' open shares, 3 the speeds before slip.
+    pub fn read_trial(&self, which: u32) -> Vec<[f32; 4]> {
+        self.trial.as_ref().map_or_else(Vec::new, |t| t.read_cells(&self.gpu.device, &self.gpu.queue, which))
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -1093,7 +1128,9 @@ impl Body {
 
     /// Bytes the drops take on the card (and what a copy of them takes).
     pub fn bytes(&self) -> usize {
-        self.room as usize * std::mem::size_of::<Drop>() + self.wet.bytes()
+        self.room as usize * std::mem::size_of::<Drop>()
+            + self.wet.bytes()
+            + self.trial.as_ref().map_or(0, |t| t.bytes())
     }
 
     /// What the renderer draws the drops from.
@@ -1247,6 +1284,13 @@ impl Body {
             scratch.bound = Some(Bound { key, groups });
         }
         let bound_groups = &scratch.bound.as_ref().expect("just made").groups;
+        // The trial core's buffers and groups, when this body steps with it.
+        if let Some(numbers) = self.trial_numbers {
+            let pipes = gpu.trial.get_or_init(|| trial::TrialPipelines::new(device));
+            let t = self.trial.get_or_insert_with(|| trial::TrialScratch::new(device, (self.cols, self.rows), numbers));
+            t.prepare(device, queue, pipes, &gpu.ticks, &scratch.uniform, &self.drops, &self.counts, &scratch.solid);
+        }
+        let trial_core = self.trial.as_ref().zip(gpu.trial.get());
         let drop_groups = bound.max(1).div_ceil(WORKGROUP);
         let cell_groups = cells.div_ceil(WORKGROUP);
         // The count comes back late, and with it how long the card took, when the last asked for
@@ -1294,16 +1338,30 @@ impl Body {
             // Pass 0 is the first scatter; grid pass n and the drops' pass after it are pass n.
             let substeps = step.grid[2];
             let tiles = (self.cols.div_ceil(TILE), self.rows.div_ceil(TILE));
-            run_as(E::P2g, a, (drop_groups, 1), 0);
-            for n in 1..=substeps {
-                run_as(E::Grid, a, tiles, n);
-                if n < substeps {
-                    a = 1 - a;
-                    run_as(E::G2p2g, a, (drop_groups, 1), n);
-                } else {
-                    run_as(E::G2p, a, (drop_groups, 1), n);
+            if trial_core.is_none() {
+                run_as(E::P2g, a, (drop_groups, 1), 0);
+                for n in 1..=substeps {
+                    run_as(E::Grid, a, tiles, n);
+                    if n < substeps {
+                        a = 1 - a;
+                        run_as(E::G2p2g, a, (drop_groups, 1), n);
+                    } else {
+                        run_as(E::G2p, a, (drop_groups, 1), n);
+                    }
                 }
             }
+            // The trial core's passes instead (the Water mode's physics trial).
+            if let Some((t, pipes)) = trial_core {
+                let moves = step.time[0] > 0.0;
+                t.run(&mut pass, pipes, gpu.tick_stride, (self.cols, self.rows), drop_groups, put_walls, moves);
+            }
+            let mut run_as = |e: E, a: usize, n: (u32, u32), number: u32| {
+                pass.set_pipeline(&gpu.pipeline(e).0);
+                let offset = [number * gpu.tick_stride];
+                let numbered = ENTRIES[e as usize].1.contains(&19);
+                pass.set_bind_group(0, &bound_groups[e as usize][a], if numbered { &offset[..] } else { &[] });
+                pass.dispatch_workgroups(n.0.max(1), n.1.max(1), 1);
+            };
             let mut run = |e: E, _: usize, n: u32| run_as(e, 0, (n, 1), substeps);
             if felt > 0 {
                 run(E::Feel, 0, felt.div_ceil(WORKGROUP));
@@ -1332,7 +1390,8 @@ impl Body {
         scratch.stamp = scratch.stamp.wrapping_add(step.grid[2]);
         // How wet the walls are, after the last substep's grid (liquid part 3).
         let dt = input.step.time[0] * step.grid[2] as f32;
-        let grids = (&scratch.grids[a], &scratch.solid);
+        // (The trial core gives the wet grid the liquid at each node in its own buffer.)
+        let grids = (trial_core.map_or(&scratch.grids[a], |(t, _)| &t.nodes), &scratch.solid);
         self.wet.run(device, queue, &gpu.wet, &mut encoder, (self.cols, self.rows), self.steps % 2, dt, grids);
         if ask {
             encoder.copy_buffer_to_buffer(&self.counts, 0, &reader.staging, 0, 32);

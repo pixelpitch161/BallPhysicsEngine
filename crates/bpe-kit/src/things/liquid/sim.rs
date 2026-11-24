@@ -207,13 +207,18 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
         .collect();
     let most_c = stiff.iter().fold(0.0f32, |m, e| m.max(e.sqrt()));
     let substeps = ((most_c * dt / CFL).ceil() as u32).clamp(1, MOST_SUBSTEPS);
+    // The Water mode's physics trial: its core solves the pressure, so it takes one step, and a
+    // drop may go several cells in it.
+    let trial = bpe_gfx::liquid_sim::trial();
+    let on_trial = host.body.as_ref().is_some_and(|b| b.is_trial());
+    let substeps = if on_trial { 1 } else { substeps };
     let dt_sub = dt / substeps as f32;
     // At the most substeps the stiffness is held a little under what they keep stable: right at it
     // a stiff Bucket pour blew apart.
     let cap = (CFL / dt_sub).powi(2) * if substeps == MOST_SUBSTEPS { 0.8 } else { 1.0 };
     step.grid[2] = substeps;
     step.grid[3] = list.len() as u32;
-    step.time = [dt_sub, g.x, g.y, 0.45 / dt_sub];
+    step.time = [dt_sub, g.x, g.y, if on_trial { trial.most_move / dt_sub } else { 0.45 / dt_sub }];
     step.flags[0] = u32::from(mixing);
     step.more = [0.2 / dt_sub, MIX_EVERY as f32 * dt, 0.05, 0.08];
     let mut free = false;
@@ -498,6 +503,8 @@ impl ThingSim for LiquidSim {
         let Some(host_st) = state_of(world, id) else { return };
         let layout = layout(world, host_st, &ids, !world.beside.contains(&id));
         let rate = host_st.settings.steps.per_second();
+        // (The Water mode's physics trial may step at its own rate.)
+        let rate = Some(bpe_gfx::liquid_sim::trial()).filter(|t| t.on && t.rate > 0).map_or(rate, |t| t.rate);
         let size = host_st.settings.size.factor();
         let body = LiquidCard::on_this_thread().map(|gpu| Arc::new(Body::new(gpu, layout.cols, layout.rows)));
         let mut taken = take(world, &ids);
