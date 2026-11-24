@@ -1,6 +1,7 @@
 //! A video's sound (`docs/superpowers/specs/2026-11-24-video-arrangement-design.md`, "Sound"):
-//! each clip's scene sound before its limiter ([`Engine::set_bare`]) times its level and fades,
-//! plus the song, through the video's one Master and its End fade.
+//! each clip's scene sound before its limiter ([`Engine::set_bare`]) times its level, pan and
+//! fades, plus the song, through the video's one Master and its End fade. Clips on the On top lane
+//! (part 4) join the mix the same way, fading over their own Fade in and Fade out.
 //!
 //! [`VideoMix`] walks the video in blocks and keeps an engine only for the clips heard now. A
 //! clip's engine renders its scene from 0 (not a seek), throws its first `offset` away, and is
@@ -10,7 +11,7 @@ use std::f64::consts::FRAC_PI_2;
 use std::path::Path;
 
 use anyhow::bail;
-use bpe_core::video::{TransitionSound, Video};
+use bpe_core::video::{Clip, TransitionSound, Video};
 use bpe_dsp::db_to_gain;
 use bpe_kit::sound::MixerSettings;
 use bpe_kit::video::clip_scene;
@@ -30,7 +31,7 @@ const CHUNK_BLOCKS: usize = 750;
 /// Whether the video makes any sound: its song is on, or a clip's scene has sound.
 pub fn video_has_sound(video: &Video, kit: &Kit) -> bool {
     let song = video.song.as_ref().is_some_and(|s| s.on && !s.audio.bytes.is_empty());
-    song || video.clips.iter().any(|c| has_sound(&clip_scene(video, c, &kit.registry)))
+    song || video.all_clips().any(|c| has_sound(&clip_scene(video, c, &kit.registry)))
 }
 
 /// `seconds` in samples.
@@ -88,13 +89,16 @@ pub fn render_video_sound(
 
 /// A clip as the mix hears it, in video samples.
 struct ClipPlan {
-    index: usize,
+    /// The clip (on either lane).
+    clip: Clip,
     /// First and one-past-last video sample.
     start: i64,
     end: i64,
     /// Samples into the scene it starts at.
     offset: i64,
     gain: f32,
+    /// The pan's left and right gains (both exactly 1 at the middle).
+    pan: [f32; 2],
     /// The equal-power fade in over this many samples (0: none), or the short edge fade.
     fade_in: Fade,
     fade_out: Fade,
@@ -107,6 +111,22 @@ enum Fade {
     Power(i64),
     /// The 5 ms edge.
     Edge,
+}
+
+impl ClipPlan {
+    fn new(c: &Clip, fade_in: Fade, fade_out: Fade) -> ClipPlan {
+        let pan = c.pan.clamp(-1.0, 1.0);
+        ClipPlan {
+            clip: c.clone(),
+            start: samples(c.start),
+            end: samples(c.end()),
+            offset: samples(c.offset),
+            gain: db_to_gain(c.level_db),
+            pan: [(1.0 - pan).min(1.0), (1.0 + pan).min(1.0)],
+            fade_in,
+            fade_out,
+        }
+    }
 }
 
 /// A clip being heard: its engine and the block it is reading.
@@ -156,12 +176,11 @@ pub struct VideoMix<'a> {
 
 impl<'a> VideoMix<'a> {
     pub fn new(video: &'a Video, kit: &'a Kit) -> Self {
-        let plans = video
+        let mut plans: Vec<ClipPlan> = video
             .clips
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let (start, end) = (samples(c.start), samples(c.end()));
                 let overlap_in = samples(video.overlap(i));
                 let fade_in = match overlap_in {
                     0 if c.offset > 0.0 => Fade::Edge,
@@ -175,17 +194,26 @@ impl<'a> VideoMix<'a> {
                 let keep_next =
                     video.clips.get(i + 1).is_some_and(|n| n.transition_in.sound == TransitionSound::KeepBoth);
                 let fade_out = if overlap_out > 0 && !keep_next { Fade::Power(overlap_out) } else { Fade::Edge };
-                ClipPlan {
-                    index: i,
-                    start,
-                    end,
-                    offset: samples(c.offset),
-                    gain: db_to_gain(c.level_db),
-                    fade_in,
-                    fade_out,
-                }
+                ClipPlan::new(c, fade_in, fade_out)
             })
             .collect();
+        // The On top lane's clips fade over their own fades.
+        plans.extend(video.on_top.iter().map(|t| {
+            let c = &t.clip;
+            let fade_in = match samples(t.place.fade_in) {
+                n if n > 0 => Fade::Power(n),
+                _ if c.offset > 0.0 => Fade::Edge,
+                _ => Fade::None,
+            };
+            let fade_out = match samples(t.place.fade_out) {
+                n if n > 0 => Fade::Power(n),
+                _ => Fade::Edge,
+            };
+            ClipPlan::new(c, fade_in, fade_out)
+        }));
+        // Engines are made as their first sample comes up, so the plans go by start (stable: the
+        // main lane's first at the same start, so a video without On top clips is as before).
+        plans.sort_by_key(|p| p.start);
         let song = video.song.as_ref().filter(|s| s.on && !s.audio.bytes.is_empty()).and_then(|s| {
             let audio = SampleBank::get(&s.audio.bytes).ok()?;
             Some(Backing { audio, start: samples(s.starts_at), gain: db_to_gain(s.level_db) })
@@ -277,8 +305,8 @@ impl<'a> VideoMix<'a> {
                 }
                 let [a, b] = p.next();
                 let g = plan.gain * fade_at(plan, j);
-                l[i] += a * g;
-                r[i] += b * g;
+                l[i] += a * g * plan.pan[0];
+                r[i] += b * g * plan.pan[1];
             }
         }
         let plans = &self.plans;
@@ -301,7 +329,7 @@ impl<'a> VideoMix<'a> {
     /// The engine for plan `index`, run through its offset.
     fn start(&self, index: usize) -> Playing {
         let plan = &self.plans[index];
-        let clip = &self.video.clips[plan.index];
+        let clip = &plan.clip;
         let scene = clip_scene(self.video, clip, &self.kit.registry);
         let engine = has_sound(&scene).then(|| {
             let resolved = resolve_scene(&scene, &self.kit.registry);
@@ -579,5 +607,69 @@ mod tests {
         let kit2 = crate::kit();
         let v3 = video(vec![tone_scene(&kit2, 440.0, 2.0)], &[(0, 0.0, 1.0, 0.0)]);
         assert!(video_has_sound(&v3, &kit2));
+    }
+
+    /// `v` with an On top clip of kept scene `scene` (start, length, offset, fade in, fade out).
+    fn with_top(mut v: Video, scene: u32, at: (f64, f64, f64), fades: (f64, f64), pan: f32) -> Video {
+        use bpe_core::video::{OnTopClip, Placement};
+        let clip = Clip {
+            id: v.next_clip_id(),
+            scene: KeptId(scene),
+            start: at.0,
+            length: at.1,
+            offset: at.2,
+            pan,
+            scene_song: true,
+            follow_video_tempo: false,
+            ..Clip::default()
+        };
+        let place = Placement { fade_in: fades.0, fade_out: fades.1, ..Placement::default() };
+        v.on_top.push(OnTopClip { clip, row: 0, place });
+        v
+    }
+
+    #[test]
+    fn an_on_top_clip_sounds_like_its_scene() {
+        let kit = crate::kit();
+        let scene = tone_scene(&kit, 440.0, 2.0);
+        let v = with_top(video(vec![scene.clone()], &[]), 0, (0.0, 1.0, 0.5), (0.0, 0.0), 0.0);
+        let mix = video_samples(&v, &kit);
+        assert_eq!(mix.len(), 48_000 * 2, "the video ends where the On top clip does");
+        let own = bare(&scene, &kit, 1.5);
+        close(window(&mix, 0.01, 0.99), window(&own, 0.51, 1.49), 1e-5);
+    }
+
+    #[test]
+    fn a_pan_moves_the_sound_and_the_middle_changes_nothing() {
+        let kit = crate::kit();
+        let scene = tone_scene(&kit, 440.0, 2.0);
+        let plain = video_samples(&video(vec![scene.clone()], &[(0, 0.0, 1.0, 0.0)]), &kit);
+        let mut v = video(vec![scene], &[(0, 0.0, 1.0, 0.0)]);
+        let middle = video_samples(&v, &kit);
+        assert!(plain == middle);
+        v.clips[0].pan = 1.0;
+        let right = video_samples(&v, &kit);
+        for (k, (got, was)) in right.chunks(2).zip(plain.chunks(2)).enumerate() {
+            assert_eq!(got[0], 0.0, "frame {k}: the left is silent");
+            assert_eq!(got[1], was[1], "frame {k}: the right is as it was");
+        }
+        v.clips[0].pan = -0.5;
+        let left = video_samples(&v, &kit);
+        let (l, r) = (left[48_000], left[48_001]);
+        assert_eq!(l, plain[48_000]);
+        assert!((r - plain[48_001] * 0.5).abs() < 1e-6, "half the right at -0.5");
+    }
+
+    #[test]
+    fn an_on_top_fade_in_is_equal_power() {
+        let kit = crate::kit();
+        let scene = tone_scene(&kit, 440.0, 3.0);
+        let v = with_top(video(vec![scene], &[]), 0, (0.0, 2.0, 0.0), (1.0, 0.5), 0.0);
+        let mix = video_samples(&v, &kit);
+        let steady = rms(window(&mix, 1.1, 1.4));
+        let middle = rms(window(&mix, 0.49, 0.51));
+        assert!((middle / steady - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.02, "{}", middle / steady);
+        assert!(rms(window(&mix, 0.0, 0.01)) < steady * 0.05, "it starts from silence");
+        assert!(rms(window(&mix, 1.99, 2.0)) < steady * 0.05, "and fades out to it");
     }
 }

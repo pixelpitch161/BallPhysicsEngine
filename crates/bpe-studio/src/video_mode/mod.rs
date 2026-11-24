@@ -10,7 +10,7 @@
 //! - `still.rs`: the still frame at the playhead in the middle, drawn on a thread of its own.
 
 use crate::app::Studio;
-use bpe_core::video::{Clip, ClipId, KeptId, Video};
+use bpe_core::video::{ClipId, KeptId, Video};
 use eframe::egui::{self, Ui};
 use std::path::PathBuf;
 
@@ -106,6 +106,8 @@ pub struct ArrangeView {
     pub lane: Option<egui::Rect>,
     /// The ruler's strip as last drawn.
     pub ruler: Option<egui::Rect>,
+    /// The On top lane's rows' strips as last drawn, row 0 first.
+    pub top_rows: [Option<egui::Rect>; Video::ON_TOP_ROWS as usize],
 }
 
 impl ArrangeView {
@@ -133,8 +135,8 @@ pub struct VideoSession {
     pub view: ArrangeView,
     /// A clip being dragged in the arrangement.
     pub drag: Option<lanes::ClipDrag>,
-    /// The clip Ctrl+C copied (the editor's own).
-    pub clip_board: Option<Clip>,
+    /// The clip Ctrl+C copied (the editor's own), with its lane.
+    pub clip_board: Option<arrange::Copied>,
     /// The preview's still frame.
     pub still: still::Still,
     /// Goes up whenever the video changes, so the still frame knows it is out of date.
@@ -391,8 +393,8 @@ impl Studio {
                 self.video.pick = VideoPick::Clip(made);
             }
         }
-        if copy && let Some(clip) = picked.and_then(|id| arrange::clip(&self.video.video, id)) {
-            self.video.clip_board = Some(clip.clone());
+        if copy && let Some(copied) = picked.and_then(|id| arrange::copy_of(&self.video.video, id)) {
+            self.video.clip_board = Some(copied);
             self.status = "Copied the clip.".into();
             self.copied_note = Some("Ball Studio: Copied a clip".into());
         }

@@ -359,7 +359,7 @@ pub fn empty_hint(ui: &mut Ui, studio: &mut Studio) {
 pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let ctx = ui.ctx().clone();
     let rect = ui.available_rect_before_wrap();
-    if studio.video.video.clips.is_empty() {
+    if !studio.video.video.has_clips() {
         ui.add_space((rect.height() * 0.4).max(0.0));
         empty_hint(ui, studio);
         return;

@@ -60,7 +60,7 @@ pub fn load(text: &str, reg: &Registry) -> Result<Video, VideoLoadError> {
         _ => {}
     }
     let mut video: Video = ron::from_str(text).map_err(|e| VideoLoadError::Broken(e.to_string()))?;
-    if let Some(c) = video.clips.iter().find(|c| !video.scenes.contains_key(&c.scene)) {
+    if let Some(c) = video.all_clips().find(|c| !video.scenes.contains_key(&c.scene)) {
         return Err(VideoLoadError::MissingScene { clip: c.id.0 });
     }
     for kept in video.scenes.values_mut() {
@@ -84,7 +84,10 @@ mod probe {
 mod tests {
     use super::*;
     use crate::scene_audio::SceneAudio;
-    use crate::video::{Clip, ClipId, Direction, KeptId, KeptScene, Song, Transition, TransitionKind, TransitionSound};
+    use crate::video::{
+        Clip, ClipId, Direction, KeptId, KeptScene, Layout, OnTopClip, Placement, Song, Transition, TransitionKind,
+        TransitionSound,
+    };
     use crate::{ThingId, TrackColour, testkit};
 
     fn sample() -> (Video, Registry) {
@@ -129,6 +132,10 @@ mod tests {
                 ..Clip::default()
             },
         ];
+        let mut place = Placement { border_colour: [10, 20, 30], fade_in: 0.5, ..Placement::default() };
+        place = place.with_layout(Layout::TopHalf, (1080, 1920));
+        let clip = Clip { id: ClipId(7), scene: KeptId(0), start: 1.0, length: 2.0, pan: -0.5, ..Clip::default() };
+        v.on_top = vec![OnTopClip { clip, row: 2, place }];
         (v, r)
     }
 
@@ -146,6 +153,10 @@ mod tests {
         let e = load(&text, &r).unwrap_err();
         assert_eq!(e, VideoLoadError::MissingScene { clip: 1 });
         assert_eq!(e.to_string(), "A clip in this video names a scene that isn't in it");
+        let (mut v, r) = sample();
+        v.on_top[0].clip.scene = KeptId(9);
+        let text = ron::ser::to_string_pretty(&v, ron::ser::PrettyConfig::default()).unwrap();
+        assert_eq!(load(&text, &r).unwrap_err(), VideoLoadError::MissingScene { clip: 7 }, "on the On top lane too");
     }
 
     #[test]

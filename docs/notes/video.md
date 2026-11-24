@@ -194,3 +194,45 @@ Plan: `docs/superpowers/plans/video/part3-playing.md` (its "Design decisions" li
 - Tests: `bpe-cli --test arranged` `player_*`; `bpe-studio` `sound_job::tests::{a_take_*, a_new_take_*,
   going_back_*}`, `video_mode::tests` (Space, end and Loop, jumps, mode switch, takes after rest, the picture on the
   card, hits, Edit scene and Back, saving and opening while editing, the Video button).
+
+
+## Part 4: the On top lane (as built)
+
+Plan: `docs/superpowers/plans/video/part4-on-top-lane.md` (its "Design decisions" list every call made).
+
+- **Data** (`bpe-core::video`): `Video.on_top: Vec<OnTopClip { clip: Clip, row, place: Placement }>`, a list of its
+  own so nothing about the main lane (`overlap`, `moment`, the mix's crossfades) changed. Clip ids are unique
+  across both lists; `all_clips`, `clip`, `clip_mut`, `top`, `top_mut`, `has_clips`, `end`, `next_clip_id`,
+  `unused_scenes_removed` and the loader's MissingScene see both. Up to `ON_TOP_ROWS` (3) rows; clips on a row
+  never overlap (tidy moves a later one along), rows draw lowest first. `Placement { x, y, width, height }` in
+  shares of the screen (tidy keeps it wholly on screen, sides 0.05 to 1), `corner` and `border` in pixels of the
+  video at its own size, `border_colour`, `opacity`, `fade_in`, `fade_out` (whole frames, together at most the
+  clip). Default: the bottom-right corner (0.4 wide, the video's shape, a 4 % gap), border 6 px white, corner
+  24 px. `Layout` (Full, the four halves, `Corner(c)`, `Quarter(c)`) and `Placement::with_layout` / `layout`.
+  Every clip has `pan` (−1 to 1, a balance; 0 is exactly as before).
+- **What shows** (`bpe-kit::video`): `on_top_at(video, frame) -> Vec<TopOnScreen>` in drawing order, with
+  `on_top_alpha` (opacity × straight fade ramps of whole frames); `top_rect(place, out)` rounds the frame's edges
+  to whole pixels so halves and quarters meet without a gap.
+- **Pictures** (`bpe-gfx::compose`): `Compose::overlay(picture, OverlayParams)` draws one finished picture over
+  the output in a rounded frame (one-pixel soft edge) with its border inside, blended by alpha
+  (`compose_overlay.wgsl`, CPU twin `overlay_reference`). `bpe-cli::arranged::put_together` is shared by
+  `arranged_frames`, `still_frame` and `Player`: the main picture as before (a lone clip with nothing on top is
+  still read straight from its renderer), then each overlay. An on-top clip's scene covers its frame's own pixel
+  size; the export runs it up exactly as a main clip, the editor with the quick run-up. `ClipScenes { main, tops }`
+  is what `clip_scenes` gives now.
+- **Sound** (`bpe-sound::video_mix`): on-top clips are plans like main clips, sorted by start across both lanes;
+  equal-power fades over their own Fade in/out, else the 5 ms edges. Opacity doesn't change the sound.
+- **Editor**: the On top lane (`lanes::on_top_lane`, rows "On top 1…3", the rows in use plus one empty one) between
+  Scenes and Song: click picks, double-click edits the scene, edges trim, the middle drags (and follows the row
+  under the pointer: `ArrangeView.top_rows`), a kept scene dropped on a row makes an on-top clip
+  (`arrange::add_on_top`, `lanes::drop_on_top`). The clip inspector has Pan for every clip, "Move to On top" /
+  "Move to the main lane" (`arrange::to_on_top`, `to_main`, same id), and for an on-top clip an ON TOP section:
+  Row, Layout / Corner / 2 × 2 split chips, the edges and size in %, Corners, Border, Border colour, Opacity, Fade
+  in, Fade out. Copy and paste keep the lane and row (`arrange::Copied`), Ctrl+D duplicates on its lane. The Scene
+  sound lane and the hits thread cover both lanes.
+- Tests: `bpe-core` video (on-top tidy, placements, layouts, save/load, missing scene), `bpe-kit --lib video::`
+  (on_top_at, fades, top_rect), `bpe-gfx --lib compose` and `--test compose` (the overlay on the card against its
+  reference), `bpe-sound --lib video_mix` (an on-top clip, pan, its fade), `bpe-cli --test arranged` (on top over
+  the main picture, border and opacity, still frame and player match the export, a video of only an on-top clip),
+  `bpe-studio` `video_mode::` (arrange's lane edits, dropping, dragging onto another row, the inspector's layout,
+  moving between lanes, copy and paste on a row).

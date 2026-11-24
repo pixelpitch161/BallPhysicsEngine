@@ -72,7 +72,7 @@ impl Hits {
                 Ok(Found::Done(revision)) if Some(revision) == self.asked => {
                     self.busy = false;
                     // Clips that are gone lose their hits.
-                    self.clips.retain(|id, _| video.clips.iter().any(|c| c.id == *id));
+                    self.clips.retain(|id, _| video.all_clips().any(|c| c.id == *id));
                     any = true;
                 }
                 Ok(_) => {}
@@ -125,7 +125,7 @@ fn start(kit: Arc<Kit>) -> Worker {
             let (revision, video) = ask;
             let stale = || theirs.load(Ordering::Relaxed) != revision;
             let mut finished = true;
-            for clip in &video.clips {
+            for clip in video.all_clips() {
                 if stale() {
                     finished = false;
                     break;
