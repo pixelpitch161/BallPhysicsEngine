@@ -1,0 +1,209 @@
+//! The Water stage shell: the view, the rail, placing and moving.
+
+use super::stage::rooms_for_tests;
+use super::*;
+use crate::app::{Centre, Studio};
+use crate::style;
+use bpe_kit::things::water;
+use eframe::egui::{self, Pos2, Rect, accesskit::Role, vec2};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
+use glam::Vec2;
+
+const SIZE: egui::Vec2 = egui::Vec2::new(700.0, 900.0);
+
+/// The stage alone, recording each frame's edit as the editor's frame does.
+fn harness<'a>(studio: Studio) -> Harness<'a, Studio> {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(
+            |ui, studio: &mut Studio| {
+                let before = studio.scene.clone();
+                egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| stage(ui, studio));
+                studio.record_frame(before);
+            },
+            studio,
+        );
+    h.run();
+    h
+}
+
+fn water_studio() -> Studio {
+    let mut studio = Studio::headless_water();
+    studio.grid.snap = false;
+    studio
+}
+
+fn view(h: &Harness<Studio>) -> CourseView {
+    h.state().water_stage.view.expect("the stage was drawn")
+}
+
+fn of_kind(studio: &Studio, kind: &str) -> Vec<bpe_core::ThingId> {
+    studio.scene.order.iter().copied().filter(|id| studio.scene.things[id].kind == kind).collect()
+}
+
+fn button(h: &mut Harness<Studio>, at: Pos2, pressed: bool) {
+    let button = egui::PointerButton::Primary;
+    h.event(egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE });
+    h.step();
+}
+
+fn click_at(h: &mut Harness<Studio>, at: Pos2) {
+    h.hover_at(at);
+    h.step();
+    button(h, at, true);
+    button(h, at, false);
+    h.run();
+}
+
+/// Presses at `from`, moves to `to` in a few steps and lets go.
+fn drag(h: &mut Harness<Studio>, from: Pos2, to: Pos2) {
+    h.hover_at(from);
+    h.step();
+    button(h, from, true);
+    for k in 1..=8 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 8.0)));
+        h.step();
+    }
+    button(h, to, false);
+    h.run();
+}
+
+#[test]
+fn the_view_fits_the_course_and_maps_both_ways() {
+    let room = Rect::from_min_size(Pos2::ZERO, vec2(832.0, 1032.0));
+    let v = CourseView::fit(room, Vec2::new(1080.0, 1920.0));
+    assert!((v.rect.height() - 1000.0).abs() < 0.01 && (v.rect.width() - 562.5).abs() < 0.01, "{:?}", v.rect);
+    assert_eq!(v.to_screen(Vec2::ZERO), v.rect.center());
+    assert_eq!(v.rect.center(), room.center());
+    let p = Vec2::new(-300.0, 500.0);
+    assert!((v.to_world(v.to_screen(p)) - p).length() < 1e-3);
+    // A wide course (two screens wide, one tall) in the same room is held by its width instead.
+    let wide = CourseView::fit(room, Vec2::new(2160.0, 1920.0));
+    assert!((wide.rect.width() - 800.0).abs() < 0.01 && wide.rect.height() < 1000.0, "{:?}", wide.rect);
+    assert!(wide.holds(wide.to_screen(Vec2::new(1079.0, 0.0))) && !wide.holds(wide.to_screen(Vec2::new(1100.0, 0.0))));
+}
+
+#[test]
+fn the_stage_follows_the_courses_size_on_the_water_card() {
+    let mut studio = water_studio();
+    let before = studio.scene.clone();
+    let wide = bpe_core::Address::on(bpe_core::ThingId::ROOT, bpe_core::SlotId::Water, "screens_wide");
+    let kit = studio.kit.clone();
+    studio.scene.set_at(&kit.registry, &wide, bpe_core::Value::Int(2)).unwrap();
+    studio.after_edit(before);
+    let h = harness(studio);
+    assert_eq!(view(&h).size, Vec2::new(2160.0, 1920.0));
+    let (_, _, room) = rooms_for_tests(Rect::from_min_size(Pos2::ZERO, SIZE));
+    assert!(room.contains_rect(view(&h).rect), "the whole course is in the room");
+}
+
+#[test]
+fn the_rail_has_the_nine_tools_and_only_the_built_ones_work() {
+    let mut h = harness(water_studio());
+    let mut last = f32::MIN;
+    for tool in Tool::ALL {
+        let node = h.get_by_role_and_label(Role::Button, tool.name());
+        assert!(node.rect().min.y > last, "{} is below the tool before it", tool.name());
+        last = node.rect().min.y;
+        assert_eq!(node.accesskit_node().is_disabled(), !tool.ready(), "{}", tool.name());
+    }
+    let disabled: Vec<&str> = Tool::ALL.into_iter().filter(|t| !t.ready()).map(Tool::name).collect();
+    assert_eq!(disabled, ["Carve", "Piece", "Pen", "Camera path"]);
+    // The strip says what the tool in hand does.
+    assert!(h.query_by_label(Tool::Select.hint()).is_some());
+    h.get_by_role_and_label(Role::Button, "Pour").click();
+    h.run();
+    assert_eq!(h.state().water_stage.tool, Tool::Pour);
+    assert!(h.query_by_label(Tool::Pour.hint()).is_some());
+    // A tool that is not built yet stays out of hand.
+    h.get_by_role_and_label(Role::Button, "Carve").click();
+    h.run();
+    assert_eq!(h.state().water_stage.tool, Tool::Pour);
+}
+
+#[test]
+fn the_pour_tool_adds_a_pour_where_the_stage_is_clicked_and_select_moves_it() {
+    let mut h = harness(water_studio());
+    h.state_mut().water_stage.tool = Tool::Pour;
+    h.run();
+    let v = view(&h);
+    let at = Vec2::new(120.0, -400.0);
+    click_at(&mut h, v.to_screen(at));
+    let pours = of_kind(h.state(), water::POUR);
+    assert_eq!(pours.len(), 1, "one Pour");
+    let pour = pours[0];
+    let place = |h: &Harness<Studio>| h.state().scene.things[&pour].transform.position;
+    assert!((place(&h) - at).length() < 0.6, "at the click: {}", place(&h));
+    assert_eq!(h.state().selection.primary, Some(pour), "the new Pour is selected");
+    assert_eq!(h.state().water_stage.tool, Tool::Select, "back to Select");
+    let placed = place(&h);
+
+    // Select drags it by its marker.
+    let from = v.to_screen(placed);
+    drag(&mut h, from, from + vec2(50.0, 30.0));
+    let moved = place(&h) - placed;
+    let want = Vec2::new(50.0, 30.0) / v.scale();
+    assert!((moved - want).length() < 1.0, "moved {moved}, wanted {want}");
+    // One undo puts it back where it was placed; the next takes the Pour away.
+    assert!(h.state_mut().undo());
+    assert_eq!(place(&h), placed, "the drag is one undo step");
+    assert!(h.state_mut().undo());
+    assert!(of_kind(h.state(), water::POUR).is_empty(), "placing is its own undo step");
+}
+
+#[test]
+fn a_click_outside_the_course_adds_nothing_and_a_click_on_nothing_lets_go() {
+    let mut h = harness(water_studio());
+    h.state_mut().water_stage.tool = Tool::Drain;
+    h.run();
+    let v = view(&h);
+    // In the room beside the course.
+    let beside = Pos2::new(v.rect.left() - 8.0, v.rect.center().y);
+    click_at(&mut h, beside);
+    assert!(of_kind(h.state(), water::DRAIN).is_empty());
+    assert_eq!(h.state().water_stage.tool, Tool::Drain, "the tool stays in hand");
+    click_at(&mut h, v.rect.center());
+    let drain = of_kind(h.state(), water::DRAIN)[0];
+    assert_eq!(h.state().selection.primary, Some(drain));
+    // With Select, a click on the empty course lets go of it, and a click on its marker picks it.
+    click_at(&mut h, v.rect.center() + vec2(0.0, 200.0));
+    assert_eq!(h.state().selection.primary, None);
+    click_at(&mut h, v.rect.center() + vec2(3.0, -2.0));
+    assert_eq!(h.state().selection.primary, Some(drain));
+    assert_eq!(of_kind(h.state(), water::DRAIN).len(), 1, "Select adds nothing");
+}
+
+#[test]
+fn a_drag_lands_on_the_grid_when_snap_is_on() {
+    let mut studio = Studio::headless_water();
+    studio.grid.snap = true;
+    let spacing = studio.grid.spacing;
+    let mut h = harness(studio);
+    h.state_mut().water_stage.tool = Tool::Lamp;
+    h.run();
+    let v = view(&h);
+    click_at(&mut h, v.to_screen(Vec2::new(spacing * 2.3, spacing * -3.4)));
+    let lamp = of_kind(h.state(), water::LAMP)[0];
+    assert_eq!(h.state().scene.things[&lamp].transform.position, Vec2::new(spacing * 2.0, spacing * -3.0));
+}
+
+#[test]
+fn the_stage_shows_in_a_water_scene_and_the_ball_preview_does_not() {
+    assert_eq!(Studio::headless_water().centre_shows(), Centre::Water);
+    assert_eq!(Studio::headless().centre_shows(), Centre::Preview);
+    let mut video = Studio::headless_water();
+    video.mode = crate::grade_mode::EditorMode::Video;
+    assert_eq!(video.centre_shows(), Centre::Video);
+    // Opening another scene puts the tool back to Select.
+    let mut studio = Studio::headless_water();
+    studio.water_stage.tool = Tool::Force;
+    let scene = bpe_kit::new_scene(&studio.kit.registry);
+    studio.replace_scene(scene, None);
+    assert_eq!(studio.water_stage.tool, Tool::Select);
+}

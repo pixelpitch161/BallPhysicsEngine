@@ -119,6 +119,15 @@ pub(crate) const NO_WATER_EXPORT: &str = "Exporting a Water scene arrives with M
 /// Why a Water scene can't go in a video yet.
 pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
 
+/// What the middle of the window shows: Video mode's viewer, a Water scene's stage, or the ball
+/// preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Centre {
+    Video,
+    Water,
+    Preview,
+}
+
 /// Something that would throw away unsaved changes.
 pub enum Pending {
     Close,
@@ -230,6 +239,8 @@ pub struct Studio {
     pub confirm: Option<Pending>,
     /// The New scene chooser (Balls or Water), while it is open: as the app opens, and after New.
     pub chooser: Option<crate::water_mode::Chooser>,
+    /// A Water scene's stage: its tool and what is being dragged.
+    pub water_stage: crate::water_mode::WaterStage,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
@@ -490,6 +501,7 @@ impl Studio {
             lighting: None,
             confirm: None,
             chooser: None,
+            water_stage: Default::default(),
             panels: Panels::default(),
             grid: Grid::default(),
             preview_mode: Default::default(),
@@ -566,6 +578,17 @@ impl Studio {
     /// an empty stand-in ([`runs::ball_side`]).
     pub fn water(&self) -> bool {
         self.scene.sim == bpe_core::SimKind::Water
+    }
+
+    /// What the middle of the window shows.
+    pub(crate) fn centre_shows(&self) -> Centre {
+        if self.mode == crate::grade_mode::EditorMode::Video {
+            Centre::Video
+        } else if self.water() {
+            Centre::Water
+        } else {
+            Centre::Preview
+        }
     }
 
     /// What the bottom panel shows: the timeline in a Water scene, which has no rules, whatever
@@ -769,16 +792,18 @@ impl eframe::App for Studio {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);
         }
-        let outcome = if video_mode {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(style::STAGE))
-                .show(ui, |ui| crate::video_mode::centre(ui, self));
-            preview::Outcome::default()
-        } else {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(style::STAGE))
-                .show(ui, |ui| preview::show(ui, frame, self))
-                .inner
+        let centre = egui::CentralPanel::default().frame(egui::Frame::new().fill(style::STAGE));
+        let outcome = match self.centre_shows() {
+            Centre::Video => {
+                centre.show(ui, |ui| crate::video_mode::centre(ui, self));
+                preview::Outcome::default()
+            }
+            // A Water scene has its own stage: the ball preview has nothing of it to show.
+            Centre::Water => {
+                centre.show(ui, |ui| crate::water_mode::stage(ui, self));
+                preview::Outcome::default()
+            }
+            Centre::Preview => centre.show(ui, |ui| preview::show(ui, frame, self)).inner,
         };
         if self.no_dialog() {
             self.late_shortcuts(&ctx);

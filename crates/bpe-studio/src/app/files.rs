@@ -18,6 +18,8 @@ impl Studio {
         self.path = path;
         self.history = History::default();
         self.selection.clear();
+        // A new scene's stage starts on Select, holding nothing.
+        self.water_stage = Default::default();
         // A scene is open: the chooser has its answer, however the scene came (a file dropped
         // on the window, restored work).
         self.chooser = None;

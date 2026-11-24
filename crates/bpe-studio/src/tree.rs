@@ -1075,7 +1075,7 @@ fn icon_shape(kind: &str) -> Icon {
     }
 }
 
-fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
+pub(crate) fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
     let c = rect.center();
     let r = rect.width() * 0.32;
     let stroke = Stroke::new(1.5, ink);
