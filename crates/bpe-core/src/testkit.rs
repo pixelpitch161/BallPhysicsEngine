@@ -99,6 +99,9 @@ impl ThingKind for SceneKind {
     fn default_slots(&self) -> &'static [SlotId] {
         &SlotId::ALL
     }
+    fn in_sim(&self, _sim: crate::SimKind) -> bool {
+        true
+    }
 }
 
 impl ThingKind for FolderKind {
@@ -122,6 +125,59 @@ impl ThingKind for FolderKind {
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
+    }
+    fn in_sim(&self, _sim: crate::SimKind) -> bool {
+        true
+    }
+}
+
+/// A Water scene's thing: a pool, with a Feel card.
+pub struct PoolKind;
+/// The pool's Feel card.
+pub struct PoolFeelKind;
+
+impl ThingKind for PoolKind {
+    fn id(&self) -> &'static str {
+        "pool"
+    }
+    fn name(&self) -> &'static str {
+        "Pool"
+    }
+    fn icon(&self) -> &'static str {
+        "pool"
+    }
+    fn help(&self) -> &'static str {
+        "A pool of water, only in a Water scene."
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        &[]
+    }
+    fn slots(&self) -> &'static [SlotId] {
+        &[SlotId::Feel]
+    }
+    fn default_slots(&self) -> &'static [SlotId] {
+        &[SlotId::Feel]
+    }
+    fn in_sim(&self, sim: crate::SimKind) -> bool {
+        sim == crate::SimKind::Water
+    }
+}
+
+impl ModuleKind for PoolFeelKind {
+    fn id(&self) -> &'static str {
+        "feel.test"
+    }
+    fn name(&self) -> &'static str {
+        "Feel"
+    }
+    fn help(&self) -> &'static str {
+        "How the pool flows."
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Feel
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        TintLayer::defs()
     }
 }
 
@@ -442,6 +498,8 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(FolderKind);
     r.add_thing(BallsKind);
+    r.add_thing(PoolKind);
+    r.add_module(PoolFeelKind);
     r.add_module(PlainLookKind);
     r.add_module(StreakKind);
     r.add_module(StackLookKind);

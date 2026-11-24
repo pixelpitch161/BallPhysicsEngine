@@ -72,6 +72,9 @@ pub enum ProblemKind {
     MissingTarget(ThingId),
     /// A layer of a kind this version doesn't know, or of a kind made for another card.
     UnknownLayerKind(KindId),
+    /// A thing of a kind that doesn't go in this kind of scene (a ball in a Water scene, from a
+    /// hand-edited file). It and what is under it are left out.
+    WrongScene(KindId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +100,7 @@ pub(crate) fn defaults(defs: &[SettingDef]) -> Params {
 }
 
 /// Works out every enabled thing's settings and lists what couldn't be used. Cards in slots the
-/// thing's kind doesn't offer are ignored.
+/// thing's kind doesn't offer, or that belong to the other kind of scene, are ignored.
 pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
     let mut out = Resolved::default();
     let mut left_out = BTreeSet::new();
@@ -112,11 +115,16 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
             left_out.insert(id);
             continue;
         };
+        if id != ThingId::ROOT && !kind.in_sim(scene.sim) {
+            out.problems.push(Problem { thing: id, slot: None, kind: ProblemKind::WrongScene(thing.kind.clone()) });
+            left_out.insert(id);
+            continue;
+        }
         let mut params = defaults(kind.settings());
         params.apply(&thing.params);
         let screen = thing.sticks_to_screen(kind);
         let mut resolved = ResolvedThing { id, kind: thing.kind.clone(), params, slots: BTreeMap::new(), screen };
-        for (&slot, card) in thing.slots.iter().filter(|(s, _)| kind.slots().contains(s)) {
+        for (&slot, card) in thing.slots.iter().filter(|(s, _)| kind.slots().contains(s) && s.in_sim(scene.sim)) {
             match reg.module(&card.kind).filter(|k| k.slot() == slot) {
                 Some(ckind) => {
                     let mut params = defaults(ckind.settings());
@@ -340,5 +348,38 @@ mod tests {
             res.problems,
             vec![Problem { thing: odd, slot: None, kind: ProblemKind::UnknownKind("magnet".into()) }]
         );
+    }
+
+    #[test]
+    fn a_thing_of_the_other_scene_kind_is_reported_and_left_out_with_its_children() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = testkit::push(&mut s, "balls", ThingId::ROOT);
+        let under = testkit::push(&mut s, "folder", b);
+        s.things.get_mut(&under).unwrap().parent = Some(b);
+        s.sim = crate::SimKind::Water;
+        let out = resolve(&s, &r);
+        assert!(out.things.contains_key(&ThingId::ROOT));
+        assert!(!out.things.contains_key(&b) && !out.things.contains_key(&under));
+        assert_eq!(out.problems, [Problem { thing: b, slot: None, kind: ProblemKind::WrongScene("balls".into()) }]);
+    }
+
+    #[test]
+    fn a_card_in_the_other_scene_kinds_slot_is_ignored() {
+        let r = testkit::registry();
+        let mut s = Scene { sim: crate::SimKind::Water, ..Scene::empty(&r) };
+        let pool = s.add_thing(&r, "pool", ThingId::ROOT).unwrap();
+        s.add_slot(&r, pool, SlotId::Feel, "feel.test").unwrap();
+        // A hand-edited file: a ball scene's card on a Water scene's settings.
+        s.things.get_mut(&ThingId::ROOT).unwrap().slots.insert(SlotId::Trail, Slot::new("trail.streak"));
+        let out = resolve(&s, &r);
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.things[&pool].slots[&SlotId::Feel].kind, "feel.test");
+        assert!(!out.things[&ThingId::ROOT].slots.contains_key(&SlotId::Trail));
+        // The same file marked Balls: the pool is the one that doesn't belong, and the card is used.
+        s.sim = crate::SimKind::Balls;
+        let out = resolve(&s, &r);
+        assert_eq!(out.problems, [Problem { thing: pool, slot: None, kind: ProblemKind::WrongScene("pool".into()) }]);
+        assert!(out.things[&ThingId::ROOT].slots.contains_key(&SlotId::Trail));
     }
 }

@@ -57,6 +57,17 @@ pub trait ThingKind: Send + Sync + 'static {
     fn offers(&self, _scene: &crate::Scene, _thing: crate::ThingId, _key: &str, _choice: &str) -> bool {
         true
     }
+    /// Whether one of these can be in a scene of kind `sim`. Balls scenes only by default; the
+    /// scene settings, the camera and folders are in both, and a Water scene's things say Water.
+    fn in_sim(&self, sim: crate::SimKind) -> bool {
+        sim == crate::SimKind::Balls
+    }
+    /// Whether the editor shows its own setting `def` in a scene of kind `sim`: a setting that
+    /// means nothing there (the scene's ball gravity in a Water scene) is hidden. It keeps its
+    /// value all the same, and `resolve` still gives it.
+    fn offered(&self, _def: &SettingDef, _sim: crate::SimKind) -> bool {
+        true
+    }
 }
 
 /// A kind of card that fills one of a thing's slots, such as a look or one effect. Each thing

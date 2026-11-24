@@ -64,6 +64,9 @@ pub(crate) fn mend_loaded(scene: &mut Scene, reg: &Registry) -> Result<(), LoadE
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
     scene.give_colours();
+    // Whatever it was saved as, it is saved as this version's from now on: a format 12 program
+    // must never be handed a Water scene.
+    scene.format = Scene::FORMAT;
 
     for thing in scene.things.values_mut() {
         if let Some(kind) = reg.thing(&thing.kind) {
@@ -271,8 +274,27 @@ mod tests {
     }
 
     #[test]
+    fn a_file_with_no_sim_is_a_balls_scene_and_balls_files_gain_no_line() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let text = save(&s);
+        assert!(!text.contains("sim"), "{text}");
+        assert!(text.contains("format: 13"), "{text}");
+        let old = text.replacen("format: 13", "format: 12", 1);
+        let opened = load(&old, &r).unwrap();
+        assert_eq!(opened.sim, crate::SimKind::Balls);
+        assert_eq!(opened.format, Scene::FORMAT, "and it is saved as this version's from now on");
+        s.sim = crate::SimKind::Water;
+        let text = save(&s);
+        assert!(text.contains("sim: Water"), "{text}");
+        let back = load(&text, &r).unwrap();
+        assert_eq!(back.sim, crate::SimKind::Water);
+        assert_eq!(back, s);
+    }
+
+    #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 13)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 14)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -356,7 +378,7 @@ mod tests {
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
         let text = save(&s);
-        for v in 7..Scene::FORMAT {
+        for v in 7..Scene::OLDEST_FORMAT {
             let old = text.replacen(&format!("format: {}", Scene::FORMAT), &format!("format: {v}"), 1);
             let e = load(&old, &r).unwrap_err();
             assert_eq!(e, LoadError::TooOld(v));
