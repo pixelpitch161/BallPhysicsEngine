@@ -54,7 +54,7 @@ that is exactly what was scrubbed.
   video's song plays over it. Follow sound is therefore not offered in a Water scene yet.
 - Balls, Emitters, Shapes, Particles, Rigs, Rules and Health in a Water scene. Floats and other driven parts take
   the place of "things in the water".
-- Text in a Water scene (**My call**; asked below).
+- Text in a Water scene (Aedan, 2026-11-24: "We can leave text out of water for now").
 - Real 3D. The water stays a 2D side view; depth is drawn, not simulated.
 - Checking a small spot at full detail without making the final ("spot check"). Later idea.
 - Stems, MIDI and bake for a Water scene (the Export window hides them).
@@ -96,8 +96,9 @@ that is exactly what was scrubbed.
   defaults to Balls when a file has none, so every saved scene, saved grade and scene kept inside a video keeps
   loading. `Scene::FORMAT` goes to 13 only so that an older program refuses a Water scene cleanly;
   `OLDEST_FORMAT` stays 12.
-- **File > New** opens the chooser from the mockup: two tiles, Balls and Water; Water then offers the six looks
-  and **Plain**. The app still opens straight to a blank Balls scene (**My call**; asked below).
+- **The app opens on the chooser** from the mockup (Aedan, 2026-11-24: "The app should open with the choice
+  between ball or water"): two tiles, Balls and Water, and **Open a scene**. Balls gives today's blank project.
+  Water then offers the six looks and **Plain**. **File > New** shows the same chooser.
 - The root is the same Scene settings thing with the same `SceneSettings` (Width, Height, fps, Length, tempo),
   because export and Video mode read them from there. Settings that mean nothing without balls are hidden in a
   Water scene; the water's gravity is on the Water card. The Camera's ball-only settings are hidden the same way.
@@ -361,7 +362,8 @@ stays linked to the look afterwards. Adding a seventh look later is adding a row
 Each part is its own thread and pull request, ends with something Aedan can open, and gets one Opus review. Each
 part adds its own tools to the rail.
 
-1. **Water scenes open.** `SimKind`, the new slots, save and load, the chooser, the Water things as data, the
+1. **Water scenes open.** `SimKind`, the new slots, save and load, the chooser at start and on File > New (and
+   the one line in `CLAUDE.md` that says the editor always opens to a blank project), the Water things as data, the
    water stage as an empty shell with the tool rail, ball-only jobs and tests gated by kind. Balls goldens and
    pictures shown unchanged.
 2. **Water runs.** `bpe-water` with the chosen physics core at draft detail and tiles from the start, the Course
@@ -396,11 +398,10 @@ whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished w
 - **The editor assumes a ball playback everywhere** (about 90 uses). Part 1 leaves that path alone and gates the
   ball-only jobs by kind; it must show Balls goldens and pictures unchanged before anything else lands.
 
-## Questions for Aedan
+## Answered by Aedan (2026-11-24)
 
-1. The app still opens to a blank Balls scene, and File > New shows the Balls or Water chooser. Or should the
-   chooser be the first thing shown?
-2. Text is left out of Water scenes for now. Is that all right, or is text over the water wanted from the start?
+- The app opens on the Balls or Water chooser.
+- Text is left out of Water scenes for now.
 
-To know, not to answer yet: finals will use several GB of disk while a scene is being worked on, and how long
-Make final takes is not known. Both are measured and reported before anything is built on them.
+Still to be measured and reported before anything is built on them: how much disk room a final uses (several GB
+is the estimate) and how long Make final takes.
