@@ -289,9 +289,10 @@ fn play(
     stop: &AtomicBool,
     ctx: &egui::Context,
 ) -> Result<(), String> {
-    // Huge swarms step on this card. Liquids keep the editor's detail, so the video plays in
-    // time (the still frame and the export use the Export detail).
+    // Huge swarms step on this card; liquids use their Export detail, as the still frame, the
+    // export and the take of the sound do, so picture and sound agree with what is exported.
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    let _export = bpe_kit::things::liquid::exporting_for_now();
     let scenes = bpe_cli::arranged::clip_scenes(video, kit);
     let mut player = bpe_cli::arranged::Player::new(device, video, &scenes, kit, STILL_SCALE);
     let size = player.size();

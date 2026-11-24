@@ -155,12 +155,14 @@ Plan: `docs/superpowers/plans/video/part3-playing.md` (its "Design decisions" li
   with `arranged_frames`.
 - **The worker** (`video_mode/still.rs`): the still-frame thread also takes `Work::Play { from, frames, clock }`;
   frames go through a `sync_channel(PLAYED_AHEAD = 3)`; while it is full the next clip is run up (3 ms at a time);
-  more than `BEHIND` (2) frames behind the playhead (`clock`, an `AtomicU32`) it skips. Playing keeps liquids at
-  the editor's detail (the still frame and export use Export detail). `Still::play` gives a `PlayFeed` (dropping it
+  more than `BEHIND` (2) frames behind the playhead (`clock`, an `AtomicU32`) it skips. Playing, the take and the
+  hits all run liquids at Export detail (`exporting_for_now`), as the still frame and the export do. `Still::play` gives a `PlayFeed` (dropping it
   stops the job); `show_frame`, `shown_from_play` (the stop frame isn't drawn again); older still results never
   overwrite a newer frame.
 - **Sound** (`video_mode/take.rs`, `sound_job.rs`): a `Take` renders the whole `VideoMix` from 0 on a low-priority
-  thread into memory (stops when nobody holds it; `Take::silent` for a video without sound). The sound thread's
+  thread into memory, in fixed 4 800-frame chunks so growing never copies under the lock the sound thread reads
+  through (stops when nobody holds it; `Take::silent` for a video without sound). Takes are made only while
+  playing (at Play, and once an edit rests) and let go when leaving Video mode. The sound thread's
   `Command::Video(Some(take))` makes it the source (a second one while playing waits in `next` and takes over once
   `TAKE_AHEAD` (0.25 s) past the playhead); `Seek` moves the read position, `Pause` never touches the engine, filling
   copies blocks and holds (no dropout counted, the clock waits) while the take isn't that far ahead; `Video(None)`
@@ -169,9 +171,11 @@ Plan: `docs/superpowers/plans/video/part3-playing.md` (its "Design decisions" li
   `video_play` → `start_video_at` (picture job, take to the sound thread, *starting*: the preview shows "Getting
   ready…" until the first frame is back and the take is `SOUND_AHEAD` past the playhead; then `SoundJob::play`).
   `video_tick` (from `Studio::tick` in Video mode): a new take once the video rests `TAKE_REST` (0.4 s, no clip drag),
-  a jump (playhead ≠ `expected`) starts again there, an edit while playing restarts only the picture (the sound swaps
+  a jump (playhead ≠ `expected`) starts again there (a jump to the end stops on the last frame, or loops), an edit while playing restarts only the picture (the sound swaps
   takes), the clock is `SoundJob::clock` or the wall clock, the end stops (or loops). Frames are queued (`QUEUE` 4)
-  and the newest at or before the playhead is shown. `video_stop` leaves the playhead on the frame on show. A sound
+  and the newest at or before the playhead is shown. `video_stop` leaves the playhead on the frame on show (its revision kept, so a frame from before an edit is drawn
+  again); stopping while getting ready leaves it where it was going; Play on the last frame starts from 0. A picture
+  job whose channel closes counts as ready, so an error or the end never leaves it "getting ready". A sound
   thread that appears later is told the take. Dragging the ruler while playing pauses for the drag.
 - **Modes**: `Studio::follow_mode` (end of `ui`) follows any change of mode: leaving Video mode stops the video and
   sends `Video(None)` (`leave_video_mode`); entering it pauses the Build scene.
@@ -183,7 +187,8 @@ Plan: `docs/superpowers/plans/video/part3-playing.md` (its "Design decisions" li
   `edit_clip_scene` parks the Build scene (`ParkedScene`: scene, saved, path, history), opens the kept scene with no
   path in Build mode, and `Studio.clip_edit` holds it; the bar "Editing X in the video Y." with Back to video.
   `back_to_video` (button, Video button, any switch to Video mode) puts the scene into the video as one undo step
-  (`put_back_clip_scene`, tidied) and restores the parked scene (still saved if it was). While editing: Save saves the
+  (`put_back_clip_scene`, tidied, nothing when the scene wasn't changed) and restores the parked scene (still saved
+  if it was) and its playhead. A new video's session starts with no hits. While editing: Save saves the
   video with the edit; New/Open/built-in/New video/Open video and closing go Back to video first; the scene's
   autosave is skipped and the video's autosave/crash copy use `video_with_edit`; `video_unsaved` counts the edit.
 - Tests: `bpe-cli --test arranged` `player_*`; `bpe-studio` `sound_job::tests::{a_take_*, a_new_take_*,

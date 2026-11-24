@@ -510,7 +510,7 @@ fn playing_stops_at_the_end_or_loops() {
     let t0 = Instant::now();
     ticks(&mut studio, t0, 0, 40);
     assert!(!studio.video.playing.on, "it stops at the end");
-    assert_eq!(studio.video.time, studio.video.video.end());
+    assert!(studio.video.video.end() - studio.video.time < 0.02, "near the end: {}", studio.video.time);
     studio.video.playing.looping = true;
     studio.video_play();
     assert_eq!(studio.video.time, 0.0, "Play at the end starts from the start");
@@ -548,14 +548,37 @@ fn a_take_is_made_once_the_video_rests() {
     let (mut studio, a, _) = studio();
     let t0 = Instant::now();
     studio.video_tick(t0);
-    assert!(studio.video.playing.take.is_none(), "not while the video may still be changing");
     studio.video_tick(t0 + Duration::from_millis(500));
-    let first = studio.video.playing.take.clone().expect("a take once it rested");
+    assert!(studio.video.playing.take.is_none(), "no take while stopped");
+    studio.video_play();
+    let first = studio.video.playing.take.clone().expect("playing makes a take");
     studio.video.change(false, |v| v.clips.iter_mut().find(|c| c.id == a).unwrap().level_db = -6.0);
     studio.video_tick(t0 + Duration::from_millis(600));
     assert!(Arc::ptr_eq(&first, studio.video.playing.take.as_ref().unwrap()), "not straight after an edit");
     studio.video_tick(t0 + Duration::from_millis(1_100));
     assert!(!Arc::ptr_eq(&first, studio.video.playing.take.as_ref().unwrap()), "a new take for the edit");
+    studio.leave_video_mode();
+    assert!(studio.video.playing.take.is_none(), "leaving Video mode lets the take go");
+}
+
+#[test]
+fn a_jump_to_the_end_while_playing_stops_on_the_last_frame() {
+    let (mut studio, _, _) = studio();
+    studio.video_play();
+    let t0 = Instant::now();
+    ticks(&mut studio, t0, 0, 2);
+    let end = studio.video.video.end();
+    studio.video.seek(end);
+    ticks(&mut studio, t0, 2, 1);
+    assert!(!studio.video.playing.on, "nothing left to play: it stops");
+    assert!(studio.video.time < end, "on the last frame, not past it");
+    studio.video.playing.looping = true;
+    studio.video_play();
+    ticks(&mut studio, t0, 3, 1);
+    studio.video.seek(end);
+    ticks(&mut studio, t0, 4, 1);
+    assert!(studio.video.playing.on, "with Loop it plays from the start");
+    assert_eq!(studio.video.time, 0.0);
 }
 
 #[test]

@@ -331,6 +331,9 @@ impl Studio {
         if pressed(Modifiers::COMMAND, Key::Z) {
             self.video_undo();
         }
+        if ctx.text_edit_focused() {
+            return;
+        }
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.video_toggle_play();
         }

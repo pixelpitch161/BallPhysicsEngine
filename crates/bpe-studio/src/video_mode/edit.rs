@@ -18,6 +18,8 @@ pub struct ParkedScene {
     pub saved: Scene,
     pub path: Option<PathBuf>,
     pub history: History,
+    /// The Build playhead.
+    pub time: f64,
 }
 
 /// Which kept scene Build mode is editing for the video.
@@ -48,6 +50,7 @@ impl Studio {
             saved: std::mem::take(&mut self.saved),
             path: self.path.take(),
             history: std::mem::take(&mut self.history),
+            time: self.time,
         };
         self.leave_video_mode();
         self.replace_scene(scene, None);
@@ -75,7 +78,8 @@ impl Studio {
     pub fn put_back_clip_scene(&mut self) {
         let Some((edit, _)) = &self.clip_edit else { return };
         let kept = edit.kept;
-        if !self.video.video.scenes.contains_key(&kept) {
+        // Nothing edited (`saved` is the kept copy as opened): nothing to put back, no undo step.
+        if !self.video.video.scenes.contains_key(&kept) || self.scene == self.saved {
             return;
         }
         let scene = self.scene.clone();
@@ -104,6 +108,7 @@ impl Studio {
         if !was_saved {
             self.saved = parked.saved;
         }
+        self.time = parked.time.clamp(0.0, self.duration());
         self.history = parked.history;
         self.mode = EditorMode::Video;
         self.seen_mode = EditorMode::Video;

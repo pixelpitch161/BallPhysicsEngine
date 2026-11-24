@@ -115,6 +115,8 @@ fn start(kit: Arc<Kit>) -> Worker {
     let _ = std::thread::Builder::new().name("ball-studio video hits".into()).spawn(move || {
         crate::thread_priority::set_this_thread(crate::thread_priority::Priority::Low);
         bpe_gfx::swarm::use_on_this_thread(card);
+        // Liquids at their Export detail, as the export and its sound run them.
+        let _export = bpe_kit::things::liquid::exporting_for_now();
         let mut runs: Vec<Run> = Vec::new();
         while let Ok(mut ask) = received.recv() {
             while let Ok(newer) = received.try_recv() {

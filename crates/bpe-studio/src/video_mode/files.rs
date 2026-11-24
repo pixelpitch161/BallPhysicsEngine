@@ -70,6 +70,8 @@ impl Studio {
         // hits' thread and Loop.
         std::mem::swap(&mut session.still, &mut self.video.still);
         std::mem::swap(&mut session.hits, &mut self.video.hits);
+        // The last video's clips' hits would land on the new one's clips (ids start again).
+        session.hits.clips.clear();
         session.playing.carry_from(&self.video.playing);
         session.revision = self.video.revision + 1;
         self.video = session;

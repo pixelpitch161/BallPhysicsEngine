@@ -103,8 +103,8 @@ Editing a clip's scene; "Parts" 3). **Earlier parts:** `docs/notes/video.md`, `p
    on the ruler while playing pauses for the drag and plays again when it is let go (as the scene's scrub bar does).
 9. **Edits while playing.** The picture job is restarted at the playhead once the video has rested `TAKE_REST` with
    no drag held, while the clock runs on (the picture catches up by skipping); the sound swaps to the new take as in
-   decision 2, so an edit never stops the sound. Undo and redo count as edits. Playing keeps liquids at the editor's
-   detail so it can keep time (the still frame and the export use the Export detail).
+   decision 2, so an edit never stops the sound. Undo and redo count as edits. Playing, the take and the hits run
+   liquids at Export detail, as the still frame and the export do, so what plays is what is exported.
 10. **Stopping.** Space, the Play button, or reaching the end without Loop. The playhead stays on the frame on show
     (so the paused picture is the one just seen), the picture job is stopped (its channel dropped), the sound is
     paused there, and the still frame is told that frame is already on show (`Still::shown_from_play`), so it isn't
@@ -273,6 +273,11 @@ Built as planned, with these differences:
 - Back to video keeps the parked scene "saved" when it was saved before (the editor adds a camera and Master to
   every scene it holds, which would otherwise make an old headless scene look changed).
 - `Studio::edit_frame_for_tests` draws Build mode's bar for the kittest of the Video button.
+- After the review: takes are made only while playing (and let go when leaving Video mode) and are stored in fixed
+  chunks; liquids run at Export detail in the picture, the take and the hits; a jump to the end stops on the last
+  frame (or loops); a closed picture channel counts as ready; the stop frame keeps the revision it was drawn from;
+  a new video's session clears the hits; Back to video records nothing when the scene wasn't changed and keeps the
+  Build playhead.
 - Not measured on Aedan's card yet: how heavy scenes keep up. The player drops frames (skips) rather than letting
   the picture drift from the sound, and the take renders ahead of the playhead, so a slow scene shows as a lower
   frame rate, not as lag.

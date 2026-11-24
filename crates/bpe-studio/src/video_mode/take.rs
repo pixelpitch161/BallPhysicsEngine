@@ -17,7 +17,9 @@ pub const RATE: usize = bpe_sound::SAMPLE_RATE as usize;
 /// A video's sound, filling up as it renders.
 pub struct Take {
     /// Interleaved stereo, `ready` frames of it so far.
-    samples: Mutex<Vec<f32>>,
+    /// Fixed chunks of [`CHUNK`] frames (the last may be short), so growing never copies what is
+    /// there while the sound thread waits to read.
+    samples: Mutex<Vec<Vec<f32>>>,
     ready: AtomicUsize,
     done: AtomicBool,
 }
@@ -36,6 +38,8 @@ impl Take {
         let spawned = std::thread::Builder::new().name("ball-studio video take".into()).spawn(move || {
             crate::thread_priority::set_this_thread(crate::thread_priority::Priority::Low);
             bpe_gfx::swarm::use_on_this_thread(card);
+            // Liquids at their Export detail, as the export's sound renders them.
+            let _export = bpe_kit::things::liquid::exporting_for_now();
             theirs.render(&video, &kit);
         });
         if spawned.is_err() {
@@ -54,15 +58,18 @@ impl Take {
     #[cfg(test)]
     pub fn from_samples(samples: Vec<f32>, done: bool) -> Arc<Take> {
         let frames = samples.len() / 2;
-        Arc::new(Take { samples: Mutex::new(samples), ready: AtomicUsize::new(frames), done: AtomicBool::new(done) })
+        let take = Take { samples: Mutex::new(Vec::new()), ready: AtomicUsize::new(0), done: AtomicBool::new(done) };
+        append(&mut take.samples.lock().unwrap(), &samples);
+        take.ready.store(frames, Ordering::Release);
+        Arc::new(take)
     }
 
     /// Adds samples to a take made by [`Take::from_samples`] (tests).
     #[cfg(test)]
     pub fn push(&self, more: &[f32], done: bool) {
         let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
-        samples.extend_from_slice(more);
-        self.ready.store(samples.len() / 2, Ordering::Release);
+        append(&mut samples, more);
+        self.ready.fetch_add(more.len() / 2, Ordering::AcqRel);
         self.done.store(done, Ordering::Release);
     }
 
@@ -81,8 +88,8 @@ impl Take {
             mix.fill(&mut chunk, frames);
             written += frames;
             let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
-            samples.extend_from_slice(&chunk);
-            self.ready.store(samples.len() / 2, Ordering::Release);
+            append(&mut samples, &chunk);
+            self.ready.fetch_add(frames, Ordering::AcqRel);
         }
         self.done.store(true, Ordering::Release);
     }
@@ -110,11 +117,32 @@ impl Take {
     /// Copies frames from frame `from` into `out` (interleaved stereo); gives how many frames came.
     pub fn read(&self, from: usize, out: &mut [f32]) -> usize {
         let samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
-        let have = (samples.len() / 2).saturating_sub(from).min(out.len() / 2);
-        if have == 0 {
-            return 0;
+        let wanted = out.len() / 2;
+        let mut got = 0;
+        while got < wanted {
+            let at = from + got;
+            let Some(chunk) = samples.get(at / CHUNK) else { break };
+            let inside = at % CHUNK;
+            let n = (chunk.len() / 2).saturating_sub(inside).min(wanted - got);
+            if n == 0 {
+                break;
+            }
+            out[got * 2..(got + n) * 2].copy_from_slice(&chunk[inside * 2..(inside + n) * 2]);
+            got += n;
         }
-        out[..have * 2].copy_from_slice(&samples[from * 2..(from + have) * 2]);
-        have
+        got
+    }
+}
+
+/// Appends interleaved `more` to `chunks`, filling the last chunk to [`CHUNK`] frames first.
+fn append(chunks: &mut Vec<Vec<f32>>, mut more: &[f32]) {
+    while !more.is_empty() {
+        if chunks.last().is_none_or(|c| c.len() >= CHUNK * 2) {
+            chunks.push(Vec::with_capacity(CHUNK * 2));
+        }
+        let last = chunks.last_mut().expect("just made");
+        let n = (CHUNK * 2 - last.len()).min(more.len());
+        last.extend_from_slice(&more[..n]);
+        more = &more[n..];
     }
 }

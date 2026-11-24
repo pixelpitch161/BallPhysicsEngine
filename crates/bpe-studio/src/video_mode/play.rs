@@ -40,6 +40,10 @@ pub struct Playing {
     queue: VecDeque<Played>,
     /// The played frame on show.
     pub shown: Option<u32>,
+    /// The video's revision that frame was drawn from.
+    shown_revision: u64,
+    /// The picture job has sent its last frame (or stopped with a problem).
+    feed_done: bool,
     /// The video's revision the picture plays.
     picture_revision: u64,
     /// The take of the video's sound (`None`: none made yet, or no clips).
@@ -97,8 +101,9 @@ impl Studio {
         if self.playing {
             self.set_playing(false);
         }
-        let end = self.video.video.end();
-        if self.video.time >= end - 0.5 / f64::from(self.video.video.settings.fps.max(1)) {
+        // On the last frame (where playing stops) or past it: from the start.
+        let v = &self.video.video;
+        if v.frames(self.video.time) + 1 >= i64::from(v.frame_count()) {
             self.video.time = 0.0;
         }
         self.video.playing.on = true;
@@ -109,10 +114,31 @@ impl Studio {
     fn start_video_at(&mut self, time: f64) {
         let kit = self.kit.clone();
         let session = &mut self.video;
-        let frame = session.video.frames(time).max(0) as u32;
+        let mut frame = session.video.frames(time).max(0) as u32;
+        if frame >= session.video.frame_count() {
+            // At (or past) the end: from the start with Loop, else stopped there.
+            if !session.playing.looping {
+                session.playing.on = false;
+                session.playing.starting = false;
+                session.playing.feed = None;
+                session.playing.shown = None;
+                session.time = session.video.seconds(i64::from(session.video.frame_count().saturating_sub(1)));
+                let time = session.time;
+                if let Some(job) = &mut self.sound
+                    && std::mem::take(&mut self.video.playing.sound_on)
+                {
+                    job.pause(time);
+                }
+                return;
+            }
+            frame = 0;
+        }
         session.time = session.video.seconds(i64::from(frame));
         let p = &mut session.playing;
         p.starting = true;
+        // A frame from before the jump is no longer the one to stop on.
+        p.shown = None;
+        p.feed_done = false;
         p.expected = session.time;
         p.from = frame;
         p.got_first = false;
@@ -170,17 +196,20 @@ impl Studio {
             return;
         }
         p.on = false;
-        p.starting = false;
         p.feed = None;
         p.queue.clear();
         if let Some(shown) = p.shown.take() {
             session.time = session.video.seconds(i64::from(shown));
-            let (revision, frame) = (session.revision, session.frame());
-            session.still.shown_from_play(revision, frame);
+            let revision = p.shown_revision;
+            session.still.shown_from_play(revision, shown);
+        } else if p.starting {
+            // Stopped while getting ready: where it was going.
+            session.time = session.video.seconds(i64::from(p.from));
         } else {
             // No picture played: on the playhead's whole frame.
             session.time = session.video.seconds(session.video.frames(session.time));
         }
+        p.starting = false;
         let time = session.time;
         if let Some(job) = &mut self.sound
             && std::mem::take(&mut self.video.playing.sound_on)
@@ -193,7 +222,12 @@ impl Studio {
     pub(crate) fn video_tick(&mut self, now: Instant) {
         let (revision, dragging) = (self.video.revision, self.video.drag.is_some());
         let rested = self.video.playing.rested(revision, dragging, now);
-        if rested && !self.video.video.clips.is_empty() && self.video.playing.take_revision != Some(revision) {
+        // While stopped the take is made only when playing starts; playing, once the video rests.
+        if rested
+            && self.video.playing.on
+            && !self.video.video.clips.is_empty()
+            && self.video.playing.take_revision != Some(revision)
+        {
             self.new_take();
         }
         if !self.video.playing.on {
@@ -223,7 +257,7 @@ impl Studio {
         let session = &mut self.video;
         let p = &mut session.playing;
         if p.starting {
-            let picture_ready = p.got_first || p.feed.is_none();
+            let picture_ready = p.got_first || p.feed.is_none() || p.feed_done;
             let sound_ready =
                 self.sound.is_none() || p.take.as_ref().is_none_or(|t| t.ready_to(session.time + SOUND_AHEAD));
             if picture_ready && sound_ready {
@@ -247,8 +281,11 @@ impl Studio {
                 session.time = 0.0;
                 self.start_video_at(0.0);
             } else {
+                // The playhead stays on the last frame on show (the last frame, with no picture).
+                if p.shown.is_none() {
+                    session.time = session.video.seconds(i64::from(session.video.frame_count().saturating_sub(1)));
+                }
                 self.video_stop();
-                self.video.time = end;
             }
             return;
         }
@@ -267,6 +304,7 @@ impl Studio {
         session.playing.picture_revision = session.revision;
         session.playing.queue.clear();
         session.playing.feed = None;
+        session.playing.feed_done = false;
         if session.still.enabled {
             let video = bpe_cli::arranged::tidied(&session.video, &kit);
             let ctx = self.repaint.clone().unwrap_or_default();
@@ -285,10 +323,15 @@ impl Studio {
         let at = if p.starting { p.from } else { session.video.frames(session.time).max(0) as u32 };
         let mut show: Option<Played> = None;
         loop {
-            while p.queue.len() < QUEUE
-                && let Ok(played) = feed.frames.try_recv()
-            {
-                p.queue.push_back(played);
+            while p.queue.len() < QUEUE {
+                match feed.frames.try_recv() {
+                    Ok(played) => p.queue.push_back(played),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        p.feed_done = true;
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                }
             }
             let mut took = false;
             while p.queue.front().is_some_and(|(f, ..)| *f <= at) {
@@ -304,6 +347,7 @@ impl Studio {
                 session.still.show_frame(ctx, &pixels, size);
             }
             p.shown = Some(frame);
+            p.shown_revision = p.picture_revision;
             if frame >= p.from {
                 p.got_first = true;
             }
@@ -314,6 +358,9 @@ impl Studio {
     /// the scene again, at the Build playhead.
     pub(crate) fn leave_video_mode(&mut self) {
         self.video_stop();
+        // Its take isn't needed outside Video mode (and stops rendering once nobody holds it).
+        self.video.playing.take = None;
+        self.video.playing.take_revision = None;
         if let Some(job) = &mut self.sound
             && self.video.playing.told.take().is_some()
         {
