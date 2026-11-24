@@ -112,7 +112,6 @@ pub struct Offer {
     pub video: Option<bpe_core::video::Video>,
 }
 
-/// Something that would throw away unsaved changes.
 /// Why a Water scene has no Grade mode yet.
 pub(crate) const NO_WATER_GRADE: &str = "Grading a Water scene arrives with its light and looks.";
 /// Why a Water scene can't be exported yet.
@@ -120,9 +119,11 @@ pub(crate) const NO_WATER_EXPORT: &str = "Exporting a Water scene arrives with M
 /// Why a Water scene can't go in a video yet.
 pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
 
+/// Something that would throw away unsaved changes.
 pub enum Pending {
     Close,
-    New,
+    /// A new scene, as the chooser was answered.
+    New(crate::water_mode::NewScene),
     /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
     /// A built-in scene from the Scenes window, by its id.
@@ -227,6 +228,8 @@ pub struct Studio {
     /// The preview's lighting, when it is lit: how many lights and the GPU's time on them (ms).
     pub lighting: Option<(usize, Option<f32>)>,
     pub confirm: Option<Pending>,
+    /// The New scene chooser (Balls or Water), while it is open: as the app opens, and after New.
+    pub chooser: Option<crate::water_mode::Chooser>,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
@@ -404,6 +407,9 @@ impl Studio {
             } else {
                 studio.open_path(&path);
             }
+        } else {
+            // Opened on its own: Balls or Water? (Behind the question about restoring work, if any.)
+            studio.chooser = Some(crate::water_mode::Chooser::at_start());
         }
         // The starter sound's wavetables (Triangle, and the subs' Square), so Enable sound is
         // heard at once.
@@ -483,6 +489,7 @@ impl Studio {
             shader_problem: None,
             lighting: None,
             confirm: None,
+            chooser: None,
             panels: Panels::default(),
             grid: Grid::default(),
             preview_mode: Default::default(),
@@ -719,7 +726,7 @@ impl eframe::App for Studio {
         self.hold_runs = pointer_down && !self.panels.preview.as_ref().is_some_and(Preview::dragging);
         // The Scenes window takes the keys the panels behind it would act on, before any of them is drawn.
         self.panels.scenes.take_keys(&ctx);
-        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
+        if self.no_dialog() {
             self.shortcuts(&ctx);
         }
 
@@ -773,8 +780,11 @@ impl eframe::App for Studio {
                 .show(ui, |ui| preview::show(ui, frame, self))
                 .inner
         };
-        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
+        if self.no_dialog() {
             self.late_shortcuts(&ctx);
+        }
+        // A scene dropped on the window opens over the chooser too.
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
             self.take_drops(&ctx);
         }
         if outcome.clicked {
@@ -819,6 +829,7 @@ impl eframe::App for Studio {
         self.panels.final_frame.show(&ctx);
         self.take_toolbar_click(&ctx);
         self.scenes_window(&ctx);
+        self.chooser_dialog(&ctx);
         self.confirm_dialog(&ctx);
         self.stop_export_dialog(&ctx);
         self.restore_dialog(&ctx);
@@ -945,11 +956,21 @@ impl Studio {
         if self.in_video_mode() { self.save_video(choose) } else { self.save(choose) }
     }
 
+    /// Whether no dialog is up, so the keys go to the editor: the question about unsaved work,
+    /// the offer to restore, stopping an export, the Scenes window, the New scene chooser.
+    fn no_dialog(&self) -> bool {
+        self.confirm.is_none()
+            && self.offer.is_none()
+            && !self.ask_stop_export
+            && !self.panels.scenes.open
+            && self.chooser.is_none()
+    }
+
     /// Does what the toolbar's button clicked this frame asks.
     pub(crate) fn take_toolbar_click(&mut self, ctx: &egui::Context) {
         match self.clicked.take() {
             Some(ToolbarClick::New) if self.in_video_mode() => self.ask_new_video(ctx),
-            Some(ToolbarClick::New) => self.guard(Pending::New, ctx),
+            Some(ToolbarClick::New) => self.ask_new_scene(),
             Some(ToolbarClick::Open) => self.ask_open(ctx),
             Some(ToolbarClick::Recent(path)) => self.ask_open_path(path, ctx),
             Some(ToolbarClick::Scenes) => self.open_scenes_window(),

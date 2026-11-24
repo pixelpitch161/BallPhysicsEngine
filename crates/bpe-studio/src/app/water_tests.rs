@@ -191,3 +191,89 @@ fn pasting_ball_things_into_a_water_scene_says_why_not() {
     assert!(water.paste_things(None));
     assert_eq!(water.scene.things.values().filter(|t| t.kind == POUR).count(), 2);
 }
+
+#[test]
+fn new_asks_what_kind_then_about_unsaved_work_and_cancel_keeps_the_scene() {
+    use crate::water_mode::{ChooserOutcome, NewScene};
+    let ctx = egui::Context::default();
+    let mut studio = Studio::headless();
+    let before = studio.scene.clone();
+    studio.scene.name = "Mine".into();
+    studio.after_edit(before);
+    assert!(studio.unsaved());
+    let kept = studio.scene.clone();
+    studio.set_playing(true);
+
+    studio.ask_new_scene();
+    assert!(studio.chooser.as_ref().is_some_and(|c| !c.at_start) && !studio.playing);
+    assert_eq!(studio.scene, kept, "the open scene stays until the chooser is answered");
+    studio.answer_chooser(ChooserOutcome::Create(NewScene::water(StartingLook::Molten)), &ctx);
+    assert!(studio.chooser.is_none());
+    assert!(matches!(studio.confirm, Some(Pending::New(_))), "unsaved work is asked about first");
+    assert_eq!(studio.scene, kept);
+    // Cancel on that question: the scene is kept exactly, and the chooser is gone.
+    studio.confirm = None;
+    assert_eq!(studio.scene, kept);
+    assert!(studio.chooser.is_none() && studio.unsaved() && studio.history.can_undo());
+
+    // Again, and this time Don't save.
+    studio.ask_new_scene();
+    studio.answer_chooser(ChooserOutcome::Create(NewScene::water(StartingLook::Molten)), &ctx);
+    let action = studio.confirm.take().expect("asked");
+    studio.perform(action, &ctx);
+    assert!(studio.water() && !studio.unsaved() && !studio.history.can_undo());
+    assert_eq!((studio.scene.name.as_str(), studio.path.as_ref()), ("Water course", None));
+    assert_eq!(studio.status, "Started a new Water scene.");
+    let water = &studio.resolved.things[&ThingId::ROOT].slots[&SlotId::Water];
+    let world = bpe_kit::modules::water::WaterWorld::from_params(&water.params);
+    assert_eq!(world.look, StartingLook::Molten, "the look picked is remembered");
+
+    // Cancel on the chooser itself changes nothing.
+    studio.ask_new_scene();
+    studio.answer_chooser(ChooserOutcome::Cancel, &ctx);
+    assert!(studio.chooser.is_none() && studio.water() && studio.confirm.is_none());
+
+    // Nothing unsaved: a Balls scene starts at once, under the name typed.
+    studio.ask_new_scene();
+    let named = NewScene { name: " Bouncy ".into(), ..NewScene::balls() };
+    studio.answer_chooser(ChooserOutcome::Create(named), &ctx);
+    assert!(!studio.water() && studio.confirm.is_none() && studio.chooser.is_none());
+    assert_eq!(studio.scene.name, "Bouncy");
+    assert!(studio.scene.card(ThingId::ROOT, SlotId::Mixer).is_some(), "the blank Balls project, as before");
+    assert_eq!(studio.status, "Started a new scene.");
+}
+
+#[test]
+fn the_chooser_goes_when_a_scene_opens_and_blocks_no_headless_start() {
+    use crate::water_mode::Chooser;
+    assert!(Studio::blank().chooser.is_none() && Studio::headless().chooser.is_none());
+    let mut studio = Studio::blank();
+    studio.chooser = Some(Chooser::at_start());
+    let scene = bpe_kit::new_scene(&studio.kit.registry);
+    studio.replace_scene(scene, None);
+    assert!(studio.chooser.is_none(), "a scene dropped on the window answers it");
+}
+
+#[test]
+fn the_chooser_shows_as_a_dialog_and_creates_a_water_scene() {
+    let mut studio = Studio::blank();
+    studio.chooser = Some(crate::water_mode::Chooser::at_start());
+    let mut h = harness(studio, egui::vec2(1100.0, 800.0), |ui, s| {
+        let ctx = ui.ctx().clone();
+        s.chooser_dialog(&ctx);
+        s.confirm_dialog(&ctx);
+    });
+    h.run();
+    assert!(has(&h, "New scene") && has(&h, "Balls") && !has(&h, "Cancel"));
+    for label in ["Water", "Next", "Glass lab", "Create Water scene"] {
+        h.query_all_by_label(label).next().unwrap_or_else(|| panic!("no {label}")).click();
+        h.run();
+    }
+    assert!(h.state().water() && h.state().chooser.is_none());
+    assert!(!has(&h, "New scene"), "the dialog is gone");
+    // While the question about unsaved work is up, the chooser waits behind it.
+    h.state_mut().chooser = Some(crate::water_mode::Chooser::for_new());
+    h.state_mut().confirm = Some(Pending::Close);
+    h.run();
+    assert!(!has(&h, "New scene") && has(&h, "Don't save"));
+}

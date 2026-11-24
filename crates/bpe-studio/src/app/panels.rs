@@ -92,7 +92,7 @@ impl Studio {
             return;
         }
         if style::toolbar_button(ui, "New")
-            .on_hover_text("Start a new blank scene with just a camera (Ctrl+N)")
+            .on_hover_text("Start a new scene: a Balls scene or a Water scene (Ctrl+N)")
             .clicked()
         {
             self.clicked = Some(ToolbarClick::New);

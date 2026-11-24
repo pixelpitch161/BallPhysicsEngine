@@ -147,7 +147,7 @@ fn a_key_clicked_while_stopped_sounds_at_the_playhead() {
 fn another_scene_forgets_the_export_file_chosen() {
     let mut studio = Studio::headless();
     studio.panels.export.path = Some(PathBuf::from("/videos/A.mp4"));
-    studio.new_scene();
+    studio.new_scene(crate::water_mode::NewScene::balls());
     assert_eq!(studio.panels.export.path, None, "exporting the new scene doesn't overwrite A.mp4");
     studio.panels.export.path = Some(PathBuf::from("/videos/A.mp4"));
     studio.replace_scene(bpe_kit::new_scene(&studio.kit.registry), Some(PathBuf::from("/scenes/B.json")));
@@ -987,7 +987,7 @@ fn the_editor_starts_on_the_blank_project_and_new_makes_another() {
     assert_eq!(uncoloured(studio.scene.clone()), uncoloured(blank));
     assert!(!studio.unsaved());
     let mut studio = Studio::headless();
-    studio.new_scene();
+    studio.new_scene(crate::water_mode::NewScene::balls());
     let kinds: Vec<&str> = studio.scene.order.iter().map(|id| studio.scene.things[id].kind.as_str()).collect();
     assert_eq!(kinds, ["scene", "camera"], "New is blank too, with just the camera");
 }
@@ -1004,7 +1004,7 @@ fn new_scene_and_undo_keep_the_saved_state_honest() {
     assert!(!studio.unsaved());
     assert!(studio.redo());
     assert_eq!(studio.scene.name, "Changed");
-    studio.new_scene();
+    studio.new_scene(crate::water_mode::NewScene::balls());
     assert_eq!(studio.scene.name, "New scene");
     assert!(!studio.unsaved());
     assert!(studio.history.undo.is_empty());
@@ -1079,7 +1079,7 @@ fn copied_things_paste_into_a_new_scene() {
     h.key_press_modifiers(Modifiers::COMMAND, Key::C);
     h.run();
     assert_eq!(h.state().status, "Copied Ball.");
-    h.state_mut().new_scene();
+    h.state_mut().new_scene(crate::water_mode::NewScene::balls());
     h.run();
     assert!(thing_named(h.state(), "Ball").is_none());
     h.key_press_modifiers(Modifiers::COMMAND, Key::V);
@@ -1327,4 +1327,56 @@ fn the_liquid_readout_says_drops_time_and_small_steps() {
     assert_eq!(liquid_readout(900, 0.4, 1), "· Liquid: 900 drops, 0.4 ms a step (1 small step)");
     // Before the first step is back there is no time to say.
     assert_eq!(liquid_readout(900, 0.0, 0), "· Liquid: 900 drops");
+}
+
+#[test]
+fn the_new_scene_chooser_waits_behind_the_restore_question() {
+    let dir = temp_dir("restore-chooser");
+    let recovery_dir = dir.join("recovery");
+    let mut crashed = Studio::blank();
+    crashed.start_recovery(&recovery_dir, None);
+    crashed.scene.name = "Unsaved work".into();
+    crashed.autosave(Instant::now());
+    session_file(&crashed);
+    drop(crashed.recovery.take());
+
+    let mut studio = Studio::blank();
+    studio.chooser = Some(crate::water_mode::Chooser::at_start());
+    studio.start_recovery(&recovery_dir, None);
+    assert!(studio.offer.is_some());
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(
+            |ui, s: &mut Studio| {
+                let ctx = ui.ctx().clone();
+                s.chooser_dialog(&ctx);
+                s.restore_dialog(&ctx);
+            },
+            studio,
+        );
+    h.run();
+    assert!(h.query_all_by_label("New scene").next().is_none(), "the restore question comes first");
+    h.get_by_label("Discard").click();
+    h.run();
+    h.run();
+    assert!(h.state().offer.is_none());
+    assert!(h.query_all_by_label("New scene").next().is_some(), "then: Balls or Water?");
+
+    // Restoring instead answers it: the work that comes back is the scene.
+    let mut crashed = Studio::blank();
+    crashed.start_recovery(&recovery_dir, None);
+    crashed.scene.name = "More work".into();
+    crashed.autosave(Instant::now());
+    session_file(&crashed);
+    drop(crashed.recovery.take());
+    let mut studio = Studio::blank();
+    studio.chooser = Some(crate::water_mode::Chooser::at_start());
+    studio.start_recovery(&recovery_dir, None);
+    assert!(studio.offer.is_some());
+    studio.restore();
+    assert!(studio.chooser.is_none());
+    assert_eq!(studio.scene.name, "More work");
+    let _ = std::fs::remove_dir_all(dir);
 }
