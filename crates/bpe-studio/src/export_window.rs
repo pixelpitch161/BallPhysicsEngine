@@ -2,8 +2,11 @@
 //! thread.
 
 use crate::style;
-use bpe_cli::{Encoder, ExportOptions, export_video, find_ffmpeg, frame_count, gpu_encoders, output_size};
+use bpe_cli::{
+    Encoder, ExportOptions, export_arranged, export_video, find_ffmpeg, frame_count, gpu_encoders, output_size,
+};
 use bpe_core::Scene;
+use bpe_core::video::Video;
 use bpe_kit::{Kit, SceneSettings};
 use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
@@ -11,6 +14,49 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// What the window exports: the scene, or the video Video mode arranges.
+pub enum Subject<'a> {
+    Scene { scene: &'a Scene, settings: &'a SceneSettings },
+    Video { video: &'a Video, name: String },
+}
+
+impl Subject<'_> {
+    /// What the mp4 is named after.
+    fn name(&self) -> String {
+        match self {
+            Subject::Scene { scene, .. } => scene.name.clone(),
+            Subject::Video { name, .. } => name.clone(),
+        }
+    }
+
+    fn is_video(&self) -> bool {
+        matches!(self, Subject::Video { .. })
+    }
+
+    /// The width, height and frame rate.
+    fn picture(&self) -> (u32, u32, u32) {
+        match self {
+            Subject::Scene { settings, .. } => (settings.width.max(1), settings.height.max(1), settings.fps),
+            Subject::Video { video, .. } => (video.settings.width, video.settings.height, video.settings.fps),
+        }
+    }
+
+    /// Its length in seconds.
+    fn seconds(&self) -> f64 {
+        match self {
+            Subject::Scene { settings, .. } => f64::from(settings.duration),
+            Subject::Video { video, .. } => video.end(),
+        }
+    }
+
+    fn frames(&self) -> u32 {
+        match self {
+            Subject::Scene { settings, .. } => frame_count(settings),
+            Subject::Video { video, .. } => video.frame_count(),
+        }
+    }
+}
 
 /// The graphics card encoders that work, and the ffmpeg they were checked with.
 type CheckedEncoders = (PathBuf, Vec<Encoder>);
@@ -20,6 +66,8 @@ pub struct ExportWindow {
     /// The file chosen with "Change…". `None` saves next to the scene, named after it. It is
     /// the open scene's: opening or starting another forgets it.
     pub(crate) path: Option<PathBuf>,
+    /// The file chosen with "Change…" for the video in Video mode (forgotten when another video opens).
+    pub(crate) video_path: Option<PathBuf>,
     /// H.264 quality: lower is sharper and bigger.
     crf: u8,
     /// Output size as a fraction of the video size (Preview final frame draws at it too).
@@ -110,6 +158,7 @@ impl Default for ExportWindow {
         Self {
             open: false,
             path: None,
+            video_path: None,
             crf: 18,
             scale: 1.0,
             encoder: Encoder::Auto,
@@ -283,13 +332,22 @@ impl ExportWindow {
         }
     }
 
+    #[cfg(test)]
     fn output_path(&self, scene: &Scene, base_dir: Option<&Path>) -> PathBuf {
-        self.path.clone().unwrap_or_else(|| {
+        let settings = SceneSettings::default();
+        self.subject_path(&Subject::Scene { scene, settings: &settings }, base_dir)
+    }
+
+    fn subject_path(&self, subject: &Subject, base_dir: Option<&Path>) -> PathBuf {
+        let chosen = if subject.is_video() { &self.video_path } else { &self.path };
+        chosen.clone().unwrap_or_else(|| {
             let folder = base_dir.map(Path::to_path_buf).unwrap_or_else(videos_dir);
-            folder.join(format!("{}.mp4", safe_file_name(&scene.name)))
+            folder.join(format!("{}.mp4", safe_file_name(&subject.name())))
         })
     }
 
+    /// The window for `scene` (tests).
+    #[cfg(test)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -298,6 +356,11 @@ impl ExportWindow {
         base_dir: Option<&Path>,
         kit: &Arc<Kit>,
     ) {
+        self.show_subject(ctx, &Subject::Scene { scene, settings }, base_dir, kit);
+    }
+
+    /// The window for `subject`, the scene or the video.
+    pub fn show_subject(&mut self, ctx: &egui::Context, subject: &Subject, base_dir: Option<&Path>, kit: &Arc<Kit>) {
         if let Some(job) = &self.job {
             let result = match job.receiver.try_recv() {
                 Ok(result) => Some(result),
@@ -338,9 +401,9 @@ impl ExportWindow {
         style::window(ctx, window, |ui| {
             ui.set_width(460.0);
             let busy = self.job.is_some();
-            ui.add_enabled_ui(!busy, |ui| self.settings(ui, scene, settings, base_dir, kit));
+            ui.add_enabled_ui(!busy, |ui| self.settings(ui, subject, base_dir, kit));
             ui.add_space(10.0);
-            self.progress(ui, ctx, scene, settings, base_dir, kit);
+            self.progress(ui, ctx, subject, base_dir, kit);
         });
         // Escape closes the window as its cross does.
         if escape_is_free && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -350,15 +413,8 @@ impl ExportWindow {
         self.remember_if_changed();
     }
 
-    fn settings(
-        &mut self,
-        ui: &mut egui::Ui,
-        scene: &Scene,
-        settings: &SceneSettings,
-        base_dir: Option<&Path>,
-        kit: &Kit,
-    ) {
-        let path = self.output_path(scene, base_dir);
+    fn settings(&mut self, ui: &mut egui::Ui, subject: &Subject, base_dir: Option<&Path>, kit: &Kit) {
+        let path = self.subject_path(subject, base_dir);
         ui.label(RichText::new("SAVE AS").size(12.0).color(style::MUTED));
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -375,7 +431,11 @@ impl ExportWindow {
                         .set_file_name(path.file_name().unwrap_or_default().to_string_lossy())
                         .save_file()
                 {
-                    self.path = Some(chosen);
+                    if subject.is_video() {
+                        self.video_path = Some(chosen);
+                    } else {
+                        self.path = Some(chosen);
+                    }
                 }
             });
         });
@@ -398,7 +458,8 @@ impl ExportWindow {
                 for (scale, name) in SCALES.into_iter().zip(["Full", "Half", "Quarter"]) {
                     ui.radio_value(&mut self.scale, scale, name);
                 }
-                let (w, h) = output_size(settings.width.max(1), settings.height.max(1), self.scale);
+                let (width, height, _) = subject.picture();
+                let (w, h) = output_size(width, height, self.scale);
                 ui.label(RichText::new(format!("{w} × {h}")).small().color(style::MUTED));
             });
             ui.end_row();
@@ -408,9 +469,10 @@ impl ExportWindow {
             ui.add(egui::Slider::new(&mut self.crf, CRF)).labelled_by(compression.id);
             ui.end_row();
             ui.label("Length");
-            let frames = frame_count(settings);
+            let frames = subject.frames();
+            let fps = subject.picture().2;
             ui.label(
-                RichText::new(format!("{} s at {} fps · {frames} frames", settings.duration, settings.fps))
+                RichText::new(format!("{} s at {fps} fps · {frames} frames", trim_seconds(subject.seconds())))
                     .color(style::MUTED),
             );
             ui.end_row();
@@ -456,6 +518,13 @@ impl ExportWindow {
             });
             ui.end_row();
         });
+        let scene = match subject {
+            Subject::Scene { scene, .. } => *scene,
+            Subject::Video { .. } => {
+                self.video_sound(ui);
+                return;
+            }
+        };
         self.lighting(ui, scene, kit);
         ui.add_space(8.0);
         ui.label(RichText::new("SOUND").size(12.0).color(style::MUTED));
@@ -492,8 +561,7 @@ impl ExportWindow {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
-        scene: &Scene,
-        settings: &SceneSettings,
+        subject: &Subject,
         base_dir: Option<&Path>,
         kit: &Arc<Kit>,
     ) {
@@ -514,8 +582,13 @@ impl ExportWindow {
             return;
         }
         let export = style::primary_button("Export").fill(style::TEXT).min_size(egui::vec2(120.0, 32.0));
-        if ui.add_enabled(self.ffmpeg.is_some(), export).clicked() {
-            self.start(ctx, scene, settings, base_dir, kit);
+        let empty = subject.frames() == 0 && subject.is_video();
+        let button = ui.add_enabled(self.ffmpeg.is_some() && !empty, export);
+        if empty {
+            ui.label(RichText::new("Add a clip first").small().color(style::MUTED));
+        }
+        if button.clicked() {
+            self.start(ctx, subject, base_dir, kit);
         }
         match &self.finished {
             Some(Ok(done)) => {
@@ -547,16 +620,9 @@ impl ExportWindow {
         }
     }
 
-    fn start(
-        &mut self,
-        ctx: &egui::Context,
-        scene: &Scene,
-        settings: &SceneSettings,
-        base_dir: Option<&Path>,
-        kit: &Arc<Kit>,
-    ) {
+    fn start(&mut self, ctx: &egui::Context, subject: &Subject, base_dir: Option<&Path>, kit: &Arc<Kit>) {
         let Some(ffmpeg) = self.ffmpeg.clone() else { return };
-        let path = self.output_path(scene, base_dir);
+        let path = self.subject_path(subject, base_dir);
         if let Some(folder) = path.parent() {
             let _ = std::fs::create_dir_all(folder);
         }
@@ -570,13 +636,19 @@ impl ExportWindow {
             )))));
             return;
         }
-        let options = self.options(&path, ffmpeg);
-        let (scene, kit, ctx) = (scene.clone(), kit.clone(), ctx.clone());
-        let (done, total, cancel) = (
-            Arc::new(AtomicU32::new(0)),
-            Arc::new(AtomicU32::new(frame_count(settings))),
-            Arc::new(AtomicBool::new(false)),
-        );
+        let mut options = self.options(&path, ffmpeg);
+        // Owned copies for the export's thread.
+        let work = match subject {
+            Subject::Scene { scene, .. } => Work::Scene(Box::new((*scene).clone())),
+            Subject::Video { video, .. } => {
+                // Stems, MIDI and baking aren't made for a video yet.
+                (options.stems, options.midi, options.bake) = (false, false, None);
+                Work::Video(Box::new((*video).clone()))
+            }
+        };
+        let (kit, ctx) = (kit.clone(), ctx.clone());
+        let (done, total, cancel) =
+            (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(subject.frames())), Arc::new(AtomicBool::new(false)));
         let (sender, receiver) = channel();
         let (d, t, c) = (done.clone(), total.clone(), cancel.clone());
         std::thread::spawn(move || {
@@ -587,12 +659,16 @@ impl ExportWindow {
                 device.on_uncaptured_error(Arc::new(move |error| {
                     seen.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| error.to_string());
                 }));
-                export_video(&device, &queue, &scene, &kit, &options, |frame, frames| {
+                let progress = |frame, frames| {
                     d.store(frame, Ordering::Relaxed);
                     t.store(frames, Ordering::Relaxed);
                     ctx.request_repaint();
                     !c.load(Ordering::Relaxed) && gpu_error.lock().is_ok_and(|e| e.is_none())
-                })
+                };
+                match &work {
+                    Work::Scene(scene) => export_video(&device, &queue, scene, &kit, &options, progress),
+                    Work::Video(video) => export_arranged(&device, &queue, video, &kit, &options, progress),
+                }
             });
             let gpu_error = gpu_error.lock().unwrap_or_else(|e| e.into_inner()).take();
             let result = match gpu_error {
@@ -607,7 +683,43 @@ impl ExportWindow {
     }
 }
 
+/// What an export's thread exports.
+enum Work {
+    Scene(Box<Scene>),
+    Video(Box<Video>),
+}
+
+/// "12", "7.5" seconds.
+fn trim_seconds(seconds: f64) -> String {
+    let text = format!("{seconds:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
 impl ExportWindow {
+    /// The Sound rows for a video: the mix only.
+    fn video_sound(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(RichText::new("SOUND").size(12.0).color(style::MUTED));
+        egui::Grid::new("export-video-sound").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Mixed sound");
+            ui.label(RichText::new("The song and every clip, AAC 320 kbps").color(style::MUTED));
+            ui.end_row();
+        });
+        ui.label(
+            RichText::new("Stems, MIDI and baked lighting aren't made for a video yet.").small().color(style::MUTED),
+        );
+        if self.ffmpeg.is_none() {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Ball Studio needs the free program ffmpeg to make videos, and couldn't find it. \
+                     Install it, or point to ffmpeg.exe with Choose…",
+                )
+                .color(style::TEXT),
+            );
+        }
+    }
+
     /// The export settings the window's choices make, for a video at `path`.
     fn options(&self, path: &Path, ffmpeg: PathBuf) -> ExportOptions {
         let mut options = ExportOptions::new(path);
@@ -983,7 +1095,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bpe-next-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = egui::Context::default();
-        window.start(&ctx, &scene, &settings, Some(&dir), &kit);
+        window.start(&ctx, &Subject::Scene { scene: &scene, settings: &settings }, Some(dir.as_path()), &kit);
         assert!(window.busy());
         let path = dir.join("New scene.mp4");
         // Let it get going (or fail for want of a graphics card), then close the editor.

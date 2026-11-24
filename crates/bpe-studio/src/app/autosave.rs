@@ -13,7 +13,12 @@ impl Studio {
         match recovery::Session::start(dir) {
             Ok(session) => {
                 if crash_report.is_some() {
-                    recovery::install_crash_hook(self.crash_slot.clone(), session.files().clone(), crash_report);
+                    recovery::install_crash_hook(
+                        self.crash_slot.clone(),
+                        self.video_crash_slot.clone(),
+                        session.files().clone(),
+                        crash_report,
+                    );
                 }
                 self.recovery = Some(session);
             }
@@ -23,6 +28,9 @@ impl Studio {
 
     /// Reads autosaved work to offer back; a copy that can't be read is set aside and reported.
     pub(super) fn offer_back(&mut self, orphan: Orphan) {
+        if orphan.kind == recovery::Work::Video {
+            return self.offer_video_back(orphan);
+        }
         let loaded = orphan
             .read()
             .map_err(|e| e.to_string())
@@ -35,7 +43,7 @@ impl Studio {
                     .as_ref()
                     .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
                     .is_some_and(|saved| saved > orphan.saved_at);
-                self.offer = Some(Offer { name: scene.name.clone(), scene, orphan, when, file_newer });
+                self.offer = Some(Offer { name: scene.name.clone(), scene, orphan, when, file_newer, video: None });
             }
             Err(error) => {
                 orphan.set_aside();
@@ -44,9 +52,65 @@ impl Studio {
         }
     }
 
+    /// Reads an autosaved video to offer back, as [`Studio::offer_back`] does a scene.
+    fn offer_video_back(&mut self, orphan: Orphan) {
+        let loaded = orphan
+            .read()
+            .map_err(|e| e.to_string())
+            .and_then(|text| bpe_kit::video::open_video(&text, &self.kit.registry).map_err(|e| e.to_string()));
+        match loaded {
+            Ok(video) => {
+                let when = recovery::how_long_ago(orphan.saved_at, std::time::SystemTime::now());
+                let file_newer = orphan
+                    .original
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                    .is_some_and(|saved| saved > orphan.saved_at);
+                let name = orphan
+                    .original
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .map_or("Untitled video".to_owned(), |s| format!("the video {}", s.to_string_lossy()));
+                let scene = bpe_core::Scene::empty(&self.kit.registry);
+                self.offer = Some(Offer { name, scene, orphan, when, file_newer, video: Some(video) });
+            }
+            Err(error) => {
+                orphan.set_aside();
+                self.report(ProblemKind::Recovery, format!("Couldn't restore the autosaved video: {error}"));
+            }
+        }
+    }
+
+    /// Takes an offered video back into Video mode, under its own file name, still unsaved.
+    fn restore_video(&mut self, offer: Offer, video: bpe_core::video::Video) {
+        let original = offer.orphan.original.clone();
+        let on_disk = original
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|text| bpe_kit::video::open_video(&text, &self.kit.registry).ok());
+        self.replace_video(video, original);
+        self.video.saved = on_disk.unwrap_or_default();
+        self.video.touched();
+        self.mode = crate::grade_mode::EditorMode::Video;
+        if let Some(session) = &self.recovery {
+            session.write_video(self.video.video.clone(), self.video.path.clone());
+            session.flush();
+            self.autosaved_video = Some(self.video.video.clone());
+            self.video_autosaved_at = Some(Instant::now());
+            self.video_was_unsaved = true;
+            if !matches!(session.outcome(), Some(Err(_))) {
+                offer.orphan.discard();
+            }
+        }
+        self.status = format!("Restored your video (saved automatically {}).", offer.when);
+    }
+
     /// Takes the offered work back: the recovered scene, under its own file name, still unsaved.
     pub fn restore(&mut self) {
-        let Some(offer) = self.offer.take() else { return };
+        let Some(mut offer) = self.offer.take() else { return };
+        if let Some(video) = offer.video.take() {
+            return self.restore_video(offer, video);
+        }
         let original = offer.orphan.original.clone();
         // What the scene's own file holds now, so the unsaved mark is honest.
         let on_disk = original
@@ -85,10 +149,62 @@ impl Studio {
         scene
     }
 
-    /// Copies unsaved work to the recovery folder every [`recovery::AUTOSAVE_EVERY`], keeps the
-    /// copy a crash would save fresh, and deletes the copy once the work is saved. Gives how long
-    /// until it wants to look again.
-    pub(super) fn autosave(&mut self, now: Instant) -> Option<Duration> {
+    /// Copies unsaved work (the scene and the video) to the recovery folder every
+    /// [`recovery::AUTOSAVE_EVERY`], keeps the copies a crash would save fresh, and deletes a copy
+    /// once its work is saved. Gives how long until it wants to look again.
+    pub(crate) fn autosave(&mut self, now: Instant) -> Option<Duration> {
+        let scene = self.autosave_scene(now);
+        let video = self.autosave_video(now);
+        match (scene, video) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The video's part of [`Studio::autosave`].
+    fn autosave_video(&mut self, now: Instant) -> Option<Duration> {
+        let session = self.recovery.as_ref()?;
+        if !self.video_unsaved() {
+            if std::mem::take(&mut self.video_was_unsaved) {
+                session.clear_video();
+                self.autosaved_video = None;
+                *self.video_crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                self.video_crash_copied_at = None;
+            }
+            return None;
+        }
+        self.video_was_unsaved = true;
+        let mut wait: Option<Duration> = None;
+        let mut soon = |d: Duration| wait = Some(wait.map_or(d, |w| w.min(d)));
+        let since_copy = self.video_crash_copied_at.map_or(recovery::CRASH_COPY_EVERY, |t| now.duration_since(t));
+        {
+            let mut slot = self.video_crash_slot.lock().unwrap_or_else(|e| e.into_inner());
+            let stale = slot.as_ref().is_none_or(|c| c.video != self.video.video || c.original != self.video.path);
+            if stale && since_copy >= recovery::CRASH_COPY_EVERY {
+                *slot = Some(recovery::VideoCrashCopy {
+                    video: self.video.video.clone(),
+                    original: self.video.path.clone(),
+                });
+                self.video_crash_copied_at = Some(now);
+            } else if stale {
+                soon(recovery::CRASH_COPY_EVERY - since_copy);
+            }
+        }
+        let since_save = self.video_autosaved_at.map_or(recovery::AUTOSAVE_EVERY, |t| now.duration_since(t));
+        if self.autosaved_video.as_ref() != Some(&self.video.video) {
+            if since_save >= recovery::AUTOSAVE_EVERY {
+                session.write_video(self.video.video.clone(), self.video.path.clone());
+                self.autosaved_video = Some(self.video.video.clone());
+                self.video_autosaved_at = Some(now);
+            } else {
+                soon(recovery::AUTOSAVE_EVERY - since_save);
+            }
+        }
+        wait
+    }
+
+    /// The scene's part of [`Studio::autosave`].
+    fn autosave_scene(&mut self, now: Instant) -> Option<Duration> {
         let session = self.recovery.as_ref()?;
         match session.outcome() {
             Some(Ok(())) => self.clear_problem(ProblemKind::Autosave),

@@ -64,7 +64,9 @@ impl Studio {
             });
             let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 let export = style::primary_button("Export video…").fill(style::TEXT);
-                if ui.add(export).on_hover_text("Render the scene to an mp4").clicked() {
+                let what =
+                    if self.in_video_mode() { "Render the video to an mp4" } else { "Render the scene to an mp4" };
+                if ui.add(export).on_hover_text(what).clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
                 ui.add_space(6.0);
@@ -81,6 +83,10 @@ impl Studio {
 
     /// The toolbar's buttons left of Export, ending with the scene's name and its save status.
     pub(super) fn toolbar_left(&mut self, ui: &mut egui::Ui) {
+        if self.in_video_mode() {
+            self.video_toolbar_left(ui);
+            return;
+        }
         if style::toolbar_button(ui, "New")
             .on_hover_text("Start a new blank scene with just a camera (Ctrl+N)")
             .clicked()
@@ -90,19 +96,7 @@ impl Studio {
         if style::toolbar_button(ui, "Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
             self.clicked = Some(ToolbarClick::Open);
         }
-        ui.menu_button("Recent", |ui| {
-            let recent = settings::recent_scenes();
-            if recent.is_empty() {
-                ui.label("No scenes opened yet");
-            }
-            for path in recent {
-                if ui.button(file_label(&path)).on_hover_text(path.display().to_string()).clicked() {
-                    self.clicked = Some(ToolbarClick::Recent(path));
-                }
-            }
-        })
-        .response
-        .on_hover_text("Open a scene you opened or saved lately");
+        self.recent_menu(ui);
         if style::toolbar_button(ui, "Scenes")
             .on_hover_text("Open one of the built-in scenes, from simple starters to full spectacles")
             .clicked()
@@ -163,6 +157,69 @@ impl Studio {
             )
             .inner;
         status.on_hover_text(full);
+    }
+
+    /// The toolbar in Video mode: the video's files and undo, its name and save status.
+    fn video_toolbar_left(&mut self, ui: &mut egui::Ui) {
+        if style::toolbar_button(ui, "New")
+            .on_hover_text("Start a new video with the open scene as its first clip (Ctrl+N)")
+            .clicked()
+        {
+            self.clicked = Some(ToolbarClick::New);
+        }
+        if style::toolbar_button(ui, "Open…").on_hover_text("Open a saved video or scene (Ctrl+O)").clicked() {
+            self.clicked = Some(ToolbarClick::Open);
+        }
+        self.recent_menu(ui);
+        if style::toolbar_button(ui, "Scenes")
+            .on_hover_text("Open one of the built-in scenes, from simple starters to full spectacles")
+            .clicked()
+        {
+            self.clicked = Some(ToolbarClick::Scenes);
+        }
+        if style::toolbar_button(ui, "Save").on_hover_text("Save this video (Ctrl+S)").clicked() {
+            self.clicked = Some(ToolbarClick::Save);
+        }
+        if style::toolbar_button(ui, "Save as…")
+            .on_hover_text("Save this video under a new name (Ctrl+Shift+S)")
+            .clicked()
+        {
+            self.clicked = Some(ToolbarClick::SaveAs);
+        }
+        style::bar_separator(ui);
+        let undo = egui::Button::new("Undo").frame_when_inactive(false);
+        if ui.add_enabled(self.video.history.can_undo(), undo).on_hover_text("Undo (Ctrl+Z)").clicked() {
+            self.clicked = Some(ToolbarClick::Undo);
+        }
+        let redo = egui::Button::new("Redo").frame_when_inactive(false);
+        if ui.add_enabled(self.video.history.can_redo(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
+            self.clicked = Some(ToolbarClick::Redo);
+        }
+        style::bar_separator(ui);
+        ui.label(RichText::new(self.video.name()).color(style::TEXT));
+        let saved_label = match (&self.video.path, self.video_unsaved()) {
+            (None, _) => RichText::new("Not saved yet").color(style::MUTED),
+            (Some(_), true) => RichText::new("• Unsaved changes").color(style::TEXT),
+            (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(style::MUTED),
+        };
+        ui.add(egui::Label::new(saved_label.small()).truncate());
+    }
+
+    /// The Recent menu: scenes and videos opened or saved lately.
+    fn recent_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Recent", |ui| {
+            let recent = settings::recent_scenes();
+            if recent.is_empty() {
+                ui.label("Nothing opened yet");
+            }
+            for path in recent {
+                if ui.button(file_label(&path)).on_hover_text(path.display().to_string()).clicked() {
+                    self.clicked = Some(ToolbarClick::Recent(path));
+                }
+            }
+        })
+        .response
+        .on_hover_text("Open a scene or video you opened or saved lately");
     }
 
     /// The inspector on the right, as wide as the user last dragged it. Returns its width.

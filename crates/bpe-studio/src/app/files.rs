@@ -54,8 +54,13 @@ impl Studio {
 
     // ---------- copying things (W5) ----------
 
-    /// The window's title: the scene's name, a dot while it has unsaved changes, then the app's.
+    /// The window's title: the scene's name (the video's in Video mode), a dot while it has unsaved
+    /// changes, then the app's.
     pub fn window_title(&self) -> String {
+        if self.in_video_mode() {
+            let dot = if self.video_unsaved() { " •" } else { "" };
+            return format!("{}{dot} – Ball Studio", self.video.name());
+        }
         let name = self.scene.name.trim();
         let name = if name.is_empty() { "Untitled" } else { name };
         let dot = if self.unsaved() { " •" } else { "" };
@@ -68,10 +73,29 @@ impl Studio {
 
     /// Runs `action` now, or asks to save first if there are unsaved changes.
     pub(crate) fn guard(&mut self, action: Pending, ctx: &egui::Context) {
-        if self.unsaved() {
+        if self.must_ask(&action) {
             self.confirm = Some(action);
         } else {
             self.perform(action, ctx);
+        }
+    }
+
+    /// Whether `action` would lose unsaved work: the video's for a video's action, the scene's for
+    /// the scene's, either for closing (the scene's until it has been asked about).
+    pub(crate) fn must_ask(&self, action: &Pending) -> bool {
+        match action {
+            Pending::NewVideo | Pending::OpenVideoPath(_) => self.video_unsaved(),
+            Pending::Close => (self.unsaved() && !self.close_scene_answered) || self.video_unsaved(),
+            _ => self.unsaved(),
+        }
+    }
+
+    /// Whether the open question is about the video (else the scene).
+    pub(crate) fn asking_about_video(&self) -> bool {
+        match &self.confirm {
+            Some(Pending::NewVideo | Pending::OpenVideoPath(_)) => true,
+            Some(Pending::Close) => !self.unsaved() || self.close_scene_answered,
+            _ => false,
         }
     }
 
@@ -81,7 +105,8 @@ impl Studio {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            Pending::Open => self.open(),
+            Pending::NewVideo => self.new_video(),
+            Pending::OpenVideoPath(path) => _ = self.open_video_path(&path),
             Pending::New => self.new_scene(),
             Pending::OpenPath(path) => _ = self.open_path(&path),
             Pending::OpenBuiltIn(id) => _ = self.open_built_in(id),
@@ -100,16 +125,6 @@ impl Studio {
         self.status = format!("Opened the built-in scene {}. Save it to keep your changes.", entry.info.name);
         self.clear_problem(ProblemKind::File);
         true
-    }
-
-    pub fn open(&mut self) {
-        let mut dialog = rfd::FileDialog::new().add_filter("Ball Studio scene", &["ron"]);
-        if let Some(dir) = self.base_dir() {
-            dialog = dialog.set_directory(dir);
-        }
-        if let Some(path) = dialog.pick_file() {
-            self.open_path(&path);
-        }
     }
 
     /// Opens the scene file at `path`. A file that can't be read leaves the current scene and

@@ -49,6 +49,7 @@ mod timeline;
 mod transport;
 mod tree;
 mod vary;
+mod video_mode;
 mod widgets;
 mod words_box;
 
