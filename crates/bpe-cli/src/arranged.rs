@@ -112,6 +112,11 @@ pub struct ClipScenes {
 }
 
 /// Each clip's scene copy ([`clip_scene`]), in the clips' order.
+/// Refuses a video that keeps a scene this renderer can't draw ([`crate::check_exportable`]).
+pub(crate) fn check_scenes(video: &Video) -> anyhow::Result<()> {
+    video.scenes.values().try_for_each(|kept| crate::check_exportable(&kept.scene))
+}
+
 pub fn clip_scenes(video: &Video, kit: &Kit) -> ClipScenes {
     ClipScenes {
         main: video.clips.iter().map(|c| clip_scene(video, c, &kit.registry)).collect(),
@@ -362,6 +367,7 @@ pub fn export_arranged(
     if !video.has_clips() {
         bail!(NO_CLIPS);
     }
+    check_scenes(&video)?;
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
     match export_arranged_with(device, queue, &video, kit, options, encoder, &mut progress) {
         Err(error) if retry_on_cpu(encoder, &error) => {

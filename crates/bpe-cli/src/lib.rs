@@ -237,8 +237,22 @@ pub fn resolve_encoder(choice: Encoder, ffmpeg: &Path) -> Encoder {
     }
 }
 
-/// The root settings that size and time the video.
+/// What a Water scene's export says until Make final exists.
+pub const NO_WATER_EXPORT: &str = "Water scenes can't be exported yet. Export arrives with Make final.";
+
+/// Whether this renderer can make pictures of `scene`: not of a Water scene yet (Water mode part
+/// 1 holds its things as data; nothing draws them), which would come out as an empty picture.
+pub fn check_exportable(scene: &Scene) -> anyhow::Result<()> {
+    if scene.sim == bpe_core::SimKind::Water {
+        anyhow::bail!(NO_WATER_EXPORT);
+    }
+    Ok(())
+}
+
+/// The root settings that size and time the video. Refuses a scene that can't be drawn
+/// ([`check_exportable`]): every export, final frame and preview clip starts here.
 fn video_of(scene: &Scene, kit: &Kit) -> anyhow::Result<(bpe_core::Resolved, SceneSettings)> {
+    check_exportable(scene)?;
     let resolved = bpe_kit::resolve_scene(scene, &kit.registry);
     let settings = {
         let root = resolved.things.get(&bpe_core::ThingId::ROOT).context("the scene has no root")?;
@@ -942,6 +956,22 @@ pub(crate) fn collect_stderr(child: &mut Child) -> std::thread::JoinHandle<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_water_scene_is_refused_in_plain_words() {
+        let kit = bpe_kit::kit();
+        assert!(check_exportable(&bpe_kit::new_studio_scene(&kit.registry)).is_ok());
+        let water = bpe_kit::things::water::new_water_scene(&kit.registry, Default::default(), "");
+        let error = check_exportable(&water).unwrap_err();
+        assert_eq!(error.to_string(), "Water scenes can't be exported yet. Export arrives with Make final.");
+        assert_eq!(video_of(&water, &kit).unwrap_err().to_string(), NO_WATER_EXPORT, "every export starts here");
+        // A video that kept one (a hand-edited file: the editor doesn't keep them) is refused too.
+        let mut video = bpe_core::Video::new();
+        let kept = bpe_core::video::KeptScene { scene: water, ..Default::default() };
+        video.scenes.insert(bpe_core::video::KeptId(1), kept);
+        assert_eq!(crate::arranged::check_scenes(&video).unwrap_err().to_string(), NO_WATER_EXPORT);
+        assert!(crate::arranged::check_scenes(&bpe_core::Video::new()).is_ok());
+    }
 
     #[test]
     fn encoder_keys_read_back() {
