@@ -180,6 +180,9 @@ impl Studio {
         {
             ctx.request_repaint_after(wait);
         }
+        if self.in_video_mode() {
+            self.video_tick(now);
+        }
         if !self.playing {
             return;
         }

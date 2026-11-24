@@ -178,26 +178,26 @@ impl Studio {
         let mut wait: Option<Duration> = None;
         let mut soon = |d: Duration| wait = Some(wait.map_or(d, |w| w.min(d)));
         let since_copy = self.video_crash_copied_at.map_or(recovery::CRASH_COPY_EVERY, |t| now.duration_since(t));
+        // While a clip's scene is edited, its edits count too (the scene's revision with the video's).
+        let revision = self.video.revision.wrapping_add(if self.editing_clip() { self.revision << 32 } else { 0 });
         {
             let mut slot = self.video_crash_slot.lock().unwrap_or_else(|e| e.into_inner());
             // Compared by revision: a video holds whole scenes, too big to compare every tick.
-            let stale = slot.is_none() || self.video_crash_rev != Some(self.video.revision);
+            let stale = slot.is_none() || self.video_crash_rev != Some(revision);
             if stale && since_copy >= recovery::CRASH_COPY_EVERY {
-                *slot = Some(recovery::VideoCrashCopy {
-                    video: self.video.video.clone(),
-                    original: self.video.path.clone(),
-                });
+                *slot =
+                    Some(recovery::VideoCrashCopy { video: self.video_with_edit(), original: self.video.path.clone() });
                 self.video_crash_copied_at = Some(now);
-                self.video_crash_rev = Some(self.video.revision);
+                self.video_crash_rev = Some(revision);
             } else if stale {
                 soon(recovery::CRASH_COPY_EVERY - since_copy);
             }
         }
         let since_save = self.video_autosaved_at.map_or(recovery::AUTOSAVE_EVERY, |t| now.duration_since(t));
-        if self.video_autosaved_rev != Some(self.video.revision) {
+        if self.video_autosaved_rev != Some(revision) {
             if since_save >= recovery::AUTOSAVE_EVERY {
-                session.write_video(self.video.video.clone(), self.video.path.clone());
-                self.video_autosaved_rev = Some(self.video.revision);
+                session.write_video(self.video_with_edit(), self.video.path.clone());
+                self.video_autosaved_rev = Some(revision);
                 self.video_autosaved_at = Some(now);
             } else {
                 soon(recovery::AUTOSAVE_EVERY - since_save);
@@ -215,6 +215,11 @@ impl Studio {
             None => {}
         }
         let session = self.recovery.as_ref()?;
+        if self.editing_clip() {
+            // Build mode holds a clip's scene, which is the video's (its autosave keeps it); the
+            // parked scene's own copy stays as it was.
+            return None;
+        }
         if !self.unsaved() {
             // A copy may exist even if the autosave didn't write it (a crash copy): always clear.
             if std::mem::take(&mut self.was_unsaved) {

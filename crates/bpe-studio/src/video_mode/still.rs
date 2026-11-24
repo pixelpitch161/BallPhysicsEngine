@@ -2,24 +2,60 @@
 //! [`bpe_cli::arranged::still_frame`] on a thread with a graphics device of its own (made once and
 //! kept), so the editor never waits for a clip's run-up. A newer ask stops the one being drawn;
 //! the last frame that came back stays on show, with a spinner, until the new one is ready.
+//!
+//! Part 3: the same thread plays the video ([`Still::play`]): a [`bpe_cli::arranged::Player`]
+//! draws frame after frame into a small channel the editor empties as the playhead passes them.
 
 use crate::app::Studio;
 use crate::style;
 use bpe_core::video::Video;
 use bpe_kit::Kit;
 use eframe::egui::{self, RichText, Ui};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// The share of the video's size the still frame is drawn at.
 pub const STILL_SCALE: f32 = 0.5;
 
+/// A played frame: its number, RGBA pixels and size.
+pub type Played = (u32, Vec<u8>, (u32, u32));
+
+/// Frames the player may draw ahead of the editor taking them.
+pub const PLAYED_AHEAD: usize = 3;
+
+/// The player steps past frames without drawing them once the playhead is more than this many
+/// frames ahead of it.
+pub const BEHIND: u32 = 2;
+
+/// What the worker is asked to do.
+enum Work {
+    /// Draw the still frame `frame`.
+    Still { frame: u32 },
+    /// Play from `from`, sending each frame to `frames`; `clock` is the playhead's frame.
+    Play { from: u32, frames: SyncSender<Played>, clock: Arc<AtomicU32> },
+}
+
 struct Job {
     video: Box<Video>,
-    frame: u32,
+    work: Work,
     asked: u64,
     stop: Arc<AtomicBool>,
+}
+
+/// What [`Still::play`] gives the editor: the frames as they are drawn, and the playhead's frame
+/// for the player to keep up with. Dropping it stops the playing.
+pub struct PlayFeed {
+    pub frames: Receiver<Played>,
+    pub clock: Arc<AtomicU32>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for PlayFeed {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 /// What the worker sends back: which ask, and the pixels and their size or why not.
@@ -73,10 +109,62 @@ impl Still {
         self.asks += 1;
         self.asked = Some((revision, frame));
         self.problem = None;
-        let job = Job { video: Box::new(video.clone()), frame, asked: self.asks, stop: self.stop.clone() };
+        let job = Job {
+            video: Box::new(video.clone()),
+            work: Work::Still { frame },
+            asked: self.asks,
+            stop: self.stop.clone(),
+        };
         if self.worker(kit, ctx).jobs.send(job).is_err() {
             self.worker = None;
             self.problem = Some("drawing the frame stopped unexpectedly".into());
+        }
+    }
+
+    /// Starts playing `video` (tidied) from frame `from` on the worker, stopping any frame being
+    /// drawn. Frames come back through the feed; `None` when the worker couldn't be reached.
+    pub fn play(&mut self, video: &Video, from: u32, kit: &Arc<Kit>, ctx: &egui::Context) -> Option<PlayFeed> {
+        self.stop.store(true, Ordering::Relaxed);
+        self.stop = Arc::new(AtomicBool::new(false));
+        self.asks += 1;
+        // Nothing still is asked while playing: the next still ask draws afresh.
+        self.asked = None;
+        self.problem = None;
+        let (sender, frames) = sync_channel(PLAYED_AHEAD);
+        let clock = Arc::new(AtomicU32::new(from));
+        let work = Work::Play { from, frames: sender, clock: clock.clone() };
+        let job = Job { video: Box::new(video.clone()), work, asked: self.asks, stop: self.stop.clone() };
+        if self.worker(kit, ctx).jobs.send(job).is_err() {
+            self.worker = None;
+            self.problem = Some("playing the video stopped unexpectedly".into());
+            return None;
+        }
+        Some(PlayFeed { frames, clock, stop: self.stop.clone() })
+    }
+
+    /// Shows a played frame.
+    pub fn show_frame(&mut self, ctx: &egui::Context, pixels: &[u8], size: (u32, u32)) {
+        let image = egui::ColorImage::from_rgba_unmultiplied([size.0 as usize, size.1 as usize], pixels); // scene colour
+        match &mut self.shown {
+            Some((texture, n)) => {
+                texture.set(image, egui::TextureOptions::LINEAR);
+                *n = self.asks;
+            }
+            None => {
+                let texture = ctx.load_texture("video still", image, egui::TextureOptions::LINEAR);
+                self.shown = Some((texture, self.asks));
+            }
+        }
+    }
+
+    /// The playing stopped on `frame` of the video at `revision`, which is on show: the still
+    /// frame there needn't be drawn again.
+    pub fn shown_from_play(&mut self, revision: u64, frame: u32) {
+        if self.shown.is_some() {
+            self.asked = Some((revision, frame));
+            if let Some((_, n)) = &mut self.shown {
+                *n = self.asks;
+            }
         }
     }
 
@@ -85,6 +173,8 @@ impl Still {
         let Some(worker) = &self.worker else { return };
         loop {
             match worker.results.try_recv() {
+                // An older ask than the frame on show (a still that came back after playing began).
+                Ok((asked, Ok(_))) if self.shown.as_ref().is_some_and(|(_, n)| *n > asked) => {}
                 Ok((asked, Ok((pixels, size)))) => {
                     let image = egui::ColorImage::from_rgba_unmultiplied([size.0 as usize, size.1 as usize], &pixels); // scene colour
                     match &mut self.shown {
@@ -151,7 +241,24 @@ fn start(kit: Arc<Kit>, ctx: egui::Context) -> Worker {
                 }
             }
             let Some((d, q)) = &device else { continue };
-            let drawn = bpe_cli::arranged::still_frame(d, q, &job.video, &kit, job.frame, STILL_SCALE, &job.stop)
+            let frame = match job.work {
+                Work::Still { frame } => frame,
+                Work::Play { from, frames, clock } => {
+                    let played = play(d, q, &job.video, &kit, from, &frames, &clock, &job.stop, &ctx);
+                    let played = match gpu_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                        Some(error) => Err(format!("the graphics card reported a problem: {error}")),
+                        None => played,
+                    };
+                    if let Err(problem) = played {
+                        if told.send((job.asked, Err(problem))).is_err() {
+                            break;
+                        }
+                        ctx.request_repaint();
+                    }
+                    continue;
+                }
+            };
+            let drawn = bpe_cli::arranged::still_frame(d, q, &job.video, &kit, frame, STILL_SCALE, &job.stop)
                 .map_err(|e| format!("{e:#}"));
             let drawn = match gpu_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 Some(error) => Err(format!("the graphics card reported a problem: {error}")),
@@ -164,6 +271,70 @@ fn start(kit: Arc<Kit>, ctx: egui::Context) -> Worker {
         }
     });
     Worker { jobs, results }
+}
+
+/// The worker's playing: frames from `from` to the end into `frames`, each sent as soon as there
+/// is room (the clips coming next are run up while there isn't), the physics stepped past frames
+/// the playhead has already passed. Ends at the video's end, when stopped, or when the editor
+/// drops the feed; gives "stopped" when stopped.
+#[allow(clippy::too_many_arguments)]
+fn play(
+    device: &bpe_gfx::wgpu::Device,
+    queue: &bpe_gfx::wgpu::Queue,
+    video: &Video,
+    kit: &Kit,
+    from: u32,
+    frames: &SyncSender<Played>,
+    clock: &AtomicU32,
+    stop: &AtomicBool,
+    ctx: &egui::Context,
+) -> Result<(), String> {
+    // Huge swarms step on this card; liquids use their Export detail, as the still frame, the
+    // export and the take of the sound do, so picture and sound agree with what is exported.
+    let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    let _export = bpe_kit::things::liquid::exporting_for_now();
+    let scenes = bpe_cli::arranged::clip_scenes(video, kit);
+    let mut player = bpe_cli::arranged::Player::new(device, video, &scenes, kit, STILL_SCALE);
+    let size = player.size();
+    let stopped = || stop.load(Ordering::Relaxed);
+    for f in from..player.frame_count() {
+        if stopped() {
+            return Ok(());
+        }
+        if f != from && f + BEHIND < clock.load(Ordering::Relaxed) {
+            player.skip(f);
+            continue;
+        }
+        let pixels = match player.draw(device, queue, f, stop) {
+            Ok(pixels) => pixels,
+            Err(_) if stopped() => return Ok(()),
+            Err(e) => return Err(format!("{e:#}")),
+        };
+        let mut item = (f, pixels, size);
+        loop {
+            match frames.try_send(item) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => return Ok(()),
+                Err(TrySendError::Full(back)) => {
+                    item = back;
+                    if stopped() {
+                        return Ok(());
+                    }
+                    let began = Instant::now();
+                    match player.warm_ahead(device, queue, began + Duration::from_millis(3), stop) {
+                        Err(_) if stopped() => return Ok(()),
+                        Err(e) => return Err(format!("{e:#}")),
+                        Ok(()) => {}
+                    }
+                    if began.elapsed() < Duration::from_micros(500) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            }
+        }
+        ctx.request_repaint();
+    }
+    Ok(())
 }
 
 /// The empty video's words and buttons: New video (the open scene as its first clip) and Open.
@@ -199,8 +370,10 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let picture = egui::Rect::from_center_size(rect.center(), egui::vec2(w * k, h * k));
     let session = &mut studio.video;
     if session.still.enabled {
-        let frame = session.frame();
-        session.still.ask(&session.video, session.revision, frame, &studio.kit, &ctx);
+        if !session.playing.on {
+            let frame = session.frame();
+            session.still.ask(&session.video, session.revision, frame, &studio.kit, &ctx);
+        }
         session.still.take(&ctx);
     }
     let painter = ui.painter_at(rect);
@@ -209,9 +382,19 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         painter.image(texture.id(), picture, uv, egui::Color32::WHITE); // scene colour
     }
-    if session.still.drawing() {
+    let starting = session.playing.on && session.playing.starting;
+    if starting || (!session.playing.on && session.still.drawing()) {
         let spot = egui::Rect::from_min_size(picture.left_top() + egui::vec2(8.0, 8.0), egui::vec2(18.0, 18.0));
         ui.put(spot, egui::Spinner::new());
+    }
+    if starting {
+        painter.text(
+            picture.left_top() + egui::vec2(32.0, 17.0),
+            egui::Align2::LEFT_CENTER,
+            "Getting ready…",
+            egui::FontId::proportional(13.0),
+            style::TEXT,
+        );
     }
     if let Some(problem) = &session.still.problem {
         let text = format!("The frame couldn't be drawn: {problem}");

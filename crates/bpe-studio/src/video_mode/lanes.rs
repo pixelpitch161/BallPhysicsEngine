@@ -1,5 +1,6 @@
 //! The arrangement at the bottom of Video mode (part 2 plan, Task 4): a bar ruler that moves the
-//! playhead, the Scenes lane with the clips, and the Song lane with the song's waveform.
+//! playhead, the Scenes lane with the clips, the Song lane with the song's waveform and (part 3)
+//! the Scene sound lane with each clip's hits. Double-clicking a clip edits its scene.
 //!
 //! A clip's middle drags to move it, its edges trim it; where two clips overlap a striped block is
 //! their transition (a click picks it). Every drag works on the video as it was when the drag
@@ -18,6 +19,7 @@ pub const LABEL_WIDTH: f32 = 64.0;
 pub const RULER_HEIGHT: f32 = 20.0;
 pub const SCENES_HEIGHT: f32 = 48.0;
 pub const SONG_HEIGHT: f32 = 34.0;
+pub const SOUND_HEIGHT: f32 = 22.0;
 /// How near (points) a clip's edge grabs it for trimming.
 pub const EDGE: f32 = 6.0;
 
@@ -101,10 +103,24 @@ pub fn fit(view: &mut ArrangeView, video: &Video, width: f32) {
     view.left = 0.0;
 }
 
-/// The header row: Snap, Fit, the playhead.
+/// The header row: Play and Loop, Snap, Fit, the playhead.
 fn header(ui: &mut Ui, studio: &mut Studio, strip_width: f32) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("ARRANGEMENT").size(12.0).color(style::MUTED));
+        ui.add_space(8.0);
+        let playing = studio.video.playing.on;
+        let play = ui
+            .add(style::toggle_button(if playing { "Stop" } else { "Play" }, playing))
+            .on_hover_text("Play or stop the video (Space)");
+        if play.clicked() {
+            studio.video_toggle_play();
+        }
+        let looped = style::switch(ui, &mut studio.video.playing.looping);
+        let label = ui.add(egui::Label::new("Loop").selectable(false).sense(Sense::click()));
+        if label.clicked() {
+            studio.video.playing.looping = !studio.video.playing.looping;
+        }
+        looped.labelled_by(label.id).on_hover_text("Play the video again from the start at its end");
         ui.add_space(8.0);
         ui.label(RichText::new("Snap").small().color(style::MUTED));
         let now = studio.video.video.settings.snap;
@@ -204,11 +220,19 @@ fn ruler(ui: &mut Ui, studio: &mut Studio) -> Rect {
         }
     }
     lane_name(ui, rect, "Bars");
+    // Dragging the playhead while playing pauses for the drag.
+    if response.drag_started() && studio.video.playing.on {
+        studio.video.resume_after_scrub = true;
+        studio.video_stop();
+    }
     if (response.clicked() || response.dragged())
         && let Some(at) = response.interact_pointer_pos()
     {
         let t = view.time_of(strip.left(), at.x.max(strip.left()));
         studio.video.seek(studio.video.video.seconds(studio.video.video.frames(t)));
+    }
+    if response.drag_stopped() && std::mem::take(&mut studio.video.resume_after_scrub) {
+        studio.video_play();
     }
     studio.video.view.ruler = Some(strip);
     strip
@@ -314,6 +338,13 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
             Some(Hit::Clip(_, Part::Body)) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
             _ => {}
         }
+    }
+    if response.double_clicked()
+        && let Some(at) = response.interact_pointer_pos()
+        && let Some(Hit::Clip(id, _)) = hit(&studio.video.video, &view, left, at.x)
+    {
+        studio.edit_clip_scene(id);
+        return;
     }
     if response.clicked()
         && let Some(at) = response.interact_pointer_pos()
@@ -445,6 +476,52 @@ fn song_lane(ui: &mut Ui, studio: &Studio) {
     }
 }
 
+/// The Scene sound lane: each clip's hits as ticks in its scene's colour, inside the clip.
+fn scene_sound_lane(ui: &mut Ui, studio: &mut Studio) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SOUND_HEIGHT), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Scene sound lane"));
+    let strip = Rect::from_min_max(Pos2::new(rect.left() + LABEL_WIDTH, rect.top()), rect.max);
+    lane_name(ui, rect, "Scene sound");
+    let painter = ui.painter_at(strip);
+    painter.rect_filled(strip, 0.0, style::GROUND);
+    let kit = studio.kit.clone();
+    let session = &mut studio.video;
+    session.hits.ask(&session.video, session.revision, &kit);
+    if session.hits.take(&session.video) || session.hits.busy {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    let view = session.view;
+    let left = strip.left();
+    for clip in &session.video.clips {
+        let Some(kept) = session.video.scenes.get(&clip.scene) else { continue };
+        let colour = style::track_color(kept.colour); // scene colour
+        let (from, to) =
+            (view.x_of(left, clip.start).max(strip.left()), view.x_of(left, clip.end()).min(strip.right()));
+        let Some(hits) = session.hits.clips.get(&clip.id) else { continue };
+        let mut last = f32::NEG_INFINITY;
+        for &h in hits {
+            let x = view.x_of(left, f64::from(h)).round();
+            // One tick a pixel column is enough, however many hits land there.
+            if x < from || x > to || x == last {
+                continue;
+            }
+            last = x;
+            let tick =
+                Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 3.0), Pos2::new(x + 1.0, strip.bottom() - 3.0));
+            painter.rect_filled(tick, 0.0, colour);
+        }
+    }
+    if session.hits.enabled && session.hits.busy {
+        painter.text(
+            strip.right_center() - egui::vec2(8.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            "Finding hits…",
+            egui::FontId::proportional(10.0),
+            style::MUTED,
+        );
+    }
+}
+
 /// The whole arrangement.
 pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let strip_width = (ui.available_width() - LABEL_WIDTH).max(50.0);
@@ -458,6 +535,8 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let lane = scenes_lane(ui, studio);
     ui.add_space(2.0);
     song_lane(ui, studio);
+    ui.add_space(2.0);
+    scene_sound_lane(ui, studio);
     let bottom = ui.cursor().top();
     // Wheel scrolls along the video; Ctrl and the wheel zooms about the pointer.
     let lanes = Rect::from_min_max(Pos2::new(lane.left(), top), Pos2::new(lane.right(), bottom));

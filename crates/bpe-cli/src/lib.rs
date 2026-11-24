@@ -684,6 +684,11 @@ impl<'a> FrameMaker<'a> {
         FrameMaker { scene, kit, resolved, world, log: Log::default(), follow, light }
     }
 
+    /// Runs the physics to `time` without building a frame (a run-up's frames nobody sees).
+    pub fn advance_to(&mut self, time: f64) {
+        self.world.advance_to(time, &self.kit.sims, &mut self.log);
+    }
+
     /// The frame at `time` (never earlier than the last asked for: the physics runs forward).
     pub fn frame(&mut self, time: f64) -> Frame {
         self.world.advance_to(time, &self.kit.sims, &mut self.log);
