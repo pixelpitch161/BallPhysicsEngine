@@ -13,7 +13,7 @@ pub fn first_beat_seconds(first_beat: f32) -> f64 {
 pub use sim::SceneSim;
 
 use crate::paint::Paint;
-use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Choice, Color, SettingDef, Settings, SimKind, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
@@ -166,7 +166,17 @@ impl ThingKind for SceneKind {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer, SlotId::Grade]
+        &[
+            SlotId::Shader,
+            SlotId::Lighting,
+            SlotId::Air,
+            SlotId::Mixer,
+            SlotId::Grade,
+            // A Water scene's cards (Water mode part 1).
+            SlotId::Water,
+            SlotId::WaterLight,
+            SlotId::Back,
+        ]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
@@ -177,6 +187,23 @@ impl ThingKind for SceneKind {
             other => other.name(),
         }
     }
+    fn in_sim(&self, _sim: SimKind) -> bool {
+        true
+    }
+    /// A Water scene has no balls: the World card (the balls' gravity and physics rate; the
+    /// water's gravity is on the Water card) and the Background card (the Back card's job)
+    /// are hidden there.
+    fn offered(&self, def: &SettingDef, sim: SimKind) -> bool {
+        root_cards(sim).contains(&def.group)
+    }
+}
+
+/// The root's inspector cards in a scene of kind `sim`, in order.
+pub fn root_cards(sim: SimKind) -> &'static [&'static str] {
+    match sim {
+        SimKind::Balls => &ROOT_CARDS,
+        SimKind::Water => &["Video", "Picture", "Sound"],
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +212,21 @@ mod tests {
 
     fn labels_in(card: &str) -> Vec<&'static str> {
         SceneSettings::defs().iter().filter(|d| d.group == card).map(|d| d.label).collect()
+    }
+
+    #[test]
+    fn a_water_scene_hides_the_ball_settings() {
+        let k = SceneKind;
+        assert_eq!(root_cards(SimKind::Balls), &ROOT_CARDS);
+        assert_eq!(root_cards(SimKind::Water), &["Video", "Picture", "Sound"]);
+        for d in SceneSettings::defs() {
+            assert!(k.offered(d, SimKind::Balls), "{}", d.key);
+            assert_eq!(k.offered(d, SimKind::Water), ["Video", "Picture", "Sound"].contains(&d.group), "{}", d.key);
+        }
+        let hidden: Vec<&str> =
+            SceneSettings::defs().iter().filter(|d| !k.offered(d, SimKind::Water)).map(|d| d.key).collect();
+        assert!(hidden.contains(&"gravity") && hidden.contains(&"steps_per_second"), "{hidden:?}");
+        assert!(k.in_sim(SimKind::Water) && k.in_sim(SimKind::Balls));
     }
 
     #[test]
@@ -225,7 +267,8 @@ mod tests {
     fn scene_settings_keep_their_effects_slot_to_themselves() {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
-        assert_eq!(k.slots(), &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer, SlotId::Grade]);
+        assert_eq!(k.slots()[..5], [SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer, SlotId::Grade]);
+        assert_eq!(k.slots()[5..], [SlotId::Water, SlotId::WaterLight, SlotId::Back], "a Water scene's cards");
         assert!(k.default_slots().is_empty());
         assert_eq!(k.slot_label(SlotId::Shader), "Effects");
     }

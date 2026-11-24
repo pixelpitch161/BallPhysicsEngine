@@ -34,4 +34,7 @@ impl ThingKind for FolderKind {
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
     }
+    fn in_sim(&self, _sim: bpe_core::SimKind) -> bool {
+        true
+    }
 }

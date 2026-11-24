@@ -181,7 +181,9 @@ fn every_setting_that_changes_a_run_restarts_it() {
     let (reg, sims) = (&kit.registry, &kit.sims);
     // (scene, thing whose settings change, what it is)
     let mut jobs: Vec<(Scene, ThingId, String)> = Vec::new();
-    for kind in reg.things().map(|k| k.id()) {
+    // A Balls scene's kinds: a Water scene's things have no part in the ball engine (Water mode
+    // part 1), and their own run gets its own check when it exists.
+    for kind in reg.things().filter(|k| k.in_sim(bpe_core::SimKind::Balls)).map(|k| k.id()) {
         let mut start = bpe_kit::new_scene(reg);
         let id = match start.things.iter().find(|(_, t)| t.kind == kind) {
             Some((id, _)) if kind == "scene" || kind == "camera" => *id,

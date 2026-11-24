@@ -170,6 +170,8 @@ pub fn registry() -> Registry {
     sound::register(&mut r);
     rules::register(&mut r);
     modules::grade::register(&mut r);
+    things::water::register(&mut r);
+    modules::water::register(&mut r);
     r
 }
 
@@ -217,6 +219,15 @@ pub fn ensure_mixer(scene: &mut Scene, reg: &Registry) {
     }
 }
 
+/// What every scene the editor holds has: a camera, and in a Balls scene the mixer card. A
+/// Water scene has no sound, so it gets no mixer.
+pub fn ensure_held(scene: &mut Scene, reg: &Registry) {
+    ensure_camera(scene, reg);
+    if scene.sim == bpe_core::SimKind::Balls {
+        ensure_mixer(scene, reg);
+    }
+}
+
 /// The blank project the editor opens to: Scene settings (with its mixer) and a camera,
 /// nothing else.
 pub fn new_studio_scene(reg: &Registry) -> Scene {
@@ -232,6 +243,31 @@ mod tests {
     use super::*;
     use bpe_core::{Settings, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn ensure_held_gives_a_water_scene_a_camera_and_no_mixer() {
+        let reg = registry();
+        let mut water = Scene { sim: bpe_core::SimKind::Water, ..Scene::empty(&reg) };
+        ensure_held(&mut water, &reg);
+        assert!(camera_of(&water).is_some());
+        assert!(water.card(ThingId::ROOT, SlotId::Mixer).is_none(), "a Water scene has no sound");
+        let mut balls = Scene::empty(&reg);
+        ensure_held(&mut balls, &reg);
+        assert!(camera_of(&balls).is_some() && balls.card(ThingId::ROOT, SlotId::Mixer).is_some());
+        let again = balls.clone();
+        ensure_held(&mut balls, &reg);
+        assert_eq!(balls, again, "nothing is added twice");
+    }
+
+    #[test]
+    fn the_camera_hides_its_ball_settings_in_a_water_scene() {
+        use bpe_core::{SimKind, ThingKind};
+        let k = CameraKind;
+        let shown: Vec<&str> =
+            CameraSettings::defs().iter().filter(|d| k.offered(d, SimKind::Water)).map(|d| d.key).collect();
+        assert_eq!(shown, ["position", "zoom", "turn", "stay_inside", "box_size", "box_centre"]);
+        assert!(CameraSettings::defs().iter().all(|d| k.offered(d, SimKind::Balls)));
+    }
 
     #[test]
     fn the_blank_project_is_scene_settings_and_a_camera() {
@@ -329,9 +365,10 @@ mod tests {
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids"];
+        let families = ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids", "Course", "Forces"];
+        let alone = ["scene", "folder", "camera", things::water::COURSE];
         let reg = registry();
-        for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
+        for kind in reg.things().filter(|k| !alone.contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
         }
     }
@@ -470,7 +507,7 @@ mod tests {
     fn the_look_registry_has_a_look_for_balls_shapes_particles_and_the_old_one() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["liquid.look", "look.basic", "look.layers", "look.particles", "look.shape"]);
+        assert_eq!(looks, ["liquid.look", "look.basic", "look.layers", "look.particles", "look.shape", "water.look"]);
         for look in looks {
             assert_eq!(reg.module(look).unwrap().name(), "Look");
         }
