@@ -466,14 +466,16 @@ impl Worker {
         }
     }
 
-    /// Waits for the helper's engine (tests).
+    /// Waits for the helper's engine (tests). A long warm-up on a machine busy with other tests
+    /// can take well over 20 s, so it waits up to two minutes and says so if it never came.
     #[cfg(test)]
     fn wait_build(&mut self) {
         let started = Instant::now();
-        while self.build.is_some() && started.elapsed() < Duration::from_secs(20) {
+        while self.build.is_some() && started.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(1));
             self.poll_build();
         }
+        assert!(self.build.is_none(), "the helper's engine never came");
     }
 
     /// Asks the speakers to drop what they hold and waits (a little) until they have, so
