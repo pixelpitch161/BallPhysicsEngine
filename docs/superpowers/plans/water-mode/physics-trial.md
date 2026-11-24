@@ -106,8 +106,8 @@ trial core is a `BPE_TRIAL_*` environment variable, so tuning needs no rebuild.
 | --- | --- | --- |
 | Still boxes (594/3, 604/3, 600/36, 600/40) after 5 s: rms speed | 5.5, 8.6, 8.4, 5.6 px/s | 0.3, 0.1, 0.7, 3.3 px/s |
 | the same: thrown up at most | 3, 15, 15, 2 px | 0 px |
-| Deep still pool (Level 0.6), level after 1 s and 20 s | sinks 19 px, then 16 px | sinks 2 px, then 3 px |
-| the same: rms speed after 20 s | 40 px/s | 0.1 px/s at 1 s with the pressure fully solved (see below) |
+| Deep still pool (Level 0.6), level after 1 s and 20 s | sinks 19 px, then 16 px | sinks 3 px, then 3 px |
+| the same: rms speed after 1 s and 20 s | 33 px/s, 40 px/s | 0.1 px/s, under 0.05 px/s |
 | Slosh half swing (theory 0.73 s) | 0.78 s | 0.77 s |
 | Slosh kept each half swing | 0.86 to 0.96 | 0.80 to 0.93 |
 | Course, 6 s: drops outside the outer box | 600 of 11935 (5 %) | 0 |
