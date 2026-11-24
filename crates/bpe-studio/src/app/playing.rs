@@ -125,8 +125,9 @@ impl Studio {
         // Opening a device can take a moment: look less and less often while there is none.
         self.speakers_wait = (self.speakers_wait * 2).min(SPEAKERS_RETRY_MOST);
         *due = now + self.speakers_wait;
+        let (ball, ball_resolved) = ball_side(&self.scene, &self.resolved, &self.no_balls);
         let Some(mut job) =
-            AudioOut::open().and_then(|out| SoundJob::start(&self.scene, &self.resolved, self.kit.clone(), out))
+            AudioOut::open().and_then(|out| SoundJob::start(ball, ball_resolved, self.kit.clone(), out))
         else {
             return;
         };
@@ -216,8 +217,9 @@ impl Studio {
         let baked = WaveBank::baked() + bpe_sound::SampleBank::decoded();
         if baked != self.tables_baked {
             self.tables_baked = baked;
+            let (ball, ball_resolved) = ball_side(&self.scene, &self.resolved, &self.no_balls);
             if let Some(job) = &mut self.sound {
-                job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
+                job.patch(SoundPatch::build_ready(ball, ball_resolved, &self.kit));
             }
         }
         if WaveBank::busy() || bpe_sound::SampleBank::busy() {

@@ -26,15 +26,18 @@ impl Studio {
         self.set_playing(false);
         self.recorded = true;
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        self.patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
-        self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
-        self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
-        self.particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        self.particle_job = ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), 0.0);
-        self.follow = follow_of(&self.scene, &self.resolved);
-        self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
+        // A Water scene's ball engine runs an empty stand-in ([`ball_side`]).
+        let none = self.no_balls.clone();
+        let (ball, ball_resolved) = ball_side(&self.scene, &self.resolved, &none);
+        self.fingerprint = fingerprint(ball, ball_resolved, &self.kit.sims);
+        self.sound_fingerprint = sound_fingerprint(ball, ball_resolved, &self.kit.sims);
+        self.patch_print = bpe_sound::patch_fingerprint(ball, ball_resolved);
+        self.aim_job = aim_job_for(ball, ball_resolved, &self.kit);
+        self.playback = main_playback(ball, ball_resolved, &self.kit);
+        self.particle_print = bpe_runtime::beside_fingerprint(ball, ball_resolved, &self.kit.sims);
+        self.particle_job = ParticleJob::start_if_wanted(ball, ball_resolved, self.kit.sims.clone(), 0.0);
+        self.follow = follow_of(ball, ball_resolved);
+        self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);
         self.revision += 1;
         self.snapshot = None;
         self.runs_due = None;
@@ -43,7 +46,7 @@ impl Studio {
         // The file chosen to export to was the last scene's.
         self.panels.export.path = None;
         if let Some(job) = &mut self.sound {
-            job.rebuild(&self.scene, &self.resolved);
+            job.rebuild(ball, ball_resolved);
         }
     }
 

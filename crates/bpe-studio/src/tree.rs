@@ -1213,6 +1213,7 @@ pub fn problem_words(p: &Problem) -> String {
         ProblemKind::UnknownCardKind(k) => format!("{slot} uses \"{k}\", which isn't installed or doesn't fit here"),
         ProblemKind::UnknownLayerKind(k) => format!("{slot} has a layer of kind \"{k}\", which isn't installed"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
+        ProblemKind::WrongScene(k) => format!("Its kind \"{k}\" doesn't go in this kind of scene, so it is left out"),
     }
 }
 
@@ -1717,6 +1718,8 @@ mod tests {
         assert_eq!(problem_words(&p), "Look uses \"look.x\", which isn't installed or doesn't fit here");
         let p = Problem { thing: ThingId(2), slot: None, kind: ProblemKind::UnknownKind("blob".into()) };
         assert_eq!(problem_words(&p), "Its kind \"blob\" isn't installed");
+        let p = Problem { thing: ThingId(1), slot: None, kind: ProblemKind::WrongScene("balls".into()) };
+        assert_eq!(problem_words(&p), "Its kind \"balls\" doesn't go in this kind of scene, so it is left out");
     }
 
     #[test]

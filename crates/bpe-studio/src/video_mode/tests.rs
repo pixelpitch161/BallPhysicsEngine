@@ -434,7 +434,7 @@ fn keeping_the_build_scene_lists_it_and_add_to_the_end_plays_it_last() {
     let (mut studio, _, b) = studio();
     let mut scene = studio.scene.clone();
     scene.name = "Second".into();
-    let kept = scenes::keep(&mut studio, scene);
+    let kept = scenes::keep(&mut studio, scene).expect("a Balls scene is kept");
     assert_eq!(studio.video.pick(), VideoPick::Scene(kept));
     assert_eq!(studio.video.video.scenes[&kept].name, "Second");
     let mut h = harness(studio);

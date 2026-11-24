@@ -33,7 +33,16 @@ impl Studio {
                 true
             }
             _ => {
-                self.status = "Nothing to paste: this scene has its camera already.".into();
+                // What was copied belongs to the other kind of scene (balls into a Water scene),
+                // or is the one camera this scene already has.
+                let reg = &self.kit.registry;
+                let sim = self.scene.sim;
+                let wrong = clip.things.iter().any(|t| reg.thing(&t.kind).is_some_and(|k| !k.in_sim(sim)));
+                self.status = if wrong {
+                    format!("Nothing to paste: those things don't go in a {} scene.", sim.name())
+                } else {
+                    "Nothing to paste: this scene has its camera already.".into()
+                };
                 false
             }
         }

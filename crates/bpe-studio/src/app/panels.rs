@@ -66,11 +66,15 @@ impl Studio {
                 let export = style::primary_button("Export video…").fill(style::TEXT);
                 let what =
                     if self.in_video_mode() { "Render the video to an mp4" } else { "Render the scene to an mp4" };
-                if ui.add(export).on_hover_text(what).clicked() {
+                // A Water scene has nothing to export yet; a video still has.
+                let can = !self.water() || self.in_video_mode();
+                let export = ui.add_enabled(can, export).on_hover_text(what).on_disabled_hover_text(NO_WATER_EXPORT);
+                if export.clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
                 ui.add_space(6.0);
-                crate::grade_mode::mode_switch(ui, &mut self.mode);
+                let grade_ok = !self.water();
+                crate::grade_mode::mode_switch(ui, &mut self.mode, grade_ok);
             });
             // The gap before Export counts as part of the right side.
             let width = right.response.rect.width() + ui.spacing().item_spacing.x;
@@ -133,6 +137,19 @@ impl Studio {
             }
         }
         style::bar_separator(ui);
+        if self.water() {
+            // Which kind of scene this is: a Water scene's editor is its own.
+            let chip = egui::Frame::new()
+                .stroke(Stroke::new(1.0, style::LINE))
+                .corner_radius(style::RADIUS)
+                .inner_margin(egui::Margin::symmetric(8, 2));
+            chip.show(ui, |ui| ui.label(RichText::new("Water scene").color(style::TEXT).small()))
+                .response
+                .on_hover_text(
+                    "This is a Water scene: liquids running through a course, with its own stage and tools. \
+                 New starts a Balls scene or another Water scene.",
+                );
+        }
         ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(170.0).hint_text("Scene name"))
             .on_hover_text("The scene's name. Exported videos are named after it.");
         let saved_label = match (&self.path, self.unsaved()) {
@@ -227,8 +244,10 @@ impl Studio {
     /// Mixer opens at the tree's width each time it is switched to, and can be dragged wider
     /// while open. Returns the width it was drawn at.
     pub(crate) fn left_panel(&mut self, ui: &mut egui::Ui, before: &Scene) -> f32 {
-        let mut left = self.left;
-        let width = match self.left {
+        // A Water scene shows its things, whichever tab the last Balls scene was on (kept for it).
+        let shown = if self.water() { LeftPanel::Things } else { self.left };
+        let mut left = shown;
+        let width = match shown {
             LeftPanel::Things => {
                 let shown = egui::Panel::left("tree")
                     .default_size(style::TREE_W)
@@ -238,7 +257,10 @@ impl Studio {
                     .frame(side_frame().inner_margin(egui::Margin::symmetric(8, 10)))
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
-                        left_switch(ui, &mut left);
+                        // A Water scene has no ball lights and no sound: only its things.
+                        if !self.water() {
+                            left_switch(ui, &mut left);
+                        }
                         self.panels.tree.paste_words = self.clipboard.things_words();
                         tree::show(
                             ui,
@@ -329,10 +351,12 @@ impl Studio {
                 shown.response.rect.width()
             }
         };
-        if left == LeftPanel::Mixer && self.left != LeftPanel::Mixer {
-            self.mixer_opens += 1;
+        if left != shown {
+            if left == LeftPanel::Mixer {
+                self.mixer_opens += 1;
+            }
+            self.left = left;
         }
-        self.left = left;
         width
     }
 
@@ -340,7 +364,7 @@ impl Studio {
     /// is a panel of its own id: it opens tall enough for a rule, and each view keeps the height it was left at,
     /// however little is in it.
     pub(crate) fn bottom_panel(&mut self, ui: &mut egui::Ui) {
-        let (id, height, tallest) = match self.bottom {
+        let (id, height, tallest) = match self.bottom_view() {
             settings::BottomView::Timeline => ("timeline", 190.0, 520.0),
             settings::BottomView::Rules => ("rules", RULES_HEIGHT, 700.0),
         };

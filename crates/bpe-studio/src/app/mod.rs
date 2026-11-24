@@ -45,6 +45,8 @@ mod runs;
 mod shortcuts;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod water_tests;
 
 use files::file_label;
 pub(crate) use panels::side_frame;
@@ -111,6 +113,13 @@ pub struct Offer {
 }
 
 /// Something that would throw away unsaved changes.
+/// Why a Water scene has no Grade mode yet.
+pub(crate) const NO_WATER_GRADE: &str = "Grading a Water scene arrives with its light and looks.";
+/// Why a Water scene can't be exported yet.
+pub(crate) const NO_WATER_EXPORT: &str = "Exporting a Water scene arrives with Make final.";
+/// Why a Water scene can't go in a video yet.
+pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
+
 pub enum Pending {
     Close,
     New,
@@ -196,6 +205,9 @@ pub struct Studio {
     /// The scene's light as the picture reads it, while something senses light (Follow light, a
     /// Light or Shadow spread, Moths, a Light modulator). Never read by the lighting itself.
     pub light_probe: Option<std::sync::Arc<dyn bpe_runtime::LightAt>>,
+    /// The blank Balls scene the ball engine runs while the scene is a Water scene
+    /// ([`runs::ball_side`]): its playback, jobs and sound stay empty and never restart.
+    pub no_balls: Arc<(Scene, Resolved)>,
     /// Goes up whenever `resolved` or `playback` is rebuilt for a changed scene, so the
     /// preview knows its picture is out of date. The scene itself can be mid-edit during a
     /// frame, ahead of both, so the preview never compares scenes.
@@ -398,8 +410,8 @@ impl Studio {
         for wave in [WaveShape::Triangle, WaveShape::Square] {
             WaveBank::ready(wave, WarpModeId::Sync);
         }
-        studio.sound =
-            AudioOut::open().and_then(|out| SoundJob::start(&studio.scene, &studio.resolved, studio.kit.clone(), out));
+        let (ball, ball_resolved) = ball_side(&studio.scene, &studio.resolved, &studio.no_balls);
+        studio.sound = AudioOut::open().and_then(|out| SoundJob::start(ball, ball_resolved, studio.kit.clone(), out));
         studio.apply_listen();
         studio
     }
@@ -408,6 +420,14 @@ impl Studio {
     pub fn blank() -> Self {
         let kit = Arc::new(bpe_sound::kit());
         let scene = bpe_kit::new_studio_scene(&kit.registry);
+        Self::with_scene(kit, scene)
+    }
+
+    /// The state without a window for tests, open on a new Water scene.
+    #[cfg(test)]
+    pub fn headless_water() -> Self {
+        let kit = Arc::new(bpe_sound::kit());
+        let scene = bpe_kit::things::water::new_water_scene(&kit.registry, Default::default(), "");
         Self::with_scene(kit, scene)
     }
 
@@ -423,16 +443,19 @@ impl Studio {
         // Every scene the editor holds has its sound's Master.
         bpe_kit::ensure_mixer(&mut scene, &kit.registry);
         let resolved = resolve_scene(&scene, &kit.registry);
-        let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
-        let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
-        let patch_print = bpe_sound::patch_fingerprint(&scene, &resolved);
+        // A Water scene's ball engine runs an empty stand-in ([`ball_side`]).
+        let no_balls = no_balls(&kit);
+        let (ball, ball_resolved) = ball_side(&scene, &resolved, &no_balls);
+        let fingerprint = fingerprint(ball, ball_resolved, &kit.sims);
+        let sound_fingerprint = sound_fingerprint(ball, ball_resolved, &kit.sims);
+        let patch_print = bpe_sound::patch_fingerprint(ball, ball_resolved);
         // Started first, so the playback's own build waits on its work instead of doing it again.
-        let aim_job = aim_job_for(&scene, &resolved, &kit);
-        let playback = main_playback(&scene, &resolved, &kit);
-        let particle_print = bpe_runtime::beside_fingerprint(&scene, &resolved, &kit.sims);
-        let particle_job = ParticleJob::start_if_wanted(&scene, &resolved, kit.sims.clone(), 0.0);
-        let follow = follow_of(&scene, &resolved);
-        let light_probe = light_probe_of(&scene, &resolved, &follow);
+        let aim_job = aim_job_for(ball, ball_resolved, &kit);
+        let playback = main_playback(ball, ball_resolved, &kit);
+        let particle_print = bpe_runtime::beside_fingerprint(ball, ball_resolved, &kit.sims);
+        let particle_job = ParticleJob::start_if_wanted(ball, ball_resolved, kit.sims.clone(), 0.0);
+        let follow = follow_of(ball, ball_resolved);
+        let light_probe = light_probe_of(ball, ball_resolved, &follow);
         let runs_things = scene.things.keys().copied().collect();
         Self {
             saved: scene.clone(),
@@ -448,6 +471,7 @@ impl Studio {
             patch_print,
             follow,
             light_probe,
+            no_balls,
             revision: 0,
             kit,
             time: 0.0,
@@ -530,6 +554,27 @@ impl Studio {
     }
 
     // ---------- the scene ----------
+
+    /// Whether the open scene is a Water scene: it has its own stage, and the ball engine runs
+    /// an empty stand-in ([`runs::ball_side`]).
+    pub fn water(&self) -> bool {
+        self.scene.sim == bpe_core::SimKind::Water
+    }
+
+    /// What the bottom panel shows: the timeline in a Water scene, which has no rules, whatever
+    /// was last picked (the pick is kept for Balls scenes).
+    pub fn bottom_view(&self) -> settings::BottomView {
+        if self.water() { settings::BottomView::Timeline } else { self.bottom }
+    }
+
+    /// A Water scene has no Grade mode yet (nothing draws it): sends Grade mode back to Build
+    /// and says why, however it was asked for (the D key, "Open in Grade mode").
+    pub(crate) fn keep_out_of_grade(&mut self) {
+        if self.water() && self.mode == crate::grade_mode::EditorMode::Grade {
+            self.mode = crate::grade_mode::EditorMode::Build;
+            self.status = NO_WATER_GRADE.into();
+        }
+    }
 
     /// The root's settings as resolved: the video's size, length and frame rate.
     pub fn settings(&self) -> SceneSettings {
@@ -688,6 +733,7 @@ impl eframe::App for Studio {
             )
             .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
+        self.keep_out_of_grade();
         let video_mode = self.mode == crate::grade_mode::EditorMode::Video;
         if !video_mode {
             crate::video_mode::edit::bar(ui, self);
@@ -709,6 +755,7 @@ impl eframe::App for Studio {
             self.inspector_panel(ui);
             if std::mem::take(&mut self.panels.inspector.open_grade) {
                 self.mode = crate::grade_mode::EditorMode::Grade;
+                self.keep_out_of_grade();
             }
         }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {

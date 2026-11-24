@@ -3,6 +3,29 @@
 
 use super::*;
 
+/// The scene the ball engine runs: `scene` itself when it is a Balls scene, and for a Water
+/// scene the empty stand-in `none` (a blank Balls scene). Everything built from a scene for the
+/// balls (the playback, the aiming, the particle playback, the sound, the Follow sound sampler,
+/// the light probe, and the fingerprints that restart them) is built from this, so in a Water
+/// scene they all stay empty and no edit restarts any of them.
+pub(crate) fn ball_side<'a>(
+    scene: &'a Scene,
+    resolved: &'a Resolved,
+    none: &'a (Scene, Resolved),
+) -> (&'a Scene, &'a Resolved) {
+    match scene.sim {
+        bpe_core::SimKind::Balls => (scene, resolved),
+        bpe_core::SimKind::Water => (&none.0, &none.1),
+    }
+}
+
+/// The blank Balls scene a Water scene's ball engine runs ([`ball_side`]).
+pub(super) fn no_balls(kit: &Kit) -> Arc<(Scene, Resolved)> {
+    let scene = bpe_kit::new_studio_scene(&kit.registry);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    Arc::new((scene, resolved))
+}
+
 /// The background aiming `scene` wants, started.
 pub(super) fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> {
     let duration = resolved.things.get(&ThingId::ROOT).map_or(0.0, |r| SceneSettings::from_params(&r.params).duration);
@@ -108,8 +131,9 @@ impl Studio {
     /// a new colour keeps the balls where they are.
     pub(crate) fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        self.follow = follow_of(&self.scene, &self.resolved);
-        self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
+        let (ball, ball_resolved) = ball_side(&self.scene, &self.resolved, &self.no_balls);
+        self.follow = follow_of(ball, ball_resolved);
+        self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);
         self.time = self.time.min(self.duration());
         self.revision += 1;
         self.restart_runs();
@@ -120,9 +144,12 @@ impl Studio {
     /// and noted due ([`Studio::runs_due`]): the preview shows the old run drawn with the new
     /// looks until the drag is let go or rests ([`Studio::settle_runs`]).
     pub(super) fn restart_runs(&mut self) {
-        let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        let heard = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        // A Water scene's ball engine runs an empty stand-in, so nothing below ever changes there.
+        let none = self.no_balls.clone();
+        let (ball, ball_resolved) = ball_side(&self.scene, &self.resolved, &none);
+        let fingerprint = fingerprint(ball, ball_resolved, &self.kit.sims);
+        let particle_print = bpe_runtime::beside_fingerprint(ball, ball_resolved, &self.kit.sims);
+        let heard = sound_fingerprint(ball, ball_resolved, &self.kit.sims);
         let rebuilt = fingerprint != self.fingerprint;
         let particles = particle_print != self.particle_print;
         let sound_rebuilt = heard != self.sound_fingerprint;
@@ -137,30 +164,29 @@ impl Studio {
         }
         if rebuilt {
             self.fingerprint = fingerprint;
-            self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
-            self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
+            self.aim_job = aim_job_for(ball, ball_resolved, &self.kit);
+            self.playback = main_playback(ball, ball_resolved, &self.kit);
         }
         // A particle edit starts the particle playback over, and nothing else.
         if particles {
             self.particle_print = particle_print;
-            self.particle_job =
-                ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), self.time);
+            self.particle_job = ParticleJob::start_if_wanted(ball, ball_resolved, self.kit.sims.clone(), self.time);
         }
         // The sound follows: a physics change starts its world over (no hits from the old
         // layout), anything else swaps the settings in where it is. How much of the balls' past
         // trails keep is the editor's alone: the sound plays on through it.
         self.sound_fingerprint = heard;
-        let patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
+        let patch_print = bpe_sound::patch_fingerprint(ball, ball_resolved);
         let patch_changed = patch_print != self.patch_print;
         self.patch_print = patch_print;
         if let Some(job) = &mut self.sound {
             if sound_rebuilt {
-                job.rebuild(&self.scene, &self.resolved);
+                job.rebuild(ball, ball_resolved);
                 if self.playing {
                     job.seek(self.time);
                 }
             } else if patch_changed {
-                job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
+                job.patch(SoundPatch::build_ready(ball, ball_resolved, &self.kit));
             }
         }
     }

@@ -16,8 +16,13 @@ pub fn short_length(seconds: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Keeps `scene` in the video as one undo step, and picks it.
-pub fn keep(studio: &mut Studio, mut scene: Scene) -> KeptId {
+/// Keeps `scene` in the video as one undo step, and picks it. A Water scene is refused (`None`,
+/// with a line saying why): nothing draws one yet, so its clip would be an empty picture.
+pub fn keep(studio: &mut Studio, mut scene: Scene) -> Option<KeptId> {
+    if scene.sim == bpe_core::SimKind::Water {
+        studio.status = crate::app::NO_WATER_VIDEO.into();
+        return None;
+    }
     bpe_kit::ensure_camera(&mut scene, &studio.kit.registry);
     bpe_kit::ensure_mixer(&mut scene, &studio.kit.registry);
     let name = scene.name.clone();
@@ -26,7 +31,7 @@ pub fn keep(studio: &mut Studio, mut scene: Scene) -> KeptId {
     studio.video.pick = VideoPick::Scene(kept);
     let shown = &studio.video.video.scenes[&kept].name;
     studio.status = format!("Added {shown} to the video. Drag it onto the Scenes lane to play it.");
-    kept
+    Some(kept)
 }
 
 /// Adds kept scene `kept` as a clip at the video's end, picking the clip.
@@ -88,8 +93,7 @@ pub fn add_file(studio: &mut Studio, path: &std::path::Path) -> bool {
             if scene.name.trim().is_empty() {
                 scene.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             }
-            keep(studio, scene);
-            true
+            keep(studio, scene).is_some()
         }
         Err(error) => {
             let name = path.file_name().unwrap_or_default().to_string_lossy();

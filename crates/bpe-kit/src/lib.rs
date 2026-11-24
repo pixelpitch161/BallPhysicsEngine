@@ -212,20 +212,21 @@ pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
     scene.add_thing(reg, "camera", ThingId::ROOT).expect("kit kinds are registered")
 }
 
-/// The scene's mixer card, added to the scene settings when it has none (older files).
+/// The scene's mixer card, added to the scene settings when it has none (older files). A Water
+/// scene has no sound, so it gets none.
 pub fn ensure_mixer(scene: &mut Scene, reg: &Registry) {
+    if scene.sim != bpe_core::SimKind::Balls {
+        return;
+    }
     if scene.card(ThingId::ROOT, bpe_core::SlotId::Mixer).is_none() {
         scene.add_slot(reg, ThingId::ROOT, bpe_core::SlotId::Mixer, "sound.mixer").expect("the kit has the mixer");
     }
 }
 
-/// What every scene the editor holds has: a camera, and in a Balls scene the mixer card. A
-/// Water scene has no sound, so it gets no mixer.
+/// What every scene the editor holds has: a camera, and in a Balls scene the mixer card.
 pub fn ensure_held(scene: &mut Scene, reg: &Registry) {
     ensure_camera(scene, reg);
-    if scene.sim == bpe_core::SimKind::Balls {
-        ensure_mixer(scene, reg);
-    }
+    ensure_mixer(scene, reg);
 }
 
 /// The blank project the editor opens to: Scene settings (with its mixer) and a camera,
