@@ -1,16 +1,20 @@
-//! Command-line renderer for the modular studio: `bpe-render-next scene.ron out.mp4`.
+//! Command-line renderer for the modular studio: `bpe-render-next scene.ron out.mp4`, or a video
+//! (`.ballvideo`) of several scenes.
 
 use anyhow::{Context, bail};
-use bpe_cli::{Encoder, ExportOptions, export_video};
+use bpe_cli::{Encoder, ExportOptions, export_arranged, export_video};
 use std::io::Write;
 use std::path::PathBuf;
 
 const USAGE: &str = "\
 Usage:
   bpe-render-next <scene.ron> [out.mp4] [options]
+  bpe-render-next <video.ballvideo> [out.mp4] [options]
   bpe-render-next --new <out.mp4> [options]
 
-Without an output name the video is written next to the scene file, with the same name.
+Without an output name the video is written next to the scene or video file, with the same name.
+A video (several scenes laid out on a song) takes --scale, --frames, --crf, --preset, --ffmpeg
+and --encoder.
 `--new` renders the blank project the editor opens to: Scene settings and a camera.
 
 Options:
@@ -89,6 +93,40 @@ fn run() -> anyhow::Result<()> {
         i += 1;
     }
 
+    let is_video = !new_scene
+        && scene_path.as_ref().is_some_and(|p| {
+            p.extension().is_some_and(|e| e.eq_ignore_ascii_case(bpe_core::video_save::VIDEO_EXTENSION))
+        });
+    if is_video {
+        let path = scene_path.as_ref().expect("checked above");
+        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let video =
+            bpe_kit::video::open_video(&text, &kit.registry).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        let output = output.unwrap_or_else(|| path.with_extension("mp4"));
+        let mut options = ExportOptions::new(output.clone());
+        options.scale = scale;
+        options.max_frames = frames;
+        options.crf = crf;
+        options.preset = preset;
+        options.encoder = encoder;
+        options.stems = stems;
+        options.midi = midi;
+        options.bake = bake;
+        if let Some(ffmpeg) = ffmpeg {
+            options.ffmpeg = ffmpeg;
+        }
+        let (device, queue) = bpe_gfx::headless_device().context("no graphics device for rendering")?;
+        let started = std::time::Instant::now();
+        let encoder = export_arranged(&device, &queue, &video, &kit, &options, show_progress)?;
+        println!(
+            "\nwrote {} with the {} in {:.1} s",
+            output.display(),
+            encoder.name(),
+            started.elapsed().as_secs_f32()
+        );
+        return Ok(());
+    }
+
     let scene = if new_scene {
         bpe_kit::new_studio_scene(&kit.registry)
     } else {
@@ -117,13 +155,16 @@ fn run() -> anyhow::Result<()> {
 
     let (device, queue) = bpe_gfx::headless_device().context("no graphics device for rendering")?;
     let started = std::time::Instant::now();
-    let encoder = export_video(&device, &queue, &scene, &kit, &options, |done, total| {
-        if done % 60 == 0 || done == total {
-            print!("\r{done}/{total} frames");
-            let _ = std::io::stdout().flush();
-        }
-        true
-    })?;
+    let encoder = export_video(&device, &queue, &scene, &kit, &options, show_progress)?;
     println!("\nwrote {} with the {} in {:.1} s", output.display(), encoder.name(), started.elapsed().as_secs_f32());
     Ok(())
+}
+
+/// Prints how far the export is, every 60 frames.
+fn show_progress(done: u32, total: u32) -> bool {
+    if done.is_multiple_of(60) || done == total {
+        print!("\r{done}/{total} frames");
+        let _ = std::io::stdout().flush();
+    }
+    true
 }

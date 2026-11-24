@@ -72,15 +72,31 @@ impl Readback {
         renderer: &Renderer,
     ) -> anyhow::Result<Option<Vec<u8>>> {
         anyhow::ensure!(renderer.size() == (self.width, self.height), "readback size doesn't match the renderer");
+        self.push_texture(device, queue, renderer.output_texture(), renderer.output_view())
+    }
+
+    /// Starts copying `texture` (an output-format picture of the readback's size, `view` its
+    /// view), as [`Readback::push`] does a renderer's output.
+    pub fn push_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        anyhow::ensure!(
+            (texture.width(), texture.height()) == (self.width, self.height),
+            "readback size doesn't match the picture"
+        );
         let index = self.next;
         let oldest = self.take(device, index)?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
         let sources: Vec<&wgpu::Texture> = match self.video.as_mut() {
             Some(video) => {
-                video.convert(device, &mut encoder, renderer.output_view());
+                video.convert(device, &mut encoder, view);
                 video.textures.iter().collect()
             }
-            None => vec![renderer.output_texture()],
+            None => vec![texture],
         };
         let slot = &mut self.slots[index];
         for (texture, &(offset, padded, _, h)) in sources.into_iter().zip(&self.planes) {

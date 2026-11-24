@@ -54,6 +54,12 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
         Some(_) => {}
     }
     let mut scene: Scene = ron::from_str(text).map_err(|e| LoadError::Broken(e.to_string()))?;
+    mend_loaded(&mut scene, reg)?;
+    Ok(scene)
+}
+
+/// Mends and cleans a scene just read from a file (a scene file's, or one kept in a video).
+pub(crate) fn mend_loaded(scene: &mut Scene, reg: &Registry) -> Result<(), LoadError> {
     if !scene.mend() {
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
@@ -74,7 +80,7 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
         scene.next_thing = scene.next_thing.max(last.0 + 1);
     }
     clean_rules(&mut scene.rules, reg);
-    Ok(scene)
+    Ok(())
 }
 
 /// Keeps one rule per id and one block per id in a rule, drops links from blocks that aren't
