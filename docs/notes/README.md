@@ -18,6 +18,7 @@ pitfalls, with one line per area pointing here. Read the file for the area you t
 | `grading.md` | Colour grading: the Grade card, its panels as layers, the GPU grade program, Grade mode, the Histogram |
 | `library.md` | The built-in scenes: the library in bpe-kit, its checks, the Scenes window |
 | `video.md` | Video arrangement: the `.ballvideo` file, clips and transitions, the video's sound, compose pass, export |
+| `water.md` | Water mode: a scene is Balls or Water, the chooser, the Water things and cards as data, the Water stage |
 | `editor.md` | bpe-studio: design system, panels, inspector cards, Look editor, emitter card, timeline, Mixer, Sound tab |
 
 ## Keeping notes

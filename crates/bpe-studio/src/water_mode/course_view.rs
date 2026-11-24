@@ -28,21 +28,21 @@ impl CourseView {
     }
 
     /// Screen points per world pixel.
-    pub fn scale(&self) -> f32 {
+    pub fn scale(self) -> f32 {
         self.rect.width() / self.size.x
     }
 
-    pub fn to_screen(&self, world: Vec2) -> Pos2 {
+    pub fn to_screen(self, world: Vec2) -> Pos2 {
         self.rect.center() + vec2(world.x, world.y) * self.scale()
     }
 
-    pub fn to_world(&self, screen: Pos2) -> Vec2 {
+    pub fn to_world(self, screen: Pos2) -> Vec2 {
         let d = (screen - self.rect.center()) / self.scale();
         Vec2::new(d.x, d.y)
     }
 
     /// Whether the screen point is on the course.
-    pub fn holds(&self, screen: Pos2) -> bool {
+    pub fn holds(self, screen: Pos2) -> bool {
         self.rect.contains(screen)
     }
 }

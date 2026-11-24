@@ -8,7 +8,7 @@ TikTok, Reels and Shorts. The owner is a music producer on Windows 11 who is not
 | --- | --- |
 | Editor crate / binary | `bpe-studio` / `ball-studio-next` |
 | Command-line renderer | `bpe-cli` / `bpe-render-next` |
-| Scenes | the editor always opens to a blank project (Scene settings + Camera); built-in scenes open from the Scenes window (`bpe-kit/src/library/`) |
+| Scenes | the editor opens on the Balls or Water chooser; Balls gives a blank project (Scene settings + Camera), Water a Water scene (`docs/notes/water.md`); built-in scenes open from the Scenes window (`bpe-kit/src/library/`) |
 | Area notes | `docs/notes/` (one file per area, the detail this guide leaves out) |
 
 The shipped `bin\ball-studio.exe` on the owner's PC is built from **`bpe-studio`** (`-p bpe-studio`), even though
@@ -40,8 +40,9 @@ same: there's no backward compatibility until the owner is happy with the softwa
 - **Drawing**: things draw into a `Frame` (`bpe-gfx/src/frame/`) and the renderer draws it: balls through one
   layered uber-shader, shapes and text through paths, trails as strips, particles as sprites, then lighting passes,
   effects, bloom and grade. A frame with no Lighting card is byte-identical to before lighting existed.
-- Scene files are format 12 (`save.rs`). Built-in scenes live in `bpe-kit/src/library/` (the owner asked for
-  them on 2026-11-10; `docs/notes/library.md`); test scenes live in `bpe-kit/src/scenes.rs` behind `test-scenes`.
+- Scene files are format 13 (`save.rs`; 12 still opens). Built-in scenes live in `bpe-kit/src/library/` (the owner
+  asked for them on 2026-11-10; `docs/notes/library.md`); test scenes live in `bpe-kit/src/scenes.rs` behind
+  `test-scenes`.
 
 ## Area index
 
@@ -66,6 +67,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Built-in scenes (library, Scenes window) | `library.md` | `specs/2026-11-10-built-in-scenes-design.md`, `plans/built-in-scenes/` |
 | Liquid thing (GPU liquid, fill and pours, colour mixing, walls band, drops drawn from the card) | `liquid.md` | `specs/2026-11-17-liquid-thing-design.md`, `plans/liquid/` |
 | Video arrangement (several scenes in one video, transitions, the mix) | `video.md` | `specs/2026-11-24-video-arrangement-design.md`, `plans/video/` |
+| Water mode (a scene is Balls or Water, the chooser, Water things and cards, the Water stage) | `water.md` | `specs/2026-11-24-water-mode-design.md`, `plans/water-mode/` |
 | Checks, picture tests, this guide | this file, `checks.md` (CI layout, focused test runs) | `plans/2026-11-08-safety-nets-lean-guide.md`, `plans/2026-11-21-faster-checks.md` |
 
 ## Crate map

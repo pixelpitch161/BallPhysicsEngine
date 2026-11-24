@@ -157,14 +157,14 @@ fn a_water_scene_has_no_lights_tab_no_mixer_tab_and_no_rules_view() {
     assert!(!has(&h, "Lights") && !has(&h, "Mixer") && !has(&h, "Things"));
     assert!(has(&h, "Course"), "the tree shows, whichever tab was last open");
     assert_eq!(h.state().left, LeftPanel::Mixer);
-    let mut h = harness(Studio::headless_water(), egui::vec2(900.0, 80.0), |ui, s| crate::transport::controls(ui, s));
+    let mut h = harness(Studio::headless_water(), egui::vec2(900.0, 80.0), crate::transport::controls);
     h.run();
     assert!(!has(&h, "Rules") && !has(&h, "Timeline"));
 
     let mut h = harness(Studio::headless(), egui::vec2(900.0, 500.0), side);
     h.run();
     assert!(has(&h, "Lights") && has(&h, "Mixer") && has(&h, "Things"));
-    let mut h = harness(Studio::headless(), egui::vec2(900.0, 80.0), |ui, s| crate::transport::controls(ui, s));
+    let mut h = harness(Studio::headless(), egui::vec2(900.0, 80.0), crate::transport::controls);
     h.run();
     assert!(has(&h, "Rules") && has(&h, "Timeline"));
 }

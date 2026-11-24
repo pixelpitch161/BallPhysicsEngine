@@ -22,6 +22,7 @@ pub struct NewScene {
 
 impl NewScene {
     /// The blank Balls project.
+    #[cfg(test)]
     pub fn balls() -> Self {
         Self { sim: SimKind::Balls, look: StartingLook::Plain, name: BALLS_NAME.into() }
     }

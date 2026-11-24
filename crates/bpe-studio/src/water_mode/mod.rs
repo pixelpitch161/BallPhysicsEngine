@@ -7,8 +7,6 @@ pub mod rail;
 pub mod stage;
 
 pub use chooser::{Chooser, ChooserOutcome, NewScene};
-pub use course_view::CourseView;
-pub use rail::Tool;
 pub use stage::{WaterStage, stage};
 
 #[cfg(test)]

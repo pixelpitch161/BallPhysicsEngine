@@ -38,7 +38,7 @@ Dependencies go bottom to top:
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 12, and 12 is also the oldest that opens
+  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 13 (Water mode part 1 added `Scene.sim`, `water.md`), and 12 is the oldest that opens
   (`OLDEST_FORMAT`): an earlier file gives `LoadError::TooOld` ("made with an earlier version of Ball Studio"), and
   there is no upgrade code (the registry's `add_upgrade` went in the 2026-11-08 clean-up). The test scenes still
   build old Trail and Particles cards and turn them into Look layers with `cards_to_layers` (test-scenes only). **Around layers** (`LayerSection::Around`)

@@ -800,3 +800,33 @@ built").
   (parts 2 and 8); the Water twin of `restarts.rs` (part 2); Grade mode, export, Video mode and the Scenes window
   for a Water scene (parts 6, 8, 10); recovery and autosave need nothing (they save and load any scene).
 - Names used across tasks were checked against each task's Produces block.
+
+## As built
+
+Built as planned in eight tasks; the notes are `docs/notes/water.md`. Where the build went another way than the
+plan above:
+
+- **Format.** A loaded file's format becomes 13 in `save::mend_loaded` (the plan kept a 12 file at 12), so a Water
+  scene is never saved as 12. `add_slot` also refuses a card of the other scene kind.
+- **Sections.** The Water Look's sections are new names (Colour, Body, Its surface, Glow, Crust, Drawn, Extras,
+  Mixing shows) so they read in the spec's order; `mixes_when` is on the Mixing card only; the look pick sits in
+  the Water card's "Course" section.
+- **Export check.** One check at the start of `video_of` (every export, final frame and preview clip) and
+  `check_scenes` for a video, instead of one per entry point.
+- **Mixer.** `ensure_mixer` itself does nothing in a Water scene, so its callers did not change.
+- **`offered` by key.** The scene's and the camera's `offered` look a setting up by key: the inspector blanks a
+  def's group on a root card, and going by `def.group` hid every Balls scene setting (caught by the existing
+  inspector tests).
+- **Cards that stay.** The cards a Water thing starts with, and the scene's Water, Light and Back, have no Remove
+  button; a card added with + Add card (a Liquid's Heat) comes off again. A Water scene's settings show no Grade
+  summary card.
+- **The rail** draws a picture per tool (the thing's own tree icon for a placing tool) with the name on hover and
+  for screen readers: nine words don't fit 44 px. The stage is `water_mode/stage.rs` with tests in
+  `water_mode/tests.rs`; opening another scene puts the tool back to Select; the course shows a faint line between
+  its screens.
+- **Tests.** Tests and code were written together per task. The editor's tests are `app/water_tests.rs`,
+  `water_mode/chooser.rs`, `water_mode/tests.rs`, and the Water tests in `inspector/tests.rs` and `tree.rs`. Open
+  from the chooser is not driven through `answer_chooser` in a test (it opens the system's file dialog).
+- **Checked.** `cargo clippy --workspace --all-targets -- -D warnings` clean; the editor's 908 tests, `bpe-core`'s
+  and the kit's Water tests pass; no golden or pinned picture file changed, and the kit's physics goldens pass in
+  debug against the unchanged files.

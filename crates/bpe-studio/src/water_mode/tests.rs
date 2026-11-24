@@ -1,7 +1,9 @@
 //! The Water stage shell: the view, the rail, placing and moving.
 
+use super::course_view::CourseView;
+use super::rail::Tool;
+use super::stage;
 use super::stage::rooms_for_tests;
-use super::*;
 use crate::app::{Centre, Studio};
 use crate::style;
 use bpe_kit::things::water;
