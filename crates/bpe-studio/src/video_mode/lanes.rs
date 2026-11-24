@@ -7,11 +7,15 @@
 //! began, so snapping never drifts, and the whole drag is one undo step. Snapping follows the
 //! video's Snap (Bar, Beat, Off); Alt drags free. A kept scene carried from the left column and let
 //! go over the lane makes a clip there.
+//!
+//! The On top lane (part 4) sits between the Scenes and Song lanes: up to three rows of clips that
+//! draw over the main picture. They drag, trim, pick and drop as on the Scenes lane; a clip dragged
+//! by its middle follows the row under the pointer.
 
 use super::{ArrangeView, VideoPick, arrange};
 use crate::app::{Studio, clock};
 use crate::style;
-use bpe_core::video::{ClipId, KeptId, Snap, TransitionKind, Video};
+use bpe_core::video::{Clip, ClipId, KeptId, Snap, TransitionKind, Video};
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, Stroke, Ui};
 
 /// The lane names' column.
@@ -20,6 +24,8 @@ pub const RULER_HEIGHT: f32 = 20.0;
 pub const SCENES_HEIGHT: f32 = 48.0;
 pub const SONG_HEIGHT: f32 = 34.0;
 pub const SOUND_HEIGHT: f32 = 22.0;
+/// One row of the On top lane.
+pub const TOP_HEIGHT: f32 = 30.0;
 /// How near (points) a clip's edge grabs it for trimming.
 pub const EDGE: f32 = 6.0;
 
@@ -53,12 +59,12 @@ pub struct ClipDrag {
     pub grab: f64,
 }
 
-/// What is under `x` in a lane drawn with `view` from `left_x`.
-pub fn hit(video: &Video, view: &ArrangeView, left_x: f32, x: f32) -> Option<Hit> {
+/// The edge of one of `clips` nearest `x` within [`EDGE`]; where two clips meet, the side the
+/// pointer is on.
+fn edge_hit<'c>(clips: impl Iterator<Item = &'c Clip>, view: &ArrangeView, left_x: f32, x: f32) -> Option<Hit> {
     let at = |t: f64| view.x_of(left_x, t);
-    // Edges first, nearest wins; where two clips meet, the side the pointer is on.
     let mut best: Option<(f32, Hit)> = None;
-    for clip in &video.clips {
+    for clip in clips {
         for (edge, part) in [(at(clip.start), Part::Left), (at(clip.end()), Part::Right)] {
             let d = (x - edge).abs();
             let outside = match part {
@@ -71,7 +77,24 @@ pub fn hit(video: &Video, view: &ArrangeView, left_x: f32, x: f32) -> Option<Hit
             }
         }
     }
-    if let Some((_, hit)) = best {
+    best.map(|(_, hit)| hit)
+}
+
+/// What is under `x` on On top row `row`: an edge, else a clip's middle.
+pub fn hit_row(video: &Video, row: u32, view: &ArrangeView, left_x: f32, x: f32) -> Option<Hit> {
+    let on_row = || video.on_top.iter().filter(move |t| t.row == row).map(|t| &t.clip);
+    if let Some(hit) = edge_hit(on_row(), view, left_x, x) {
+        return Some(hit);
+    }
+    let at = |t: f64| view.x_of(left_x, t);
+    on_row().find(|c| x >= at(c.start) && x <= at(c.end())).map(|c| Hit::Clip(c.id, Part::Body))
+}
+
+/// What is under `x` in the Scenes lane drawn with `view` from `left_x`.
+pub fn hit(video: &Video, view: &ArrangeView, left_x: f32, x: f32) -> Option<Hit> {
+    let at = |t: f64| view.x_of(left_x, t);
+    // Edges first, nearest wins; where two clips meet, the side the pointer is on.
+    if let Some(hit) = edge_hit(video.clips.iter(), view, left_x, x) {
         return Some(hit);
     }
     for i in 1..video.clips.len() {
@@ -140,7 +163,7 @@ fn header(ui: &mut Ui, studio: &mut Studio, strip_width: f32) {
         let s = &studio.video.video.settings;
         let (bar, beat) = arrange::bar_beat(s, studio.video.time);
         ui.label(RichText::new(format!("{} · bar {bar}.{beat}", clock(studio.video.time))).small().color(style::TEXT));
-        if studio.video.video.clips.is_empty() {
+        if !studio.video.video.has_clips() {
             ui.add_space(12.0);
             if ui
                 .add(style::primary_button("New video"))
@@ -238,6 +261,93 @@ fn ruler(ui: &mut Ui, studio: &mut Studio) -> Rect {
     strip
 }
 
+/// Paints a clip in its scene's colour with its name (and where in its scene it starts) in `r`.
+fn paint_clip(ui: &Ui, painter: &egui::Painter, video: &Video, clip: &Clip, r: Rect, picked: VideoPick) {
+    let Some(kept) = video.scenes.get(&clip.scene) else { return };
+    let (fill, edge) = style::clip_colours(Some(style::track_color(kept.colour)));
+    painter.rect_filled(r, style::RADIUS, fill);
+    let on = picked == VideoPick::Clip(clip.id);
+    let stroke = if on { Stroke::new(2.0, style::TEXT_STRONG) } else { Stroke::new(1.0, edge) };
+    painter.rect_stroke(r, style::RADIUS, stroke, egui::StrokeKind::Inside);
+    let words = ui.painter_at(r.shrink(3.0));
+    let tall = r.height() > 32.0;
+    let name_at = if tall { r.left_top() + egui::vec2(6.0, 5.0) } else { r.left_center() + egui::vec2(6.0, 0.0) };
+    let align = if tall { egui::Align2::LEFT_TOP } else { egui::Align2::LEFT_CENTER };
+    words.text(name_at, align, &kept.name, egui::FontId::proportional(12.0), style::TEXT);
+    if tall && clip.offset > 0.0 {
+        words.text(
+            r.left_bottom() + egui::vec2(6.0, -5.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("from {}", clock(clip.offset)),
+            egui::FontId::proportional(10.0),
+            style::MUTED,
+        );
+    }
+}
+
+/// Which lane a strip is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    Scenes,
+    /// A row of the On top lane.
+    OnTop(u32),
+}
+
+fn lane_hit(video: &Video, lane: Lane, view: &ArrangeView, left_x: f32, x: f32) -> Option<Hit> {
+    match lane {
+        Lane::Scenes => hit(video, view, left_x, x),
+        Lane::OnTop(row) => hit_row(video, row, view, left_x, x),
+    }
+}
+
+/// How many On top rows the arrangement shows: those in use and one more to drop onto (at most
+/// every row), and one with none.
+pub fn top_rows_shown(video: &Video) -> u32 {
+    video.on_top.iter().map(|t| t.row + 2).max().unwrap_or(1).min(Video::ON_TOP_ROWS)
+}
+
+/// The On top lane: a strip a row, its clips and the drags on them.
+fn on_top_lane(ui: &mut Ui, studio: &mut Studio) {
+    // While a clip is dragged the rows stay as they were, so the lanes don't move under the pointer.
+    let rows = top_rows_shown(studio.video.drag.as_ref().map_or(&studio.video.video, |d| &d.before));
+    let mut drawn = [None; Video::ON_TOP_ROWS as usize];
+    for row in 0..rows {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), TOP_HEIGHT), Sense::click_and_drag());
+        let name = format!("On top {}", row + 1);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Group, true, format!("{name} lane")));
+        let strip = Rect::from_min_max(Pos2::new(rect.left() + LABEL_WIDTH, rect.top()), rect.max);
+        lane_name(ui, rect, &name);
+        let painter = ui.painter_at(strip);
+        painter.rect_filled(strip, 0.0, style::GROUND);
+        let view = studio.video.view;
+        let left = strip.left();
+        paint_grid(&painter, &studio.video.video, &view, strip);
+        let video = &studio.video.video;
+        let picked = studio.video.pick();
+        for t in video.on_top.iter().filter(|t| t.row == row) {
+            let r = Rect::from_min_max(
+                Pos2::new(view.x_of(left, t.clip.start), strip.top() + 3.0),
+                Pos2::new(view.x_of(left, t.clip.end()), strip.bottom() - 3.0),
+            );
+            paint_clip(ui, &painter, video, &t.clip, r, picked);
+        }
+        if video.on_top.is_empty() {
+            painter.text(
+                strip.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop a scene here to show it on top: picture in picture or a split screen",
+                egui::FontId::proportional(11.0),
+                style::FAINT,
+            );
+        }
+        lane_input(ui, studio, &response, strip, Lane::OnTop(row));
+        drawn[row as usize] = Some(strip);
+        ui.add_space(1.0);
+    }
+    studio.video.view.top_rows = drawn;
+}
+
 /// The Scenes lane: the clips, their overlaps and the drags on them.
 fn scenes_lane(ui: &mut Ui, studio: &mut Studio) -> Rect {
     let (rect, response) =
@@ -259,30 +369,7 @@ fn scenes_lane(ui: &mut Ui, studio: &mut Studio) -> Rect {
         )
     };
     for clip in &video.clips {
-        let r = body(clip.start, clip.end());
-        let Some(kept) = video.scenes.get(&clip.scene) else { continue };
-        let (fill, edge) = style::clip_colours(Some(style::track_color(kept.colour)));
-        painter.rect_filled(r, style::RADIUS, fill);
-        let on = picked == VideoPick::Clip(clip.id);
-        let stroke = if on { Stroke::new(2.0, style::TEXT_STRONG) } else { Stroke::new(1.0, edge) };
-        painter.rect_stroke(r, style::RADIUS, stroke, egui::StrokeKind::Inside);
-        let words = ui.painter_at(r.shrink(3.0));
-        words.text(
-            r.left_top() + egui::vec2(6.0, 5.0),
-            egui::Align2::LEFT_TOP,
-            &kept.name,
-            egui::FontId::proportional(12.0),
-            style::TEXT,
-        );
-        if clip.offset > 0.0 {
-            words.text(
-                r.left_bottom() + egui::vec2(6.0, -5.0),
-                egui::Align2::LEFT_BOTTOM,
-                format!("from {}", clock(clip.offset)),
-                egui::FontId::proportional(10.0),
-                style::MUTED,
-            );
-        }
+        paint_clip(ui, &painter, video, clip, body(clip.start, clip.end()), picked);
     }
     for i in 1..video.clips.len() {
         if video.overlap(i) <= 0.0 {
@@ -320,18 +407,18 @@ fn scenes_lane(ui: &mut Ui, studio: &mut Studio) -> Rect {
             style::MUTED,
         );
     }
-    lane_input(ui, studio, &response, strip);
+    lane_input(ui, studio, &response, strip, Lane::Scenes);
     studio.video.view.lane = Some(strip);
     strip
 }
 
-/// Picking, dragging and dropping on the Scenes lane.
-fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip: Rect) {
+/// Picking, dragging and dropping on the Scenes lane or an On top row.
+fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip: Rect, lane: Lane) {
     let left = strip.left();
     let view = studio.video.view;
     let free = ui.input(|i| i.modifiers.alt);
     if let Some(at) = response.hover_pos() {
-        match hit(&studio.video.video, &view, left, at.x) {
+        match lane_hit(&studio.video.video, lane, &view, left, at.x) {
             Some(Hit::Clip(_, Part::Left | Part::Right)) => {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
             }
@@ -341,7 +428,7 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
     }
     if response.double_clicked()
         && let Some(at) = response.interact_pointer_pos()
-        && let Some(Hit::Clip(id, _)) = hit(&studio.video.video, &view, left, at.x)
+        && let Some(Hit::Clip(id, _)) = lane_hit(&studio.video.video, lane, &view, left, at.x)
     {
         studio.edit_clip_scene(id);
         return;
@@ -349,7 +436,7 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
     if response.clicked()
         && let Some(at) = response.interact_pointer_pos()
     {
-        studio.video.pick = match hit(&studio.video.video, &view, left, at.x) {
+        studio.video.pick = match lane_hit(&studio.video.video, lane, &view, left, at.x) {
             Some(Hit::Clip(id, _)) => VideoPick::Clip(id),
             Some(Hit::Transition(id)) => VideoPick::Transition(id),
             None => VideoPick::Video,
@@ -359,7 +446,7 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
     {
         let grab = view.time_of(left, origin.x);
-        let held = match hit(&studio.video.video, &view, left, origin.x) {
+        let held = match lane_hit(&studio.video.video, lane, &view, left, origin.x) {
             Some(Hit::Clip(id, part)) => Some((id, part)),
             // Dragging a transition moves the clip coming in.
             Some(Hit::Transition(id)) => Some((id, Part::Body)),
@@ -382,6 +469,13 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
                 Part::Body => {
                     let reach = f64::from(EDGE + 2.0) / f64::from(view.px_per_second.max(1e-3));
                     let start = arrange::snap_move(clip.start + delta, clip.length, s, free, reach);
+                    // An On top clip follows the row under the pointer.
+                    let row = view.top_rows.iter().position(|r| r.is_some_and(|r| r.y_range().contains(at.y)));
+                    if let Some(row) = row
+                        && let Some(t) = video.top_mut(drag.clip)
+                    {
+                        t.row = row as u32;
+                    }
                     arrange::move_clip(&mut video, reg, drag.clip, start);
                 }
                 Part::Left => {
@@ -409,7 +503,20 @@ fn lane_input(ui: &mut Ui, studio: &mut Studio, response: &egui::Response, strip
         && let Some(kept) = egui::DragAndDrop::take_payload::<KeptId>(ui.ctx())
     {
         let start = arrange::snap(view.time_of(left, at.x), &studio.video.video.settings, free);
-        drop_scene(studio, *kept, start);
+        match lane {
+            Lane::Scenes => drop_scene(studio, *kept, start),
+            Lane::OnTop(row) => drop_on_top(studio, *kept, row, start),
+        }
+    }
+}
+
+/// Makes an On top clip of kept scene `kept` on row `row` at `start`, as one undo step, and picks it.
+pub fn drop_on_top(studio: &mut Studio, kept: KeptId, row: u32, start: f64) {
+    let kit = studio.kit.clone();
+    let mut made = None;
+    studio.video.change(false, |v| made = arrange::add_on_top(v, &kit.registry, kept, row, start));
+    if let Some(id) = made {
+        studio.video.pick = VideoPick::Clip(id);
     }
 }
 
@@ -492,7 +599,7 @@ fn scene_sound_lane(ui: &mut Ui, studio: &mut Studio) {
     }
     let view = session.view;
     let left = strip.left();
-    for clip in &session.video.clips {
+    for clip in session.video.all_clips() {
         let Some(kept) = session.video.scenes.get(&clip.scene) else { continue };
         let colour = style::track_color(kept.colour); // scene colour
         let (from, to) =
@@ -534,6 +641,8 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let ruler = ruler(ui, studio);
     let lane = scenes_lane(ui, studio);
     ui.add_space(2.0);
+    on_top_lane(ui, studio);
+    ui.add_space(1.0);
     song_lane(ui, studio);
     ui.add_space(2.0);
     scene_sound_lane(ui, studio);

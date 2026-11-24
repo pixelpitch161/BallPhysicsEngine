@@ -2,7 +2,7 @@
 //! the scene copy a clip plays ([`clip_scene`]), what is on screen at each frame ([`moment`]) and
 //! how a scene of another shape covers the video ([`cover`]). The data is `bpe_core::video`.
 
-use bpe_core::video::{Clip, TransitionKind, Video};
+use bpe_core::video::{Clip, Placement, TransitionKind, Video};
 use bpe_core::video_save::{self, VideoLoadError};
 use bpe_core::{Choice, Registry, Scene, Settings, SlotId, ThingId, Value};
 
@@ -112,6 +112,73 @@ pub fn moment(video: &Video, frame: u32) -> Moment {
             Moment { old: Some(old), new: Some(new), progress, kind: clip.transition_in.kind }
         }
     }
+}
+
+/// An On top clip on screen: its index in `Video::on_top`, the scene time it shows and how much
+/// of it shows (its opacity times its fades).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TopOnScreen {
+    pub top: usize,
+    pub scene_time: f64,
+    pub scene_frame: u32,
+    /// 0 to 1; at 0 it is still running but not drawn.
+    pub alpha: f32,
+}
+
+/// The On top clips video frame `frame` shows, in drawing order (lower rows first, a row's clips
+/// by start). The video must be tidied.
+pub fn on_top_at(video: &Video, frame: u32) -> Vec<TopOnScreen> {
+    let f = i64::from(frame);
+    let fps = f64::from(video.settings.fps.max(1));
+    video
+        .on_top
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let c = &t.clip;
+            let (start, length, offset) = (video.frames(c.start), video.frames(c.length), video.frames(c.offset));
+            (start..start + length).contains(&f).then(|| {
+                let scene_frame = f - start + offset;
+                TopOnScreen {
+                    top: i,
+                    scene_time: scene_frame as f64 / fps,
+                    scene_frame: scene_frame as u32,
+                    alpha: on_top_alpha(video, i, frame),
+                }
+            })
+        })
+        .collect()
+}
+
+/// How much of On top clip `top` shows at video frame `frame`: its opacity times its fade in and
+/// fade out, each a straight ramp of whole frames (`(frames in + 1) / (fade frames + 1)`). 0 off
+/// the clip.
+pub fn on_top_alpha(video: &Video, top: usize, frame: u32) -> f32 {
+    let Some(t) = video.on_top.get(top) else { return 0.0 };
+    let f = i64::from(frame);
+    let (start, end) = (video.frames(t.clip.start), video.frames(t.clip.end()));
+    if f < start || f >= end {
+        return 0.0;
+    }
+    let ramp = |into: i64, fade: f64| {
+        let n = video.frames(fade);
+        if n <= 0 { 1.0 } else { ((into + 1) as f64 / (n + 1) as f64).min(1.0) }
+    };
+    let fade = ramp(f - start, t.place.fade_in) * ramp(end - 1 - f, t.place.fade_out);
+    (f64::from(t.place.opacity.clamp(0.0, 1.0)) * fade) as f32
+}
+
+/// An On top frame's rectangle in whole pixels of an output `out` pixels: x, y, width, height. Its
+/// edges are rounded, so frames that meet (two halves, four quarters) leave no gap; at least 2
+/// pixels a side.
+pub fn top_rect(place: &Placement, out: (u32, u32)) -> [u32; 4] {
+    let (w, h) = (out.0.max(2) as f32, out.1.max(2) as f32);
+    let edge = |v: f32, most: f32| (v * most).round().clamp(0.0, most) as u32;
+    let (x0, x1) = (edge(place.x, w), edge(place.x + place.width, w));
+    let (y0, y1) = (edge(place.y, h), edge(place.y + place.height, h));
+    let width = x1.saturating_sub(x0).max(2);
+    let height = y1.saturating_sub(y0).max(2);
+    [x0.min(w as u32 - width), y0.min(h as u32 - height), width, height]
 }
 
 /// How a scene covers the video: the size it's drawn at and the part of that picture shown.
@@ -259,6 +326,49 @@ mod tests {
             assert!(m.old.is_none() && m.new.is_none(), "frame {frame}");
         }
         assert_eq!(moment(&v, 120).new.map(|o| (o.clip, o.scene_frame)), Some((1, 0)));
+    }
+
+    fn with_top(reg: &Registry, place: Placement) -> Video {
+        let mut v = video(reg, &[(0.0, 4.0, 0.0)]);
+        let clip = Clip { id: ClipId(5), start: 1.0, length: 2.0, offset: 0.5, ..Clip::default() };
+        v.on_top.push(bpe_core::video::OnTopClip { clip, row: 1, place });
+        let clip = Clip { id: ClipId(6), start: 0.0, length: 1.5, ..Clip::default() };
+        v.on_top.push(bpe_core::video::OnTopClip { clip, row: 0, place });
+        v.tidy(|s| scene_length(s, reg));
+        v
+    }
+
+    #[test]
+    fn on_top_at_lists_the_clips_by_row() {
+        let reg = crate::registry();
+        let v = with_top(&reg, Placement::default());
+        let at = |f| on_top_at(&v, f).iter().map(|t| (v.on_top[t.top].clip.id.0, t.scene_frame)).collect::<Vec<_>>();
+        assert_eq!(at(0), vec![(6, 0)]);
+        assert_eq!(at(70), vec![(6, 70), (5, 40)], "row 0 first; the offset counts");
+        assert_eq!(at(100), vec![(5, 70)]);
+        assert_eq!(at(180), vec![]);
+        assert!(on_top_at(&v, 70).iter().all(|t| t.alpha == 1.0));
+    }
+
+    #[test]
+    fn on_top_fades_ramp_by_whole_frames() {
+        let reg = crate::registry();
+        let place = Placement { opacity: 0.5, fade_in: 0.05, fade_out: 1.0 / 60.0, ..Placement::default() };
+        let v = with_top(&reg, place);
+        let top = v.on_top.iter().position(|t| t.clip.id.0 == 5).unwrap();
+        // Fade in over 3 frames from frame 60: 1/4, 2/4, 3/4, then whole; out over its last frame.
+        let a = |f| on_top_alpha(&v, top, f);
+        assert_eq!([a(59), a(60), a(61), a(62), a(63), a(100)], [0.0, 0.125, 0.25, 0.375, 0.5, 0.5]);
+        assert_eq!([a(178), a(179), a(180)], [0.5, 0.25, 0.0]);
+    }
+
+    #[test]
+    fn top_rect_is_whole_pixels_on_screen() {
+        let p = Placement::default()
+            .with_layout(bpe_core::video::Layout::Quarter(bpe_core::video::Corner::TopRight), (270, 480));
+        assert_eq!(top_rect(&p, (270, 480)), [135, 0, 135, 240]);
+        let p = Placement { x: 0.0, y: 0.0, width: 1.0, height: 1.0, ..p };
+        assert_eq!(top_rect(&p, (270, 480)), [0, 0, 270, 480]);
     }
 
     #[test]

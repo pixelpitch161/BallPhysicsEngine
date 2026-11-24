@@ -1,7 +1,10 @@
 //! The edits Video mode makes to a video, as plain functions: every one ends with
 //! [`Video::tidy`], so a video is inside its limits after every edit (part 2 plan, decisions 3 to 10).
 
-use bpe_core::video::{Clip, ClipId, KeptId, KeptScene, Snap, Transition, TransitionKind, Video, VideoSettings};
+use bpe_core::video::{
+    Clip, ClipId, KeptId, KeptScene, Layout, OnTopClip, Placement, Snap, Transition, TransitionKind, Video,
+    VideoSettings,
+};
 use bpe_core::{Registry, Scene, TrackColour};
 use bpe_kit::video::{scene_length, scene_settings};
 
@@ -118,15 +121,87 @@ pub fn add_at_end(video: &mut Video, reg: &Registry, kept: KeptId) -> Option<Cli
 }
 
 fn clip_mut(video: &mut Video, id: ClipId) -> Option<&mut Clip> {
-    video.clips.iter_mut().find(|c| c.id == id)
+    video.clip_mut(id)
 }
 
-/// The clip `id`.
+/// The clip `id`, on either lane.
 pub fn clip(video: &Video, id: ClipId) -> Option<&Clip> {
-    video.clips.iter().find(|c| c.id == id)
+    video.clip(id)
 }
 
-/// The clip's place in the lane (clips are kept sorted by start).
+/// Whether clip `id` is on the On top lane.
+pub fn is_on_top(video: &Video, id: ClipId) -> bool {
+    video.top(id).is_some()
+}
+
+/// The placement a new On top clip gets: a frame in the bottom right corner of a video `video`.
+pub fn new_place(video: &Video) -> Placement {
+    let size = (video.settings.width, video.settings.height);
+    Placement::default().with_layout(Layout::Corner(bpe_core::video::Corner::BottomRight), size)
+}
+
+/// The first On top row with room from `start` for `length` seconds (no clip on it overlaps), or
+/// the last row.
+pub fn free_row(video: &Video, start: f64, length: f64) -> u32 {
+    (0..Video::ON_TOP_ROWS)
+        .find(|&row| {
+            video
+                .on_top
+                .iter()
+                .filter(|t| t.row == row)
+                .all(|t| t.clip.end() <= start || t.clip.start >= start + length)
+        })
+        .unwrap_or(Video::ON_TOP_ROWS - 1)
+}
+
+/// A clip on the On top lane, row `row`, playing the whole of kept scene `kept` from `start`, in
+/// the corner: the new clip's id, once tidied.
+pub fn add_on_top(video: &mut Video, reg: &Registry, kept: KeptId, row: u32, start: f64) -> Option<ClipId> {
+    let scene = &video.scenes.get(&kept)?.scene;
+    let id = video.next_clip_id();
+    let clip = Clip { id, scene: kept, start: start.max(0.0), length: scene_length(scene, reg), ..Clip::default() };
+    let place = new_place(video);
+    video.on_top.push(OnTopClip { clip, row, place });
+    tidy(video, reg);
+    video.top(id).map(|_| id)
+}
+
+/// Moves main clip `id` to the On top lane: the first row with room at its time, in the corner. It
+/// keeps its id and everything else.
+pub fn to_on_top(video: &mut Video, reg: &Registry, id: ClipId) {
+    let Some(i) = index_of(video, id) else { return };
+    let clip = video.clips.remove(i);
+    let row = free_row(video, clip.start, clip.length);
+    let place = new_place(video);
+    video.on_top.push(OnTopClip { clip: Clip { transition_in: Transition::default(), ..clip }, row, place });
+    tidy(video, reg);
+}
+
+/// Moves On top clip `id` to the main lane, with a Crossfade in (as a new main clip has).
+pub fn to_main(video: &mut Video, reg: &Registry, id: ClipId) {
+    let Some(i) = video.on_top.iter().position(|t| t.clip.id == id) else { return };
+    let clip = video.on_top.remove(i).clip;
+    let transition_in = Transition { kind: TransitionKind::Crossfade, ..Transition::default() };
+    video.clips.push(Clip { transition_in, ..clip });
+    tidy(video, reg);
+}
+
+/// A clip as Ctrl+C keeps it: the clip and, from the On top lane, its row and placement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Copied {
+    pub clip: Clip,
+    pub top: Option<(u32, Placement)>,
+}
+
+/// Clip `id` as copied.
+pub fn copy_of(video: &Video, id: ClipId) -> Option<Copied> {
+    match video.top(id) {
+        Some(t) => Some(Copied { clip: t.clip.clone(), top: Some((t.row, t.place)) }),
+        None => clip(video, id).map(|c| Copied { clip: c.clone(), top: None }),
+    }
+}
+
+/// The clip's place in the main lane (clips are kept sorted by start).
 pub fn index_of(video: &Video, id: ClipId) -> Option<usize> {
     video.clips.iter().position(|c| c.id == id)
 }
@@ -173,40 +248,47 @@ pub fn set_overlap(video: &mut Video, reg: &Registry, incoming: ClipId, seconds:
     tidy(video, reg);
 }
 
-/// Takes clip `id` out. False when there was none.
+/// Takes clip `id` (on either lane) out. False when there was none.
 pub fn delete_clip(video: &mut Video, id: ClipId) -> bool {
-    let before = video.clips.len();
+    let before = video.clips.len() + video.on_top.len();
     video.clips.retain(|c| c.id != id);
-    video.clips.len() != before
+    video.on_top.retain(|t| t.clip.id != id);
+    video.clips.len() + video.on_top.len() != before
 }
 
-/// Puts a copy of `clip` (from this video or another moment) at `start` with an id of its own.
-/// Refused when its kept scene is no longer in the video.
-pub fn paste_clip(video: &mut Video, reg: &Registry, clip: &Clip, start: f64) -> Option<ClipId> {
-    if !video.scenes.contains_key(&clip.scene) {
+/// Puts a copy of `copied` (from this video or another moment) at `start` with an id of its own, on
+/// the lane (and row) it came from. Refused when its kept scene is no longer in the video.
+pub fn paste_clip(video: &mut Video, reg: &Registry, copied: &Copied, start: f64) -> Option<ClipId> {
+    if !video.scenes.contains_key(&copied.clip.scene) {
         return None;
     }
     let id = video.next_clip_id();
-    video.clips.push(Clip { id, start: start.max(0.0), ..clip.clone() });
+    let clip = Clip { id, start: start.max(0.0), ..copied.clip.clone() };
+    match copied.top {
+        Some((row, place)) => video.on_top.push(OnTopClip { clip, row, place }),
+        None => video.clips.push(clip),
+    }
     tidy(video, reg);
-    video.clips.iter().any(|c| c.id == id).then_some(id)
+    video.clip(id).map(|_| id)
 }
 
-/// A copy of clip `id` just after it.
+/// A copy of clip `id` just after it, on its lane.
 pub fn duplicate_clip(video: &mut Video, reg: &Registry, id: ClipId) -> Option<ClipId> {
-    let original = clip(video, id)?.clone();
-    paste_clip(video, reg, &original, original.end())
+    let original = copy_of(video, id)?;
+    let end = original.clip.end();
+    paste_clip(video, reg, &original, end)
 }
 
-/// Takes kept scene `kept` and every clip playing it out of the video.
+/// Takes kept scene `kept` and every clip playing it (on both lanes) out of the video.
 pub fn remove_scene(video: &mut Video, kept: KeptId) {
     video.scenes.remove(&kept);
     video.clips.retain(|c| c.scene != kept);
+    video.on_top.retain(|t| t.clip.scene != kept);
 }
 
-/// How many clips play kept scene `kept`.
+/// How many clips (on both lanes) play kept scene `kept`.
 pub fn clips_of(video: &Video, kept: KeptId) -> usize {
-    video.clips.iter().filter(|c| c.scene == kept).count()
+    video.all_clips().filter(|c| c.scene == kept).count()
 }
 
 /// A new video made from `scene`: kept and played whole as its first clip at 0, with the scene's
@@ -379,7 +461,7 @@ mod tests {
         let reg = reg();
         let (mut video, kept) = video(&reg);
         let a = add_clip(&mut video, &reg, kept, 0.0).unwrap();
-        let copy = clip(&video, a).unwrap().clone();
+        let copy = copy_of(&video, a).unwrap();
         let d = duplicate_clip(&mut video, &reg, a).unwrap();
         assert_eq!(clip(&video, d).unwrap().start, 8.0);
         let p = paste_clip(&mut video, &reg, &copy, 20.0).unwrap();
@@ -409,5 +491,49 @@ mod tests {
         assert_eq!(video.clips.len(), 1);
         assert_eq!(video.clips[0].length, 6.0);
         assert_eq!(video.scenes.values().next().unwrap().name, "Ring Drop");
+    }
+
+    #[test]
+    fn on_top_clips_are_added_moved_and_moved_between_lanes() {
+        let reg = reg();
+        let (mut video, kept) = video(&reg);
+        let main = add_clip(&mut video, &reg, kept, 0.0).unwrap();
+        let top = add_on_top(&mut video, &reg, kept, 0, 2.0).unwrap();
+        assert!(is_on_top(&video, top) && !is_on_top(&video, main));
+        assert_eq!(video.top(top).unwrap().place, new_place(&video), "a new one sits in the corner");
+        assert_eq!(free_row(&video, 4.0, 1.0), 1, "row 1 is taken there");
+        assert_eq!(free_row(&video, 10.0, 1.0), 0);
+        move_clip(&mut video, &reg, top, 3.0);
+        trim_end(&mut video, &reg, top, 6.0);
+        let c = clip(&video, top).unwrap();
+        assert_eq!((c.start, c.length), (3.0, 3.0), "the id-based edits find it on the On top lane");
+        video.top_mut(top).unwrap().row = 9;
+        tidy(&mut video, &reg);
+        assert_eq!(video.top(top).unwrap().row, 2, "rows are clamped");
+        to_main(&mut video, &reg, top);
+        assert!(!is_on_top(&video, top) && clip(&video, top).is_some(), "it keeps its id");
+        assert_eq!(clip(&video, top).unwrap().transition_in.kind, TransitionKind::Crossfade);
+        to_on_top(&mut video, &reg, top);
+        assert!(is_on_top(&video, top));
+        assert_eq!(video.top(top).unwrap().row, 0);
+        assert_eq!(clips_of(&video, kept), 2);
+    }
+
+    #[test]
+    fn copy_paste_duplicate_and_delete_keep_the_lane() {
+        let reg = reg();
+        let (mut video, kept) = video(&reg);
+        let top = add_on_top(&mut video, &reg, kept, 1, 0.0).unwrap();
+        video.top_mut(top).unwrap().place.opacity = 0.5;
+        let copied = copy_of(&video, top).unwrap();
+        assert_eq!(copied.top.map(|(row, p)| (row, p.opacity)), Some((1, 0.5)));
+        let pasted = paste_clip(&mut video, &reg, &copied, 20.0).unwrap();
+        assert_eq!(video.top(pasted).map(|t| (t.row, t.clip.start, t.place.opacity)), Some((1, 20.0, 0.5)));
+        let d = duplicate_clip(&mut video, &reg, top).unwrap();
+        assert_eq!(video.top(d).map(|t| (t.row, t.clip.start)), Some((1, 8.0)));
+        assert!(delete_clip(&mut video, d));
+        assert!(video.top(d).is_none());
+        remove_scene(&mut video, kept);
+        assert!(video.on_top.is_empty());
     }
 }

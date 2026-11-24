@@ -5,7 +5,7 @@
 use super::{VideoPick, arrange, scenes};
 use crate::app::{Studio, clock};
 use crate::style;
-use bpe_core::video::{ClipId, Direction, KeptId, Song, TransitionKind, TransitionSound};
+use bpe_core::video::{ClipId, Corner, Direction, KeptId, Layout, Song, TransitionKind, TransitionSound, Video};
 use eframe::egui::{self, RichText, Ui};
 
 fn heading(ui: &mut Ui, text: &str) {
@@ -63,9 +63,13 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
 fn video(ui: &mut Ui, studio: &mut Studio, merge: bool) {
     ui.label(RichText::new(studio.video.name()).size(15.0).color(style::TEXT_STRONG));
     ui.label(
-        RichText::new(format!("{} clips · {} long", studio.video.video.clips.len(), clock(studio.video.video.end())))
-            .small()
-            .color(style::MUTED),
+        RichText::new(format!(
+            "{} clips · {} long",
+            studio.video.video.all_clips().count(),
+            clock(studio.video.video.end())
+        ))
+        .small()
+        .color(style::MUTED),
     );
     let mut s = studio.video.video.settings.clone();
     heading(ui, "PICTURE");
@@ -244,6 +248,15 @@ fn clip(ui: &mut Ui, studio: &mut Studio, id: ClipId, merge: bool) {
             "How far into its scene the clip begins.",
         );
         number(ui, "Level", &mut c.level_db, -60.0..=12.0, 0.05, " dB", "The scene's sound in the video's mix.");
+        number(
+            ui,
+            "Pan",
+            &mut c.pan,
+            -1.0..=1.0,
+            0.005,
+            "",
+            "Its sound to the left (-1) or the right (1); 0 is as it is.",
+        );
         let follow = ui
             .label("Follow video tempo")
             .on_hover_text("The scene plays at the video's tempo and beat grid, so its beats land on the song's");
@@ -292,10 +305,122 @@ fn clip(ui: &mut Ui, studio: &mut Studio, id: ClipId, merge: bool) {
             studio.video.change(false, |v| _ = arrange::delete_clip(v, id));
         }
     });
+    let top = arrange::is_on_top(&studio.video.video, id);
+    let (words, hint) = if top {
+        ("Move to the main lane", "Play this clip on the Scenes lane instead, full screen")
+    } else {
+        ("Move to On top", "Draw this clip over the main lane, in a frame (picture in picture)")
+    };
+    if ui.button(words).on_hover_text(hint).clicked() {
+        studio.video.change(false, |v| if top { arrange::to_main(v, reg, id) } else { arrange::to_on_top(v, reg, id) });
+        return;
+    }
     if c != before {
         studio.video.change(merge, |v| {
-            if let Some(slot) = v.clips.iter_mut().find(|x| x.id == id) {
+            if let Some(slot) = v.clip_mut(id) {
                 *slot = c;
+            }
+            arrange::tidy(v, reg);
+        });
+    }
+    // After the clip's own edit, so neither undoes the other's tidying.
+    if top {
+        on_top(ui, studio, id, merge);
+    }
+}
+
+/// A layout chip: the layout, its words and its hint.
+type LayoutChip = (Layout, &'static str, &'static str);
+
+const LAYOUTS: [(&str, &[LayoutChip]); 3] = [
+    (
+        "Layout",
+        &[
+            (Layout::Full, "Full", "The whole screen"),
+            (Layout::TopHalf, "Top", "The top half (a split screen with the main clip below)"),
+            (Layout::BottomHalf, "Bottom", "The bottom half"),
+            (Layout::LeftHalf, "Left", "The left half (side by side)"),
+            (Layout::RightHalf, "Right", "The right half (side by side)"),
+        ],
+    ),
+    (
+        "Corner",
+        &[
+            (Layout::Corner(Corner::TopLeft), "Top left", "A small frame in the top left corner"),
+            (Layout::Corner(Corner::TopRight), "Top right", "A small frame in the top right corner"),
+            (Layout::Corner(Corner::BottomLeft), "Bottom left", "A small frame in the bottom left corner"),
+            (Layout::Corner(Corner::BottomRight), "Bottom right", "A small frame in the bottom right corner"),
+        ],
+    ),
+    (
+        "2 × 2 split",
+        &[
+            (Layout::Quarter(Corner::TopLeft), "Top left", "The top left quarter of a 2 × 2 split"),
+            (Layout::Quarter(Corner::TopRight), "Top right", "The top right quarter of a 2 × 2 split"),
+            (Layout::Quarter(Corner::BottomLeft), "Bottom left", "The bottom left quarter of a 2 × 2 split"),
+            (Layout::Quarter(Corner::BottomRight), "Bottom right", "The bottom right quarter of a 2 × 2 split"),
+        ],
+    ),
+];
+
+/// A share (0 to 1) edited as a percentage.
+fn percent(ui: &mut Ui, name: &str, value: &mut f32, hint: &str) {
+    let mut p = *value * 100.0;
+    number(ui, name, &mut p, 0.0..=100.0, 0.2, " %", hint);
+    if (p - *value * 100.0).abs() > 1e-4 {
+        *value = p / 100.0;
+    }
+}
+
+/// The On top part of a clip's inspector: its row, its frame's place and look, and its fades.
+fn on_top(ui: &mut Ui, studio: &mut Studio, id: ClipId, merge: bool) {
+    let kit = studio.kit.clone();
+    let reg = &kit.registry;
+    let video = &studio.video.video;
+    let Some(t) = video.top(id) else { return };
+    let size = (video.settings.width, video.settings.height);
+    let (mut row, mut p) = (t.row, t.place);
+    let length = t.clip.length;
+    let before = (row, p);
+    heading(ui, "ON TOP");
+    egui::Grid::new("video on top").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+        let rows: Vec<(u32, String)> = (0..Video::ON_TOP_ROWS).map(|r| (r, (r + 1).to_string())).collect();
+        let names: Vec<(u32, &str)> = rows.iter().map(|(r, n)| (*r, n.as_str())).collect();
+        chips(ui, "Row", &mut row, &names);
+        let now = p.layout(size);
+        for (name, layouts) in LAYOUTS {
+            ui.label(name);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for &(layout, words, hint) in layouts {
+                    if ui.add(style::toggle_button(words, now == Some(layout))).on_hover_text(hint).clicked() {
+                        p = p.with_layout(layout, size);
+                    }
+                }
+            });
+            ui.end_row();
+        }
+        percent(ui, "Left edge", &mut p.x, "How far from the screen's left the frame starts.");
+        percent(ui, "Top edge", &mut p.y, "How far from the screen's top the frame starts.");
+        percent(ui, "Width", &mut p.width, "The frame's width, a share of the screen's.");
+        percent(ui, "Height", &mut p.height, "The frame's height, a share of the screen's.");
+        number(ui, "Corners", &mut p.corner, 0.0..=960.0, 0.5, " px", "How round the frame's corners are.");
+        number(ui, "Border", &mut p.border, 0.0..=200.0, 0.2, " px", "The border's width, inside the frame.");
+        let label = ui.label("Border colour");
+        ui.color_edit_button_srgb(&mut p.border_colour).labelled_by(label.id);
+        ui.end_row();
+        percent(ui, "Opacity", &mut p.opacity, "How much of the clip shows over the main picture.");
+        // Each fade gets the room the other leaves, so dragging one never wears the other away.
+        let (fade_in, fade_out) = (p.fade_in, p.fade_out);
+        let hint = "Its picture and sound fade in over this long.";
+        number(ui, "Fade in", &mut p.fade_in, 0.0..=(length - fade_out).max(0.0), 0.01, " s", hint);
+        let hint = "And fade out over this long at its end.";
+        number(ui, "Fade out", &mut p.fade_out, 0.0..=(length - fade_in).max(0.0), 0.01, " s", hint);
+    });
+    if (row, p) != before {
+        studio.video.change(merge, |v| {
+            if let Some(t) = v.top_mut(id) {
+                (t.row, t.place) = (row, p);
             }
             arrange::tidy(v, reg);
         });

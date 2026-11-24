@@ -156,6 +156,168 @@ pub fn reference(
     [out[0].clamp(0.0, 1.0), out[1].clamp(0.0, 1.0), out[2].clamp(0.0, 1.0), 1.0]
 }
 
+/// The overlay pass's uniform (the On top lane): a frame in output pixels, the part of the picture
+/// it shows, and its corner, border and alpha.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct OverlayParams {
+    /// x, y, width, height in output pixels.
+    pub rect: [f32; 4],
+    /// x, y, width, height of the picture shown (0 to 1 of it).
+    pub crop: [f32; 4],
+    /// Linear 0 to 1 values of the output's bytes.
+    pub border_colour: [f32; 4],
+    /// Corner radius (px), border width (px), alpha (0 to 1), unused.
+    pub shape: [f32; 4],
+}
+
+/// The overlay uniform for a frame `rect` (output pixels) showing `crop` of its picture.
+pub fn overlay_params(
+    rect: [f32; 4],
+    crop: [f32; 4],
+    corner: f32,
+    border: f32,
+    border_colour: [f32; 3],
+    alpha: f32,
+) -> OverlayParams {
+    let [r, g, b] = border_colour;
+    OverlayParams {
+        rect,
+        crop,
+        border_colour: [r, g, b, 1.0],
+        shape: [corner.max(0.0), border.max(0.0), alpha.clamp(0.0, 1.0), 0.0],
+    }
+}
+
+/// The colour at output pixel centre `pos` (pixels, y down) after the overlay `params` is drawn
+/// over `under`, with its picture sampled by `picture` (a point in it, 0 to 1): the CPU twin of
+/// `compose_overlay.wgsl`.
+pub fn overlay_reference(
+    params: &OverlayParams,
+    pos: [f32; 2],
+    under: [f32; 4],
+    picture: impl Fn([f32; 2]) -> [f32; 4],
+) -> [f32; 4] {
+    let [x, y, w, h] = params.rect;
+    let half = [w * 0.5, h * 0.5];
+    let centre = [x + half[0], y + half[1]];
+    let r = params.shape[0].clamp(0.0, half[0].min(half[1]));
+    let q = [(pos[0] - centre[0]).abs() - half[0] + r, (pos[1] - centre[1]).abs() - half[1] + r];
+    let outside = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt();
+    let d = outside + q[0].max(q[1]).min(0.0) - r;
+    let cover = (0.5 - d).clamp(0.0, 1.0) * params.shape[2];
+    if cover <= 0.0 {
+        return under;
+    }
+    let uv = [((pos[0] - x) / w).clamp(0.0, 1.0), ((pos[1] - y) / h).clamp(0.0, 1.0)];
+    let c = params.crop;
+    let mut colour = picture([c[0] + uv[0] * c[2], c[1] + uv[1] * c[3]]);
+    let border = params.shape[1];
+    if border > 0.0 {
+        let b = (border + d + 0.5).clamp(0.0, 1.0);
+        colour = mix(colour, params.border_colour, b);
+    }
+    let out = mix(under, colour.map(|v| v.clamp(0.0, 1.0)), cover);
+    [out[0], out[1], out[2], under[3]]
+}
+
+/// The overlay pass (the On top lane): its pipeline, layout and uniform.
+struct OverlayPass {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    uniform: wgpu::Buffer,
+}
+
+impl OverlayPass {
+    fn new(device: &wgpu::Device) -> OverlayPass {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("compose overlay"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/compose_overlay.wgsl").into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("compose overlay"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("compose overlay"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        // Straight alpha over what is there; the output keeps its own alpha.
+        let blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("compose overlay"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_overlay"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OUTPUT_FORMAT,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("compose overlay"),
+            size: std::mem::size_of::<OverlayParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        OverlayPass { pipeline, layout, uniform }
+    }
+}
+
 /// The compose pass and the picture it draws into (the video's size, the output format).
 pub struct Compose {
     pipeline: wgpu::RenderPipeline,
@@ -166,6 +328,8 @@ pub struct Compose {
     black: wgpu::TextureView,
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
+    /// Made the first time an On top clip is drawn.
+    overlay: Option<OverlayPass>,
 }
 
 impl Compose {
@@ -283,7 +447,50 @@ impl Compose {
             black: black.create_view(&Default::default()),
             output_view: output.create_view(&Default::default()),
             output,
+            overlay: None,
         }
+    }
+
+    /// Draws `picture` (a finished picture) over the output inside the frame `params` describes.
+    pub fn overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        picture: &wgpu::TextureView,
+        params: &OverlayParams,
+    ) {
+        let pass = self.overlay.get_or_insert_with(|| OverlayPass::new(device));
+        queue.write_buffer(&pass.uniform, 0, bytemuck::bytes_of(params));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compose overlay"),
+            layout: &pass.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(picture) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: pass.uniform.as_entire_binding() },
+            ],
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("compose overlay") });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("compose overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.output_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rp.set_pipeline(&pass.pipeline);
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        queue.submit([encoder.finish()]);
     }
 
     /// Draws `old` and `new` (finished pictures, `None` for black) put together by `params` into
@@ -437,5 +644,39 @@ mod tests {
     #[test]
     fn the_uniform_is_a_whole_number_of_vec4s() {
         assert_eq!(std::mem::size_of::<ComposeParams>() % 16, 0);
+        assert_eq!(std::mem::size_of::<OverlayParams>() % 16, 0);
+    }
+
+    /// A 100 × 200 frame at (20, 40), corner 10, border 4, white.
+    fn framed(alpha: f32) -> OverlayParams {
+        overlay_params([20.0, 40.0, 100.0, 200.0], WHOLE, 10.0, 4.0, [1.0; 3], alpha)
+    }
+
+    fn over(p: &OverlayParams, pos: [f32; 2]) -> [f32; 4] {
+        overlay_reference(p, pos, RED, |_| BLUE)
+    }
+
+    #[test]
+    fn an_overlay_draws_its_picture_inside_its_frame() {
+        let p = framed(1.0);
+        assert!(near(over(&p, [70.5, 140.5]), BLUE), "the middle is the picture");
+        assert!(near(over(&p, [10.5, 140.5]), RED), "left of the frame is what was there");
+        assert!(near(over(&p, [70.5, 245.5]), RED), "below it too");
+        assert!(near(over(&p, [21.5, 140.5]), [1.0; 4]), "the border is its colour");
+        assert!(near(over(&p, [20.5, 40.5]), RED), "the rounded corner leaves the corner pixel");
+        assert!(near(over(&p, [23.5, 140.5]), [1.0; 4]), "the border is 4 px wide");
+        assert!(near(over(&p, [24.5, 140.5]), BLUE), "and the picture is inside it");
+        let half = over(&framed(0.5), [70.5, 140.5]);
+        assert!(near(half, [0.5, 0.0, 0.5, 1.0]), "alpha ½ is half way: {half:?}");
+        assert!(near(over(&framed(0.0), [70.5, 140.5]), RED), "alpha 0 draws nothing");
+    }
+
+    #[test]
+    fn an_overlay_shows_its_crop() {
+        let p = overlay_params([0.0, 0.0, 10.0, 10.0], [0.25, 0.0, 0.5, 1.0], 0.0, 0.0, [0.0; 3], 1.0);
+        let x = |pos| overlay_reference(&p, pos, RED, |q| [q[0], q[1], 0.0, 1.0]);
+        assert!(near(x([0.5, 0.5]), [0.275, 0.05, 0.0, 1.0]));
+        assert!(near(x([9.5, 9.5]), [0.725, 0.95, 0.0, 1.0]));
+        assert!(near(x([5.0, 5.0]), [0.5, 0.5, 0.0, 1.0]));
     }
 }

@@ -1,6 +1,6 @@
 //! The compose pass on the graphics card matches its CPU twin (`compose::reference`).
 
-use bpe_gfx::compose::{Compose, Look, params, reference};
+use bpe_gfx::compose::{Compose, Look, overlay_params, overlay_reference, params, reference};
 use bpe_gfx::{OUTPUT_FORMAT, Readback, test_device};
 
 fn flat(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> wgpu::TextureView {
@@ -90,4 +90,37 @@ fn push_texture_reads_back_a_compose() {
     // Nothing on either side is black.
     compose.draw(&device, &queue, None, None, &params(None, 0.0, WHOLE, WHOLE));
     assert!(read(&device, &queue, &compose).chunks(4).all(|px| px == [0, 0, 0, 255]));
+}
+
+#[test]
+fn the_overlay_shader_matches_its_reference() {
+    let (device, queue) = test_device().unwrap();
+    let (red, blue) = (flat(&device, &queue, [255, 0, 0, 255]), flat(&device, &queue, [0, 0, 255, 255]));
+    let (w, h) = (48u32, 80u32);
+    let mut compose = Compose::new(&device, &queue, w, h);
+    for (rect, corner, border, alpha) in [
+        ([6.0, 10.0, 30.0, 50.0], 8.0, 3.0, 1.0),
+        ([0.0, 0.0, 24.0, 40.0], 0.0, 0.0, 0.5),
+        ([10.5, 20.0, 37.5, 60.0], 40.0, 1.5, 0.8),
+    ] {
+        compose.draw(&device, &queue, None, Some(&red), &params(None, 0.0, WHOLE, WHOLE));
+        let p = overlay_params(rect, WHOLE, corner, border, [0.0, 1.0, 0.0], alpha);
+        compose.overlay(&device, &queue, &blue, &p);
+        let pixels = read(&device, &queue, &compose);
+        for y in 0..h {
+            for x in 0..w {
+                let want = overlay_reference(&p, [x as f32 + 0.5, y as f32 + 0.5], RED, |_| BLUE);
+                let i = ((y * w + x) * 4) as usize;
+                for c in 0..3 {
+                    let got = pixels[i + c] as f32 / 255.0;
+                    assert!(
+                        (got - want[c]).abs() <= 2.0 / 255.0,
+                        "{rect:?}, pixel ({x}, {y}) channel {c}: {got} vs {}",
+                        want[c]
+                    );
+                }
+                assert_eq!(pixels[i + 3], 255, "the output stays opaque");
+            }
+        }
+    }
 }

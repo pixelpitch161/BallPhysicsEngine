@@ -4,7 +4,9 @@
 
 use bpe_cli::arranged::{NO_CLIPS, NOT_FOR_VIDEOS, Player, arranged_frames, clip_scenes, still_frame, tidied};
 use bpe_cli::{Encoder, ExportOptions, FrameMaker, export_arranged, find_ffmpeg};
-use bpe_core::video::{Clip, ClipId, KeptId, KeptScene, Transition, TransitionKind, Video};
+use bpe_core::video::{
+    Clip, ClipId, KeptId, KeptScene, Layout, OnTopClip, Placement, Transition, TransitionKind, Video,
+};
 use bpe_core::{Scene, SlotId, ThingId, TrackColour, Value, layered_key};
 use bpe_gfx::yuv::PixelLayout;
 use bpe_gfx::{Readback, Renderer, test_device};
@@ -473,4 +475,123 @@ fn player_makes_the_next_clip_ahead() {
     assert!(!player.all_warm(), "a clip partway in waits to be run up");
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     assert!(player.draw(&device, &queue, 1, &stop).is_ok(), "a clip already run up draws even when stopped");
+}
+
+/// Adds an On top clip of kept scene `scene` (start, length, offset) placed by `place`.
+fn with_top(mut v: Video, scene: u32, at: (f64, f64, f64), place: Placement) -> Video {
+    let clip =
+        Clip { id: v.next_clip_id(), scene: KeptId(scene), start: at.0, length: at.1, offset: at.2, ..Clip::default() };
+    v.on_top.push(OnTopClip { clip, row: 0, place });
+    v
+}
+
+/// The top half, no corner or border.
+fn top_half() -> Placement {
+    Placement { corner: 0.0, border: 0.0, ..Placement::default() }.with_layout(Layout::TopHalf, (W, H))
+}
+
+/// The On top clip's scene as the video plays it.
+fn played_top(video: &Video, kit: &Kit) -> Scene {
+    let video = tidied(video, kit);
+    clip_scene(&video, &video.on_top[0].clip, &kit.registry)
+}
+
+fn px(frame: &[u8], x: usize, y: usize) -> [u8; 3] {
+    let i = (y * W as usize + x) * 4;
+    [frame[i], frame[i + 1], frame[i + 2]]
+}
+
+fn near_px(a: [u8; 3], b: [f32; 3], tol: f32) -> bool {
+    a.iter().zip(b).all(|(a, b)| (f32::from(*a) - b).abs() <= tol)
+}
+
+/// A main clip of scene A for 1.5 s and, from 0.5 s, scene B (0.4 s into it) on top in the top
+/// half for 0.5 s.
+fn on_top_video(kit: &Kit, place: Placement) -> Video {
+    let v = video(vec![scene(kit, W, H), scene(kit, W, H)], &[(0, 0.0, 1.5, 0.0, TransitionKind::Cut)]);
+    with_top(v, 1, (0.5, 0.5, 0.4), place)
+}
+
+#[test]
+fn an_on_top_clip_draws_over_the_main_picture() {
+    let kit = kit();
+    let v = on_top_video(&kit, top_half());
+    let got = frames(&v, &kit);
+    assert_eq!(got.len(), 45);
+    let a = own_frames(&played(&v, &kit, 0), &kit, 45);
+    let b = own_frames(&played_top(&v, &kit), &kit, 40);
+    for f in [0, 14, 30, 44] {
+        assert!(got[f] == a[f], "frame {f}, with nothing on top, is scene A's own");
+    }
+    // Frame 20 shows B's frame 12 + 5 = 17: its middle half in the top half of the screen.
+    let (frame, bf) = (&got[20], &b[17]);
+    let mut differs = false;
+    for y in (0..H as usize).step_by(7) {
+        for x in (0..W as usize).step_by(5) {
+            let want = if y < 240 { px(bf, x, y + 120) } else { px(&a[20], x, y) };
+            assert!(
+                near_px(px(frame, x, y), want.map(f32::from), 1.0),
+                "({x}, {y}): {:?} vs {want:?}",
+                px(frame, x, y)
+            );
+            differs |= y < 240 && px(bf, x, y + 120) != px(&a[20], x, y);
+        }
+    }
+    assert!(differs, "the two scenes' pictures differ there, so the check says something");
+}
+
+#[test]
+fn an_on_top_clip_has_its_border_and_opacity() {
+    let kit = kit();
+    let place = Placement { border: 6.0, border_colour: [0, 255, 0], ..top_half() };
+    let got = frames(&on_top_video(&kit, place), &kit);
+    for (x, y) in [(100, 2), (2, 100), (267, 120), (100, 237)] {
+        assert_eq!(px(&got[20], x, y), [0, 255, 0], "({x}, {y}) is on the border");
+    }
+    let v = on_top_video(&kit, Placement { opacity: 0.5, ..top_half() });
+    let half = frames(&v, &kit);
+    let a = own_frames(&played(&v, &kit, 0), &kit, 21);
+    let b = own_frames(&played_top(&v, &kit), &kit, 18);
+    for y in (0..240).step_by(9) {
+        for x in (0..W as usize).step_by(7) {
+            let (o, n) = (px(&a[20], x, y), px(&b[17], x, y + 120));
+            let want: [f32; 3] = std::array::from_fn(|c| (f32::from(o[c]) + f32::from(n[c])) / 2.0);
+            assert!(near_px(px(&half[20], x, y), want, 2.0), "({x}, {y}): {:?} vs {want:?}", px(&half[20], x, y));
+        }
+    }
+}
+
+#[test]
+fn the_still_frame_and_the_player_draw_on_top_clips_as_the_export_does() {
+    let kit = kit();
+    let place = Placement { corner: 20.0, ..Placement::default() }
+        .with_layout(Layout::Quarter(bpe_core::video::Corner::BottomRight), (W, H));
+    let v = tidied(&on_top_video(&kit, place), &kit);
+    let got = frames(&v, &kit);
+    for f in [10, 20, 29] {
+        assert!(most_off(&still(&v, &kit, f), &got[f as usize]) <= 2, "still frame {f}");
+    }
+    let scenes = clip_scenes(&v, &kit);
+    let (device, queue) = gpu();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut player = Player::new(&device, &v, &scenes, &kit, 1.0);
+    player.draw(&device, &queue, 0, &stop).unwrap();
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    player.warm_ahead(&device, &queue, later, &stop).unwrap();
+    assert!(player.all_warm(), "the On top clip coming next is made and run up");
+    for f in 1..35 {
+        let frame = player.draw(&device, &queue, f, &stop).unwrap();
+        if f % 5 == 0 || f == 29 {
+            assert!(most_off(&frame, &got[f as usize]) <= 2, "player frame {f}");
+        }
+    }
+}
+
+#[test]
+fn a_video_with_only_an_on_top_clip_exports() {
+    let kit = kit();
+    let v = with_top(video(vec![scene(&kit, W, H)], &[]), 0, (0.0, 0.5, 0.0), top_half());
+    let got = frames(&v, &kit);
+    assert_eq!(got.len(), 15);
+    assert!(got[5][(300 * W as usize + 10) * 4..][..3] == [0, 0, 0], "below the frame is black");
 }

@@ -5,7 +5,7 @@
 use super::*;
 use crate::grade_mode::EditorMode;
 use crate::style;
-use bpe_core::video::{Snap, TransitionKind};
+use bpe_core::video::{Clip, Snap, TransitionKind};
 use bpe_core::{ThingId, Value};
 use eframe::egui::{Event, Modifiers, PointerButton, Pos2};
 use egui_kittest::{Harness, kittest::Queryable};
@@ -724,4 +724,121 @@ fn the_video_button_goes_back_to_video() {
     assert!(!h.state().editing_clip(), "the Video button went back");
     assert_eq!(h.state().mode, EditorMode::Video);
     assert_eq!(h.state().scene.name, "Other");
+}
+
+/// The studio of [`studio`] with an On top clip of the same scene on row 1 from 1 s, picked, and
+/// the grid off.
+fn studio_with_top() -> (Studio, ClipId) {
+    let (mut studio, _, _) = studio();
+    studio.video.video.settings.snap = Snap::Off;
+    let kept = *studio.video.video.scenes.keys().next().unwrap();
+    lanes::drop_on_top(&mut studio, kept, 0, 1.0);
+    let VideoPick::Clip(top) = studio.video.pick() else { panic!("the new clip is picked") };
+    studio.video.history = VideoHistory::default();
+    (studio, top)
+}
+
+/// Where video time `t` is in On top row `row`.
+fn top_at(h: &Harness<'_, Studio>, row: usize, t: f64) -> Pos2 {
+    let view = h.state().video.view;
+    let strip = view.top_rows[row].expect("the row was drawn");
+    Pos2::new(view.x_of(strip.left(), t), strip.center().y)
+}
+
+fn drag_between(h: &mut Harness<'_, Studio>, a: Pos2, b: Pos2) {
+    h.input_mut().events.push(Event::PointerMoved(a));
+    h.step();
+    press(h, a, true, Modifiers::NONE);
+    h.step();
+    for i in 1..=8 {
+        h.input_mut().events.push(Event::PointerMoved(a + (b - a) * (i as f32 / 8.0)));
+        h.step();
+    }
+    press(h, b, false, Modifiers::NONE);
+    h.run();
+}
+
+#[test]
+fn a_scene_dropped_on_the_on_top_lane_makes_an_on_top_clip() {
+    let (studio, top) = studio_with_top();
+    let t = studio.video.video.top(top).unwrap();
+    assert_eq!((t.row, t.clip.start, t.clip.length), (0, 1.0, 4.0));
+    assert_eq!(t.place, arrange::new_place(&studio.video.video));
+    let mut h = harness(studio);
+    assert!(h.state().video.view.top_rows[1].is_some(), "an empty row shows below the one in use");
+    assert!(h.state().video.view.top_rows[2].is_none());
+    // A click on an empty part of the row picks the video; on the clip, the clip.
+    let empty = top_at(&h, 0, 7.0);
+    h.input_mut().events.push(Event::PointerMoved(empty));
+    h.step();
+    press(&mut h, empty, true, Modifiers::NONE);
+    h.step();
+    press(&mut h, empty, false, Modifiers::NONE);
+    h.run();
+    assert_eq!(h.state().video.pick(), VideoPick::Video);
+    let on = top_at(&h, 0, 3.0);
+    press(&mut h, on, true, Modifiers::NONE);
+    h.step();
+    press(&mut h, on, false, Modifiers::NONE);
+    h.run();
+    assert_eq!(h.state().video.pick(), VideoPick::Clip(top));
+}
+
+#[test]
+fn an_on_top_clip_drags_along_and_onto_another_row_as_one_step() {
+    let (studio, top) = studio_with_top();
+    let mut h = harness(studio);
+    let (a, b) = (top_at(&h, 0, 2.0), top_at(&h, 1, 4.0));
+    drag_between(&mut h, a, b);
+    let t = h.state().video.video.top(top).unwrap().clone();
+    assert_eq!((t.row, t.clip.start), (1, 3.0));
+    assert!(h.state_mut().video_undo());
+    let t = h.state().video.video.top(top).unwrap();
+    assert_eq!((t.row, t.clip.start), (0, 1.0), "the drag was one step");
+    // Its right edge trims it.
+    let (a, b) = (top_at(&h, 0, 5.0), top_at(&h, 0, 4.0));
+    drag_between(&mut h, a, b);
+    assert_eq!(h.state().video.video.top(top).unwrap().clip.length, 3.0);
+}
+
+#[test]
+fn the_on_top_inspector_sets_the_layout_and_moves_between_lanes() {
+    let (studio, top) = studio_with_top();
+    let mut h = harness(studio);
+    h.get_by_label("Top").click();
+    h.run();
+    let size = (1080, 1920);
+    let place = h.state().video.video.top(top).unwrap().place;
+    assert_eq!(place.layout(size), Some(bpe_core::video::Layout::TopHalf));
+    assert!(h.state_mut().video_undo());
+    assert_eq!(
+        h.state().video.video.top(top).unwrap().place.layout(size),
+        arrange::new_place(&Video::new()).layout(size)
+    );
+    h.run();
+    h.get_by_label("Move to the main lane").click();
+    h.run();
+    assert!(!arrange::is_on_top(&h.state().video.video, top) && arrange::clip(&h.state().video.video, top).is_some());
+    h.get_by_label("Move to On top").click();
+    h.run();
+    assert!(arrange::is_on_top(&h.state().video.video, top), "it keeps its id both ways");
+}
+
+#[test]
+fn copying_an_on_top_clip_pastes_it_on_its_row() {
+    let (studio, top) = studio_with_top();
+    let mut h = harness(studio);
+    h.state_mut().video.video.top_mut(top).unwrap().row = 1;
+    h.input_mut().events.push(Event::Copy);
+    h.run();
+    h.state_mut().video.seek(12.0);
+    h.input_mut().events.push(Event::Paste(String::new()));
+    h.run();
+    let video = &h.state().video.video;
+    assert_eq!(video.on_top.len(), 2);
+    let pasted = video.on_top.iter().find(|t| t.clip.id != top).unwrap();
+    assert_eq!((pasted.row, pasted.clip.start), (1, 12.0));
+    assert_eq!(video.clips.len(), 2, "the main lane is as it was");
+    key(&mut h, egui::Key::Delete);
+    assert_eq!(h.state().video.video.on_top.len(), 1, "Delete takes the picked (pasted) clip out");
 }

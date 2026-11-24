@@ -94,7 +94,7 @@ impl Studio {
 
     /// Plays the video from the playhead (from the start when it is at the end).
     pub fn video_play(&mut self) {
-        if self.video.video.clips.is_empty() {
+        if !self.video.video.has_clips() {
             self.status = "Add a clip first: drop a scene on the Scenes lane.".into();
             return;
         }
@@ -225,7 +225,7 @@ impl Studio {
         // While stopped the take is made only when playing starts; playing, once the video rests.
         if rested
             && self.video.playing.on
-            && !self.video.video.clips.is_empty()
+            && self.video.video.has_clips()
             && self.video.playing.take_revision != Some(revision)
         {
             self.new_take();

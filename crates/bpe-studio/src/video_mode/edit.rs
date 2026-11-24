@@ -113,7 +113,7 @@ impl Studio {
         self.mode = EditorMode::Video;
         self.seen_mode = EditorMode::Video;
         self.entered_video_mode();
-        if let Some(clip) = self.video.video.clips.iter().find(|c| c.scene == kept) {
+        if let Some(clip) = self.video.video.all_clips().find(|c| c.scene == kept) {
             self.video.pick = VideoPick::Clip(clip.id);
         }
         self.status = if gone {
