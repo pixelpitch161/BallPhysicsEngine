@@ -21,8 +21,8 @@ prints stay bit for bit as on main, so any difference seen is the new physics.
 - `crates/bpe-gfx/src/liquid_sim/mod.rs`: `Body::step` runs the trial passes in place of the substep loop when the
   body's core is the trial one; `Clone` copies the kept pressure.
 - `crates/bpe-kit/src/things/liquid/sim.rs::step_settings`: one substep and a higher speed cap for the trial core.
-- `crates/bpe-kit/src/scenes.rs::liquid_course`: the course scene (test scenes feature).
-- `crates/bpe-kit/tests/liquid_trial.rs`: the measurements (ignored, run by hand) and the side-by-side frames.
+- `crates/bpe-kit/tests/liquid_trial.rs`: the course scene (`course`), the measurements (ignored, run by hand)
+  and the side-by-side frames.
 
 Births, the dead's removal, mixing, the walls band, the wet grid, drawing: all today's, unchanged. The drops stay
 in today's 112-byte layout, so today's drawing draws both cores.
@@ -45,18 +45,26 @@ in today's 112-byte layout, so today's drawing draws both cores.
    together into clumps. With P ≥ 0, loose drops fall freely, pile up, and push back only once a cell is full.
    The density term is also what keeps the volume (the known weak spot: drops drifting together); it is measured,
    not assumed.
-3. **Solver: red-black over-relaxed Gauss-Seidel with P clamped at 0, warm-started.** `iters` sweeps a step
-   (each two passes), `omega` about 1.8. Why not conjugate gradients: its dot products need a reduction and a
-   read-back or many tiny passes every iteration, and the clamp (P ≥ 0) breaks it. Why not multigrid: it is the
-   right answer for big pools at Extreme and is listed as a full-build item; the trial measures how far the plain
-   sweep gets (the slosh period against theory shows whether pressure reaches across the pool in time). The kept
-   pressure is part of the body's state (a copy copies it), or a seek would not repeat.
+3. **Solver: multigrid over red-black sweeps, P clamped at 0, warm-started.** Two V-cycles a step: two sweeps
+   on the cells, what they still lack summed onto a grid half as fine (2 x 2 cells to one), and so on down to a
+   handful of cells, then each coarser answer added back on the way up with two more sweeps. Why not conjugate
+   gradients: its dot products need a reduction every iteration, and the clamp (P ≥ 0) breaks it. Why not plain
+   sweeps (the first try): a pool needs about as many sweeps as it is cells deep, every step, or it does not
+   rest (30 sweeps left a 67-cell pool heaving at 50 px/s; 120 made it dead still; Extreme would need 600).
+   Three things the multigrid needed, each found by it failing: a coarse face is half the sum of the fine faces
+   that cross it, but the way out to the air is not halved (its middle is only a quarter-cell further from the
+   surface), or every level puts the surface too far off and the pressure swings; a coarse cell's answer has a
+   floor (it may not ask any cell under it for less than no pressure), or liquid in free fall, whose cells all
+   lack "less than nothing", wipes out every pressure; and a cell at its floor that would rather have less hands
+   down no lack. The kept pressure is part of the body's state (a copy copies it), or a seek would not repeat.
 4. **Walls enter as open shares of faces** (cut cells, after Batty et al. 2007): each face's open share comes from
    the walls band's signed distances at its two end nodes, measured from the plane a quarter cell off the wall's
    face (today's mirror plane, so today's drawing meets the wall the same way). A slope is then a slope to the
    pressure, not a staircase. A hollow wall thinner than a cell, which no node may fall inside, also shuts every
    face whose two cell middles are on opposite sides of its line, and drops do not spread onto faces or cells
-   across such a wall, so liquid on both sides of a thin wall does not feel the other side.
+   across such a wall, so liquid on both sides of a thin wall does not feel the other side. A band node that
+   lies exactly on a wall's line is never trusted for the side of another point: its normal may point either way
+   (`Outline::nearest`), which once let a whole pool out through one wall of the 600-wide box.
 5. **Free slip at walls.** Shut faces are left out when a drop gathers its speed (the rest are re-weighted), then
    the drop itself loses its speed into a wall it touches and is put back half a cell off the face, exactly as
    today. Faces with too little liquid on them (under 2 % of a drop) are left out the same way.
