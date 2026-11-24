@@ -20,6 +20,7 @@ pub mod starters;
 pub mod testing;
 pub mod text;
 pub mod things;
+pub mod video;
 
 use std::sync::Arc;
 
