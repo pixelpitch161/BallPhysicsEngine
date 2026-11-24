@@ -83,7 +83,7 @@ struct Trial {
     // mass on a face for it to have a speed
     a: vec4<f32>,
     // the share of a cell's room that may fill a step, a sub-move's length (cells), how much of a
-    // coarser level's answer is added, 0
+    // coarser level's answer is added, how hard a cell may pull before it lets go
     b: vec4<f32>,
     // the pressure's levels (0 the cells themselves, each next one half as many each way): where
     // the level starts in `cellp` and `coef`, its columns, its rows, 0
@@ -525,7 +525,7 @@ fn cs2_grid(@builtin(global_invocation_id) id: vec3<u32>) {
         want = s - out;
         // The pressure it had: where the sweeps start from.
         p = cellp[k].x;
-        if !(p >= 0.0 && p < 1e9) {
+        if !(p >= -tr.b.w && p < 1e9) {
             p = 0.0;
         }
         bits = bits + 4.0;
@@ -551,7 +551,8 @@ fn is_solved(c: vec4<f32>, level: u32) -> bool {
 // of everything.
 fn floor_of(c: vec4<f32>, level: u32) -> f32 {
     if level == 0u {
-        return 0.0;
+        // (A first try at holding together: a cell may pull by this much before it lets go.)
+        return -tr.b.w;
     }
     return c.w;
 }

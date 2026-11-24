@@ -28,6 +28,9 @@ pub struct Trial {
     pub coarse: u32,
     /// How much of a coarser level's answer is added.
     pub scale: f32,
+    /// A first try at holding together: how far below nothing a cell's pressure may go (0: the
+    /// liquid only ever pushes).
+    pub tension: f32,
     /// The sweeps' over-relaxation.
     pub omega: f32,
     /// The share of a cell's excess density pushed out a step, and the most a step.
@@ -54,6 +57,7 @@ impl Trial {
         post: 2,
         coarse: 16,
         scale: 1.0,
+        tension: 0.0,
         omega: 1.0,
         push_out: 0.25,
         most_out: 0.1,
@@ -80,6 +84,7 @@ impl Trial {
             post: num("POST", d.post),
             coarse: num("COARSE", d.coarse),
             scale: num("SCALE", d.scale),
+            tension: num("TENSION", d.tension),
             omega: num("OMEGA", d.omega),
             push_out: num("PUSH_OUT", d.push_out),
             most_out: num("MOST_OUT", d.most_out),
@@ -296,7 +301,7 @@ impl TrialScratch {
         let numbers = TrialGpu {
             n: [t.iters, self.levels.len() as u32, 0, 0],
             a: [t.omega, t.push_out, t.most_out, t.face_floor],
-            b: [t.fill, t.sub_move, t.scale, 0.0],
+            b: [t.fill, t.sub_move, t.scale, t.tension],
             lv,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&numbers));
