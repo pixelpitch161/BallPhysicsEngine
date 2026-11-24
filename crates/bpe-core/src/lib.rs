@@ -38,6 +38,8 @@ pub mod sound_values;
 pub mod testkit;
 pub mod value;
 pub mod vary;
+pub mod video;
+pub mod video_save;
 
 pub use address::Address;
 pub use animation::{
@@ -75,6 +77,8 @@ pub use shape_path::ShapePath;
 pub use sound_values::{CurvePoint, MAX_CURVE_POINTS, ModRoute, NoteSlot, ROUTES_KEY, SLOTS_KEY, curve_is_valid};
 pub use value::{Params, Stroke, Strokes, Value, ValueType};
 pub use vary::{BallSpread, Vary, VaryBy, VaryEase, VaryUse};
+pub use video::{Clip, Video};
+pub use video_save::VideoLoadError;
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.
 pub use bpe_settings_derive::{Choice, Settings};
