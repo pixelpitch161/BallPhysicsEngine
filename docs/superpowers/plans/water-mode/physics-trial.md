@@ -97,4 +97,66 @@ in today's 112-byte layout, so today's drawing draws both cores.
 
 ## As built and measured
 
-(filled in at the end)
+All of it is on the trial's branch only. The test is `crates/bpe-kit/tests/liquid_trial.rs`; every number of the
+trial core is a `BPE_TRIAL_*` environment variable, so tuning needs no rebuild.
+
+### In the cloud (software card), Detail Normal unless said
+
+| Measure | Today's core | Trial core |
+| --- | --- | --- |
+| Still boxes (594/3, 604/3, 600/36, 600/40) after 5 s: rms speed | 5.5, 8.6, 8.4, 5.6 px/s | 0.3, 0.1, 0.7, 3.3 px/s |
+| the same: thrown up at most | 3, 15, 15, 2 px | 0 px |
+| Deep still pool (Level 0.6), level after 1 s and 20 s | sinks 19 px, then 16 px | sinks 2 px, then 3 px |
+| the same: rms speed after 20 s | 40 px/s | 0.1 px/s at 1 s with the pressure fully solved (see below) |
+| Slosh half swing (theory 0.73 s) | 0.78 s | 0.77 s |
+| Slosh kept each half swing | 0.86 to 0.96 | 0.80 to 0.93 |
+| Course, 6 s: drops outside the outer box | 600 of 11935 (5 %) | 0 |
+| Course, 6 s: through the 12 px opening (1.5 cells) | 0 | 499 |
+| Course, 6 s: through the 24 px opening | 946 | 875 |
+| Course, 6 s: left in the top pool (theory about 15 %) | 40 % | 20 % |
+| Course, 30 s | not run | all drained: 4219 through 12 px, 7455 through 24 px, 0 outside |
+| Repeats (two runs, played, sought back and played) | the same | the same |
+| Wall time, course, 6 s of liquid | 151 s | 34 s |
+| Wall time, 361 frames of the course at Fine, 540 x 960 | 759 s | 193 s |
+| Wall time, 361 frames of Water Weird at Fine | 498 s | 147 s |
+
+The deep pool at Fine and Extreme on the trial core: a second of it at both took 29 s together; rms 4.5 px/s
+(Fine) and 1.1 px/s (Extreme) after 1 s.
+
+Today's core's prints (`liquid_speed`, pour and box at Normal, 1 s) are unchanged by the branch:
+`7e100902fef20dc9`, `7cccd7f6eeae0ca6`.
+
+### At full size (the look)
+
+Pools, walls and openings look right on the trial core. **Thin streams and films in the air do not**: on Water
+Weird the thin pour, once it has struck a shape, breaks into lumps and a rain of small drops, some in level rows,
+where today's core keeps clean streams that hug the shapes. On the course the stream out of the corridor and
+the ones under the small openings are ragged strands. Today's core has no separate hold-together force to port:
+its streams hold because each drop is spread over three cells and its pressure is a spring. The trial core's
+cells push only when they are full, so anything thinner than a cell is loose drops.
+
+Two quick tries, neither enough: letting a cell's pressure go a little below nothing (`BPE_TRIAL_TENSION`), which
+pulls drops into cell-sized lumps and not into streams; and a weaker push-out (`BPE_TRIAL_PUSH_OUT=0`), which
+changed nothing, so the rain is not the density term kicking.
+
+### On the owner's card
+
+(added when the PC run reports)
+
+### Verdict
+
+Adopt, with named gaps. The gap that matters is thin streams (above): a full build needs a real hold-together
+and stream part before it replaces today's core, with "Water Weird's pour looks as clean as today's" as its
+test. If that part fails, keep today's core.
+
+### What a full build still needs (rough sizes)
+
+| Item | Size | Note |
+| --- | --- | --- |
+| Hold-together, thin streams and films, hugging walls | large, the main risk | not a port; needs its own design (a surface force, or drops that smooth their own spacing) |
+| Moving walls (keyframed and water-driven) | medium | wall speeds are already in the band; the faces' open shares change each step; two-way push needs the pressure on a part summed |
+| Thick liquids (honey) | medium | a second solve for the speeds (viscosity); not tried |
+| Slime and ice | medium to large | slime wants stretch, which today's core has and this one does not; ice as today (drops that stop) |
+| Repeating exactly on other machines | small to medium | same on one machine now; across cards it needs the same care as today's sums (fixed-point is kept) and no fused arithmetic |
+| Skipping empty tiles, half-rate steps | small | speed only |
+| Balls, forces, heat, mixing, wet walls | as today's, each small to medium | they read or push the drops; the grid passes differ |
