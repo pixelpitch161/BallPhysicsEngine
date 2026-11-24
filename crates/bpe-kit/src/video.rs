@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(fit.crop, [0.21875, 0.0, 0.5625, 1.0]);
         let wide = cover((1920, 1080), (1080, 1920));
         assert_eq!(wide.draw.1, 1920);
-        assert!(wide.draw.0 >= 3412 && wide.draw.0 % 2 == 0);
+        assert!(wide.draw.0 >= 3412 && wide.draw.0.is_multiple_of(2));
     }
 
     #[test]

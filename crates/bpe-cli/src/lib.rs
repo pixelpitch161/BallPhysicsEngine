@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+pub mod arranged;
+pub use arranged::{arranged_frames, export_arranged};
+
 #[derive(Clone, Debug)]
 pub struct ExportOptions {
     pub output: PathBuf,
@@ -273,23 +276,23 @@ pub fn export_video(
     }
 }
 
-const CANCELLED: &str = "export cancelled";
+pub(crate) const CANCELLED: &str = "export cancelled";
 
 /// How the sound is encoded: AAC at 320 kbps, 48 kHz.
 pub const AUDIO_ARGS: [&str; 6] = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000"];
 
 /// How a failed pass putting the sound in starts its error.
-const MUX_FAILED: &str = "ffmpeg failed putting the sound in";
+pub(crate) const MUX_FAILED: &str = "ffmpeg failed putting the sound in";
 
 /// Whether a failed export is worth trying again on the CPU: only when a graphics card encoder
 /// made the video, and not because it was cancelled or putting the sound in failed.
-fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
+pub(crate) fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
     let text = error.to_string();
     encoder != Encoder::Cpu && !text.contains(CANCELLED) && !text.contains(MUX_FAILED)
 }
 
 /// Frames that can be on their way back from the graphics card at once.
-const FRAMES_IN_FLIGHT: usize = 3;
+pub(crate) const FRAMES_IN_FLIGHT: usize = 3;
 /// Finished frames that can wait for ffmpeg at once.
 const FRAMES_QUEUED: usize = 4;
 
@@ -318,15 +321,6 @@ fn export_with(
     let picture = Picture { width, height, fps, total, encoder };
 
     let has_sound = bpe_sound::has_sound(scene);
-    // Beside the video, where there is room for it (the system's temporary folder may be on a
-    // smaller drive); the system's when that folder can't be written.
-    let beside = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let temp = tempfile::Builder::new()
-        .prefix(".ball-studio-export-")
-        .tempdir_in(beside)
-        .or_else(|_| tempfile::tempdir())
-        .context("a folder for the sound")?;
-    let sound = temp.path().join("sound.wav");
     let extras = bpe_sound::Extras {
         stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)),
         midi: options.midi.then(|| bpe_sound::midi_path(&output)),
@@ -344,25 +338,65 @@ fn export_with(
         )
         .chain(extras.midi.clone().filter(|_| has_sound))
         .collect();
+    let seconds = total as f64 / fps as f64;
+    let job = Parts { output: &output, total, seconds, has_sound, written: &written };
+    export_parts(
+        options,
+        &job,
+        |sound, heard| bpe_sound::render_sound(scene, kit, sound, seconds, &extras, heard),
+        |into, silence, done| draw_video(device, queue, scene, kit, options, &picture, into, silence, done),
+        progress,
+    )
+}
+
+/// An export's output and length, for [`export_parts`].
+pub(crate) struct Parts<'a> {
+    pub(crate) output: &'a Path,
+    pub(crate) total: u32,
+    pub(crate) seconds: f64,
+    pub(crate) has_sound: bool,
+    /// Every file the export writes, removed if it stops.
+    pub(crate) written: &'a [PathBuf],
+}
+
+/// The part every export shares (a scene's, a video's): with no sound, one pass of `draw` with a
+/// silent track; else the sound (`sound`, into the WAV it's given, telling how far it is) on its
+/// own thread while `draw` makes a video-only file, then [`mux`]. The bar is nine tenths frames
+/// and one tenth sound; cancelling or a failure removes `parts.written`.
+pub(crate) fn export_parts(
+    options: &ExportOptions,
+    parts: &Parts<'_>,
+    sound: impl FnOnce(&Path, &mut dyn FnMut(f64) -> bool) -> anyhow::Result<()> + Send,
+    mut draw: impl FnMut(&Path, bool, &mut dyn FnMut(u32) -> bool) -> anyhow::Result<()>,
+    progress: &mut impl FnMut(u32, u32) -> bool,
+) -> anyhow::Result<()> {
+    let Parts { output, total, seconds, has_sound, written } = *parts;
     let remove_outputs = || {
-        for f in &written {
+        for f in written {
             let _ = std::fs::remove_file(f);
         }
     };
     if !has_sound {
         // One pass: the frames and a silent track straight into the video.
-        let made =
-            draw_video(device, queue, scene, kit, options, &picture, &output, true, |done| progress(done, total));
+        let made = draw(output, true, &mut |done| progress(done, total));
         if made.is_err() {
             remove_outputs();
         }
         return made;
     }
+    // Beside the video, where there is room for it (the system's temporary folder may be on a
+    // smaller drive); the system's when that folder can't be written.
+    let beside = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let temp = tempfile::Builder::new()
+        .prefix(".ball-studio-export-")
+        .tempdir_in(beside)
+        .or_else(|_| tempfile::tempdir())
+        .context("a folder for the sound")?;
+    let sound_file = temp.path().join("sound.wav");
 
     // The sound is worked out on its own thread while the frames are drawn into a video-only file
     // (W7, S13); then a quick second pass puts the two together. The bar is nine tenths frames and
     // one tenth sound, both moving at once.
-    let seconds = total as f64 / fps as f64;
     let video_only = temp.path().join("video.mp4");
     let sound_at = AtomicU64::new(0f64.to_bits());
     let cancel = AtomicBool::new(false);
@@ -375,10 +409,12 @@ fn export_with(
     // The sound's world steps its liquids on the export's card, at the export's Detail.
     let card = bpe_gfx::swarm::on_this_thread();
     let made = std::thread::scope(|s| -> anyhow::Result<()> {
-        let mut job = Some(s.spawn(|| {
+        let sound_file = &sound_file;
+        let (sound_at, cancel) = (&sound_at, &cancel);
+        let mut job = Some(s.spawn(move || {
             let _card = bpe_gfx::swarm::use_for_now(card);
             let _export = bpe_kit::things::liquid::exporting_for_now();
-            bpe_sound::render_sound(scene, kit, &sound, seconds, &extras, |done| {
+            sound(sound_file, &mut |done| {
                 sound_at.store(done.to_bits(), Ordering::Relaxed);
                 !cancel.load(Ordering::Relaxed)
             })
@@ -389,8 +425,8 @@ fn export_with(
         let mut heard: Option<anyhow::Result<()>> = None;
         let mut cancelled = false;
         // Drawing that panics stops the sound too, so the panic isn't held up behind it.
-        let stop_sound = CancelOnDrop(&cancel);
-        let drawn = draw_video(device, queue, scene, kit, options, &picture, &video_only, false, |done| {
+        let stop_sound = CancelOnDrop(cancel);
+        let drawn = draw(&video_only, false, &mut |done| {
             // A sound that fails stops the frames.
             if job.as_ref().is_some_and(|j| j.is_finished())
                 && let Some(j) = job.take()
@@ -430,7 +466,7 @@ fn export_with(
             (Ok(()), Ok(())) => Ok(()),
         }
     })
-    .and_then(|()| mux(&options.ffmpeg, &video_only, &sound, &output, seconds))
+    .and_then(|()| mux(&options.ffmpeg, &video_only, &sound_file, output, seconds))
     .and_then(|()| if progress(total, total) { Ok(()) } else { Err(anyhow::anyhow!(CANCELLED)) });
     if made.is_err() {
         remove_outputs();
@@ -439,7 +475,7 @@ fn export_with(
 }
 
 /// Sets its flag when dropped (on a panic: it is forgotten when all goes well).
-struct CancelOnDrop<'a>(&'a AtomicBool);
+pub(crate) struct CancelOnDrop<'a>(&'a AtomicBool);
 
 impl Drop for CancelOnDrop<'_> {
     fn drop(&mut self) {
@@ -448,12 +484,12 @@ impl Drop for CancelOnDrop<'_> {
 }
 
 /// The video's size, speed, length in frames and encoder.
-struct Picture {
-    width: u32,
-    height: u32,
-    fps: u32,
-    total: u32,
-    encoder: Encoder,
+pub(crate) struct Picture {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) fps: u32,
+    pub(crate) total: u32,
+    pub(crate) encoder: Encoder,
 }
 
 /// Draws the frames into `output` through ffmpeg: with a silent sound track when `silence`, else
@@ -471,11 +507,54 @@ fn draw_video(
     silence: bool,
     mut progress: impl FnMut(u32) -> bool,
 ) -> anyhow::Result<()> {
-    let Picture { width, height, fps, total, encoder } = *picture;
-    // The frames come back as the encoder's own video colours, worked out on the graphics card
-    // (review S23); RGBA (converted by ffmpeg) only for a size 4:2:0 can't take.
-    let layout = encoder.layout();
-    let layout = if layout.fits(width, height) { layout } else { PixelLayout::Rgba };
+    let Picture { width, height, fps, total, .. } = *picture;
+    encode_frames(options, picture, output, silence, |layout, send| {
+        let mut renderer = Renderer::new(device, width, height);
+        let mut readback = Readback::with_layout(device, width, height, FRAMES_IN_FLIGHT, layout);
+        // Drawn from a run that keeps pace with the frames, exactly as the preview plays.
+        let mut maker = FrameMaker::new(scene, kit);
+        let bake = bake_for(scene, kit, options.bake);
+        for index in 0..total {
+            let time = index as f64 / fps as f64;
+            let samples = maker.samples(time, fps, bake.as_ref());
+            renderer.render_samples(device, queue, &samples);
+            if let Some(pixels) = readback.push(device, queue, &renderer)?
+                && !send(pixels)
+            {
+                return Ok(true);
+            }
+            if !progress(index + 1) {
+                return Ok(false);
+            }
+        }
+        for pixels in readback.finish(device)? {
+            if !send(pixels) {
+                break;
+            }
+        }
+        Ok(true)
+    })
+}
+
+/// The layout frames go to ffmpeg in for `picture`: the encoder's own video colours, worked out on
+/// the graphics card (review S23); RGBA (converted by ffmpeg) only for a size 4:2:0 can't take.
+pub(crate) fn frame_layout(picture: &Picture) -> PixelLayout {
+    let layout = picture.encoder.layout();
+    if layout.fits(picture.width, picture.height) { layout } else { PixelLayout::Rgba }
+}
+
+/// Encodes frames into `output` through ffmpeg (as [`draw_video`] says). `draw` makes the frames
+/// in `layout`, handing each to `send` (which says `false` once ffmpeg takes no more); it gives
+/// back `false` when the export was cancelled.
+pub(crate) fn encode_frames(
+    options: &ExportOptions,
+    picture: &Picture,
+    output: &Path,
+    silence: bool,
+    draw: impl FnOnce(PixelLayout, &mut dyn FnMut(Vec<u8>) -> bool) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let Picture { width, height, fps, encoder, .. } = *picture;
+    let layout = frame_layout(picture);
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
     ffmpeg.args(["-f", "rawvideo", "-pix_fmt", layout.ffmpeg_name(), "-s", &format!("{width}x{height}")]);
@@ -521,50 +600,18 @@ fn draw_video(
         written
     };
 
-    let mut renderer = Renderer::new(device, width, height);
-    let mut readback = Readback::with_layout(device, width, height, FRAMES_IN_FLIGHT, layout);
-    // Drawn from a run that keeps pace with the frames, exactly as the preview plays.
-    let mut maker = FrameMaker::new(scene, kit);
-    let bake = bake_for(scene, kit, options.bake);
-    let mut failed = None;
-    for index in 0..total {
-        let time = index as f64 / fps as f64;
-        let samples = maker.samples(time, fps, bake.as_ref());
-        renderer.render_samples(device, queue, &samples);
-        let ready = match readback.push(device, queue, &renderer) {
-            Ok(ready) => ready,
-            Err(error) => {
-                failed = Some(error);
-                break;
-            }
-        };
-        if let Some(pixels) = ready
-            && frames.send(pixels).is_err()
-        {
-            break;
-        }
-        if !progress(index + 1) {
-            drop(frames);
+    let drawn = draw(layout, &mut |pixels| frames.send(pixels).is_ok());
+    drop(frames);
+    match drawn {
+        Ok(true) => {}
+        Ok(false) => {
             let _ = stop(&mut child, writer, true);
             bail!(CANCELLED);
         }
-    }
-    if failed.is_none() {
-        match readback.finish(device) {
-            Ok(rest) => {
-                for pixels in rest {
-                    if frames.send(pixels).is_err() {
-                        break;
-                    }
-                }
-            }
-            Err(error) => failed = Some(error),
+        Err(error) => {
+            let _ = stop(&mut child, writer, true);
+            return Err(error);
         }
-    }
-    drop(frames);
-    if let Some(error) = failed {
-        let _ = stop(&mut child, writer, true);
-        return Err(error);
     }
     if let Err(error) = writer.join().unwrap_or(Ok(())) {
         let _ = child.wait();
@@ -580,7 +627,7 @@ fn draw_video(
 /// Puts the drawn `video` and the `sound` together into `output`: the picture copied as it is, the
 /// sound encoded as every export's is, both `seconds` long. The length is given outright: with the
 /// picture copied, `-shortest` alone let ffmpeg 9 keep the whole sound (a 0.5 s clip came out 0.98 s).
-fn mux(ffmpeg: &Path, video: &Path, sound: &Path, output: &Path, seconds: f64) -> anyhow::Result<()> {
+pub(crate) fn mux(ffmpeg: &Path, video: &Path, sound: &Path, output: &Path, seconds: f64) -> anyhow::Result<()> {
     let mut command = Command::new(ffmpeg);
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     command.arg("-i").arg(video).arg("-i").arg(sound);
@@ -842,7 +889,7 @@ pub fn output_size(width: u32, height: u32, scale: f32) -> (u32, u32) {
     (even(width), even(height))
 }
 
-fn spawn(mut command: Command, ffmpeg: &Path) -> anyhow::Result<Child> {
+pub(crate) fn spawn(mut command: Command, ffmpeg: &Path) -> anyhow::Result<Child> {
     command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
@@ -857,7 +904,7 @@ fn spawn(mut command: Command, ffmpeg: &Path) -> anyhow::Result<Child> {
 }
 
 /// Reads ffmpeg's error output on a thread, so a chatty ffmpeg cannot block the pipe.
-fn collect_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
+pub(crate) fn collect_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
     let mut stderr = child.stderr.take();
     std::thread::spawn(move || {
         let mut text = String::new();
