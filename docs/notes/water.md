@@ -51,7 +51,9 @@ one `WaterCard`; settings in `scene.rs`, `solids.rs`, `liquid.rs`, `places.rs`).
   def's group on a root card.
 - `ensure_mixer` does nothing in a Water scene (no sound there yet). `tests/restarts.rs` and the kit-wide tests go
   over Balls kinds only; the settings contract (`simple` count, ranges, sections in `SECTION_ORDER`) covers the
-  Water cards too. New section names sit after "Health" in `SECTION_ORDER`.
+  Water cards too. New section names sit after "Health" in `SECTION_ORDER`, and **a Water section must be a name
+  no ball setting groups under** (ranking "Colour" or "Body" moved a ball card's sections, so the Water Look's are
+  "Its colour" and "Its body"; `a_water_section_is_no_ball_settings_group` checks).
 - Text is left out of Water scenes for now (Aedan, 2026-11-24).
 
 ### The editor (`bpe-studio`)
@@ -68,7 +70,9 @@ one `WaterCard`; settings in `scene.rs`, `solids.rs`, `liquid.rs`, `places.rs`).
   greyed (`NO_WATER_GRADE`, and `keep_out_of_grade()` catches the D key and "Open in Grade mode"), Export video is
   greyed (`NO_WATER_EXPORT`), it can't be kept in a video (`NO_WATER_VIDEO`), the Lights and Mixer tabs and the
   Rules view are hidden (the remembered tab is kept for Balls scenes), and the toolbar shows a "Water scene" chip.
-  `bpe-cli` refuses with `NO_WATER_EXPORT` (`check_exportable`, at the start of every export).
+  `bpe-cli` refuses with `NO_WATER_EXPORT` (`check_exportable`, at the start of every export). A picture, song or
+  font dropped on a Water scene, or behind the chooser, is let go with a sentence and keeps nothing in the scene
+  (`drops.rs::lets_go_of_drop`, `NO_WATER_DROPS`, `DROP_AFTER_CHOOSING`).
 - **Inspector**: cards in `SlotId::shown_in` order; + Add card and Find go by the scene kind; a Water thing has no
   own card (`inspector::has_own_card`), the Course and a Liquid no Placement (`has_placement`), no Attach row
   (nothing rides), no Follow sound / light / health (`follow::offered`), and the cards a thing is made of have no

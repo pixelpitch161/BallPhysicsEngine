@@ -119,6 +119,12 @@ pub(crate) const NO_WATER_EXPORT: &str = "Exporting a Water scene arrives with M
 /// Why a Water scene can't go in a video yet.
 pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
 
+/// What a picture, song or font dropped on a Water scene is told.
+pub(crate) const NO_WATER_DROPS: &str = "Water scenes don't use pictures, songs or fonts yet.";
+
+/// What a picture, song or font dropped behind the New scene chooser is told.
+pub(crate) const DROP_AFTER_CHOOSING: &str = "Choose Balls or Water first, then drop it again.";
+
 /// What the middle of the window shows: Video mode's viewer, a Water scene's stage, or the ball
 /// preview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

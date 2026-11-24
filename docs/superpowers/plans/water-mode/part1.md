@@ -808,7 +808,7 @@ plan above:
 
 - **Format.** A loaded file's format becomes 13 in `save::mend_loaded` (the plan kept a 12 file at 12), so a Water
   scene is never saved as 12. `add_slot` also refuses a card of the other scene kind.
-- **Sections.** The Water Look's sections are new names (Colour, Body, Its surface, Glow, Crust, Drawn, Extras,
+- **Sections.** The Water Look's sections are new names (Its colour, Its body, Its surface, Glow, Crust, Drawn, Extras,
   Mixing shows) so they read in the spec's order; `mixes_when` is on the Mixing card only; the look pick sits in
   the Water card's "Course" section.
 - **Export check.** One check at the start of `video_of` (every export, final frame and preview clip) and
@@ -830,3 +830,12 @@ plan above:
 - **Checked.** `cargo clippy --workspace --all-targets -- -D warnings` clean; the editor's 908 tests, `bpe-core`'s
   and the kit's Water tests pass; no golden or pinned picture file changed, and the kit's physics goldens pass in
   debug against the unchanged files.
+- **After the review** (one Opus review of the whole branch; no critical findings). Two fixes: the Water Look's
+  "Colour" and "Body" sections became "Its colour" and "Its body", because ranking those two names in
+  `SECTION_ORDER` moved the Wavefront layer's Colour section on a ball's Look (test
+  `a_water_section_is_no_ball_settings_group`); and a picture, song or font dropped on a Water scene or behind
+  the chooser is let go with a sentence instead of being kept in the scene with nothing to show for it (tests in
+  `app/water_tests.rs`). Left for later: Delete read twice in a Water scene when the remembered tab is Lights or
+  Mixer (harmless), `bpe_kit::ensure_held` is unused outside its test, the "Opened" status is replaced by the
+  Grade sentence when a Water scene is opened from Grade mode, the inspector still shows the typed Screens tall
+  when the 16-screen limit lowers it, and no test pins one undo step per stage drag beyond the Pour test.

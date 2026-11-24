@@ -277,3 +277,71 @@ fn the_chooser_shows_as_a_dialog_and_creates_a_water_scene() {
     h.run();
     assert!(!has(&h, "New scene") && has(&h, "Don't save"));
 }
+
+/// The first bytes of a PNG: enough for the drop to take it for a picture.
+fn png() -> std::sync::Arc<[u8]> {
+    vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A].into()
+}
+
+/// A tenth of a second of silence as a WAV file.
+fn wav() -> std::sync::Arc<[u8]> {
+    let samples = vec![0u8; 4800 * 2];
+    let mut bytes = Vec::new();
+    bytes.extend(b"RIFF");
+    bytes.extend((36 + samples.len() as u32).to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(16u32.to_le_bytes());
+    bytes.extend(1u16.to_le_bytes()); // PCM
+    bytes.extend(1u16.to_le_bytes()); // mono
+    bytes.extend(48_000u32.to_le_bytes());
+    bytes.extend(96_000u32.to_le_bytes());
+    bytes.extend(2u16.to_le_bytes());
+    bytes.extend(16u16.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend((samples.len() as u32).to_le_bytes());
+    bytes.extend(samples);
+    bytes.into()
+}
+
+fn font() -> std::sync::Arc<[u8]> {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/text");
+    let first = std::fs::read_dir(folder).unwrap().filter_map(Result::ok).map(|e| e.path());
+    let font = first.filter(|p| p.extension().is_some_and(|e| e == "ttf" || e == "otf")).min().expect("a font");
+    std::fs::read(font).unwrap().into()
+}
+
+#[test]
+fn a_picture_song_or_font_dropped_on_a_water_scene_is_let_go_with_a_sentence() {
+    let mut studio = Studio::headless_water();
+    let before = studio.scene.clone();
+    studio.drop_picture("dot.png", png());
+    assert_eq!(studio.status, NO_WATER_DROPS);
+    studio.status.clear();
+    studio.drop_song("song.wav", wav());
+    assert_eq!(studio.status, NO_WATER_DROPS);
+    studio.status.clear();
+    studio.drop_font("font.ttf", font());
+    assert_eq!(studio.status, NO_WATER_DROPS);
+    assert!(studio.scene == before, "nothing is kept in the scene");
+    assert!(!studio.separate_edit && !studio.unsaved(), "and it is no edit");
+
+    // A Balls scene takes all three as before.
+    let mut studio = Studio::headless();
+    studio.drop_picture("dot.png", png());
+    studio.drop_song("song.wav", wav());
+    studio.drop_font("font.ttf", font());
+    let scene = &studio.scene;
+    assert_eq!((scene.pictures.len(), scene.audio.len(), scene.fonts.len()), (1, 1, 1));
+}
+
+#[test]
+fn a_picture_dropped_behind_the_start_chooser_is_let_go() {
+    let mut studio = Studio::headless();
+    studio.chooser = Some(crate::water_mode::Chooser::at_start());
+    let before = studio.scene.clone();
+    studio.drop_picture("dot.png", png());
+    studio.drop_song("song.wav", wav());
+    studio.drop_font("font.ttf", font());
+    assert!(studio.scene == before, "the blank project behind the chooser is not touched");
+    assert_eq!(studio.status, DROP_AFTER_CHOOSING);
+}

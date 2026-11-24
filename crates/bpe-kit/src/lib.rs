@@ -398,6 +398,26 @@ mod tests {
         }
     }
 
+    /// A section added for a Water scene's cards must be a name no ball setting groups under:
+    /// ranking it would move that group on the ball card (sections sort by rank, unranked last).
+    #[test]
+    fn a_water_section_is_no_ball_settings_group() {
+        let reg = registry();
+        let first = bpe_core::section_rank("Course").expect("the first Water section");
+        let water_only = |group: &str| bpe_core::section_rank(group).is_some_and(|r| r >= first);
+        let things = reg.things().filter(|k| !things::water::KINDS.contains(&k.id()));
+        let cards = reg.modules().filter(|m| !modules::water::CARDS.contains(&m.id()));
+        let clashes: Vec<String> = things
+            .map(|k| (k.id().to_owned(), k.settings()))
+            .chain(cards.map(|m| (m.id().to_owned(), m.settings())))
+            .chain(reg.layers().map(|l| (l.id().to_owned(), l.settings())))
+            .flat_map(|(id, defs)| defs.iter().map(move |d| (id.clone(), d)))
+            .filter(|(_, d)| water_only(d.group))
+            .map(|(id, d)| format!("{id}.{} in {:?}", d.key, d.group))
+            .collect();
+        assert!(clashes.is_empty(), "ball settings under a Water section's name: {clashes:?}");
+    }
+
     #[test]
     fn angles_say_degrees_one_way() {
         let reg = registry();

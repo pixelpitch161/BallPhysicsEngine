@@ -61,28 +61,28 @@ pub enum MixShows {
 /// A Liquid's Look card.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct WaterLook {
-    #[setting(label = "Colour", simple, keyframe, group = "Colour")]
+    #[setting(label = "Colour", simple, keyframe, group = "Its colour")]
     pub colour: Color,
     /// Its own colour, or a gradient read from how fast, hot, old or deep it is.
-    #[setting(label = "Colour from", simple, group = "Colour")]
+    #[setting(label = "Colour from", simple, group = "Its colour")]
     pub colour_from: ColourFrom,
-    #[setting(label = "Gradient", when = "colour_from!=its_own", keyframe, group = "Colour")]
+    #[setting(label = "Gradient", when = "colour_from!=its_own", keyframe, group = "Its colour")]
     pub colour_gradient: Gradient,
 
     /// How far you see into it before its colour takes over.
-    #[setting(label = "Clarity", range(0, 1e9), span(0, 600), unit = "px", simple, keyframe, group = "Body")]
+    #[setting(label = "Clarity", range(0, 1e9), span(0, 600), unit = "px", simple, keyframe, group = "Its body")]
     pub clarity: f32,
     /// Its colour where it is deep.
-    #[setting(label = "Deep colour", when = "clarity", keyframe, group = "Body")]
+    #[setting(label = "Deep colour", when = "clarity", keyframe, group = "Its body")]
     pub deep: Color,
     /// 0 is see-through like water, 1 is solid like paint.
-    #[setting(label = "Solid", range(0, 1), span(0, 1), simple, keyframe, group = "Body")]
+    #[setting(label = "Solid", range(0, 1), span(0, 1), simple, keyframe, group = "Its body")]
     pub solid: f32,
     /// How far it bends what is seen through it.
-    #[setting(label = "Bend", range(0, 1e9), span(0, 60), unit = "px", keyframe, group = "Body")]
+    #[setting(label = "Bend", range(0, 1e9), span(0, 60), unit = "px", keyframe, group = "Its body")]
     pub bend: f32,
     /// Splits the bent picture into colours at its edges.
-    #[setting(label = "Rainbow split", when = "bend", range(0, 1), span(0, 1), keyframe, group = "Body")]
+    #[setting(label = "Rainbow split", when = "bend", range(0, 1), span(0, 1), keyframe, group = "Its body")]
     pub split: f32,
 
     /// How smooth its outline is: 0 shows every drop.
