@@ -157,3 +157,57 @@ fn bands() {
         y += step;
     }
 }
+
+/// The Water Weird layout's stream off the disc: how wide the falling thread is (the spread of the
+/// drops across it in bands of height, a mean over many moments), and how many drops are in it.
+/// A steady thread is a few pixels wide; one that leaves in strands or frays is tens.
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn strands() {
+    let gpu = card();
+    let cell: f32 = num("WATER_CELL", 8.0);
+    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env());
+    let (lo, hi) = (Vec2::new(-80.0, 60.0), Vec2::new(330.0, 620.0));
+    let bands = 8usize;
+    let mut spread = vec![0.0f64; bands];
+    let mut seen = vec![0u32; bands];
+    let mut drops_in = 0usize;
+    let mut moments = 0u32;
+    let mut t = 1.5f32;
+    while t <= num("WATER_UNTIL", 4.0f32) {
+        run.run_to(t);
+        let drops = run.water.read();
+        let layout = run.water.layout();
+        let mut by_band: Vec<Vec<f32>> = vec![Vec::new(); bands];
+        for d in &drops {
+            let w = layout.to_world(Vec2::from(d.x));
+            if w.x >= lo.x && w.x < hi.x && w.y >= lo.y && w.y < hi.y {
+                let b = (((w.y - lo.y) / (hi.y - lo.y)) * bands as f32) as usize;
+                by_band[b.min(bands - 1)].push(w.x);
+            }
+        }
+        for (b, xs) in by_band.iter().enumerate() {
+            drops_in += xs.len();
+            if xs.len() >= 3 {
+                let n = xs.len() as f32;
+                let mean = xs.iter().sum::<f32>() / n;
+                let sd = (xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n).sqrt();
+                spread[b] += f64::from(sd);
+                seen[b] += 1;
+            }
+        }
+        moments += 1;
+        t += 0.1;
+    }
+    let per: Vec<String> = spread
+        .iter()
+        .zip(&seen)
+        .map(|(s, n)| if *n > 0 { format!("{:.0}", s / f64::from(*n)) } else { "-".into() })
+        .collect();
+    let all = spread.iter().sum::<f64>() / f64::from(seen.iter().sum::<u32>().max(1));
+    println!(
+        "strands\tspread px by band\t{}\tmean\t{all:.1}\tdrops a moment\t{:.0}",
+        per.join(" "),
+        drops_in as f32 / moments as f32
+    );
+}

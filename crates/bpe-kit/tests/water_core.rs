@@ -176,7 +176,11 @@ fn block(scene: &mut Scene, reg: &Registry, points: &[(f32, f32)]) {
     let points: Vec<Vec2> = points.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
     let centre = points.iter().copied().sum::<Vec2>() / points.len() as f32;
     let far = points.iter().map(|p| (*p - centre).length()).fold(1.0, f32::max);
-    let size = far.log2().ceil().exp2();
+    // (The next power of two: a shape's Size any corner fits in.)
+    let mut size = 1.0f32;
+    while size < far {
+        size *= 2.0;
+    }
     let path = bpe_core::ShapePath {
         points: points.iter().map(|p| ((*p - centre) / size).to_array()).collect(),
         bends: vec![None; points.len()],

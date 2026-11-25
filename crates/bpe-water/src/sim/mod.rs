@@ -353,9 +353,9 @@ impl Water {
             }
             go(P::Clear, (cells, 1), None);
             // (Always: the hold nodes also hold the liquid round each drop, which the spacing reads.)
-            go(P::HoldP2g, (drop_groups, 1), None);
+            go(P::HoldSpread, (drop_groups, 1), None);
             go(P::HoldGrid, tiles, None);
-            go(P::P2g, (drop_groups, 1), None);
+            go(P::Spread, (drop_groups, 1), None);
             go(P::Grid, tiles, None);
             let n = self.numbers;
             let top = self.levels.len() as u32 - 1;
@@ -383,7 +383,7 @@ impl Water {
             sweep(&mut go, 0, n.iters);
             go(P::Proj, tiles, None);
             go(P::Slip, tiles, None);
-            go(P::G2p, (drop_groups, 1), None);
+            go(P::Gather, (drop_groups, 1), None);
         }
         self.in_flight.push_back(queue.submit([encoder.finish()]));
         self.walls_put = true;

@@ -94,7 +94,7 @@ impl Default for Numbers {
             hold_settle: 200.0,
             hold_relax: 4.0,
             hold_full: 0.9,
-            even: 20.0,
+            even: 12.0,
             even_most: 0.15,
             hold_join: 0.6,
             tear_calm: 2.0,

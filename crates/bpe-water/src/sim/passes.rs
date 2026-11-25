@@ -15,16 +15,16 @@ pub(super) const SOURCE: &str = concat!(
 pub(super) enum P {
     Walls,
     Clear,
-    HoldP2g,
+    HoldSpread,
     HoldGrid,
-    P2g,
+    Spread,
     Grid,
     Sor,
     Down,
     Up,
     Proj,
     Slip,
-    G2p,
+    Gather,
 }
 
 /// The entry points in [`P`]'s order, and the bindings each uses: 0 the step, 1 the drops, 2 the
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn every_pass_has_its_entry() {
-        assert_eq!(ENTRIES.len(), P::G2p as usize + 1);
+        assert_eq!(ENTRIES.len(), P::Gather as usize + 1);
         assert_eq!(ENTRIES[P::Slip as usize].0, "cs_slip");
         assert_eq!(ENTRIES[P::HoldGrid as usize].0, "cs_hold_grid");
     }

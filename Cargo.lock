@@ -351,6 +351,7 @@ name = "bpe-water"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bpe-core",
  "bpe-gfx",
  "bpe-water",
  "bytemuck",

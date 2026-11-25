@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bpe-core.workspace = true
 bpe-gfx.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
