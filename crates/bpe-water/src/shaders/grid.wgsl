@@ -217,10 +217,11 @@ fn mean_of(which: u32, a: u32, b: u32, c: u32, d: u32) -> vec2<f32> {
     return vec2<f32>(sum / n, n);
 }
 
-// Free slip: a face a solid shuts takes the liquid's speed beside it, less its part into or out
-// of the solid (so a face along a wall's normal reads nothing, and one inside a slope reads the
-// slide along it). Without it the drops by a wall gathered a share of "nothing" from every shut
-// face: a slope braked the liquid like a staircase.
+// Free slip: a face a solid shuts takes the liquid's speed beside it, less its part into the solid
+// (so a face inside a slope reads the slide along it). Without it the drops by a wall gathered a
+// share of "nothing" from every shut face: a slope braked the liquid like a staircase. The part
+// out of the solid stays: with it taken off too, a film passing a corner or the top of a curve was
+// steered round it and slowed, the drops nearest the solid most, and it left as a fan.
 @compute @workgroup_size(16, 16)
 fn cs_slip(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= st.grid.x || id.y >= st.grid.y {
@@ -246,7 +247,7 @@ fn cs_slip(@builtin(global_invocation_id) id: vec3<u32>) {
                 n = vec2<f32>(0.0, 1.0);
             }
             let flow = vec2<f32>(own.x, other.x);
-            v.x = (flow - dot(flow, n) * n).x;
+            v.x = (flow - min(dot(flow, n), 0.0) * n).x;
             bits = bits | 1u;
         }
     }
@@ -261,7 +262,7 @@ fn cs_slip(@builtin(global_invocation_id) id: vec3<u32>) {
                 n = vec2<f32>(1.0, 0.0);
             }
             let flow = vec2<f32>(other.x, own.x);
-            v.y = (flow - dot(flow, n) * n).y;
+            v.y = (flow - min(dot(flow, n), 0.0) * n).y;
             bits = bits | 2u;
         }
     }
