@@ -165,13 +165,91 @@ The trial core's cost hardly grows with Detail (0.08 to 0.15), where today's gro
 trial's 0.08 is mostly the fixed cost of the passes, not the drops. Still box, mean speed squared after 5 s:
 today 2234 / 3134 / 2683 (about 47 to 56 px/s rms), trial 0 / 1 / 0.
 
-(the still, slosh, volume, course and repeat runs on the card follow)
+The rest of the card's runs (each started after 90 s with no check on the PC and watched for one starting; the
+course run's first try had one start and was thrown away, its counts were identical).
+
+Speed over 20 s (the pours have filled more by then), wall seconds a second of scene:
+
+| Scene | Core | Normal | Fine | Extreme |
+| --- | --- | --- | --- | --- |
+| Water Weird (20 364 / 36 203 / 144 815 drops) | today | 0.24 | 0.44 | 1.26 |
+| | trial | 0.08 | 0.09 | 0.15 |
+| Course (11 935 / 21 170 / 84 680 drops) | today | 0.29 | 0.51 | 1.40 |
+| | trial | 0.08 | 0.09 | 0.15 |
+
+At half rate (`BPE_TRIAL_RATE=120`, 5 s) the trial core ran at 0.04 to 0.08 and the box stayed still (mean
+speed squared 0 / 20 / 1); the look at half rate was not checked.
+
+Still boxes (Level 0.3; boxes 594/3, 604/3, 600/36, 600/40) after 5 s, rms px/s:
+
+| Core | Normal | Fine | Extreme |
+| --- | --- | --- | --- |
+| today | 5.4, 8.3, 7.8, 5.8 | 77.1, 52.5, 4.9, 10.7 | 16.5, 15.5, 5.6, 12.5 |
+| trial | 0.4, 0.1, 0.6, 3.3 | 0.1, 0.4, 1.4, 0.2 | 1.2, 1.8, 2.8, 0.9 |
+
+Today's threw drops up 2 to 34 px; the trial 0 px. The trial has more drops sharing a place in these shallow
+boxes (crowded 70 to 1182 against 2 to 506).
+
+Deep pool (Level 0.6, about 534 px deep) over 20 s:
+
+| Measure | Core | Normal | Fine | Extreme |
+| --- | --- | --- | --- | --- |
+| Top sinks by, after 20 s | today | 16.4 px | 18.8 px | 25.6 px |
+| | trial | 2.6 px | 9.4 px | 1.7 px |
+| Drops a full cell (4.00 at the start) | today | 4.11 | 4.08 | 4.19 |
+| | trial | 4.01 | 4.00 | 4.00 |
+| rms speed at 20 s, px/s | today | 31.6 | 62.6 | 28.7 |
+| | trial | 0.0 | 1.8 | 0.6 |
+| Crowded at 20 s | today | 1452 | 4100 | 7923 |
+| | trial | 45 | 443 | 363 |
+
+The trial lost one drop at Fine and one at Extreme (34 888 to 34 887, 141 768 to 141 767); where it goes is not
+known.
+
+Slosh (theory 0.73 s a half swing): today 0.78 / 0.82 / 0.80 s, trial 0.77 / 0.78 / 0.78 s. Swing left after
+four half swings: today 69 / 70 / 71 %, trial 53 / 50 / 52 %. **The trial loses a slosh about a third sooner.**
+
+Course after 30 s (drops; "held up" is the top pool, the way down and the bottom pool together):
+
+| Measure | Core | Normal | Fine | Extreme |
+| --- | --- | --- | --- | --- |
+| Through the 12 px opening | today | 85 | 452 | 19 209 |
+| | trial | 4 270 | 7 021 | 28 206 |
+| Through the 24 px opening | today | 7 058 | 9 725 | 55 219 |
+| | trial | 7 459 | 13 374 | 53 987 |
+| Held up | today | 1 764 | 10 890 | 9 881 |
+| | trial | 206 | 741 | 2 486 |
+| Outside the outer box | today | 3 028 | 103 | 371 |
+| | trial | 0 | 34 | 1 |
+| Wall seconds for the 30 s | today | 8.9 | 15.3 | 45.9 |
+| | trial | 2.6 | 2.9 | 14.2 |
+
+The trial's shares hardly change with Detail (12 px: 36 / 33 / 33 %; 24 px: 62 / 63 / 64 %); today's do
+(12 px: 0.7 / 2 / 23 %). One timing does not fit: the trial at Extreme took 14.2 s here (4.6 s of it between
+10 s and 15 s of scene, 4.1 s between 15 s and 20 s) where the straight 20 s speed run of the same scene took
+2.99 s. The trial core's work a step is fixed, so the likely cause is something else using the card then (the
+owner was at the PC); not confirmed.
+
+Repeats at Fine (pour and course): both cores gave the same print for two runs, a played run, and a run sought
+back and played again.
+
+Frames with drawing at 1080 x 1920, Extreme, made while checks ran on the PC: course 481 frames, today 364 s,
+trial 412 s; Water Weird 601 frames, today 443 s, trial 352 s. Drawing and writing the pictures, not the
+physics, is most of that time.
+
+The PC's scratch build and temporary folder were deleted afterwards; nothing was installed.
 
 ### Verdict
 
 Adopt, with named gaps. The gap that matters is thin streams (above): a full build needs a real hold-together
 and stream part before it replaces today's core, with "Water Weird's pour looks as clean as today's" as its
 test. If that part fails, keep today's core.
+
+The card's numbers confirm it: 2 to 8 times faster and faster than real time at every Detail, still pools at
+rest, pools that keep their height, walls that hold, a 12 px opening that flows at every Detail, and answers
+that hardly change with Detail. Smaller gaps: a slosh dies about a third sooner; 34 of 21 170 drops crossed
+walls on the course at Fine; one drop went missing in the still pool at Fine and Extreme; drops share places
+more in shallow still pools. The owner's page: https://claude.ai/artifact/6sgerUCgwjRnvsX1ZWRjBR
 
 ### What a full build still needs (rough sizes)
 
@@ -181,6 +259,7 @@ test. If that part fails, keep today's core.
 | Moving walls (keyframed and water-driven) | medium | wall speeds are already in the band; the faces' open shares change each step; two-way push needs the pressure on a part summed |
 | Thick liquids (honey) | medium | a second solve for the speeds (viscosity); not tried |
 | Slime and ice | medium to large | slime wants stretch, which today's core has and this one does not; ice as today (drops that stop) |
+| A livelier slosh | small to medium | the bilinear hand-over between drops and grid loses swing; a wider kernel or a share of the drop's own speed |
 | Repeating exactly on other machines | small to medium | same on one machine now; across cards it needs the same care as today's sums (fixed-point is kept) and no fused arithmetic |
 | Skipping empty tiles, half-rate steps | small | speed only |
 | Balls, forces, heat, mixing, wet walls | as today's, each small to medium | they read or push the drops; the grid passes differ |
