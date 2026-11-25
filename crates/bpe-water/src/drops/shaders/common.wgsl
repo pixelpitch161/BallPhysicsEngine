@@ -34,7 +34,7 @@ struct Fr {
     k: vec4<f32>,
     // 0, how far off a face a drop stays, a sub-move's length, the solids' share of the density
     w: vec4<f32>,
-    // 0, how far from a face drag reaches, the most a sweep moves a drop, 0
+    // a cell's pixels, how far from a face drag reaches, the most a sweep moves a drop, 0
     s: vec4<f32>,
     feels: array<Feel, 16>,
     // the solids' share of a drop's neighbourhood by its distance from the face (`wall_table`)

@@ -7,6 +7,7 @@ pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/sort.wgsl"),
     include_str!("shaders/sweep.wgsl"),
     include_str!("shaders/finish.wgsl"),
+    include_str!("shaders/report.wgsl"),
 );
 
 /// A pass.
@@ -23,6 +24,7 @@ pub(super) enum P {
     Apply,
     ApplyLast,
     Finish,
+    Report,
     Export,
 }
 
@@ -30,7 +32,8 @@ pub(super) enum P {
 /// the liquid's ways and fullness, 4 and 5 the kinds and serials (as they were, sorted), 6 where
 /// each drop would be, 7 the bins' counts, 8 their starts, 9 the blocks' sums, 10 the sorted order,
 /// 11 and 12 the sorted places (in, out), 13 the multipliers, 14 where each was and then its new
-/// speed, 15 the solid field, 16 the step's births, 17 the drops in the grid core's layout.
+/// speed, 15 the solid field, 16 the step's births, 17 the drops in the grid core's layout, 18 the
+/// frame's report.
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_predict", &[0, 1, 2, 3, 4, 6, 7, 15, 16]),
     ("cs_sum_a", &[0, 1, 7, 8, 9]),
@@ -43,6 +46,7 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_apply", &[0, 1, 8, 11, 12, 13, 14, 15]),
     ("cs_apply_last", &[0, 1, 8, 11, 12, 13, 14, 15]),
     ("cs_finish", &[0, 1, 2, 3, 8, 11, 13, 14, 15]),
+    ("cs_report", &[0, 1, 2, 8, 18]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
 ];
 

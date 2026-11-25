@@ -154,3 +154,92 @@ fn an_empty_body_moves_on() {
     assert_eq!(run.water.frames(), 10);
     assert!(run.water.read().is_empty());
 }
+
+/// The clock takes the floor's steps for still water and more for fast water.
+#[test]
+fn the_clock_takes_more_steps_for_faster_water() {
+    let Some(gpu) = card() else { return };
+    let mut still = scenes::still_box(8.0, 0.3).start(&gpu, Numbers::for_cell(8.0));
+    still.run_to(1.0);
+    assert_eq!(still.water.steps_last_frame(), 16, "still water takes the floor's steps");
+
+    let layout = Layout::cover(Vec2::new(-400.0, -800.0), Vec2::new(400.0, 800.0), 8.0);
+    let field = SolidField::build(layout, &[]);
+    let mut water = Water::new(gpu.clone(), &field, Vec2::ZERO, Numbers::for_cell(8.0), &[Feel::default()]);
+    let fired: Vec<Drop> = (0..50)
+        .map(|k| {
+            Drop::new(
+                layout.to_grid(Vec2::new(-200.0 + 8.0 * k as f32, -700.0)),
+                Vec2::new(0.0, 750.0),
+                STOPS,
+                0,
+                WATER,
+            )
+        })
+        .collect();
+    water.add(&fired);
+    let mut steps = Vec::new();
+    for _ in 0..6 {
+        water.frame();
+        steps.push(water.steps_last_frame());
+    }
+    // (6000 px/s at 8 px cells: ceil(6000 / 60 / (1.3 x 4)) = 20 steps a frame.)
+    assert!(steps.iter().all(|n| *n == 20), "fast water gets its steps every frame: {steps:?}");
+}
+
+/// Drops that leave the course are let go, and no drop still in it is lost with them.
+#[test]
+fn drops_that_leave_are_counted_out() {
+    let Some(gpu) = card() else { return };
+    let layout = Layout::cover(Vec2::new(-300.0, -300.0), Vec2::new(300.0, 300.0), 8.0);
+    let field = SolidField::build(layout, &[]);
+    let leaving: Vec<Drop> = (0..500)
+        .map(|k| {
+            let at = Vec2::new(-250.0 + (k % 50) as f32 * 10.0, 100.0 + (k / 50) as f32 * 10.0);
+            Drop::new(layout.to_grid(at), Vec2::new(0.0, 2000.0) / 8.0, STOPS, 0, WATER)
+        })
+        .collect();
+    let mut water = Water::new(gpu.clone(), &field, scenes::GRAVITY, Numbers::for_cell(8.0), &[Feel::default()]);
+    water.set_edges_shut(false);
+    water.add(&leaving);
+    for _ in 0..60 {
+        water.frame();
+    }
+    assert_eq!(water.count(), 0, "every drop has left and is let go");
+
+    // A pool in a box inside the course, and drops leaving past it all the while.
+    let (layout, field) = {
+        let layout = Layout::cover(Vec2::new(-300.0, -300.0), Vec2::new(300.0, 300.0), 8.0);
+        let walls = [Solid::rect(Vec2::new(-100.0, -100.0), Vec2::new(100.0, 100.0), false, 3.0)];
+        (layout, SolidField::build_least(layout, &walls, LEAST_WALL * 8.0))
+    };
+    let mut water = Water::new(gpu.clone(), &field, scenes::GRAVITY, Numbers::for_cell(8.0), &[Feel::default()]);
+    water.set_edges_shut(false);
+    let pool = bpe_water::fill(&layout, &field, Vec2::new(-90.0, 0.0), Vec2::new(90.0, 90.0), STOPS, 0);
+    let kept = water.add(&pool);
+    assert!(kept > 200);
+    for f in 0..60 {
+        let side = if f % 2 == 0 { -200.0 } else { 200.0 };
+        let wave: Vec<Drop> = (0..20)
+            .map(|k| {
+                Drop::new(
+                    layout.to_grid(Vec2::new(side, -250.0 + 5.0 * k as f32)),
+                    Vec2::new(0.0, 3000.0) / 8.0,
+                    STOPS,
+                    0,
+                    WATER,
+                )
+            })
+            .collect();
+        water.add(&wave);
+        water.frame();
+    }
+    for _ in 0..30 {
+        water.frame();
+    }
+    let drops = water.read();
+    let mut pool_serials: Vec<u32> = drops.iter().map(|d| d.serial).filter(|s| *s < kept).collect();
+    pool_serials.sort();
+    assert_eq!(pool_serials, (0..kept).collect::<Vec<_>>(), "every pool drop is still there");
+    assert_eq!(water.count(), kept, "and only they are");
+}
