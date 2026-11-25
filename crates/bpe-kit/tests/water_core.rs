@@ -412,6 +412,11 @@ fn report(
         st.gap,
         widths.join(" ")
     );
+    // How thin liquid's drops move across their neighbours' way (`WATER_ACROSS=1`): a thread whose
+    // drops fly crosswise is drawn as hairs.
+    if std::env::var("WATER_ACROSS").is_ok() {
+        across(name, detail, core, t, drops, layout);
+    }
     // The drops themselves as dots (`WATER_DOTS=<folder>`): what the physics did, without the look.
     if let Ok(dir) = std::env::var("WATER_DOTS") {
         let (pixels, w, h) = probe::picture(drops, field, 1.0, f32::MAX);
@@ -419,6 +424,56 @@ fn report(
         let file = format!("{name}-{detail:?}-{core}-{t}.png").to_lowercase();
         probe::save_png(&std::path::Path::new(&dir).join(file), &pixels, w, h).expect("a picture");
     }
+}
+
+/// For each drop with fewer than 12 others within two cells (thin liquid), its speed against the
+/// mean of those others': the spread along and across their way, as shares of the mean speed, and
+/// the share of drops flying more than 45 degrees off it.
+fn across(name: &str, detail: Detail, core: &str, t: f64, drops: &[bpe_water::Drop], layout: &Layout) {
+    let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+    for (i, d) in drops.iter().enumerate() {
+        cells.entry((d.x[0].floor() as i32, d.x[1].floor() as i32)).or_default().push(i);
+    }
+    let (mut n, mut speed, mut along, mut across, mut wide) = (0usize, 0.0f64, 0.0f64, 0.0f64, 0usize);
+    for (i, d) in drops.iter().enumerate() {
+        let p = Vec2::from(d.x);
+        let (cx, cy) = (p.x.floor() as i32, p.y.floor() as i32);
+        let (mut sum, mut k) = (Vec2::ZERO, 0usize);
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                for &j in cells.get(&(cx + dx, cy + dy)).map(Vec::as_slice).unwrap_or(&[]) {
+                    if j != i && (Vec2::from(drops[j].x) - p).length() < 2.0 {
+                        sum += Vec2::from(drops[j].v);
+                        k += 1;
+                    }
+                }
+            }
+        }
+        if k == 0 || k >= 12 {
+            continue;
+        }
+        let mean = sum / k as f32;
+        if mean.length() * layout.cell < 200.0 {
+            continue;
+        }
+        let way = mean.normalize();
+        let off = Vec2::from(d.v) - mean;
+        n += 1;
+        speed += f64::from(mean.length());
+        along += f64::from(off.dot(way) / mean.length()).powi(2);
+        across += f64::from(off.dot(way.perp()) / mean.length()).powi(2);
+        if Vec2::from(d.v).normalize_or_zero().dot(way) < std::f32::consts::FRAC_1_SQRT_2 {
+            wide += 1;
+        }
+    }
+    let m = n.max(1) as f64;
+    println!(
+        "# across\t{name}\t{detail:?}\t{core}\t{t}\tthin fast drops {n}\tmean {:.0} px/s\talong {:.3}\tacross {:.3}\tover 45 deg {:.3}",
+        speed / m * f64::from(layout.cell),
+        (along / m).sqrt(),
+        (across / m).sqrt(),
+        wide as f64 / m
+    );
 }
 
 /// The bridge hands today's drawing every drop: a pool drawn through it covers the pool.

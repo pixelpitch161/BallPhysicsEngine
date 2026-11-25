@@ -264,3 +264,56 @@ fn kicks() {
         run.step();
     }
 }
+
+/// How far drops in the air below the disc move across their neighbours' way: the spread of
+/// each drop's speed from the mean of the drops within two cells, across and along that way.
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn across() {
+    let gpu = card();
+    let cell: f32 = num("WATER_CELL", 6.0);
+    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env());
+    println!("# time\tdrops\tmean speed\trms along\trms across\tshare > 45 deg");
+    for time in list::<f32>("WATER_TIMES", "2,3,4") {
+        run.run_to(time);
+        let layout = run.water.layout();
+        let drops = run.water.read();
+        let places: Vec<Vec2> = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).collect();
+        let speeds: Vec<Vec2> = drops.iter().map(|d| Vec2::from(d.v) * cell).collect();
+        let (mut n, mut mean_speed, mut along, mut across, mut wide) = (0usize, 0.0f32, 0.0f32, 0.0f32, 0usize);
+        for (i, p) in places.iter().enumerate() {
+            if p.y < 50.0 || p.y > 750.0 || p.x < -100.0 || p.x > 350.0 {
+                continue;
+            }
+            let mut sum = Vec2::ZERO;
+            let mut k = 0;
+            for (j, q) in places.iter().enumerate() {
+                if (*q - *p).length() < 2.0 * cell {
+                    sum += speeds[j];
+                    k += 1;
+                }
+            }
+            if k < 2 {
+                continue;
+            }
+            let mean = sum / k as f32;
+            let way = mean.normalize_or_zero();
+            let off = speeds[i] - mean;
+            n += 1;
+            mean_speed += mean.length();
+            along += off.dot(way).powi(2);
+            across += off.dot(way.perp()).powi(2);
+            if speeds[i].normalize_or_zero().dot(way) < std::f32::consts::FRAC_1_SQRT_2 {
+                wide += 1;
+            }
+        }
+        let m = n.max(1) as f32;
+        println!(
+            "{time}\t{n}\t{:.0}\t{:.1}\t{:.1}\t{:.3}",
+            mean_speed / m,
+            (along / m).sqrt(),
+            (across / m).sqrt(),
+            wide as f32 / m
+        );
+    }
+}

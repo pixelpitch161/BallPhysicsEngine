@@ -355,7 +355,17 @@ Inputs the spec implies but does not spell out. Each has a test in the task that
 
 ## As built and measured
 
-(Filled in as the work is done. Runs are on lavapipe in the cloud container unless they say the owner's card.)
+(Runs are on lavapipe in the cloud container unless they say the owner's card.)
+
+**The outcome.** The pass mark is **not reached** on the owner's own `Water Weird.ron`: on their card its thread
+off the disc breaks into lumps at Fine and into short crosswise pieces at Extreme, where today's is one clean
+line (below, "Why the owner's thread breaks at Extreme"). On the hand-built Water Weird layout and the stream
+scenes the new core is as clean as today's or cleaner, its pools rest better, and it is three to ten times
+faster. Goal lines: a two-cell pour stays one stream down a whole screen (reached, `a_thin_pour_stays_one_stream`);
+a sheet off an edge stays a sheet (reached); the width stays steady (reached, 7 to 15 px of 16); clean at draft
+detail (reached on the test scenes); breaks into drops only when Surface pull says so (not reached: Surface pull
+hardly changes anything yet). Tiles are not built. The crate is merged as it stands (nothing in the editor uses
+it); whether Water mode goes on with this core or starts on today's is the owner's choice.
 
 ### What made the trial's streams break up (found while porting)
 
@@ -425,10 +435,38 @@ comes as jolts. Today's soft core takes the same hit over several steps.
 - With no pressure at all the same scene is perfectly clean lines (so the drops' own moves, the keeping off
   solids and the spacing step are not the cause), but then nothing turns the pour on the block.
 - A more thorough solve (6 cycles, 30 more sweeps) changes little: 40 kicks in a second become 29.
-- **Smaller liquid steps cure the thread**: at 480 steps a second it is mostly whole, at 960 one clean line to
-  the floor as today's, and the film over the disc is tidier though still feathery. Still pools rest at both
-  (box 0.4 to 0.8 px/s, deep 0.2 to 1.0). The cost is the step count itself: at 960 the new core is about as
-  fast as today's at Normal and Fine rather than three to five times faster.
+- **Smaller liquid steps help at Fine, not at Extreme.** On lavapipe at 6 px cells, 960 steps a second made the
+  thread one line to the floor. The second films from the owner's card (`card-second-run/` in the project
+  files, the frame at 6 s) are less kind: at Fine the thread at 960 is nearly whole high up but still lumpy
+  lower down (at 240 and 480 it is broken into lumps), and at Extreme (3 px cells) it is short crosswise
+  pieces ("hairs") at 960 and at 1920 alike. Today's is one clean line at both. Normal at 720 is the closest
+  of the new core's films.
+- Still pools rest at every rate (deep pool 0.1 to 1.6 px/s, its height kept to a pixel).
+- The cost is the step count itself. Wall seconds a second of scene on the owner's card, Water Weird layout
+  at 8 / 6 / 3 px cells: 240 steps 0.065 / 0.08 / 0.115; 960 steps 0.26 / 0.32 / 0.45; 1920 steps 0.52 /
+  0.62 / 0.89; today's core (the trial's table) 0.24 / 0.44 / 1.26. At 960 the new core is about as fast as
+  today's at Normal and Fine.
+- The course drains alike at 240 and 960, but at 1920 a few drops are left in the top pool after 20 s (its
+  top -644 against 604): not looked into further.
+
+### Why the owner's thread breaks at Extreme (measured, the cause not yet cured)
+
+- **Not drops flying crosswise.** `water_core.rs` with `WATER_ACROSS=1` measures each thin, fast drop's speed
+  against its neighbours' mean. The spread across the way is 0.09 to 0.17 of the speed in both cores (0.04 to
+  0.26 in the new one at 960); hardly a drop in either flies more than 45 degrees off its neighbours.
+- **The thread is in three times as many pieces** (Extreme, 3 s: 382 against today's 128) and its pieces are
+  short rows of drops lying across the way (the dot pictures, `WATER_DOTS`). The rows are already there
+  upstream: the film running down the block's top towards the disc gathers into humps about 30 px apart,
+  where today's film is a smooth band about twice as wide and looser. Each hump leaves the disc as one short
+  row.
+- Turning off the spacing step (`EVEN=0`), the hold-together (`HOLD=0`), or going back to `FILL=0.25`, or a
+  ten times stronger push in thin liquid (`MOST_OUT_THIN=0.05`): the humps stay in all of them. They are the
+  one-sided pressure itself: a film one or two cells thick never fills its cells, so nothing keeps its drops
+  evenly spaced along it, and when a bunch fills a cell it is pushed apart in one step. Today's core gives
+  every drop a soft pressure from how crowded it is, so its films stay even.
+- **What would cure it, as far as this part found:** spacing thin liquid by the drops themselves rather than
+  by cells (a soft crowding push between neighbouring drops, felt only where the liquid is thin, so a pool's
+  inside stays incompressible). That is a new piece of physics and is left for the next part.
 
 ### Where the Water Weird layout stands (lavapipe, 6 px cells, drawn through the bridge)
 

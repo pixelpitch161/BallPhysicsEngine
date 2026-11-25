@@ -126,6 +126,11 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
   only its part *into* the solid (`cs_slip`: with the part out of it taken off as well, a film left a corner as a
   fan). A drop's carried stretch (`Drop::e`) pulls through the hold nodes (`hold.wgsl`): weak at the default
   Surface pull.
+- **Where it stands (2026-11-25):** not yet as clean as today's core on the owner's own Water Weird scene (its thread breaks
+  at Fine and Extreme on their card): a film one or two cells thick never fills its cells, so the one-sided
+  pressure does not keep its drops evenly spaced, and the film gathers into humps that leave the disc as
+  pieces. The likely cure is a soft crowding push between neighbouring drops in thin liquid (the plan's "Why
+  the owner's thread breaks at Extreme"). `water_core.rs` measures it: `WATER_ACROSS=1`, `WATER_DOTS`.
 - **Not built yet: tiles.** The grid is dense (every cell of the course stored and stepped). The plan's tiles are
   their own part, before courses bigger than a screen.
 - **The bridge** (`bridge.rs`, `bridge.wgsl`): the drops rewritten in today's 112-byte layout with a wet grid made
