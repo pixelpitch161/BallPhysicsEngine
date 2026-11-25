@@ -14,6 +14,8 @@
 //!   `grid` and `drops`, side by side in that order).
 //! - `WATER_MEASURE=1,2,4` when the streams are measured (seconds).
 //! - `WATER_FAN=1` the new engines' pours keep the scene's Spread (see `NewCore::step`).
+//! - `WATER_PULL`, `WATER_STICK` the all-drops engine's Surface pull (else the scene's) and
+//!   Stickiness (else none).
 //! - `BPE_GRID_*` replace the grid core's numbers (its steps a second follow the detail's cell
 //!   size, `Numbers::for_cell`, unless `BPE_GRID_RATE` says otherwise), `BPE_WATER_*` the
 //!   all-drops engine's.
@@ -132,6 +134,11 @@ struct NewCore {
     bridge: Bridge,
 }
 
+/// A number from the environment (the measuring run's settings), or `or`.
+fn num(name: &str, or: f32) -> f32 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
+}
+
 fn rgba8(c: [f32; 4]) -> u32 {
     let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     u32::from_le_bytes([b(c[0]), b(c[1]), b(c[2]), b(c[3])])
@@ -199,7 +206,8 @@ impl NewCore {
                     .iter()
                     .map(|f| bpe_water::Feel {
                         gravity: f.gravity,
-                        surface_pull: f.surface_pull,
+                        surface_pull: num("WATER_PULL", f.surface_pull),
+                        stickiness: num("WATER_STICK", 0.0),
                         weight: f.weight,
                         settles: f.settles,
                         ..bpe_water::Feel::default()
