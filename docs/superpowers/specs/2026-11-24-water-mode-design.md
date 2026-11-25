@@ -148,8 +148,9 @@ that is exactly what was scrubbed.
   cut a tunnel through rock.
 - **Size.** A course is measured in screens. One screen is 1080 x 1920. Up to 8 screens on a side and 16 screens
   in all (**my call**). Only the tiles that hold liquid are stepped and stored, so an empty stretch of a long
-  course costs nothing. Tiles are part of the physics from its first part, since the grid and the saved final
-  both depend on them; the editor's tools for courses over one screen come in a later part.
+  course costs nothing. Tiles are a physics part of their own (2c), built before Make final and big courses,
+  since the saved final and the course size both depend on them; the editor's tools for courses over one screen
+  come in a later part.
 - **Camera.** The stage shows the whole course beside the camera's shot, as in the mockups. The Camera's position
   and zoom are keyframed; the **Camera path** tool drops those keyframes by clicking on the course. **Follow**
   can instead keep the shot on the water's front, on a Piece, or on the busiest water, with Lead and Smoothness.
@@ -200,6 +201,17 @@ Drops carried on a grid stay (it is what gives streams, splashes and colour carr
     a look Aedan chooses, never an accident of the method. Each of these gets its own test scene and clip.
   - 2a keeps working past the pass mark toward the goal, and says plainly in its report which of the goal's
     lines it reached and which it did not.
+- **Where it stands after part 2a** (merged 2026-11-25, PR #225; `docs/superpowers/plans/water-mode/part2a.md`
+  "As built and measured"). On the test scenes the new core is clean: a two-cell pour stays one stream down a
+  whole screen, a sheet off an edge stays a sheet, the width stays steady, and it is clean at draft detail. Pools
+  rest better and it is 3 to 10 times faster. **The pass mark is not reached on Aedan's own Water Weird scene**:
+  on the RX 9070 XT the thread off the disc is lumpy at Fine and in short pieces at Extreme, where today's core
+  gives one clean line. Measured cause: a film one or two cells thick never fills its cells, so the one-sided
+  pressure does not space its drops, and the film gathers into humps that leave the disc as pieces. Aedan chose
+  to **keep improving the new core** (decision card, 2026-11-25). So the next part (2a-2 below) spaces thin water
+  by the drops themselves, with the same pass mark: Water Weird's real thread as clean as today's at Fine and
+  Extreme on the RX 9070 XT. Part 2b waits for that pass mark. Still owed from the goal: Surface pull deciding
+  when a stream breaks up. Tiles were not built in 2a and are now their own part (2c).
 - **Smaller gaps to close in 2a or note:** a slosh dies down about a third sooner than it should; 34 of 21,170
   drops crossed walls at Fine; one drop went missing in a still pool. **Not built in the trial:** moving walls
   (part 5), thick liquids, slime and ice (part 4), forces (part 4).
@@ -401,13 +413,16 @@ part adds its own tools to the rail.
    water stage as an empty shell with the tool rail, ball-only jobs and tests gated by kind. Balls goldens and
    pictures shown unchanged.
 2. In two halves, because the stream question has to be settled before anything is built on the core:
-   - **2a. The water core, with streams better than today's.** `bpe-water` with the pressure-solving core from
-     the trial (tiles from the start, whole-number or fixed-order sums) and a hold-together for thin streams
-     and films. Pass mark and goal as in section 3, with the trial's table still holding, on the RX 9070 XT.
-     Ends with side-by-side clips for Aedan. If the pass mark cannot be reached, 2a instead moves today's core
-     into `bpe-water`.
+   - **2a. The water core** (merged, PR #225). `bpe-water` with the pressure-solving core, clean on the test
+     scenes, not yet on Aedan's Water Weird (section 3).
+   - **2a-2. Thin water holds together.** Spacing of thin films and threads by the drops themselves, and
+     Surface pull deciding break-up if it comes with it. Pass mark: Water Weird's real thread as clean as on
+     today's core at Fine and Extreme on the RX 9070 XT, with the trial's table still holding. Ends with
+     side-by-side clips for Aedan.
    - **2b. Water runs in a Water scene.** The Course with carving, Liquid (Feel), Pour (tap and fill at the
-     start), a plain look, in place of part 1's empty stand-in.
+     start), a plain look, in place of part 1's empty stand-in. Starts once 2a-2 reaches its pass mark.
+   - **2c. Tiles.** Only the tiles that hold liquid are stepped and stored. Needed before parts 8 and 9; can
+     run beside parts 3 to 7.
 3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
 4. **Everything today's liquid can do.** Mixing and Un-mix, rain, drips, bursts, drains, leaks, Forces, heat,
    freezing, drying, stains, fizz, wet marks.
@@ -421,8 +436,9 @@ part adds its own tools to the rail.
 10. **Video mode and clean-up.** Water clips in a video and the Scenes window, and, once Aedan agrees Water mode
     is at least as good, removing the old Liquid thing from Balls scenes.
 
-Order: 1, 2a, 2b, 3 in a row. Then 4, 5, 6 and 7 side by side (the Molten look's crust from heat is finished by
-whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after part 8.
+Order: 1, 2a, 2a-2, 2b, 3 in a row (2c beside 3 to 7). Then 4, 5, 6 and 7 side by side (the Molten look's crust from
+heat is finished by whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after
+part 8.
 
 ## Risks
 
