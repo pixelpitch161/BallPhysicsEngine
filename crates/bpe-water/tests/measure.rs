@@ -10,6 +10,7 @@
 
 use std::time::Instant;
 
+use bpe_core::maths::Maths;
 use bpe_water::probe::{self, Stats, Stream};
 use bpe_water::scenes::{self, Scene};
 use bpe_water::{Numbers, WaterGpu};
@@ -246,7 +247,7 @@ fn kicks() {
                 if shown < num("WATER_SHOW", 40) {
                     shown += 1;
                     let near = places.iter().filter(|q| (**q - *p).length() < 1.5 * cell).count();
-                    let angle = (p.y - centre.y).atan2(p.x - centre.x).to_degrees();
+                    let angle = (p.y - centre.y).det_atan2(p.x - centre.x).to_degrees();
                     let along = out.perp();
                     println!(
                         "{step}\t{angle:.0}\t{off:.1}\t{a:.0}\t{b:.0}\t{:.0}\t{:.0}\t{near}",
