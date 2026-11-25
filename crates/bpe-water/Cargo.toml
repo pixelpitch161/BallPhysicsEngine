@@ -1,0 +1,23 @@
+[package]
+name = "bpe-water"
+description = "Water mode's own engine: the liquid's physics on the graphics card (drops on a tiled grid, the pressure solved, streams held together)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-gfx.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
+# Debug pictures of the drops (`probe::save_png`), for the measuring tests.
+png = "0.18"
+
+[features]
+# The physics test scenes (`scenes`): only tests and the side-by-side with today's core turn this on.
+test-scenes = []
+
+[dev-dependencies]
+bpe-water = { path = ".", features = ["test-scenes"] }

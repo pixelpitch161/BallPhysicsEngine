@@ -346,6 +346,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe-water"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bpe-gfx",
+ "bpe-water",
+ "bytemuck",
+ "glam",
+ "png",
+ "pollster 1.0.1",
+ "wgpu",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

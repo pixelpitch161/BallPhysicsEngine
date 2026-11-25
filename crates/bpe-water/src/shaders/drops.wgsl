@@ -1,0 +1,245 @@
+// ---- the drops: to the grid and back ----------------------------------------------------------
+
+@compute @workgroup_size(256)
+fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= st.grid.z {
+        return;
+    }
+    let p = drops[i];
+    if !steps(p) {
+        return;
+    }
+    let feel = st.feels[liquid_of(p)];
+    let mass = feel.b.x * VOL;
+    let dt = st.time.x;
+    var v = p.v + vec2<f32>(st.time.y, st.time.z) * feel.a.x * dt;
+    // The hold-together's pull, from the hold nodes.
+    if st.h.w > 0.5 {
+        let base = base3(p.x);
+        let fx = p.x - vec2<f32>(base);
+        let w = weights3(fx);
+        var dv = vec2<f32>(0.0);
+        for (var a = 0; a < 3; a = a + 1) {
+            for (var b = 0; b < 3; b = b + 1) {
+                dv = dv + w[a].x * w[b].y * hold_out[node(base.x + a, base.y + b)].xy;
+            }
+        }
+        v = v + dv;
+    }
+    // Speed across, on left faces (at whole x, y + a half).
+    {
+        let off = vec2<f32>(0.0, 0.5);
+        let base = base2(p.x, off);
+        let f = clamp(p.x - off - vec2<f32>(base), vec2<f32>(0.0), vec2<f32>(1.0));
+        for (var a = 0; a < 2; a = a + 1) {
+            for (var b = 0; b < 2; b = b + 1) {
+                let k = node(base.x + a, base.y + b);
+                let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
+                let dpos = vec2<f32>(f32(base.x + a), f32(base.y + b) + 0.5) - p.x;
+                let val = v.x + p.c.x * dpos.x + p.c.y * dpos.y;
+                atomicAdd(&sums[SUMS * k], fixed(w * mass, S_M));
+                atomicAdd(&sums[SUMS * k + 1u], fixed(w * mass * val, S_P));
+            }
+        }
+    }
+    // Speed down, on top faces (at x + a half, whole y).
+    {
+        let off = vec2<f32>(0.5, 0.0);
+        let base = base2(p.x, off);
+        let f = clamp(p.x - off - vec2<f32>(base), vec2<f32>(0.0), vec2<f32>(1.0));
+        for (var a = 0; a < 2; a = a + 1) {
+            for (var b = 0; b < 2; b = b + 1) {
+                let k = node(base.x + a, base.y + b);
+                let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
+                let dpos = vec2<f32>(f32(base.x + a) + 0.5, f32(base.y + b)) - p.x;
+                let val = v.y + p.c.z * dpos.x + p.c.w * dpos.y;
+                atomicAdd(&sums[SUMS * k + 2u], fixed(w * mass, S_M));
+                atomicAdd(&sums[SUMS * k + 3u], fixed(w * mass * val, S_P));
+            }
+        }
+    }
+    // Volume, at cell middles.
+    {
+        let off = vec2<f32>(0.5, 0.5);
+        let base = base2(p.x, off);
+        let f = clamp(p.x - off - vec2<f32>(base), vec2<f32>(0.0), vec2<f32>(1.0));
+        for (var a = 0; a < 2; a = a + 1) {
+            for (var b = 0; b < 2; b = b + 1) {
+                let k = node(base.x + a, base.y + b);
+                let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
+                atomicAdd(&sums[SUMS * k + 4u], fixed(w * VOL, S_M));
+            }
+        }
+    }
+}
+
+// One of a drop's two speeds gathered from the 2 x 2 faces round it: the speed and its slope
+// (along x, along y). Faces with no speed are left out and the rest re-weighted, as if the missing
+// ones had the mean. `had` is 0 when no face had a speed.
+struct Got {
+    v: f32,
+    slope: vec2<f32>,
+    had: f32,
+};
+
+fn gather_one(x: vec2<f32>, off: vec2<f32>, which: u32) -> Got {
+    let base = base2(x, off);
+    let f = clamp(x - off - vec2<f32>(base), vec2<f32>(0.0), vec2<f32>(1.0));
+    var ws = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var vs = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var sum_w = 0.0;
+    var sum_v = 0.0;
+    for (var a = 0; a < 2; a = a + 1) {
+        for (var b = 0; b < 2; b = b + 1) {
+            let k = node(base.x + a, base.y + b);
+            let g = vel_out[k];
+            let bits = u32(g.w + 0.5);
+            if (bits & (1u << which)) != 0u {
+                let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
+                let val = select(g.y, g.x, which == 0u);
+                ws[a * 2 + b] = 1.0;
+                vs[a * 2 + b] = val;
+                sum_w = sum_w + w;
+                sum_v = sum_v + w * val;
+            }
+        }
+    }
+    if sum_w < 1e-4 {
+        return Got(0.0, vec2<f32>(0.0), 0.0);
+    }
+    let mean = sum_v / sum_w;
+    var slope = vec2<f32>(0.0);
+    for (var a = 0; a < 2; a = a + 1) {
+        for (var b = 0; b < 2; b = b + 1) {
+            if ws[a * 2 + b] > 0.5 {
+                let wx = select(1.0 - f.x, f.x, a == 1);
+                let wy = select(1.0 - f.y, f.y, b == 1);
+                let dx = select(-1.0, 1.0, a == 1) * wy;
+                let dy = select(-1.0, 1.0, b == 1) * wx;
+                slope = slope + vec2<f32>(dx, dy) * (vs[a * 2 + b] - mean);
+            }
+        }
+    }
+    return Got(mean, slope, 1.0);
+}
+
+// Keeps a drop at `x` moving at `v` off the solids and (when it stops there) the course's edge.
+struct Kept {
+    x: vec2<f32>,
+    v: vec2<f32>,
+};
+
+fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
+    var x = xin;
+    var v = vin;
+    let s = solid_at(x);
+    if s.z < OFF {
+        x = x + s.xy * min(OFF - s.z, 4.0);
+        let vn = dot(v, s.xy);
+        if vn < 0.0 {
+            v = v - vn * s.xy;
+        }
+    }
+    if stops {
+        let lo = vec2<f32>(EDGE);
+        let hi = vec2<f32>(f32(st.grid.x) - 1.0 - EDGE, f32(st.grid.y) - 1.0 - EDGE);
+        if x.x < lo.x + 0.05 { x.x = lo.x + 0.05; v.x = max(v.x, 0.0); }
+        if x.x > hi.x - 0.05 { x.x = hi.x - 0.05; v.x = min(v.x, 0.0); }
+        if x.y < lo.y + 0.05 { x.y = lo.y + 0.05; v.y = max(v.y, 0.0); }
+        if x.y > hi.y - 0.05 { x.y = hi.y - 0.05; v.y = min(v.y, 0.0); }
+    }
+    return Kept(x, v);
+}
+
+@compute @workgroup_size(256)
+fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= st.grid.z {
+        return;
+    }
+    var p = drops[i];
+    if !steps(p) {
+        return;
+    }
+    let feel = st.feels[liquid_of(p)];
+    let dt = st.time.x;
+    let gu = gather_one(p.x, vec2<f32>(0.0, 0.5), 0u);
+    let gv = gather_one(p.x, vec2<f32>(0.5, 0.0), 1u);
+    // With no face to go by (it is alone in a solid's margin), it falls on its own.
+    let own = p.v + vec2<f32>(st.time.y, st.time.z) * feel.a.x * dt;
+    var v = vec2<f32>(select(own.x, gu.v, gu.had > 0.5), select(own.y, gv.v, gv.had > 0.5));
+    var c = vec4<f32>(gu.slope, gv.slope);
+    // The liquid round it: the drops' own, and with the solids' share.
+    var liquid = 0.0;
+    var full = 0.0;
+    {
+        let off = vec2<f32>(0.5, 0.5);
+        let base = base2(p.x, off);
+        let f = clamp(p.x - off - vec2<f32>(base), vec2<f32>(0.0), vec2<f32>(1.0));
+        for (var a = 0; a < 2; a = a + 1) {
+            for (var b = 0; b < 2; b = b + 1) {
+                let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
+                let k = node(base.x + a, base.y + b);
+                let own_vol = vel_out[k].z;
+                liquid = liquid + w * own_vol;
+                full = full + w * (own_vol + wallc[k].z);
+            }
+        }
+    }
+    // How stretched it is: moved by the flow's own spreading; nothing is stretched inside full
+    // liquid; a torn drop joins again where the liquid is dense enough.
+    var e = p.e;
+    if !(abs(e) < 1e30) {
+        e = 0.0;
+    }
+    let tear = feel.a.z;
+    if e >= tear {
+        if full >= st.h.z {
+            e = 0.0;
+        }
+    } else {
+        e = e + (1.0 + e) * dt * (c.x + c.w);
+        // The liquid round it through the hold nodes' smooth kernel (with the solids' share).
+        var round = 0.0;
+        {
+            let base = base3(p.x);
+            let fx = p.x - vec2<f32>(base);
+            let w = weights3(fx);
+            for (var a = 0; a < 3; a = a + 1) {
+                for (var b = 0; b < 3; b = b + 1) {
+                    round = round + w[a].x * w[b].y * hold_out[node(base.x + a, base.y + b)].z;
+                }
+            }
+        }
+        // Inside full liquid it settles fast; everywhere it eases off slowly (a pull is how
+        // the liquid answers being pulled apart, not something it keeps).
+        let rate = st.h2.x + st.h.y * smoothstep(st.h2.y - 0.15, st.h2.y, round);
+        e = e * exp(-rate * dt);
+        e = clamp(e, -0.5, tear);
+    }
+    v = v * exp(-feel.b.y * dt);
+    let speed = length(v);
+    if speed > st.time.w {
+        v = v * (st.time.w / speed);
+        c = vec4<f32>(0.0);
+    }
+    if !finite2(v) {
+        v = vec2<f32>(0.0);
+        c = vec4<f32>(0.0);
+    }
+    // Moved in short sub-moves, kept off the solids at each: a fast drop cannot jump a thin wall.
+    let stops = (p.kind & STOPS) != 0u;
+    let moves = clamp(u32(ceil(length(v) * dt / max(st.b.y, 0.05))), 1u, 24u);
+    let h = dt / f32(moves);
+    var x = p.x;
+    for (var m = 0u; m < moves; m = m + 1u) {
+        let kept = keep_off(x + v * h, v, stops);
+        x = kept.x;
+        v = kept.v;
+    }
+    drops[i].x = x;
+    drops[i].v = v;
+    drops[i].c = c;
+    drops[i].e = e;
+}
