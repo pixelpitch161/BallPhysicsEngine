@@ -87,6 +87,80 @@ pub fn fill(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kind: u32, 
     out
 }
 
+/// A fill for the all-drops engine: the drops' resting lattice (half a cell apart) over the world
+/// rectangle `lo` to `hi`, each column stacked on the face below it (or from the rectangle's
+/// bottom when none is within its height), its lowest drop a quarter cell (`rest_off` cells) off
+/// the face, bottom row first. A drop is never placed nearer a solid than `rest_off`.
+pub fn fill_stacked(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kind: u32, rest_off: f32) -> Vec<Drop> {
+    let (g_lo, g_hi) = (layout.to_grid(lo), layout.to_grid(hi));
+    let height = (g_hi.y - g_lo.y).max(0.0);
+    let (c0, c1) = ((g_lo.x * 2.0).ceil() as i64, (g_hi.x * 2.0).floor() as i64);
+    // How far a grid point is from the solids, in cells, less how far a drop rests off them.
+    let clear = |g: Vec2| field.at(layout.to_world(g)) / layout.cell - rest_off;
+    let mut columns: Vec<(f32, Vec<f32>)> = Vec::new();
+    for c in c0..c1 {
+        let x = c as f32 * 0.5 + 0.25;
+        // The lowest place a drop may rest in this column: on the face at or below the
+        // rectangle's bottom (searched a rectangle's height down), else the bottom itself.
+        let mut bottom = g_hi.y;
+        if clear(Vec2::new(x, bottom)) >= 0.0 {
+            let step = 0.05;
+            let mut y = bottom;
+            while y < g_hi.y + height && clear(Vec2::new(x, y + step)) >= 0.0 {
+                y += step;
+            }
+            if y < g_hi.y + height {
+                bottom = settle_on(&clear, x, y, y + step);
+            }
+        } else {
+            let step = 0.05;
+            let mut y = bottom;
+            while y > g_lo.y && clear(Vec2::new(x, y - step)) < 0.0 {
+                y -= step;
+            }
+            if y <= g_lo.y {
+                continue;
+            }
+            bottom = settle_on(&clear, x, y - step, y);
+        }
+        let mut ys = Vec::new();
+        let mut y = bottom;
+        while y >= g_lo.y {
+            if clear(Vec2::new(x, y)) >= -1e-4 {
+                ys.push(y);
+            }
+            y -= 0.5;
+        }
+        columns.push((x, ys));
+    }
+    // Bottom row first: by how far each drop is above its column's lowest.
+    let rows = columns.iter().map(|(_, ys)| ys.len()).max().unwrap_or(0);
+    let mut out = Vec::new();
+    for r in 0..rows {
+        for (x, ys) in &columns {
+            if let Some(y) = ys.get(r) {
+                out.push(Drop::new(Vec2::new(*x, *y), Vec2::ZERO, kind, out.len() as u32, WATER));
+            }
+        }
+    }
+    out
+}
+
+/// Where between `clear_at` (clear of the solids) and `solid_at` (not) the clearance in column
+/// `x` is nothing, to a ten-thousandth of a cell (the field is straight between its nodes).
+fn settle_on(clear: &impl Fn(Vec2) -> f32, x: f32, clear_at: f32, solid_at: f32) -> f32 {
+    let (mut a, mut b) = (clear_at, solid_at);
+    for _ in 0..24 {
+        let m = 0.5 * (a + b);
+        if clear(Vec2::new(x, m)) >= 0.0 {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    a
+}
+
 /// A pour: a spout that makes as many drops a second as its width times its speed fills.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pour {
@@ -123,11 +197,14 @@ impl Default for Pour {
     }
 }
 
-/// What a pour still owes and the serial of its next drop.
+/// What a pour still owes and the serial of its next drop. For the all-drops engine's rows
+/// ([`Pour::rows`]): `owed` is how far (pixels) the stream has run since its last row, `born` how
+/// many drops it has made, and `extra` the share of a drop its rows still owe across.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Poured {
     pub owed: f32,
     pub born: u32,
+    pub extra: f32,
 }
 
 impl Pour {
@@ -164,6 +241,102 @@ impl Pour {
 }
 
 impl Pour {
+    /// The spacing of drops at rest on `layout` (pixels): half a cell.
+    fn spacing(layout: &Layout) -> f64 {
+        f64::from(layout.cell) * 0.5
+    }
+
+    /// The stream's width in drops (columns; under 1 when it is narrower than a drop).
+    fn columns(&self, layout: &Layout) -> f64 {
+        f64::from(self.width.max(0.0)) / Pour::spacing(layout)
+    }
+
+    /// How far apart (pixels, along the way) its rows are born: the resting spacing, or more for a
+    /// stream narrower than a drop, so it still pours its amount as single drops with gaps.
+    pub fn pitch(&self, layout: &Layout) -> f32 {
+        let columns = self.columns(layout);
+        let s = Pour::spacing(layout);
+        (if columns >= 1.0 { s } else { s / columns.max(1e-6) }) as f32
+    }
+
+    /// How far the stream runs (pixels) in the part of the step from `from` to `from + dt`
+    /// seconds that falls between its Starts and Stops.
+    fn travel(&self, from: f64, dt: f64) -> f64 {
+        let t0 = from.max(f64::from(self.from));
+        let t1 = (from + dt).min(f64::from(self.until));
+        if t1.is_nan() || t0.is_nan() || t1 <= t0 || !self.speed.is_finite() {
+            return 0.0;
+        }
+        f64::from(self.speed.max(0.0)) * (t1 - t0)
+    }
+
+    /// Whether the stream runs at all in the step from `from` to `from + dt` seconds.
+    pub fn runs(&self, from: f64, dt: f64) -> bool {
+        from.max(f64::from(self.from)) < (from + dt).min(f64::from(self.until))
+    }
+
+    /// This pour's rows for the step from `from` to `from + dt` seconds, for the all-drops engine:
+    /// rows across the spout exactly the resting spacing apart, one each time the last has run that
+    /// far (its first at the moment it starts), each where a row born at that moment is at the
+    /// step's end. A stream whose width is not a whole number of drops has one more drop in some
+    /// rows, spread evenly through time, so it pours its width times its speed without squeezing.
+    pub fn rows(&self, state: &mut Poured, layout: &Layout, from: f64, dt: f64) -> Vec<Drop> {
+        if !self.runs(from, dt) {
+            return Vec::new();
+        }
+        let columns = self.columns(layout);
+        if columns <= 0.0 || !columns.is_finite() {
+            return Vec::new();
+        }
+        let s = Pour::spacing(layout);
+        let pitch = f64::from(self.pitch(layout));
+        let (whole, part) = if columns >= 1.0 { (columns.floor(), columns - columns.floor()) } else { (1.0, 0.0) };
+        // (Its first row comes the moment it starts.)
+        let first = state.born == 0 && state.owed == 0.0;
+        let mut owed = f64::from(state.owed) + self.travel(from, dt) + if first { pitch } else { 0.0 };
+        let mut extra = f64::from(state.extra);
+        let way = way_at(self.aim);
+        let across = way.perp();
+        let mut out = Vec::new();
+        let most = Pour::MOST_A_STEP as usize;
+        while owed >= pitch && out.len() < most {
+            owed -= pitch;
+            extra += part;
+            let m = if extra >= 1.0 {
+                extra -= 1.0;
+                whole + 1.0
+            } else {
+                whole
+            };
+            let along = way * owed as f32;
+            for i in 0..m as u32 {
+                let u = ((f64::from(i) + 0.5) / m - 0.5) as f32;
+                let at = self.place + across * (u * (m * s) as f32) + along;
+                let v = self.fanned(u) * self.speed;
+                out.push(Drop::new(layout.to_grid(at), v / layout.cell, self.kind, state.born, self.colour));
+                state.born = state.born.wrapping_add(1);
+            }
+        }
+        // (A pour that owes more than a step can make lets the rest go.)
+        state.owed = owed.min(pitch * most as f64) as f32;
+        state.extra = extra as f32;
+        out
+    }
+
+    /// Which way the stream sets off from the middle of its spout.
+    pub fn way(&self) -> Vec2 {
+        way_at(self.aim)
+    }
+
+    /// The same step while the spout is full: no rows, and what the stream owes stops at `rows`
+    /// rows, so a freed spout never bursts.
+    pub fn hold(&self, state: &mut Poured, layout: &Layout, from: f64, dt: f64, rows: u32) {
+        let pitch = f64::from(self.pitch(layout));
+        let first = state.born == 0 && state.owed == 0.0 && self.runs(from, dt);
+        let owed = f64::from(state.owed) + self.travel(from, dt) + if first { pitch } else { 0.0 };
+        state.owed = owed.min(pitch * f64::from(rows.max(1))) as f32;
+    }
+
     /// The way a drop born at `u` across the spout (-0.5 at one edge, 0.5 at the other) sets off:
     /// the stream fans out smoothly from its middle to `spread` degrees at its edges. (A way
     /// picked at random for each drop is not a fan but drops knocking into each other all the way
@@ -217,5 +390,115 @@ mod tests {
         let mut drops = born(&fan);
         drops.sort_by(|a, b| a.x[0].total_cmp(&b.x[0]));
         assert!(drops.windows(2).all(|w| w[0].v[0] <= w[1].v[0] + 1e-6), "left of the spout leans left");
+    }
+
+    /// A pour straight down from (100, 50) on a layout of `cell`-pixel cells from the origin.
+    fn tap(cell: f32, width: f32) -> (Pour, Layout) {
+        let pour = Pour { place: Vec2::new(100.0, 50.0), aim: 90.0, width, speed: 848.528, ..Pour::default() };
+        (pour, Layout { cell, cols: 256, rows: 256, origin: Vec2::ZERO })
+    }
+
+    /// The pour's rows over `steps` steps of `dt` from the start: how many drops, and how far the
+    /// stream ran.
+    fn poured(pour: &Pour, layout: &Layout, steps: u32, dt: f64) -> (usize, f64) {
+        let mut state = Poured::default();
+        let mut drops = 0;
+        for k in 0..steps {
+            drops += pour.rows(&mut state, layout, f64::from(k) * dt, dt).len();
+        }
+        (drops, f64::from(pour.speed) * f64::from(steps) * dt)
+    }
+
+    #[test]
+    fn rows_pour_their_amount() {
+        for rate in [1.0, 0.5] {
+            for cell in [8.0, 6.0, 3.0, 2.0] {
+                let (pour, layout) = tap(cell, 19.2 * rate);
+                let s = f64::from(cell) * 0.5;
+                // (A thousand rows' run, in steps of 1/960 s.)
+                let dt = 1.0 / 960.0;
+                let steps = (1000.0 * f64::from(pour.pitch(&layout)) / (f64::from(pour.speed) * dt)).ceil() as u32;
+                let (drops, ran) = poured(&pour, &layout, steps, dt);
+                let amount = drops as f64 * s * s / (f64::from(pour.width) * ran);
+                assert!((amount - 1.0).abs() < 0.02, "rate {rate} at {cell} px: {amount}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_thin_tap_pours_its_amount_as_single_drops() {
+        let (pour, layout) = tap(8.0, 3.0);
+        let mut state = Poured::default();
+        let dt = 1.0 / 960.0;
+        let mut drops = 0;
+        for k in 0..2000 {
+            let rows = pour.rows(&mut state, &layout, f64::from(k) * dt, dt);
+            // (Each row is one drop, on the spout's middle line.)
+            for d in &rows {
+                assert!((layout.to_world(Vec2::from(d.x)).x - pour.place.x).abs() < 1e-4, "{:?}", d.x);
+            }
+            drops += rows.len();
+        }
+        let ran = f64::from(pour.speed) * 2000.0 * dt;
+        let amount = drops as f64 * 16.0 / (f64::from(pour.width) * ran);
+        assert!((amount - 1.0).abs() < 0.02, "{amount}");
+        assert!(pour.pitch(&layout) > 4.0, "single drops with gaps: {}", pour.pitch(&layout));
+    }
+
+    #[test]
+    fn a_pour_starts_at_its_time() {
+        let (mut pour, layout) = tap(8.0, 12.0);
+        pour.from = 0.0123;
+        let mut state = Poured::default();
+        let dt = 1.0 / 960.0;
+        let pitch = f64::from(pour.pitch(&layout));
+        let mut rows_before = 0u32;
+        for k in 0..60 {
+            let from = f64::from(k) * dt;
+            let end = from + dt;
+            let born = pour.rows(&mut state, &layout, from, dt);
+            if end <= f64::from(pour.from) {
+                assert!(born.is_empty(), "nothing before it starts: step {k}");
+                continue;
+            }
+            // (Rows of 3 drops, the newest last; each where a row born at its moment is at the
+            // step's end.)
+            for row in born.chunks(3) {
+                let along = f64::from(layout.to_world(Vec2::from(row[0].x)).y - pour.place.y);
+                let want = f64::from(pour.speed) * (end - f64::from(pour.from)) - pitch * f64::from(rows_before);
+                assert!((along - want).abs() < 1e-4, "step {k}, row {rows_before}: {along} px, not {want}");
+                rows_before += 1;
+            }
+        }
+        assert!(rows_before >= 10, "{rows_before}");
+    }
+
+    #[test]
+    fn rows_are_even() {
+        let (pour, layout) = tap(8.0, 19.2);
+        let mut state = Poured::default();
+        // (A long step: several rows at once.)
+        let dt = 1.0 / 60.0;
+        for k in 0..4 {
+            let born = pour.rows(&mut state, &layout, f64::from(k) * dt, dt);
+            let at: Vec<Vec2> = born.iter().map(|d| layout.to_world(Vec2::from(d.x))).collect();
+            let mut rows: Vec<Vec<Vec2>> = Vec::new();
+            for p in at {
+                match rows.last_mut() {
+                    Some(row) if (row[0].y - p.y).abs() < 1e-3 => row.push(p),
+                    _ => rows.push(vec![p]),
+                }
+            }
+            assert!(rows.len() > 2, "{}", rows.len());
+            for row in &rows {
+                assert!((4..=5).contains(&row.len()), "{} drops in a row", row.len());
+                for w in row.windows(2) {
+                    assert!(((w[0].x - w[1].x).abs() - 4.0).abs() < 1e-3, "across: {w:?}");
+                }
+            }
+            for w in rows.windows(2) {
+                assert!(((w[0][0].y - w[1][0].y).abs() - 4.0).abs() < 1e-3, "along: {} {}", w[0][0].y, w[1][0].y);
+            }
+        }
     }
 }

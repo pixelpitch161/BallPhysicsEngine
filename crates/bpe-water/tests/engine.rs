@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use bpe_water::drops::LEAST_WALL;
+use bpe_water::drops::numbers::FRAME;
 use bpe_water::probe::{self, Stats};
 use bpe_water::scenes::{self, Scene};
 use bpe_water::{Drop, Feel, Layout, Numbers, Pour, STOPS, Solid, SolidField, WATER, Water, WaterGpu};
@@ -242,4 +243,151 @@ fn drops_that_leave_are_counted_out() {
     pool_serials.sort();
     assert_eq!(pool_serials, (0..kept).collect::<Vec<_>>(), "every pool drop is still there");
     assert_eq!(water.count(), kept, "and only they are");
+}
+
+/// The drops a pour of `width` makes at rest spacing on `layout`, as water: `count × s²`.
+fn poured_area(count: u32, cell: f32) -> f32 {
+    count as f32 * (cell * 0.5) * (cell * 0.5)
+}
+
+/// A tap pours exactly its width times its speed.
+#[test]
+fn a_tap_pours_its_amount() {
+    let Some(gpu) = card() else { return };
+    for cell in [12.0, 8.0] {
+        let scene = scenes::thin_pour(cell, 2.0);
+        let pour = scene.pours[0];
+        let mut run = scene.start(&gpu, Numbers::for_cell(cell));
+        run.run_to(1.0);
+        let want = pour.width * pour.speed * (1.0 - pour.from);
+        let got = poured_area(run.water.count(), cell);
+        assert!((got / want - 1.0).abs() < 0.02, "at {cell} px: {got} of {want} px²");
+    }
+}
+
+/// A tap's drops set off straight: nothing thrown sideways at the spout.
+#[test]
+fn a_tap_is_born_even() {
+    let Some(gpu) = card() else { return };
+    let scene = scenes::thin_pour(8.0, 2.4);
+    let pour = scene.pours[0];
+    let mut run = scene.start(&gpu, Numbers::for_cell(8.0));
+    run.run_to(0.5);
+    let layout = run.water.layout();
+    let near: Vec<Drop> = run
+        .water
+        .read()
+        .into_iter()
+        .filter(|d| layout.to_world(Vec2::from(d.x)).distance(pour.place) < 10.0 * 4.0)
+        .collect();
+    assert!(near.len() > 20, "{}", near.len());
+    for d in &near {
+        let sideways = d.v[0].abs() * layout.cell;
+        assert!(sideways <= 0.05 * pour.speed, "a drop by the spout goes sideways at {sideways} px/s");
+    }
+}
+
+/// How wide the stream is `below` pixels under its spout: its outer drops' distance apart, and a
+/// drop's own spacing.
+fn stream_width(run: &scenes::Running, pour: &Pour, below: f32) -> f32 {
+    let layout = run.water.layout();
+    let s = layout.cell * 0.5;
+    let xs: Vec<f32> = run
+        .water
+        .read()
+        .iter()
+        .map(|d| layout.to_world(Vec2::from(d.x)))
+        .filter(|p| (p.y - (pour.place.y + below)).abs() <= s * 0.5)
+        .map(|p| p.x)
+        .collect();
+    assert!(!xs.is_empty(), "the stream reaches {below} px down");
+    let (lo, hi) = xs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
+    hi - lo + s
+}
+
+/// Half the Rate is a stream half as wide.
+#[test]
+fn a_turned_down_tap_is_narrower() {
+    let Some(gpu) = card() else { return };
+    let width = |rate: f32| {
+        let mut scene = scenes::thin_pour(8.0, 4.0);
+        scene.pours[0].width *= rate;
+        let pour = scene.pours[0];
+        let mut run = scene.start(&gpu, Numbers::for_cell(8.0));
+        run.run_to(0.3);
+        stream_width(&run, &pour, 5.0 * 4.0)
+    };
+    let (full, half) = (width(1.0), width(0.5));
+    assert!((half - full * 0.5).abs() <= 4.0, "{half} px at half the rate, {full} px at the full rate");
+}
+
+/// A spout under the surface makes no drops where there is no room: it owes a few rows at most.
+#[test]
+fn a_submerged_spout_holds_back() {
+    let Some(gpu) = card() else { return };
+    let mut scene = scenes::still_box(12.0, 0.6);
+    let pour = Pour { place: Vec2::new(0.0, 300.0), width: 24.0, speed: scenes::POUR_SPEED, ..Pour::default() };
+    scene.pours = vec![pour];
+    let numbers = Numbers::for_cell(12.0);
+    let mut run = scene.start(&gpu, numbers);
+    let before = run.water.count();
+    run.run_to(1.0);
+    let layout = run.water.layout();
+    let columns = (pour.width / (layout.cell * 0.5)).ceil() as u32;
+    let first_two = (pour.speed * 2.0 * FRAME / pour.pitch(&layout)).ceil() as u32 + 1;
+    let most = (numbers.held_rows + first_two) * columns;
+    let grew = run.water.count() - before;
+    assert!(grew <= most, "the spout made {grew} drops under the surface (at most {most})");
+}
+
+/// A run with a pour, copied at frame 7 (the pour part way through its rows), plays on the same.
+#[test]
+fn a_copy_with_pours_plays_on_the_same() {
+    let Some(gpu) = card() else { return };
+    let scene = scenes::thin_pour(8.0, 2.4);
+    let numbers = Numbers::for_cell(8.0);
+    let mut a = scene.start(&gpu, numbers);
+    a.run_to(0.5);
+    let mut b = scene.start(&gpu, numbers);
+    for _ in 0..7 {
+        b.frame();
+    }
+    let mut c = b.copy();
+    b.run_to(0.5);
+    c.run_to(0.5);
+    let first = a.water.read();
+    assert!(first.len() > 100, "{}", first.len());
+    assert_eq!(probe::print_of(&first), probe::print_of(&b.water.read()), "twice from the start");
+    assert_eq!(probe::print_of(&first), probe::print_of(&c.water.read()), "from a copy made at frame 7");
+}
+
+/// A fill starts stacked on the floor at its resting spacing: its lowest row a quarter cell off the
+/// floor, its rows and columns half a cell apart, and no drop nearer a solid than that.
+/// (Starting without a bounce is part C2's, with the fill's pressure worked out before the first
+/// frame: here the pool squeezes a few per cent under its weight and bounces for about 0.2 s.)
+#[test]
+fn a_fill_is_stacked_on_the_floor() {
+    let Some(gpu) = card() else { return };
+    let numbers = Numbers::for_cell(12.0);
+    let run = scenes::still_box(12.0, 0.3).start(&gpu, numbers);
+    let layout = run.water.layout();
+    let drops = run.water.read();
+    let off = |d: &Drop| run.field.at(layout.to_world(Vec2::from(d.x))) / layout.cell;
+    assert!(drops.iter().all(|d| off(d) >= numbers.wall_off - 1e-3), "every drop is clear of the solids");
+    let lowest = drops.iter().map(|d| d.x[1]).fold(f32::MIN, f32::max);
+    let floor_row: Vec<&Drop> = drops.iter().filter(|d| (d.x[1] - lowest).abs() < 0.1).collect();
+    assert!(floor_row.len() > 40, "{}", floor_row.len());
+    for d in &floor_row {
+        assert!((off(d) - numbers.wall_off).abs() < 1e-3, "the lowest row rests {} cell off the floor", off(d));
+    }
+    // (Each column stacked on its own face: down a column, the drops are half a cell apart.)
+    let mut columns: std::collections::BTreeMap<i64, Vec<f32>> = Default::default();
+    for d in &drops {
+        columns.entry((d.x[0] * 2.0).floor() as i64).or_default().push(d.x[1]);
+    }
+    assert!(columns.len() > 40, "{}", columns.len());
+    for ys in columns.values_mut() {
+        ys.sort_by(f32::total_cmp);
+        assert!(ys.windows(2).all(|w| (w[1] - w[0] - 0.5).abs() < 1e-3), "a column's drops half a cell apart");
+    }
 }

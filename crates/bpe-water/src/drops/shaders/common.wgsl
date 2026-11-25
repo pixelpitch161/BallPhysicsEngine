@@ -23,7 +23,7 @@ struct Feel {
 
 // A frame's numbers: the same for each of its steps.
 struct Fr {
-    // the layout's columns and rows of nodes, 0, bit 0 the course's edges are shut
+    // the layout's columns and rows of nodes, how many pours, bit 0 the course's edges are shut
     grid: vec4<u32>,
     // the bins across and down, how many (the next is the bin of drops that left), how many
     // blocks of running sums
@@ -39,6 +39,9 @@ struct Fr {
     feels: array<Feel, 16>,
     // the solids' share of a drop's neighbourhood by its distance from the face (`wall_table`)
     wall: array<vec4<f32>, 17>,
+    // where each pour judges the room for its drops (grid units: a reach behind its spout), two
+    // to an entry
+    spouts: array<vec4<f32>, 32>,
 };
 
 // A step's numbers (one for each step of the frame, at its own offset): the drops this step, the

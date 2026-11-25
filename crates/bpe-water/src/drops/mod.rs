@@ -16,7 +16,7 @@ mod clock;
 pub mod numbers;
 mod passes;
 
-use crate::drop::Drop;
+use crate::drop::{Drop, Pour, Poured};
 use crate::solid::{Layout, SolidField};
 pub use buffers::DropBuffers;
 use buffers::{ByDrop, room_for, storage};
@@ -55,6 +55,7 @@ struct FrameGpu {
     s: [f32; 4],
     feels: [FeelGpu; MOST_LIQUIDS],
     wall: [[f32; 4]; 17],
+    spouts: [[f32; 4]; MOST_POURS / 2],
 }
 
 /// A drop born in a step. Matches `Born` in common.wgsl.
@@ -100,6 +101,8 @@ pub struct Water {
     feels: Vec<Feel>,
     gravity: glam::Vec2,
     edges_shut: bool,
+    /// The pours, and how far each is through its rows.
+    pours: Vec<(Pour, Poured)>,
     count: u32,
     room: u32,
     /// The serial the next drop added is given.
@@ -172,6 +175,7 @@ impl Water {
             feels: Vec::new(),
             gravity,
             edges_shut: true,
+            pours: Vec::new(),
             count: 0,
             room,
             serial: 0,
@@ -224,6 +228,7 @@ impl Water {
                             1 => self.step_binding(),
                             2 => self.by.xv.as_entire_binding(),
                             8 => self.starts.as_entire_binding(),
+                            15 => self.solid.as_entire_binding(),
                             _ => clock.on_card(slot).as_entire_binding(),
                         };
                         wgpu::BindGroupEntry { binding: b, resource }
@@ -335,6 +340,22 @@ impl Water {
         self.gravity = gravity;
     }
 
+    /// The pours (at most [`MOST_POURS`]), from the next frame. A pour that was there before (the
+    /// same place in the list) keeps how far it is through its rows; a new one starts afresh.
+    pub fn set_pours(&mut self, pours: &[Pour]) {
+        let was = std::mem::take(&mut self.pours);
+        self.pours = pours
+            .iter()
+            .take(MOST_POURS)
+            .enumerate()
+            .map(|(k, p)| (*p, was.get(k).map_or_else(Poured::default, |w| w.1)))
+            .collect();
+    }
+
+    pub fn pours(&self) -> impl Iterator<Item = &Pour> {
+        self.pours.iter().map(|(p, _)| p)
+    }
+
     /// Where the drops are on the card, for the drawing.
     pub fn drop_buffers(&self) -> DropBuffers<'_> {
         DropBuffers { xv: &self.by.xv, nf: &self.by.nf, id: &self.by.id[self.now], count: self.count }
@@ -401,8 +422,16 @@ impl Water {
         for (k, f) in self.feels.iter().enumerate() {
             feels[k] = n.feel_gpu(f, cell, g.length(), dt, capped);
         }
+        let mut spouts = [[0.0f32; 4]; MOST_POURS / 2];
+        for (k, (p, _)) in self.pours.iter().enumerate() {
+            // (Where the room for a new drop is judged: a reach behind the spout, where the stream's
+            // own drops do not count.)
+            let g = self.layout.to_grid(p.place) - p.way() * n.reach;
+            spouts[k / 2][2 * (k % 2)] = g.x;
+            spouts[k / 2][2 * (k % 2) + 1] = g.y;
+        }
         FrameGpu {
-            grid: [self.layout.cols, self.layout.rows, 0, u32::from(self.edges_shut)],
+            grid: [self.layout.cols, self.layout.rows, self.pours.len() as u32, u32::from(self.edges_shut)],
             cells: [self.cells.0, self.cells.1, self.cells.0 * self.cells.1, self.bins().div_ceil(BLOCK)],
             time: [dt, g.x, g.y, n.most_move / dt],
             k: [n.reach, rho0, n.eps.max(0.0) * stiff, n.relax],
@@ -410,6 +439,7 @@ impl Water {
             s: [cell, n.drag_reach.max(n.wall_off + 0.01), n.most_fix, 0.0],
             feels,
             wall: self.wall,
+            spouts,
         }
     }
 
@@ -423,7 +453,13 @@ impl Water {
     /// The steps frame `frames()` takes: enough for the fastest water two frames ago and what was
     /// added since, with room for two frames' fall, and for the liquids' skins.
     fn steps_now(&mut self) -> u32 {
-        let fastest = self.clock.get_mut().expect("the clock").fastest(self.frames);
+        let mut fastest = self.clock.get_mut().expect("the clock").fastest(self.frames);
+        let from = f64::from(self.frames) * f64::from(FRAME);
+        for (p, _) in &self.pours {
+            if p.runs(from, f64::from(FRAME)) && p.speed.is_finite() {
+                fastest = fastest.max(p.speed);
+            }
+        }
         let fastest = fastest + self.gravity.length() * 2.0 * FRAME;
         self.numbers.steps_for(fastest, &self.feels, self.layout.cell).min(MOST_STEPS)
     }
@@ -441,25 +477,76 @@ impl Water {
         self.clock.lock().expect("the clock").last_steps
     }
 
+    /// The pours' births for a frame of `n` steps, each step's own at its end (a pour whose spout
+    /// was full two frames ago owes its rows instead), and each step's numbers: its drops, the
+    /// drops before its births, and where its births start.
+    fn births(&mut self, n: u32) -> (Vec<Born>, Vec<[u32; 4]>) {
+        let held = self.clock.get_mut().expect("the clock").spouts;
+        let dt = f64::from(FRAME) / f64::from(n);
+        let mut born = Vec::new();
+        let mut steps = Vec::with_capacity(n as usize);
+        let mut count = self.count;
+        for j in 0..n {
+            let from = (f64::from(self.frames) + f64::from(j) / f64::from(n)) * f64::from(FRAME);
+            let start = born.len() as u32;
+            for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
+                if held[k] >= self.numbers.full_spout {
+                    pour.hold(state, &self.layout, from, dt, self.numbers.held_rows);
+                    continue;
+                }
+                for d in pour.rows(state, &self.layout, from, dt) {
+                    if count + (born.len() as u32 - start) >= MOST_DROPS {
+                        break;
+                    }
+                    born.push(Born { xv: [d.x[0], d.x[1], d.v[0], d.v[1]], id: [d.kind, self.serial, d.colour, 0] });
+                    self.serial = self.serial.wrapping_add(1);
+                }
+            }
+            let here = born.len() as u32 - start;
+            steps.push([count + here, count, start, 0]);
+            count += here;
+        }
+        // (The reports of the next two frames do not see these drops yet.)
+        let fastest = born.iter().map(|b| glam::Vec2::new(b.xv[2], b.xv[3]).length()).fold(0.0f32, f32::max);
+        if !born.is_empty() {
+            self.clock.get_mut().expect("the clock").added(self.frames, fastest * self.layout.cell);
+        }
+        (born, steps)
+    }
+
+    /// Makes room in the births buffer for `n`.
+    fn births_room(&mut self, n: u32) {
+        let bytes = u64::from(n) * std::mem::size_of::<Born>() as u64;
+        if bytes > self.births.size() {
+            self.births = storage(&self.gpu.device, "water births", bytes.next_power_of_two());
+            self.bind();
+        }
+    }
+
     /// One frame of `n` steps.
     fn play_frame(&mut self, n: u32) {
         let dt = FRAME / n as f32;
         let capped = n >= self.numbers.most_steps.min(MOST_STEPS);
         let frame = self.frame_gpu(dt, capped);
-        let count = self.count;
         let k = self.frames;
+        let (born, records) = self.births(n);
+        let end = records.last().map_or(self.count, |r| r[0]);
         let mut done = None;
-        if count > 0 {
+        if end > 0 {
+            self.grow_to(end);
+            self.births_room(born.len() as u32);
             let gpu = self.gpu.clone();
             let queue = &gpu.queue;
             queue.write_buffer(&self.frame_uniform, 0, bytemuck::bytes_of(&frame));
+            if !born.is_empty() {
+                queue.write_buffer(&self.births, 0, bytemuck::cast_slice(&born));
+            }
             let mut steps = vec![0u8; n as usize * STEP_ROOM as usize];
-            for j in 0..n as usize {
+            for (j, r) in records.iter().enumerate() {
                 let at = j * STEP_ROOM as usize;
-                steps[at..at + 16].copy_from_slice(bytemuck::cast_slice(&[count, count, 0u32, 0]));
+                steps[at..at + 16].copy_from_slice(bytemuck::cast_slice(r));
             }
             queue.write_buffer(&self.step_uniform, 0, &steps);
-            let by_drop = count.div_ceil(WORKGROUP);
             let by_bin = self.bins().div_ceil(WORKGROUP);
             let by_block = self.bins().div_ceil(BLOCK).div_ceil(WORKGROUP);
             let iters = self.numbers.iters.clamp(1, 16) as usize;
@@ -476,6 +563,7 @@ impl Water {
                 for j in 0..n {
                     let now = self.now ^ (j as usize & 1);
                     let offset = [j * STEP_ROOM as u32];
+                    let by_drop = records[j as usize][0].div_ceil(WORKGROUP);
                     let mut go = |p: P, y_in: usize, groups: u32| {
                         pass.set_pipeline(&gpu.pipes.list[p as usize].0);
                         pass.set_bind_group(0, &self.groups[(p as usize * 2 + now) * 2 + y_in], &offset);
@@ -495,7 +583,7 @@ impl Water {
                 }
                 pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
                 pass.set_bind_group(0, &self.report_groups[slot], &[(n - 1) * STEP_ROOM as u32]);
-                pass.dispatch_workgroups(by_drop.max(1), 1, 1);
+                pass.dispatch_workgroups(end.div_ceil(WORKGROUP).max(1), 1, 1);
             }
             clock.copy_back(&mut encoder, k);
             let index = queue.submit([encoder.finish()]);
@@ -504,7 +592,8 @@ impl Water {
             done = Some(index);
             self.now ^= n as usize & 1;
         }
-        self.clock.get_mut().expect("the clock").sent(k, count, done, n);
+        self.count = end;
+        self.clock.get_mut().expect("the clock").sent(k, end, done, n);
         self.steps += u64::from(n);
         self.frames += 1;
     }
@@ -539,6 +628,7 @@ impl Water {
         new.steps = self.steps;
         new.frames = self.frames;
         new.edges_shut = self.edges_shut;
+        new.pours = self.pours.clone();
         new
     }
 

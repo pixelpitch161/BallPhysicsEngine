@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::drop::{Pour, Poured, STOPS, fill};
+use crate::drop::{Pour, Poured, STOPS, fill, fill_stacked};
 use crate::drops::numbers::{FRAME, Feel, Numbers};
 use crate::drops::{LEAST_WALL, Water, WaterGpu};
 use crate::grid;
@@ -32,11 +32,10 @@ pub struct Scene {
     pub pours: Vec<Pour>,
 }
 
-/// A scene being played by the all-drops engine.
+/// A scene being played by the all-drops engine (its pours are the body's own).
 pub struct Running {
     pub water: Water,
     pub field: SolidField,
-    pours: Vec<(Pour, Poured)>,
 }
 
 /// A scene being played by the grid core.
@@ -52,10 +51,10 @@ impl Scene {
         let field = SolidField::build_least(self.layout, &self.solids, LEAST_WALL * self.layout.cell);
         let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &self.feels);
         for (lo, hi) in &self.fills {
-            water.add(&fill(&self.layout, &field, *lo, *hi, STOPS, 0));
+            water.add(&fill_stacked(&self.layout, &field, *lo, *hi, STOPS, numbers.wall_off));
         }
-        let pours = self.pours.iter().map(|p| (*p, Poured::default())).collect();
-        Running { water, field, pours }
+        water.set_pours(&self.pours);
+        Running { water, field }
     }
 
     /// Starts the scene on `gpu` with the grid core's `numbers`.
@@ -68,19 +67,14 @@ impl Scene {
             let drops = fill(&self.layout, &field, *lo, *hi, STOPS, born);
             born = born.wrapping_add(water.add(&drops));
         }
-        let pours = self.pours.iter().map(|p| (*p, Poured { owed: 0.0, born: 1 << 24 })).collect();
+        let pours = self.pours.iter().map(|p| (*p, Poured { born: 1 << 24, ..Poured::default() })).collect();
         GridRunning { water, field, pours }
     }
 }
 
 impl Running {
-    /// One frame: the pours' births, then the frame.
+    /// One frame (the body pours its own).
     pub fn frame(&mut self) {
-        let (frame, layout) = (self.water.frames(), self.water.layout());
-        for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
-            let drops = pour.drops(state, &layout, FRAME, frame, k as u32 + 1);
-            self.water.add(&drops);
-        }
         self.water.frame();
     }
 
@@ -94,7 +88,7 @@ impl Running {
 
     /// A copy that plays on exactly as this one does.
     pub fn copy(&self) -> Running {
-        Running { water: self.water.copy(), field: self.field.clone(), pours: self.pours.clone() }
+        Running { water: self.water.copy(), field: self.field.clone() }
     }
 }
 

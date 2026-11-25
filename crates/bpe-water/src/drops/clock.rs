@@ -66,6 +66,8 @@ pub(super) struct Clock {
     /// a second) in the report it read then.
     settled: Option<u32>,
     reported: f32,
+    /// The pours' fullness at their spouts in that report.
+    pub(super) spouts: [f32; MOST_POURS],
     pub(super) last_steps: u32,
 }
 
@@ -96,6 +98,7 @@ impl Clock {
             added: [0.0; SLOTS],
             settled: None,
             reported: 0.0,
+            spouts: [0.0; MOST_POURS],
             last_steps: 0,
         }
     }
@@ -183,11 +186,13 @@ impl Clock {
         // (The boundary after this one takes the place of the one two before.)
         self.added[(k + 1) as usize % SLOTS] = 0.0;
         self.reported = 0.0;
+        self.spouts = [0.0; MOST_POURS];
         let mut go = 0;
         if k >= 2
             && let Some((report, count)) = self.report_of(device, k - 2)
         {
             self.reported = report.fastest_px();
+            self.spouts = report.spout;
             // (The dead at the end of frame k - 2, less those let go at the last boundary: they were
             // among them.)
             go = count.saturating_sub(report.live).saturating_sub(self.let_go);
@@ -214,6 +219,7 @@ impl Clock {
         to.added = self.added;
         to.settled = self.settled;
         to.reported = self.reported;
+        to.spouts = self.spouts;
         to.last_steps = self.last_steps;
     }
 }
