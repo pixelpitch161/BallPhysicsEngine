@@ -98,3 +98,44 @@ one `WaterCard`; settings in `scene.rs`, `solids.rs`, `liquid.rs`, `places.rs`).
   Pour, Drain and Force cards and the solids; it gives the kinds their sims and replaces the stand-in for Water.
 - The rail's Carve, Piece, Pen and Camera path tools, the looks behind `StartingLook`, Draft | Final and Make
   final, grading, sound and export are later parts (the spec's "Parts").
+
+## Part 2a: the water core (as built)
+
+Plan and measurements: `docs/superpowers/plans/water-mode/part2a.md` (its "As built and measured"). Nothing in the
+editor uses it yet (part 2b): the crate is reached only by its own tests and by `bpe-kit/tests/water_core.rs`.
+
+- **`bpe-water`** (after `bpe-gfx`, before `bpe-kit`): the liquid's physics on the card. `Water::new(gpu, &SolidField,
+  gravity, Numbers, &[Feel])`, `add(&[Drop])`, `step()` (one liquid step, 240 a second), `copy()`, `read()`.
+  `Numbers` holds every solver number (`Numbers::from_env` lets the measuring tests replace any by `BPE_WATER_*`);
+  `Feel` is a liquid in the owner's terms (gravity, Surface pull, Spray, Weight, Settles).
+- **The step** (`src/shaders/`, joined in `sim/passes.rs`): drops (48 bytes: place, speed, APIC matrix, stretch,
+  kind, serial, colour) spread to a staggered grid with whole-number sums (`cs_p2g`); each cell works out its faces'
+  speeds, how full it is and what must flow out (`cs_grid`); the pressure is solved one-sided (never below nothing)
+  by red-black sweeps on a ladder of coarser grids (`cs_sor`, `cs_down`, `cs_up`), kept from step to step; the
+  faces are corrected (`cs_proj`, `cs_slip`); the drops gather their speed back and move in short sub-moves, kept
+  off the solids (`cs_g2p`). This is the physics trial's core (plan `physics-trial.md`), ported.
+- **Solids are a distance field** (`solid.rs`): `SolidField` holds each node's distance to the nearest face
+  (`build` from `Solid`s, `from_distance` from any measure). A hollow wall or a line thinner than a cell is a cell
+  thick to the physics, so a face is always between nodes; the trial's thin-wall cases are gone.
+- **What keeps streams whole** (all in the plan's "As built"): a face no drop reaches counts as air, not as still
+  liquid (the trial's fault: fast lone drops were braked and a thin pour fell as slow flat clusters); thin moving
+  liquid evens out its own spacing along its flight (`Numbers::even`, in `cs_g2p`); crowded drops in thin liquid
+  part gently (`most_out_thin`). A drop's carried stretch (`Drop::e`) pulls through the hold nodes (`hold.wgsl`):
+  weak at the default Surface pull.
+- **The bridge** (`bridge.rs`, `bridge.wgsl`): the drops rewritten in today's 112-byte layout with a wet grid made
+  from the solid field, as a `bpe_gfx::liquid_sim::DropsSource`, so today's liquid drawing draws the new core.
+  No wetness through it (Wet walls shows nothing), and a thin wall's water stops at the cell-thick face.
+- **Test scenes and measures**: `scenes.rs` (feature `test-scenes`: still boxes, the course, the Water Weird
+  layout, a thin pour, a sheet off a ledge, a pour on a disc) and `probe.rs` (`Stats`, `Stream`, dot pictures).
+- **Pitfall**: a new physics number goes in `Numbers`, its default, `from_env` and `StepGpu` (matching `Step` in
+  `common.wgsl`). A pass that binds a new buffer lists it in `passes.rs::ENTRIES`.
+
+### Tests
+
+`bpe-water/tests/core.rs` (still water rests, a pool keeps its height, two runs and a copy are the same to the
+bit, a thin wall holds a fast pour, a full box stays shut, a two-cell opening flows, the air does not brake a
+pour), `tests/streams.rs` (a thin pour is one narrow stream at 8 and 12 px cells, a sheet stays a sheet, a lone
+drop is left alone), `bpe-kit/tests/water_core.rs` (`the_bridge_draws_every_drop`). By hand, in release:
+`bpe-water/tests/measure.rs` (`look`, `bands`, `strands`) and `water_core.rs::side_by_side` (both cores drawn
+from one scene, joined left and right; its header lists the `WATER_*` variables).
+
