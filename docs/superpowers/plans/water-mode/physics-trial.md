@@ -141,7 +141,31 @@ changed nothing, so the rain is not the density term kicking.
 
 ### On the owner's card
 
-(added when the PC run reports)
+AMD Radeon RX 9070 XT, Vulkan, driver 26.11.2 (LLPC), the Windows exe built on the PC from 0755f3c8 (the
+tension knob added later is off by default, so the same core). Physics only (no drawing), 5 s of scene time,
+run twice with no check running on the PC; both runs gave the same prints and wall times within 0.1 s.
+The second run's numbers, as wall seconds for one second of scene (1.00 = real time):
+
+| Scene | Detail | Drops | Today | Trial | Trial is |
+| --- | --- | --- | --- | --- | --- |
+| Water Weird | Normal | 5 091 | 0.15 | 0.08 | 1.8 x faster |
+| Water Weird | Fine | 9 050 | 0.23 | 0.08 | 2.8 x |
+| Water Weird | Extreme | 36 203 | 0.45 | 0.11 | 4.0 x |
+| Still box | Normal | 19 832 | 0.19 | 0.08 | 2.5 x |
+| Still box | Fine | 34 888 | 0.39 | 0.08 | 4.6 x |
+| Still box | Extreme | 141 768 | 1.24 | 0.15 | 8.1 x |
+| Pour | Normal | 4 772 | 0.14 | 0.08 | 1.7 x |
+| Pour | Fine | 8 485 | 0.19 | 0.08 | 2.3 x |
+| Pour | Extreme | 33 941 | 0.52 | 0.11 | 4.9 x |
+| Course | Normal | 11 935 | 0.23 | 0.08 | 2.9 x |
+| Course | Fine | 21 170 | 0.45 | 0.09 | 5.1 x |
+| Course | Extreme | 84 680 | 1.19 | 0.15 | 8.2 x |
+
+The trial core's cost hardly grows with Detail (0.08 to 0.15), where today's grows 3 to 6 times; at Normal the
+trial's 0.08 is mostly the fixed cost of the passes, not the drops. Still box, mean speed squared after 5 s:
+today 2234 / 3134 / 2683 (about 47 to 56 px/s rms), trial 0 / 1 / 0.
+
+(the still, slosh, volume, course and repeat runs on the card follow)
 
 ### Verdict
 
