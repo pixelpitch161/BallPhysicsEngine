@@ -45,13 +45,14 @@ struct Step {
     // mass on a face for it to have a speed
     a: vec4<f32>,
     // the share of a cell's room that may fill a step, a sub-move's length (cells), how much of a
-    // coarser level's answer is added, 0
+    // coarser level's answer is added, the most an over-full cell in thin liquid pushes out a step
     b: vec4<f32>,
     // the hold-together: its damping, how fast stretch settles in full liquid (a second), the
     // density a loose drop joins at, on (0 or 1)
     h: vec4<f32>,
     // the hold-together: how fast stretch eases off everywhere (a second), the liquid round a
-    // drop from which it is inside full liquid, 0, 0
+    // drop from which it is inside full liquid, how fast thin liquid evens out its spacing (cells
+    // squared a second), the furthest that moves a drop a step (cells)
     h2: vec4<f32>,
     // the pressure's levels (0 the cells themselves, each next one half as many each way): where
     // the level starts in `cellp` and `coef`, its columns, its rows, 0

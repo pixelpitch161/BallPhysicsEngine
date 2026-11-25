@@ -354,4 +354,38 @@ Inputs the spec implies but does not spell out. Each has a test in the task that
 
 ## As built and measured
 
-(Filled in as the work is done.)
+(Filled in as the work is done. Runs are on lavapipe in the cloud container unless they say the owner's card.)
+
+### What made the trial's streams break up (found while porting)
+
+1. **Air braked fast drops.** In a solved cell's outflow sum the trial read a face no drop reaches as speed 0. A
+   lone fast drop (or a stream's tip, or a stream with a gap of a cell) then looked like liquid running into still
+   liquid, and the pressure braked it: the thin pour fell freely to about 2,600 px/s and then dropped to a
+   "terminal" 700 to 1,100 px/s, piling up on its own gaps into slow flat clusters. Fixed in `cs_grid`: a face with
+   no speed takes the speed of the face across the cell. After it the pour falls at free fall (within 1 %) down
+   the whole screen, and the Water Weird layout shows arcs instead of rain. The still box rests as before
+   (rms 0.3 px/s).
+2. **Thin liquid left shapes in bunches.** A stream a drop wide leaves a shape (or a place where two streams part)
+   in bursts, a cell's worth at a time. Today's core does the same thing more smoothly (its soft pressure), and
+   its thin streams are simply loose drops flying one path. The fix here is the **spacing step** (decision 13a,
+   as built): in `cs_g2p` a drop in thin, moving liquid moves a little along its own flight, from where the other
+   drops round it are many to where they are few (`Numbers::even`, cells squared a second; its own part in the
+   smooth density is taken out, so a lone drop never moves). It moves as if a moment earlier or later on its own
+   path (place and speed together): moved in place only, each drop of a curving thread went on along a path beside
+   its own and the thread frayed. Gated to thin liquid (under about 0.35 to 0.5 of full round it) moving faster
+   than 12 to 36 cells a second, so pools are untouched (the still boxes rest at 0.3 to 0.4 px/s with it on).
+3. **Crowded drops in thin liquid were thrown apart.** An over-full cell pushes out a tenth of a cell a step
+   (`most_out`), right for a body of liquid (with a hundredth, the course's funnel pool visibly squashed), but a
+   bunch in a thread or a film was thrown sideways by it. Where the cell and the eight round it are under about
+   0.65 to 0.9 full (`near` in `cs_grid`), the push is `most_out_thin` (0.005) instead.
+
+### Tried and dropped
+
+- **The carried stretch with a pull that grows to a tear at about 1 (the first hold-together).** It ropes a
+  straight pour (width 12 to 15 px against 20 to 30) but beads every arc: when a stretched thread tears, what is
+  left pulls itself into lumps. Today's core lets go at a stretch of about 0.18, so its threads are loose drops:
+  the pull is not what keeps them whole. The pull stays in the code as what Surface pull turns up (beads), weak
+  at the default.
+- **Only solving cells near a body of liquid (thin liquid fully loose).** Loose drops stack on one spot, and the
+  first step they count as a body the push throws them apart: puffs all down the stream.
+- More sweeps, a bigger or smaller fill allowance: no change to the bunching.

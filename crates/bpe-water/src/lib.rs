@@ -5,6 +5,7 @@
 //! ([`solid`]); and measurements for tests ([`probe`]). Nothing here knows about scenes, cards or
 //! the editor: a later part turns a Water scene into a [`SolidField`], pours and [`Feel`]s.
 
+pub mod bridge;
 pub mod probe;
 #[cfg(feature = "test-scenes")]
 pub mod scenes;

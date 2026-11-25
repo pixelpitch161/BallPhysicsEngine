@@ -40,9 +40,16 @@ fn scene_named(name: &str, cell: f32) -> Scene {
 /// The air a scene's stream is measured in: a world rectangle.
 fn air_of(name: &str) -> Option<(Vec2, Vec2)> {
     match name {
-        "thin_pour" => Some((Vec2::new(-250.0, scenes::THIN_POUR.0 + 40.0), Vec2::new(250.0, scenes::THIN_POUR.1 - 80.0))),
-        "sheet" => Some((Vec2::new(scenes::SHEET.0 + 4.0, scenes::SHEET.1 - 40.0), Vec2::new(450.0, scenes::SHEET.2 - 80.0))),
-        "on_a_disc" => Some((Vec2::new(-250.0, scenes::DISC.0.y + scenes::DISC.1 + 40.0), Vec2::new(250.0, scenes::THIN_POUR.1 - 80.0))),
+        "thin_pour" => {
+            Some((Vec2::new(-250.0, scenes::THIN_POUR.0 + 40.0), Vec2::new(250.0, scenes::THIN_POUR.1 - 80.0)))
+        }
+        "sheet" => {
+            Some((Vec2::new(scenes::SHEET.0 + 4.0, scenes::SHEET.1 - 40.0), Vec2::new(450.0, scenes::SHEET.2 - 80.0)))
+        }
+        "on_a_disc" => Some((
+            Vec2::new(-250.0, scenes::DISC.0.y + scenes::DISC.1 + 40.0),
+            Vec2::new(250.0, scenes::THIN_POUR.1 - 80.0),
+        )),
         "weird" => Some((Vec2::new(-400.0, 20.0), Vec2::new(400.0, 700.0))),
         _ => None,
     }
@@ -63,7 +70,9 @@ fn look() {
     let gpu = card();
     let out = std::env::var("WATER_OUT").ok();
     let tag: String = num("WATER_TAG", String::new());
-    println!("# scene\tcell\tseconds\tdrops\trms px/s\tfastest\ttop\tcrowded\tbroken\tin air\tpieces\twhole\tstrays\tgap px\twidths\twall s");
+    println!(
+        "# scene\tcell\tseconds\tdrops\trms px/s\tfastest\ttop\tcrowded\tbroken\tin air\tpieces\twhole\tstrays\tgap px\twidths\twall s"
+    );
     for name in list::<String>("WATER_SCENES", "weird") {
         for cell in list::<f32>("WATER_CELLS", "8") {
             let scene = scene_named(&name, cell);
@@ -124,8 +133,13 @@ fn bands() {
     println!("# from\tdrops\tfall px/s\tfree fall\tsd fall\tsd across\tmean |vx|\tstretch");
     let mut y = top;
     while y < floor {
-        let inside: Vec<_> =
-            drops.iter().filter(|d| { let w = layout.to_world(Vec2::from(d.x)); w.y >= y && w.y < y + step }).collect();
+        let inside: Vec<_> = drops
+            .iter()
+            .filter(|d| {
+                let w = layout.to_world(Vec2::from(d.x));
+                w.y >= y && w.y < y + step
+            })
+            .collect();
         if !inside.is_empty() {
             let n = inside.len() as f32;
             let vy: Vec<f32> = inside.iter().map(|d| d.v[1] * cell).collect();
@@ -136,7 +150,8 @@ fn bands() {
             let sx = (xs.iter().map(|x| (x - mx) * (x - mx)).sum::<f32>() / n).sqrt();
             let vx = inside.iter().map(|d| (d.v[0] * cell).abs()).sum::<f32>() / n;
             let e = inside.iter().map(|d| d.e).sum::<f32>() / n;
-            let free = (scenes::POUR_SPEED * scenes::POUR_SPEED + 2.0 * scenes::GRAVITY.y * (y + step * 0.5 - top)).sqrt();
+            let free =
+                (scenes::POUR_SPEED * scenes::POUR_SPEED + 2.0 * scenes::GRAVITY.y * (y + step * 0.5 - top)).sqrt();
             println!("{y:.0}\t{}\t{mean:.0}\t{free:.0}\t{sd:.0}\t{sx:.1}\t{vx:.0}\t{e:.2}", inside.len());
         }
         y += step;

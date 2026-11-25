@@ -55,20 +55,29 @@ impl Layout {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Solid {
     /// A closed shape: filled, or hollow with a wall `thickness` pixels wide along its outline.
-    Polygon { points: Vec<Vec2>, filled: bool, thickness: f32 },
-    Circle { centre: Vec2, radius: f32, filled: bool, thickness: f32 },
+    Polygon {
+        points: Vec<Vec2>,
+        filled: bool,
+        thickness: f32,
+    },
+    Circle {
+        centre: Vec2,
+        radius: f32,
+        filled: bool,
+        thickness: f32,
+    },
     /// A straight wall with round ends.
-    Line { a: Vec2, b: Vec2, thickness: f32 },
+    Line {
+        a: Vec2,
+        b: Vec2,
+        thickness: f32,
+    },
 }
 
 impl Solid {
     /// A filled or hollow rectangle from `lo` to `hi`.
     pub fn rect(lo: Vec2, hi: Vec2, filled: bool, thickness: f32) -> Solid {
-        Solid::Polygon {
-            points: vec![lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)],
-            filled,
-            thickness,
-        }
+        Solid::Polygon { points: vec![lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)], filled, thickness }
     }
 
     /// How far `p` is from this solid's face (below 0 inside), with thin walls taken as at least
@@ -132,6 +141,20 @@ impl SolidField {
         SolidField { layout, distance }
     }
 
+    /// A field from any measure of the solids: `distance(p, least)` is how far world point `p` is
+    /// from the nearest face (pixels, below 0 inside), with thin walls taken as at least `least`
+    /// pixels thick (a cell: see the module's notes).
+    pub fn from_distance(layout: Layout, distance: impl Fn(Vec2, f32) -> f32) -> SolidField {
+        let mut out = Vec::with_capacity(layout.nodes());
+        for y in 0..layout.rows {
+            for x in 0..layout.cols {
+                let d = distance(layout.to_world(Vec2::new(x as f32, y as f32)), layout.cell);
+                out.push(if d.is_finite() { d.min(SolidField::FAR) } else { SolidField::FAR });
+            }
+        }
+        SolidField { layout, distance: out }
+    }
+
     /// The distance at world point `p` (between the nodes round it), in pixels.
     pub fn at(&self, p: Vec2) -> f32 {
         let l = &self.layout;
@@ -176,7 +199,8 @@ mod tests {
     #[test]
     fn a_field_reads_between_its_nodes() {
         let layout = Layout::cover(Vec2::new(-40.0, -40.0), Vec2::new(40.0, 40.0), 8.0);
-        let field = SolidField::build(layout, &[Solid::rect(Vec2::new(-100.0, 20.0), Vec2::new(100.0, 100.0), true, 0.0)]);
+        let field =
+            SolidField::build(layout, &[Solid::rect(Vec2::new(-100.0, 20.0), Vec2::new(100.0, 100.0), true, 0.0)]);
         assert!((field.at(Vec2::new(3.0, 5.0)) - 15.0).abs() < 1e-3);
         assert!((field.at(Vec2::new(3.0, 23.0)) + 3.0).abs() < 1e-3);
     }

@@ -274,6 +274,7 @@ dependencies = [
  "bpe-gfx",
  "bpe-kit",
  "bpe-runtime",
+ "bpe-water",
  "glam",
  "i_overlay",
  "png",

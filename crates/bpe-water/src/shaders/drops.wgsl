@@ -187,6 +187,31 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
     }
+    // The hold nodes at the drop (their smooth kernel): the liquid round it with the solids'
+    // share, the drops' own, and the own's slope; and its own part in those, to take out.
+    var round = 0.0;
+    var mine = 0.0;
+    var own_slope = vec2<f32>(0.0);
+    var self_own = 0.0;
+    var self_slope = vec2<f32>(0.0);
+    {
+        let base = base3(p.x);
+        let fx = p.x - vec2<f32>(base);
+        let w = weights3(fx);
+        let dw = slopes3(fx);
+        for (var a = 0; a < 3; a = a + 1) {
+            for (var b = 0; b < 3; b = b + 1) {
+                let h = hold_out[node(base.x + a, base.y + b)];
+                let wt = w[a].x * w[b].y;
+                let g = vec2<f32>(dw[a].x * w[b].y, w[a].x * dw[b].y);
+                round = round + wt * h.z;
+                mine = mine + wt * h.w;
+                own_slope = own_slope + g * h.w;
+                self_own = self_own + VOL * wt * wt;
+                self_slope = self_slope + 2.0 * VOL * wt * g;
+            }
+        }
+    }
     // How stretched it is: moved by the flow's own spreading; nothing is stretched inside full
     // liquid; a torn drop joins again where the liquid is dense enough.
     var e = p.e;
@@ -200,23 +225,35 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     } else {
         e = e + (1.0 + e) * dt * (c.x + c.w);
-        // The liquid round it through the hold nodes' smooth kernel (with the solids' share).
-        var round = 0.0;
-        {
-            let base = base3(p.x);
-            let fx = p.x - vec2<f32>(base);
-            let w = weights3(fx);
-            for (var a = 0; a < 3; a = a + 1) {
-                for (var b = 0; b < 3; b = b + 1) {
-                    round = round + w[a].x * w[b].y * hold_out[node(base.x + a, base.y + b)].z;
-                }
-            }
-        }
         // Inside full liquid it settles fast; everywhere it eases off slowly (a pull is how
         // the liquid answers being pulled apart, not something it keeps).
         let rate = st.h2.x + st.h.y * smoothstep(st.h2.y - 0.15, st.h2.y, round);
         e = e * exp(-rate * dt);
         e = clamp(e, -0.5, tear);
+    }
+    // Thin liquid on its way evens out its own spacing: a drop moves a little, along the way it
+    // travels only, from where the other drops round it are many to where they are few (its place
+    // moves, never its speed, so nothing is stirred and nothing spreads sideways). A stream that
+    // left a shape in bunches is one even thread a little further on. Not inside a body of liquid
+    // (the pressure spaces that), and not at rest.
+    var even = vec2<f32>(0.0);
+    let pace = length(v);
+    if st.h2.z > 0.0 && pace > 1e-3 {
+        let way = v / pace;
+        let others = max(mine - self_own, 0.0);
+        let slope = dot(own_slope - self_slope, way);
+        let thin = 1.0 - smoothstep(0.35, 0.5, mine);
+        let moving = smoothstep(12.0, 36.0, pace);
+        let far = clamp(-st.h2.z * dt * slope / (others + 0.05) * thin * moving, -st.h2.w, st.h2.w);
+        if abs(far) < 1e9 {
+            // Moved along its own flight, as if a moment earlier or later on it: its place and its
+            // speed both, so it stays on the path it was flying (moved in place only, each drop
+            // of a curving thread went on along a path beside its own and the thread frayed).
+            let fall = vec2<f32>(st.time.y, st.time.z) * feel.a.x;
+            let moment = far / pace;
+            even = v * moment + 0.5 * fall * moment * moment;
+            v = v + fall * moment;
+        }
     }
     v = v * exp(-feel.b.y * dt);
     let speed = length(v);
@@ -232,7 +269,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let stops = (p.kind & STOPS) != 0u;
     let moves = clamp(u32(ceil(length(v) * dt / max(st.b.y, 0.05))), 1u, 24u);
     let h = dt / f32(moves);
-    var x = p.x;
+    var x = keep_off(p.x + even, v, stops).x;
     for (var m = 0u; m < moves; m = m + 1u) {
         let kept = keep_off(x + v * h, v, stops);
         x = kept.x;

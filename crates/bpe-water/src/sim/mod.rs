@@ -227,7 +227,11 @@ impl Water {
                         _ => whole(11, &self.hold_out),
                     })
                     .collect();
-                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(name), layout, entries: &entries })
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(name),
+                    layout,
+                    entries: &entries,
+                })
             })
             .collect();
     }
@@ -265,7 +269,7 @@ impl Water {
 
     /// The buffers the drawing bridge reads.
     pub(crate) fn buffers(&self) -> (&wgpu::Buffer, &wgpu::Buffer, &wgpu::Buffer) {
-        (&self.drops, &self.solid, &self.vel_out)
+        (&self.drops, &self.wallc, &self.vel_out)
     }
 
     /// Adds `born` to the drops (those past [`MOST_DROPS`] are let go). Returns how many were added.
@@ -279,7 +283,8 @@ impl Water {
             let room = room_for(self.count + n);
             let device = &self.gpu.device;
             let bigger = storage(device, "water drops", u64::from(room) * size);
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water grows") });
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water grows") });
             if self.count > 0 {
                 encoder.copy_buffer_to_buffer(&self.drops, 0, &bigger, 0, u64::from(self.count) * size);
             }
@@ -288,7 +293,11 @@ impl Water {
             self.room = room;
             self.bind();
         }
-        self.gpu.queue.write_buffer(&self.drops, u64::from(self.count) * size, bytemuck::cast_slice(&born[..n as usize]));
+        self.gpu.queue.write_buffer(
+            &self.drops,
+            u64::from(self.count) * size,
+            bytemuck::cast_slice(&born[..n as usize]),
+        );
         self.count += n;
         n
     }
@@ -308,9 +317,9 @@ impl Water {
             time: [dt, g.x, g.y, n.most_move / dt],
             flags: [self.steps, u32::from(self.edges_shut), 0, 0],
             a: [n.omega, n.push_out, n.most_out, n.face_floor],
-            b: [n.fill, n.sub_move, n.scale, 0.0],
+            b: [n.fill, n.sub_move, n.scale, n.most_out_thin.max(0.0)],
             h: [n.hold_damp, n.hold_settle, n.hold_join, if n.hold { 1.0 } else { 0.0 }],
-            h2: [n.hold_relax, n.hold_full, 0.0, 0.0],
+            h2: [n.hold_relax, n.hold_full, n.even.max(0.0), n.even_most.max(0.0)],
             lv,
             feels,
         }
@@ -328,8 +337,8 @@ impl Water {
         let drop_groups = self.count.max(1).div_ceil(WORKGROUP);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water step") });
         {
-            let mut pass =
-                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("water step"), timestamp_writes: None });
+            let mut pass = encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("water step"), timestamp_writes: None });
             let groups = &self.groups;
             let mut go = |p: P, n: (u32, u32), number: Option<u32>| {
                 pass.set_pipeline(&gpu.pipelines.list[p as usize].0);
@@ -343,10 +352,9 @@ impl Water {
                 go(P::Walls, tiles, None);
             }
             go(P::Clear, (cells, 1), None);
-            if self.numbers.hold {
-                go(P::HoldP2g, (drop_groups, 1), None);
-                go(P::HoldGrid, tiles, None);
-            }
+            // (Always: the hold nodes also hold the liquid round each drop, which the spacing reads.)
+            go(P::HoldP2g, (drop_groups, 1), None);
+            go(P::HoldGrid, tiles, None);
             go(P::P2g, (drop_groups, 1), None);
             go(P::Grid, tiles, None);
             let n = self.numbers;

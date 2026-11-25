@@ -33,6 +33,9 @@ pub struct Numbers {
     pub most_out: f32,
     /// The share of a cell's room that may fill a step before it pushes back.
     pub fill: f32,
+    /// The most of a cell's volume an over-full cell pushes out a step where the liquid is thin (a
+    /// thread, a film, a surface): gentler than `most_out`, which bodies of liquid keep.
+    pub most_out_thin: f32,
     /// The least mass on a face for it to have a speed (a drop's is 0.25).
     pub face_floor: f32,
     /// A sub-move's length, in cells.
@@ -55,6 +58,10 @@ pub struct Numbers {
     pub hold_relax: f32,
     /// The liquid round a drop (1 is full) from which it counts as inside full liquid.
     pub hold_full: f32,
+    /// How fast thin liquid on its way evens out its own spacing, in cells squared a second (0:
+    /// never), and the furthest that moves a drop in a liquid step, in cells.
+    pub even: f32,
+    pub even_most: f32,
     /// The density at which a torn drop joins the liquid again.
     pub hold_join: f32,
     /// The stretch a liquid tears at with no Spray, and with all of it.
@@ -76,16 +83,19 @@ impl Default for Numbers {
             push_out: 0.25,
             most_out: 0.1,
             fill: 0.25,
+            most_out_thin: 0.005,
             face_floor: 0.005,
             sub_move: 0.4,
             most_move: 8.0,
             hold: true,
-            pull: 8.0e6,
+            pull: 4.0e5,
             pull_cfl: 0.3,
             hold_damp: 0.7,
             hold_settle: 200.0,
             hold_relax: 4.0,
             hold_full: 0.9,
+            even: 20.0,
+            even_most: 0.15,
             hold_join: 0.6,
             tear_calm: 2.0,
             tear_spray: 0.2,
@@ -114,6 +124,7 @@ impl Numbers {
             push_out: num("PUSH_OUT", d.push_out),
             most_out: num("MOST_OUT", d.most_out),
             fill: num("FILL", d.fill),
+            most_out_thin: num("MOST_OUT_THIN", d.most_out_thin),
             face_floor: num("FACE_FLOOR", d.face_floor),
             sub_move: num("SUB_MOVE", d.sub_move),
             most_move: num("MOST_MOVE", d.most_move),
@@ -124,6 +135,8 @@ impl Numbers {
             hold_settle: num("HOLD_SETTLE", d.hold_settle),
             hold_relax: num("HOLD_RELAX", d.hold_relax),
             hold_full: num("HOLD_FULL", d.hold_full),
+            even: num("EVEN", d.even),
+            even_most: num("EVEN_MOST", d.even_most),
             hold_join: num("HOLD_JOIN", d.hold_join),
             tear_calm: num("TEAR_CALM", d.tear_calm),
             tear_spray: num("TEAR_SPRAY", d.tear_spray),
