@@ -294,8 +294,8 @@ only where `kind` is needed, or pack.
 
 - [ ] **Step 1: Write the failing tests.**
   - `the_clock_takes_more_steps_for_faster_water`: on a still pool at 8 px, `steps_last_frame()` equals the floor
-    (16) after 1 s. Drops fired at 6000 px/s on an empty 8 px course give more than 16 from the third frame on (`steps_for` gives
-    20 there).
+    (16) after 1 s. Drops fired at 6000 px/s on an empty 8 px course give more than 16 from the third frame on
+    (`steps_for` gives 20 there).
   - `two_runs_and_a_copy_are_the_same` (Task 3's test) still passes, and now also covers frames whose counts
     differ.
   - `drops_that_leave_are_counted_out`: a course with open edges (`set_edges_shut(false)`) and 500 drops fired
