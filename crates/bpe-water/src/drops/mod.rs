@@ -561,6 +561,7 @@ impl Water {
             let by_bin = self.bins().div_ceil(WORKGROUP);
             let by_block = self.bins().div_ceil(BLOCK).div_ceil(WORKGROUP);
             let iters = self.numbers.iters.clamp(1, 16) as usize;
+            let joined = self.numbers.join != 0;
             let clock = self.clock.get_mut().expect("the clock");
             let slot = clock.slot_of(k);
             let mut encoder =
@@ -571,26 +572,37 @@ impl Water {
                     label: Some("water frame"),
                     timestamp_writes: None,
                 });
+                let mut go = |p: P, now: usize, y_in: usize, step: u32, groups: u32| {
+                    pass.set_pipeline(&gpu.pipes.list[p as usize].0);
+                    let offset = [step * STEP_ROOM as u32];
+                    pass.set_bind_group(0, &self.groups[(p as usize * 2 + now) * 2 + y_in], &offset);
+                    pass.dispatch_workgroups(groups.max(1), 1, 1);
+                };
                 for j in 0..n {
                     let now = self.now ^ (j as usize & 1);
-                    let offset = [j * STEP_ROOM as u32];
-                    let by_drop = records[j as usize][0].div_ceil(WORKGROUP);
-                    let mut go = |p: P, y_in: usize, groups: u32| {
-                        pass.set_pipeline(&gpu.pipes.list[p as usize].0);
-                        pass.set_bind_group(0, &self.groups[(p as usize * 2 + now) * 2 + y_in], &offset);
-                        pass.dispatch_workgroups(groups.max(1), 1, 1);
-                    };
-                    go(P::Predict, 0, by_drop);
-                    go(P::SumA, 0, by_block);
-                    go(P::SumB, 0, 1);
-                    go(P::SumC, 0, by_bin);
-                    go(P::Scatter, 0, by_drop);
-                    go(P::Order, 0, by_drop);
-                    for k in 0..iters {
-                        go(if k == 0 { P::LambdaFirst } else { P::Lambda }, k % 2, by_drop);
-                        go(if k + 1 == iters { P::ApplyLast } else { P::Apply }, k % 2, by_drop);
+                    let [count, before, _, _] = records[j as usize];
+                    let by_drop = count.div_ceil(WORKGROUP);
+                    // (The first step falls from the kept places; the others' fall was joined with
+                    // the last step's end, and only their births come in here.)
+                    if j == 0 || !joined {
+                        go(P::Predict, now, 0, j, by_drop);
+                    } else if count > before {
+                        go(P::Born, now, 0, j, (count - before).div_ceil(WORKGROUP));
                     }
-                    go(P::Finish, iters % 2, by_drop);
+                    go(P::SumA, now, 0, j, by_block);
+                    go(P::SumB, now, 0, j, 1);
+                    go(P::SumC, now, 0, j, by_bin);
+                    go(P::Scatter, now, 0, j, by_drop);
+                    go(P::Order, now, 0, j, by_drop);
+                    for k in 0..iters {
+                        go(if k == 0 { P::LambdaFirst } else { P::Lambda }, now, k % 2, j, by_drop);
+                        go(if k + 1 == iters { P::ApplyLast } else { P::Apply }, now, k % 2, j, by_drop);
+                    }
+                    if joined && j + 1 < n {
+                        go(P::FinishPredict, now, iters % 2, j + 1, by_drop);
+                    } else {
+                        go(P::Finish, now, iters % 2, j, by_drop);
+                    }
                 }
                 pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
                 pass.set_bind_group(0, &self.report_groups[slot], &[(n - 1) * STEP_ROOM as u32]);

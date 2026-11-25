@@ -391,3 +391,19 @@ fn a_fill_is_stacked_on_the_floor() {
         assert!(ys.windows(2).all(|w| (w[1] - w[0] - 0.5).abs() < 1e-3), "a column's drops half a cell apart");
     }
 }
+
+/// A step's end joined with the next step's fall (one pass fewer a step) plays the same water to
+/// the bit, births and all.
+#[test]
+fn joining_a_steps_end_to_the_next_fall_changes_nothing() {
+    let Some(gpu) = card() else { return };
+    let scene = scenes::thin_pour(8.0, 2.4);
+    let play = |join| {
+        let mut run = scene.start(&gpu, Numbers { join, ..Numbers::for_cell(8.0) });
+        run.run_to(0.5);
+        run.water.read()
+    };
+    let (joined, apart) = (play(1), play(0));
+    assert!(joined.len() > 200, "{}", joined.len());
+    assert_eq!(probe::print_of(&joined), probe::print_of(&apart));
+}

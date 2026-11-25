@@ -24,6 +24,8 @@ pub(super) enum P {
     Apply,
     ApplyLast,
     Finish,
+    FinishPredict,
+    Born,
     Report,
     Export,
 }
@@ -46,6 +48,8 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_apply", &[0, 1, 8, 11, 12, 13, 14, 15]),
     ("cs_apply_last", &[0, 1, 8, 11, 12, 13, 14, 15]),
     ("cs_finish", &[0, 1, 2, 3, 8, 11, 13, 14, 15]),
+    ("cs_finish_predict", &[0, 1, 3, 6, 7, 8, 11, 13, 14, 15]),
+    ("cs_born", &[0, 1, 2, 3, 4, 6, 7, 16]),
     ("cs_report", &[0, 1, 2, 8, 15, 18]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
 ];
@@ -133,6 +137,7 @@ mod tests {
         assert_eq!(ENTRIES.len(), P::Export as usize + 1);
         assert_eq!(ENTRIES[P::Order as usize].0, "cs_order");
         assert_eq!(ENTRIES[P::Finish as usize].0, "cs_finish");
+        assert_eq!(ENTRIES[P::Born as usize].0, "cs_born");
         for (name, bindings) in ENTRIES {
             let storage = bindings.iter().filter(|&&b| b > STEP).count();
             assert!(storage <= MOST_STORAGE, "{name} binds {storage} storage buffers");

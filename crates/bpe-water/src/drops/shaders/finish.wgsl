@@ -1,20 +1,22 @@
 
 // ---- speeds, the skin, grip and drag ----------------------------------------------------------
 
-@compute @workgroup_size(256)
-fn cs_finish(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if i >= st.n.x {
-        return;
-    }
+// A drop as a step leaves it: its place and speed, and its kind.
+struct Finished {
+    p: vec4<f32>,
+    kind: u32,
+};
+
+// Works out sorted drop `i`'s speed at the step's end (the evening of speeds, the skin, grip and
+// drag), writes which way the liquid lies from it and how full it is, and returns it.
+fn finish_at(i: u32) -> Finished {
     let me = y_in[i];
     let xi = me.xy;
-    if !alive(xi) {
-        xv[i] = vec4<f32>(xi, 0.0, 0.0);
-        nf[i] = vec4<f32>(0.0);
-        return;
-    }
     let mv = velb[i];
+    if !alive(xi) {
+        nf[i] = vec4<f32>(0.0);
+        return Finished(vec4<f32>(xi, 0.0, 0.0), u32(mv.z));
+    }
     let feel = fr.feels[u32(mv.z) & 15u];
     let dt = fr.time.x;
     let h = fr.k.x;
@@ -93,8 +95,31 @@ fn cs_finish(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !finite2(v) {
         v = vec2<f32>(0.0);
     }
-    xv[i] = vec4<f32>(xi, v);
     nf[i] = vec4<f32>(lies * (h / 4.0), li.z, 0.0);
+    return Finished(vec4<f32>(xi, v), u32(mv.z));
+}
+
+// The last step of a frame: its drops kept.
+@compute @workgroup_size(256)
+fn cs_finish(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= st.n.x {
+        return;
+    }
+    xv[i] = finish_at(i).p;
+}
+
+// A step's end joined with the next step's fall (its `st`: the step's drops are the first
+// `st.n.y`; the next step's births come in by `cs_born`). Within a frame the places and speeds
+// stay in the step's own buffers: only the frame's last step keeps them (`cs_finish`).
+@compute @workgroup_size(256)
+fn cs_finish_predict(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= st.n.y {
+        return;
+    }
+    let f = finish_at(i);
+    fall(i, f.p, f.kind);
 }
 
 // The drops `st.n.x` on, `st.n.y` of them, in the grid core's layout (its `c` holds how full the

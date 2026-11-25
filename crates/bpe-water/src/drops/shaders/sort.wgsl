@@ -1,6 +1,18 @@
 
 // ---- falling, and sorting ---------------------------------------------------------------------
 
+// Drop `i`, born this step: it is already where it is at the step's end, and was a step's travel
+// back (so the speed the step finds is its own).
+fn born_at(i: u32) {
+    let b = births[st.n.z + (i - st.n.y)];
+    xv[i] = b.xv;
+    nf[i] = vec4<f32>(0.0, 0.0, 1.0, 0.0);
+    id_cur[i] = b.id;
+    let x = b.xv.xy;
+    xp[i] = vec4<f32>(x, x - b.xv.zw * fr.time.x);
+    atomicAdd(&counts[bin_of(x)], 1u);
+}
+
 @compute @workgroup_size(256)
 fn cs_predict(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -8,24 +20,29 @@ fn cs_predict(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     if i >= st.n.y {
-        // Born this step: it is already where it is at the step's end, and was a step's travel
-        // back (so the speed the step finds is its own).
-        let b = births[st.n.z + (i - st.n.y)];
-        xv[i] = b.xv;
-        nf[i] = vec4<f32>(0.0, 0.0, 1.0, 0.0);
-        id_cur[i] = b.id;
-        let x = b.xv.xy;
-        xp[i] = vec4<f32>(x, x - b.xv.zw * fr.time.x);
-        atomicAdd(&counts[bin_of(x)], 1u);
+        born_at(i);
         return;
     }
-    let p = xv[i];
+    fall(i, xv[i], id_cur[i].x);
+}
+
+// The step's births alone (after `cs_finish_predict`).
+@compute @workgroup_size(256)
+fn cs_born(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = st.n.y + gid.x;
+    if i >= st.n.x {
+        return;
+    }
+    born_at(i);
+}
+
+// Drop `i` at `p` (place and speed), of `kind`, falls and is moved to where it would be.
+fn fall(i: u32, p: vec4<f32>, kind: u32) {
     if !alive(p.xy) {
         xp[i] = vec4<f32>(p.xy, p.xy);
         atomicAdd(&counts[fr.cells.z], 1u);
         return;
     }
-    let kind = id_cur[i].x;
     let feel = fr.feels[kind & 15u];
     let dt = fr.time.x;
     var v = p.zw + vec2<f32>(fr.time.y, fr.time.z) * feel.a.x * dt;

@@ -99,6 +99,9 @@ pub struct Numbers {
     pub full_spout: f32,
     /// The most rows a held pour may owe.
     pub held_rows: u32,
+    /// 1: a step's end is joined with the next step's fall, one pass fewer a step (the same water
+    /// to the bit either way; kept while the card run times both).
+    pub join: u32,
 }
 
 impl Default for Numbers {
@@ -128,6 +131,7 @@ impl Default for Numbers {
             drag_reach: 0.75,
             full_spout: 0.9,
             held_rows: 4,
+            join: 1,
         }
     }
 }
@@ -178,6 +182,7 @@ impl Numbers {
             drag_reach: num("DRAG_REACH", d.drag_reach),
             full_spout: num("FULL_SPOUT", d.full_spout),
             held_rows: num("HELD_ROWS", d.held_rows),
+            join: num("JOIN", d.join),
         }
     }
 
