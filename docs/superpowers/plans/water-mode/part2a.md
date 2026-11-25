@@ -45,7 +45,8 @@ only) today's liquid drawing.
 - The hold-together may not calm the liquid by damping whole-liquid motion or by taking speed off the grid. If
   still water moves, find what is out of balance (the trial's rule).
 - Speed and look numbers given to the owner as facts are measured on the RX 9070 XT. Estimates are called so.
-- `bpe-water` may use platform maths (it never feeds the balls' physics); it has no `clippy.toml` ban.
+- `bpe-water`'s own Rust uses `bpe_core::maths` like the other physics crates (as built: its `clippy.toml`
+  carries the same ban, so a pour's births round the same on every platform). The shaders' maths is the card's.
 - wgpu without a window goes through `bpe_gfx::headless_device`; tests use `bpe_gfx::test_device()`.
 - Do not build or install the exe. Tests: only this part's; CI runs the rest.
 - No built-in or example scenes for the owner: the scenes here are test scenes behind the `test-scenes` feature.
@@ -393,6 +394,22 @@ Inputs the spec implies but does not spell out. Each has a test in the task that
    drops nearest the solid were steered round it and slowed, the outer ones not: the film left as a fan (the
    feathery arc off the block's top corner). Only the part into the solid is taken off now; the arc is one line
    (`water_leaves_a_corner_as_one_arc`, which fails with the old line).
+
+7. **The spacing step took a drop's own share out twice** (found by the review). `own_slope` reads the nodes'
+   values held still, so a drop's own part in it is once its share, not the twice of its own density sloping as
+   it moves. With twice, every drop in thin liquid was nudged towards the grid's lines: up to 0.7 px and
+   4 px/s off its flight within 48 steps. `a_lone_drop_pulls_on_nothing` now checks every step of the flight
+   (0.0015 px off with the fix).
+
+### What the review found (one Opus review, all fixed)
+
+The spacing step's own share (7 above); the slip pass's "out of the solid" pointed the wrong way at the course's
+right and bottom edges (it only began to matter with fix 6); the bridge counted the solids in a drop's "liquid
+round it" where today's core does not, so a film on a shape was drawn as full liquid, without today's droplet
+look; the bridge's buffer could pass the card's limit above a million drops (capped at today's own cap); the
+hold nodes' weights could go below nothing for a drop within half a cell of the grid's very edge; a liquid
+heavier than 16 could clip the whole-number momentum sums at the speed cap (Weight is held to 16); a pour's
+direction used the platform's sine (now `bpe_core::maths`); and four comments or docs that no longer matched.
 
 ### Where the Water Weird layout stands (lavapipe, 6 px cells, drawn through the bridge)
 

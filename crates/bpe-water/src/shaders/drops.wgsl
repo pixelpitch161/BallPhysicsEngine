@@ -17,7 +17,7 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     // The hold-together's pull, from the hold nodes.
     if st.h.w > 0.5 {
         let base = base3(p.x);
-        let fx = p.x - vec2<f32>(base);
+        let fx = frac3(p.x, base);
         let w = weights3(fx);
         var dv = vec2<f32>(0.0);
         for (var a = 0; a < 3; a = a + 1) {
@@ -196,7 +196,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     var self_slope = vec2<f32>(0.0);
     {
         let base = base3(p.x);
-        let fx = p.x - vec2<f32>(base);
+        let fx = frac3(p.x, base);
         let w = weights3(fx);
         let dw = slopes3(fx);
         for (var a = 0; a < 3; a = a + 1) {
@@ -208,7 +208,9 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
                 mine = mine + wt * h.w;
                 own_slope = own_slope + g * h.w;
                 self_own = self_own + VOL * wt * wt;
-                self_slope = self_slope + 2.0 * VOL * wt * g;
+                // (The nodes' values held still, as `own_slope` reads them: once, not the twice of a
+                // drop's own density sloping as it moves.)
+                self_slope = self_slope + VOL * wt * g;
             }
         }
     }
@@ -232,8 +234,8 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         e = clamp(e, -0.5, tear);
     }
     // Thin liquid on its way evens out its own spacing: a drop moves a little, along the way it
-    // travels only, from where the other drops round it are many to where they are few (its place
-    // moves, never its speed, so nothing is stirred and nothing spreads sideways). A stream that
+    // travels only, from where the other drops round it are many to where they are few (nothing
+    // is stirred and nothing spreads sideways). A stream that
     // left a shape in bunches is one even thread a little further on. Not inside a body of liquid
     // (the pressure spaces that), and not at rest.
     var even = vec2<f32>(0.0);

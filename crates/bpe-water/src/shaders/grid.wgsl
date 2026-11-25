@@ -241,10 +241,11 @@ fn cs_slip(@builtin(global_invocation_id) id: vec3<u32>) {
         if own.y > 0.5 {
             let other = mean_of(1u, k - 1u, k, k - 1u + st.grid.x, k + st.grid.x);
             var n = solid_at(vec2<f32>(f32(x), f32(y) + 0.5)).xy;
+            // (At the course's shut edges "out of the solid" is into the course.)
             if shut && (x <= i32(EDGE) || x >= cols - 1 - i32(EDGE)) {
-                n = vec2<f32>(1.0, 0.0);
+                n = vec2<f32>(select(-1.0, 1.0, x <= i32(EDGE)), 0.0);
             } else if shut && (y < i32(EDGE) || y >= rows - 1 - i32(EDGE)) {
-                n = vec2<f32>(0.0, 1.0);
+                n = vec2<f32>(0.0, select(-1.0, 1.0, y < i32(EDGE)));
             }
             let flow = vec2<f32>(own.x, other.x);
             v.x = (flow - min(dot(flow, n), 0.0) * n).x;
@@ -257,9 +258,9 @@ fn cs_slip(@builtin(global_invocation_id) id: vec3<u32>) {
             let other = mean_of(0u, k, k + 1u, k - st.grid.x, k - st.grid.x + 1u);
             var n = solid_at(vec2<f32>(f32(x) + 0.5, f32(y))).xy;
             if shut && (y <= i32(EDGE) || y >= rows - 1 - i32(EDGE)) {
-                n = vec2<f32>(0.0, 1.0);
+                n = vec2<f32>(0.0, select(-1.0, 1.0, y <= i32(EDGE)));
             } else if shut && (x < i32(EDGE) || x >= cols - 1 - i32(EDGE)) {
-                n = vec2<f32>(1.0, 0.0);
+                n = vec2<f32>(select(-1.0, 1.0, x < i32(EDGE)), 0.0);
             }
             let flow = vec2<f32>(other.x, own.x);
             v.y = (flow - min(dot(flow, n), 0.0) * n).y;

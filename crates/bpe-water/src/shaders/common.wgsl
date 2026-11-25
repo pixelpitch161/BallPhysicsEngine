@@ -39,7 +39,7 @@ struct Step {
     grid: vec4<u32>,
     // dt, gravity x and y (cells a second squared), the speed cap (cells a second)
     time: vec4<f32>,
-    // the step's number, 0, 0, 0
+    // the step's number, whether the course's edges are shut (0 or 1), 0, 0
     flags: vec4<u32>,
     // over-relaxation, the share of a cell's excess pushed out a step, the most a step, the least
     // mass on a face for it to have a speed
@@ -163,6 +163,12 @@ fn base2(x: vec2<f32>, off: vec2<f32>) -> vec2<i32> {
 fn base3(x: vec2<f32>) -> vec2<i32> {
     let b = vec2<i32>(floor(x - 0.5));
     return clamp(b, vec2<i32>(0), vec2<i32>(i32(st.grid.x) - 3, i32(st.grid.y) - 3));
+}
+
+// Where `x` is among its 3 x 3 nodes. Held inside the kernel's own span: at the grid's very edge
+// the clamped start would put it outside, where a weight goes below nothing.
+fn frac3(x: vec2<f32>, base: vec2<i32>) -> vec2<f32> {
+    return clamp(x - vec2<f32>(base), vec2<f32>(0.5), vec2<f32>(1.5));
 }
 
 fn weights3(fx: vec2<f32>) -> array<vec2<f32>, 3> {

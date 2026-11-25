@@ -46,7 +46,7 @@ fn cs_hold_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let feel = st.feels[liquid_of(p)];
     let mass = feel.b.x * VOL;
     let base = base3(p.x);
-    let fx = p.x - vec2<f32>(base);
+    let fx = frac3(p.x, base);
     let w = weights3(fx);
     let dw = slopes3(fx);
     let k = st.time.x * VOL * pull_of(p);

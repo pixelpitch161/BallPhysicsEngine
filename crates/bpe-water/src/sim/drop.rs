@@ -1,5 +1,6 @@
 //! A drop, and where drops are born: a fill (a lattice of four drops a cell) and a pour.
 
+use bpe_core::maths::Maths;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
@@ -145,7 +146,7 @@ impl Pour {
         let owed = if owed.is_finite() { owed.min(Pour::MOST_A_STEP as f32 + 1.0) } else { 0.0 };
         let n = owed.floor() as u32;
         state.owed = owed - n as f32;
-        let way = Vec2::from_angle(self.aim.to_radians());
+        let way = way_at(self.aim);
         let across = way.perp();
         let mut dice = Dice::new(seed, step);
         let mut out = Vec::with_capacity(n as usize);
@@ -154,11 +155,16 @@ impl Pour {
             // Spread along the way it travels this step too, so drops don't come out in rows.
             let along = dice.unit() * self.speed * dt;
             let at = self.place + across * (u * self.width) + way * along;
-            let turn = (self.spread * dice.signed()).to_radians();
-            let v = Vec2::from_angle(self.aim.to_radians() + turn) * self.speed;
+            let v = way_at(self.aim + self.spread * dice.signed()) * self.speed;
             out.push(Drop::new(layout.to_grid(at), v / layout.cell, self.kind, state.born, self.colour));
             state.born = state.born.wrapping_add(1);
         }
         out
     }
+}
+
+/// The unit vector at `degrees`, the same on every platform.
+fn way_at(degrees: f32) -> Vec2 {
+    let (sin, cos) = degrees.to_radians().det_sin_cos();
+    Vec2::new(cos, sin)
 }

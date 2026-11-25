@@ -35,7 +35,9 @@ fn cs_bridge(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let p = drops[i];
     let at = i * DROP_FLOATS;
-    // The liquid round it (1 is full), with the solids' share: between the four cell middles.
+    // The drops' own liquid round it (1 is full), between the four cell middles. Without the
+    // solids' share, as today's core keeps it: the picture draws a drop with little liquid round
+    // it as a droplet, and a film on a wall is that too.
     let lo = clamp(vec2<i32>(floor(p.x - 0.5)), vec2<i32>(0), vec2<i32>(i32(br.grid.x) - 2, i32(br.grid.y) - 2));
     let f = clamp(p.x - 0.5 - vec2<f32>(lo), vec2<f32>(0.0), vec2<f32>(1.0));
     var full = 0.0;
@@ -43,7 +45,7 @@ fn cs_bridge(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var b = 0; b < 2; b = b + 1) {
             let k = u32(lo.y + b) * br.grid.x + u32(lo.x + a);
             let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
-            full = full + w * (vel_out[k].z + wallc[k].z);
+            full = full + w * vel_out[k].z;
         }
     }
     if !(full > 0.0) {

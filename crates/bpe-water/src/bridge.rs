@@ -54,6 +54,10 @@ fn out_buffer(device: &wgpu::Device, room: u32) -> wgpu::Buffer {
 }
 
 impl Bridge {
+    /// The most drops handed to the drawing (today's core's own cap: more would pass the card's
+    /// limit on one buffer).
+    pub const MOST: u32 = 1 << 20;
+
     /// A bridge for `water`, whose solids are `field` (the one the water was made with).
     pub fn new(water: &Water, field: &SolidField) -> Bridge {
         use wgpu::util::DeviceExt;
@@ -104,7 +108,7 @@ impl Bridge {
             wet[4 * nodes + n] = if near { *d } else { 0.0 };
             wet[5 * nodes + n] = if near { 1.0 } else { 0.0 };
         }
-        let room = water.count().max(1024).next_power_of_two();
+        let room = water.count().clamp(1024, Bridge::MOST).next_power_of_two();
         Bridge {
             pipeline,
             group_layout,
@@ -137,7 +141,7 @@ impl Bridge {
     pub fn update(&mut self, water: &Water) {
         let gpu = water.gpu();
         let device = gpu.device();
-        let count = water.count();
+        let count = water.count().min(Bridge::MOST);
         if count > self.room {
             self.room = count.next_power_of_two();
             self.out = out_buffer(device, self.room);

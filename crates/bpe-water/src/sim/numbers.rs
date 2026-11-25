@@ -191,7 +191,7 @@ impl Feel {
         let tear = numbers.tear_calm + (numbers.tear_spray - numbers.tear_calm) * spray;
         FeelGpu {
             a: [self.gravity, pull.min(cap).max(0.0), tear, self.stickiness.max(0.0)],
-            b: [self.weight.clamp(0.05, 20.0), 8.0 * self.settles * self.settles, 0.0, 0.0],
+            b: [self.weight.clamp(0.05, 16.0), 8.0 * self.settles * self.settles, 0.0, 0.0],
         }
     }
 }

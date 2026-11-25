@@ -22,7 +22,9 @@ fn pour_at(cell: f32) -> Option<Stream> {
     let (top, floor) = scenes::THIN_POUR;
     let (lo, hi) = (Vec2::new(-250.0, top + 40.0), Vec2::new(250.0, floor - 300.0));
     let air = probe::inside(&run.water.read(), &layout, lo, hi);
-    Some(Stream::of(&air, &layout, (lo.y, hi.y), 1.5, 6))
+    let s = Stream::of(&air, &layout, (lo.y, hi.y), 1.5, 6);
+    println!("a thin pour at {cell} px cells: {s:?}");
+    Some(s)
 }
 
 #[test]
@@ -59,6 +61,7 @@ fn a_sheet_stays_a_sheet() {
     let (lo, hi) = (Vec2::new(edge + 4.0, shelf - 40.0), Vec2::new(380.0, floor - 200.0));
     let air = probe::inside(&run.water.read(), &layout, lo, hi);
     let s = Stream::of(&air, &layout, (lo.y, hi.y), 1.5, 6);
+    println!("the sheet: {s:?}");
     assert!(s.drops > 100, "liquid runs off the shelf: {}", s.drops);
     assert!(s.whole > 0.6, "most of what is in the air is one piece: {}", s.whole);
     assert!(s.strays < 0.1, "with no rain of droplets: {}", s.strays);
@@ -76,6 +79,7 @@ fn water_leaves_a_corner_as_one_arc() {
     let (lo, hi) = (Vec2::new(230.0, -420.0), Vec2::new(400.0, -200.0));
     let air = probe::inside(&run.water.read(), &layout, lo, hi);
     let s = Stream::of(&air, &layout, (lo.y, hi.y), 1.5, 1);
+    println!("the corner's arc: {} drops, whole {}", s.drops, s.whole);
     assert!(s.drops > 30, "liquid flies off the corner: {}", s.drops);
     assert!(s.whole > 0.8, "as one piece: {}", s.whole);
     // How thick the arc is: the drops' spread in height in each 20 px of its way across.
@@ -86,36 +90,42 @@ fn water_leaves_a_corner_as_one_arc() {
         *span = (span.0.min(p.y), span.1.max(p.y));
     }
     let thickest = spans.iter().map(|(a, b)| (b - a).max(0.0)).fold(0.0, f32::max);
+    println!("the corner's arc: {thickest} px at its thickest");
     assert!(thickest < 30.0, "a thin arc all the way across, not a fan: {thickest} px at its thickest");
 }
 
 /// A drop by itself flies as if nothing else were there: the pull and the spacing act on nothing.
+/// Checked at every step of its flight (the spacing's push on a drop's own share would come and
+/// go with where it is in its cell), unstretched and stretched.
 #[test]
 fn a_lone_drop_pulls_on_nothing() {
     let Some(gpu) = card() else { return };
     let layout = Layout::cover(Vec2::splat(-200.0), Vec2::splat(200.0), 8.0);
     let field = SolidField::build(layout, &[]);
     let gravity = Vec2::new(0.0, 4000.0);
-    let mut water =
-        Water::new(gpu, &field, gravity, Numbers::default(), &[Feel { surface_pull: 1.0, ..Feel::default() }]);
-    let (x0, v0) = (Vec2::new(-150.3, -120.7), Vec2::new(900.0, -300.0));
-    let mut lone = Drop::new(layout.to_grid(x0), v0 / layout.cell, 0, 0, WATER);
-    // (Stretched: the most a pull could act on.)
-    lone.e = 0.5;
-    water.add(&[lone]);
-    let steps = 48u32;
-    for _ in 0..steps {
-        water.step();
+    // (Stretched by a half: the most a pull could act on. That one is held to the fixed-point
+    // sums' own rounding of the pull, the unstretched one to next to nothing.)
+    for (stretch, most) in [(0.0, 0.02), (0.5, 0.1)] {
+        let feels = [Feel { surface_pull: 1.0, ..Feel::default() }];
+        let mut water = Water::new(gpu.clone(), &field, gravity, Numbers::default(), &feels);
+        let (x0, v0) = (Vec2::new(-150.3, -120.7), Vec2::new(420.0, -300.0));
+        let mut lone = Drop::new(layout.to_grid(x0), v0 / layout.cell, 0, 0, WATER);
+        lone.e = stretch;
+        water.add(&[lone]);
+        let dt = water.numbers().dt();
+        // What the step does to one drop alone: speed first, then place.
+        let (mut x, mut v) = (x0, v0);
+        let (mut off, mut off_speed) = (0.0f32, 0.0f32);
+        for _ in 0..48 {
+            water.step();
+            v += gravity * dt;
+            x += v * dt;
+            let d = water.read()[0];
+            off = off.max((layout.to_world(Vec2::from(d.x)) - x).length());
+            off_speed = off_speed.max((Vec2::from(d.v) * layout.cell - v).length());
+        }
+        println!("a lone drop stretched {stretch}: at most {off} px and {off_speed} px/s off a free fall");
+        assert!(off < most, "stretched {stretch}, it is where a free fall puts it all the way: {off} px off");
+        assert!(off_speed < 4.0 * most, "at a free fall's speed: {off_speed} px/s off");
     }
-    let dt = water.numbers().dt();
-    // What the step does to one drop alone: speed first, then place.
-    let (mut x, mut v) = (x0, v0);
-    for _ in 0..steps {
-        v += gravity * dt;
-        x += v * dt;
-    }
-    let d = water.read()[0];
-    let at = layout.to_world(Vec2::from(d.x));
-    assert!((at - x).length() < 0.5, "it is where a free fall puts it: {at} against {x}");
-    assert!((Vec2::from(d.v) * layout.cell - v).length() < 2.0, "at a free fall's speed");
 }
