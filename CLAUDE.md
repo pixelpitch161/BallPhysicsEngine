@@ -84,9 +84,9 @@ Dependencies go bottom to top. `docs/notes/engine.md`, `sound.md` and `editor.md
 - `bpe-gfx`: the renderer: frames (`frame/`), the renderer itself (`renderer/`), the layered ball shader and in-ball
   programs, paths for shapes and text, trails, sprites, fields, liquid, swarm, lighting (`lighting/`,
   `shaders/lighting/`, pass names in `light_pass.rs`), effects, bake.
-- `bpe-water`: Water mode's own liquid physics on the card (drops on a staggered grid, the pressure solved, streams
-  kept whole), its solid field, and the bridge to today's liquid drawing. Nothing in the editor uses it yet
-  (`docs/notes/water.md`, part 2a).
+- `bpe-water`: Water mode's own liquid physics on the card: the all-drops engine (`Water`, every drop feeling its
+  neighbours, frames of steps it picks itself) and the grid core it replaces (`grid`), its solid field, and the
+  bridge to today's liquid drawing. Nothing in the editor uses it yet (`docs/notes/water.md`, parts 2a and C1).
 - `bpe-kit`: every plugin: one folder per thing kind in `src/things/`, per card kind in `src/modules/`, rule blocks
   in `src/rules/`, the text engine in `src/text/`, paint and gradients in `src/paint/`, starting cards in
   `starters.rs`, test scenes in `scenes.rs`.
