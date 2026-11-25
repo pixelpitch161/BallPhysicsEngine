@@ -156,6 +156,12 @@ that is exactly what was scrubbed.
 
 ### 3. The physics core
 
+**Replaced on 2026-11-25** by `2026-11-25-all-drops-water-core-design.md`. After the all-drops trial Aedan chose
+"All-drops engine. Middle, slider reaches both.", so Water mode's liquid is drops that feel their neighbours
+directly, with the grid's pressure solve working only underneath deep water. Below is the history that led there.
+"Same card, same result", Detail, the caps, "Same water at every detail", several liquids and moving solids still
+hold as written.
+
 Drops carried on a grid stay (it is what gives streams, splashes and colour carried drop by drop). What changes:
 
 - **Its own clock.** The water picks its own step from how fast it is moving. Nothing reads it back for balls,
@@ -406,8 +412,12 @@ part adds its own tools to the rail.
      and films. Pass mark and goal as in section 3, with the trial's table still holding, on the RX 9070 XT.
      Ends with side-by-side clips for Aedan. If the pass mark cannot be reached, 2a instead moves today's core
      into `bpe-water`.
-   - **2b. Water runs in a Water scene.** The Course with carving, Liquid (Feel), Pour (tap and fill at the
-     start), a plain look, in place of part 1's empty stand-in.
+   - **2a and 2a-2 were built** (PRs #225, #227) and are superseded by the all-drops core: **C1** the engine
+     proper, **C2** deep water and landings, **C3** the plain drawing
+     (`2026-11-25-all-drops-water-core-design.md`, "Parts"). C2 and C3 run side by side after C1.
+   - **2b. Water runs in a Water scene** (after C2 and C3, on the all-drops engine and the plain drawing). The
+     Course with carving, Liquid (Feel), Pour (tap and fill at the start), a plain look, in place of part 1's
+     empty stand-in.
 3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
 4. **Everything today's liquid can do.** Mixing and Un-mix, rain, drips, bursts, drains, leaks, Forces, heat,
    freezing, drying, stains, fizz, wet marks.
@@ -421,13 +431,14 @@ part adds its own tools to the rail.
 10. **Video mode and clean-up.** Water clips in a video and the Scenes window, and, once Aedan agrees Water mode
     is at least as good, removing the old Liquid thing from Balls scenes.
 
-Order: 1, 2a, 2b, 3 in a row. Then 4, 5, 6 and 7 side by side (the Molten look's crust from heat is finished by
-whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after part 8.
+Order: 1, 2a, then the all-drops core (C1, then C2 and C3 side by side), 2b, 3 in a row. Then 4, 5, 6 and 7
+side by side (the Molten look's crust from heat is finished by whichever of 4 and 6 lands second). Then 8, 9,
+10. Aedan can export a finished water video after part 8.
 
 ## Risks
 
-- **Thin streams on the new core** are the main risk of the whole build. Part 2a exists to settle it first, with
-  a pass mark Aedan can see and today's core as the way back.
+- **Thin streams on the new core** were the main risk of the whole build. The all-drops trial settled the method
+  (2026-11-25); the core's own risks are in `2026-11-25-all-drops-water-core-design.md`.
 - **Make final may be slow.** Nobody has timed 1.4 million drops yet. If it is too slow to be pleasant, the
   default final becomes coarser and the finest setting stays for the last pass before a post.
 - **Take size.** If packing cannot get the size down, finals store every other frame.
