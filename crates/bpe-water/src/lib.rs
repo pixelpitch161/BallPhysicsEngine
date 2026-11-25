@@ -10,6 +10,8 @@ pub mod bridge;
 pub mod drop;
 pub mod drops;
 pub mod grid;
+#[cfg(feature = "test-scenes")]
+pub mod plain;
 pub mod probe;
 #[cfg(feature = "test-scenes")]
 pub mod scenes;

@@ -268,6 +268,18 @@ impl Water {
         self.numbers = numbers;
     }
 
+    /// What the bridge to today's drawing reads of this body.
+    pub fn feed(&self) -> crate::bridge::Feed<'_> {
+        let (drops, wallc, vel_out) = self.buffers();
+        crate::bridge::Feed {
+            device: self.gpu().device(),
+            queue: self.gpu().queue(),
+            layout: self.layout(),
+            count: self.count(),
+            buffers: crate::bridge::FeedBuffers::Grid { drops, wallc, vel_out },
+        }
+    }
+
     pub fn gpu(&self) -> &Arc<WaterGpu> {
         &self.gpu
     }
