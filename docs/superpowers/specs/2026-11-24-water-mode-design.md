@@ -149,7 +149,8 @@ that is exactly what was scrubbed.
 - **Size.** A course is measured in screens. One screen is 1080 x 1920. Up to 8 screens on a side and 16 screens
   in all (**my call**). Only the tiles that hold liquid are stepped and stored, so an empty stretch of a long
   course costs nothing. Tiles are a physics part of their own (2c), built before Make final and big courses,
-  since the saved final and the course size both depend on them; the editor's tools for courses over one screen come in a later part.
+  since the saved final and the course size both depend on them; the editor's tools for courses over one screen
+  come in a later part.
 - **Camera.** The stage shows the whole course beside the camera's shot, as in the mockups. The Camera's position
   and zoom are keyframed; the **Camera path** tool drops those keyframes by clicking on the course. **Follow**
   can instead keep the shot on the water's front, on a Piece, or on the busiest water, with Lead and Smoothness.
@@ -435,8 +436,9 @@ part adds its own tools to the rail.
 10. **Video mode and clean-up.** Water clips in a video and the Scenes window, and, once Aedan agrees Water mode
     is at least as good, removing the old Liquid thing from Balls scenes.
 
-Order: 1, 2a, 2a-2, 2b, 3 in a row (2c beside 3 to 7). Then 4, 5, 6 and 7 side by side (the Molten look's crust from heat is finished by
-whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after part 8.
+Order: 1, 2a, 2a-2, 2b, 3 in a row (2c beside 3 to 7). Then 4, 5, 6 and 7 side by side (the Molten look's crust from
+heat is finished by whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after
+part 8.
 
 ## Risks
 
