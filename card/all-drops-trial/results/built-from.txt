@@ -1,0 +1,5 @@
+Built from commit e6ee31b13fc695c80b6615faf7fedfbe41d5cea9 (origin/claude/project-thread-awquwz), cross-built in WSL (bpe-ci) for x86_64-pc-windows-gnu, release.
+Programs: alldrops-940bfe38c16a4d0e.exe (bpe-water), water_core-8fa1770cc49a481f.exe (bpe-kit).
+Card line from the logs: AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+Windows driver version: 32.0.32029.2010 (Windows 11 Home 10.0.26300). ffmpeg 9.0.2 (gyan.dev full build) joined the films.
+Run natively on Windows on 2026-11-25; times in group-times.txt are this PC's local clock.

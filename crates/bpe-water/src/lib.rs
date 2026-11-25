@@ -6,11 +6,15 @@
 //! the editor: a later part turns a Water scene into a [`SolidField`], pours and [`Feel`]s.
 
 pub mod bridge;
+pub mod drops;
+pub mod plain;
 pub mod probe;
 #[cfg(feature = "test-scenes")]
 pub mod scenes;
 pub mod sim;
 pub mod solid;
+#[cfg(feature = "test-scenes")]
+pub mod trial;
 
 pub use sim::drop::{Drop, Pour, Poured, STOPS, WATER, fill};
 pub use sim::numbers::{Feel, Numbers};

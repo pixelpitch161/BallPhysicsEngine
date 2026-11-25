@@ -1,0 +1,180 @@
+﻿
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	engine	seconds	drops	rms px/s	fastest	top	broken	wall s
+slope	6	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	6	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	6	grid	1.00	1319	1975.9	3276	-700.2	0	0.2
+slope	6	drops	1.00	1410	1234.1	2779	-699.2	0	0.3
+slope	6	grid	2.00	2639	1688.6	3273	-680.4	0	0.3
+slope	6	drops	2.00	2825	1224.3	2792	-678.0	0	0.7
+slope	6	grid	3.00	3959	1506.2	3253	-658.5	0	0.5
+slope	6	drops	3.00	4240	1024.9	3023	-657.6	0	1.1
+# slope-c6-shift0	4 frames	physics alone: grid 0.5 s, drops 1.1 s
+slope	3	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	3	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	3	grid	1.00	5279	2071.2	4194	-701.2	0	0.4
+slope	3	drops	1.00	5085	1442.1	4007	-700.0	0	0.9
+slope	3	grid	2.00	10559	1635.7	3664	-681.6	0	0.8
+slope	3	drops	2.00	10179	1370.7	3953	-679.9	0	1.7
+slope	3	grid	3.00	15839	1289.7	3374	-660.8	0	1.2
+slope	3	drops	3.00	15273	1132.6	3371	-657.7	0	2.6
+# slope-c3-shift0	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+weird	6	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	6	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	6	grid	1.00	1810	1533.7	3118	-550.3	0	0.2
+weird	6	drops	1.00	1692	1343.9	2955	-549.6	0	0.3
+weird	6	grid	2.00	3620	1458.1	3194	-530.4	0	0.3
+weird	6	drops	2.00	3390	1217.8	2943	-529.2	0	0.7
+weird	6	grid	3.00	5430	1234.3	3143	-509.3	0	0.5
+weird	6	drops	3.00	5088	989.6	3058	-507.7	0	1.1
+# weird-c6-shift0	4 frames	physics alone: grid 0.5 s, drops 1.1 s
+weird	3	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	3	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	3	grid	1.00	7240	1558.3	3181	-553.5	0	0.4
+weird	3	drops	1.00	7345	1408.0	6588	-550.8	0	0.9
+weird	3	grid	2.00	14481	1560.5	3470	-531.6	0	0.8
+weird	3	drops	2.00	14703	1338.1	3294	-530.5	0	1.7
+weird	3	grid	3.00	21722	1246.0	3440	-510.8	0	1.2
+weird	3	drops	3.00	22061	1049.1	4499	-509.1	0	2.6
+# weird-c3-shift0	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 14.91s
+
+# shots took 15 s, exit 0: {"WATER_SECONDS":3,"WATER_SHIFT":"0","WATER_FILM":0,"WATER_CELLS":"6,3","WATER_TAG":"shift0","WATER_FPS":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_SHOTS":"slope,weird","WATER_STICK":"0.5","WATER_STILLS":"3"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	engine	seconds	drops	rms px/s	fastest	top	broken	wall s
+slope	6	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	6	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	6	grid	1.00	1319	1889.1	3151	-700.1	0	0.1
+slope	6	drops	1.00	1410	1246.1	2718	-699.2	0	0.3
+slope	6	grid	2.00	2639	1634.4	3126	-680.5	0	0.3
+slope	6	drops	2.00	2825	1240.7	3008	-678.0	0	0.6
+slope	6	grid	3.00	3959	1341.7	3175	-658.5	0	0.4
+slope	6	drops	3.00	4240	966.1	2875	-657.6	0	1.0
+# slope-c6-shift0.25	4 frames	physics alone: grid 0.4 s, drops 1.0 s
+slope	3	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	3	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	3	grid	1.00	5279	1935.3	3590	-701.2	0	0.4
+slope	3	drops	1.00	5085	1447.7	5102	-700.0	0	0.8
+slope	3	grid	2.00	10559	1662.5	3394	-681.7	0	0.8
+slope	3	drops	2.00	10179	1333.3	4803	-679.9	0	1.7
+slope	3	grid	3.00	15839	1297.1	3724	-660.9	0	1.2
+slope	3	drops	3.00	15273	1147.2	3818	-657.7	0	2.6
+# slope-c3-shift0.25	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+weird	6	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	6	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	6	grid	1.00	1810	1538.1	3112	-550.4	0	0.2
+weird	6	drops	1.00	1692	1334.1	2867	-549.6	0	0.3
+weird	6	grid	2.00	3620	1485.3	3328	-530.4	0	0.3
+weird	6	drops	2.00	3390	1228.7	3569	-529.2	0	0.7
+weird	6	grid	3.00	5430	1244.0	3152	-509.5	0	0.5
+weird	6	drops	3.00	5088	986.8	3105	-507.7	0	1.1
+# weird-c6-shift0.25	4 frames	physics alone: grid 0.5 s, drops 1.1 s
+weird	3	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	3	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	3	grid	1.00	7240	1587.5	3526	-558.3	0	0.4
+weird	3	drops	1.00	7345	1406.3	4314	-550.8	0	0.8
+weird	3	grid	2.00	14481	1472.3	3310	-531.5	0	0.8
+weird	3	drops	2.00	14703	1318.2	3368	-530.5	0	1.7
+weird	3	grid	3.00	21722	1270.8	3849	-510.7	0	1.2
+weird	3	drops	3.00	22061	1075.2	3411	-509.1	0	2.6
+# weird-c3-shift0.25	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 14.56s
+
+# shots took 15 s, exit 0: {"WATER_SECONDS":3,"WATER_SHIFT":"0.25","WATER_FILM":0,"WATER_CELLS":"6,3","WATER_TAG":"shift0.25","WATER_FPS":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_SHOTS":"slope,weird","WATER_STICK":"0.5","WATER_STILLS":"3"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	engine	seconds	drops	rms px/s	fastest	top	broken	wall s
+slope	6	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	6	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	6	grid	1.00	1319	1922.5	3217	-700.2	0	0.2
+slope	6	drops	1.00	1410	1239.7	2780	-699.2	0	0.3
+slope	6	grid	2.00	2639	1629.1	3210	-680.4	0	0.3
+slope	6	drops	2.00	2825	1230.6	4342	-678.0	0	0.7
+slope	6	grid	3.00	3959	1459.3	3190	-658.5	0	0.5
+slope	6	drops	3.00	4240	1017.8	2777	-657.6	0	1.0
+# slope-c6-shift0.5	4 frames	physics alone: grid 0.5 s, drops 1.0 s
+slope	3	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	3	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	3	grid	1.00	5279	1922.6	3542	-701.3	0	0.4
+slope	3	drops	1.00	5085	1475.6	3798	-700.0	0	0.9
+slope	3	grid	2.00	10559	1626.6	3936	-681.8	0	0.8
+slope	3	drops	2.00	10179	1362.2	3898	-679.9	0	1.7
+slope	3	grid	3.00	15839	1332.7	3526	-660.7	0	1.2
+slope	3	drops	3.00	15273	1120.6	3704	-657.7	0	2.6
+# slope-c3-shift0.5	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+weird	6	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	6	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	6	grid	1.00	1810	1530.3	3130	-550.3	0	0.2
+weird	6	drops	1.00	1692	1337.8	2986	-549.6	0	0.3
+weird	6	grid	2.00	3620	1503.1	3088	-530.4	0	0.3
+weird	6	drops	2.00	3390	1222.1	3459	-529.2	0	0.7
+weird	6	grid	3.00	5430	1256.5	3398	-509.2	0	0.5
+weird	6	drops	3.00	5088	983.3	3085	-507.7	0	1.1
+# weird-c6-shift0.5	4 frames	physics alone: grid 0.5 s, drops 1.1 s
+weird	3	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	3	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	3	grid	1.00	7240	1578.2	3310	-553.1	0	0.4
+weird	3	drops	1.00	7345	1411.3	4188	-550.8	0	0.9
+weird	3	grid	2.00	14481	1528.5	3543	-531.7	0	0.8
+weird	3	drops	2.00	14703	1309.0	4304	-530.5	0	1.7
+weird	3	grid	3.00	21722	1287.2	3316	-510.7	0	1.2
+weird	3	drops	3.00	22061	1080.1	3941	-509.1	0	2.6
+# weird-c3-shift0.5	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 14.92s
+
+# shots took 15 s, exit 0: {"WATER_SECONDS":3,"WATER_SHIFT":"0.5","WATER_FILM":0,"WATER_CELLS":"6,3","WATER_TAG":"shift0.5","WATER_FPS":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_SHOTS":"slope,weird","WATER_STICK":"0.5","WATER_STILLS":"3"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	engine	seconds	drops	rms px/s	fastest	top	broken	wall s
+slope	6	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	6	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	6	grid	1.00	1319	1956.2	3237	-700.0	0	0.2
+slope	6	drops	1.00	1410	1233.8	2946	-699.2	0	0.3
+slope	6	grid	2.00	2639	1669.1	3149	-680.4	0	0.3
+slope	6	drops	2.00	2825	1255.8	3096	-678.0	0	0.6
+slope	6	grid	3.00	3959	1569.8	3176	-658.5	0	0.5
+slope	6	drops	3.00	4240	1024.6	2908	-657.6	0	1.0
+# slope-c6-shift0.75	4 frames	physics alone: grid 0.5 s, drops 1.0 s
+slope	3	grid	0.00	0	0.0	0	0.0	0	0.0
+slope	3	drops	0.00	0	0.0	0	0.0	0	0.0
+slope	3	grid	1.00	5279	1982.6	4867	-701.2	0	0.4
+slope	3	drops	1.00	5085	1444.9	4321	-700.0	0	0.8
+slope	3	grid	2.00	10559	1601.5	3373	-681.5	0	0.8
+slope	3	drops	2.00	10179	1325.9	4048	-679.9	0	1.8
+slope	3	grid	3.00	15839	1285.2	3461	-660.9	0	1.2
+slope	3	drops	3.00	15273	1101.4	4419	-657.7	0	2.6
+# slope-c3-shift0.75	4 frames	physics alone: grid 1.2 s, drops 2.6 s
+weird	6	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	6	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	6	grid	1.00	1810	1512.4	3096	-550.4	0	0.2
+weird	6	drops	1.00	1692	1348.4	2942	-549.6	0	0.3
+weird	6	grid	2.00	3620	1450.0	3199	-530.5	0	0.3
+weird	6	drops	2.00	3390	1172.8	3329	-529.2	0	0.7
+weird	6	grid	3.00	5430	1252.9	3180	-509.4	0	0.5
+weird	6	drops	3.00	5088	1005.1	3175	-507.7	0	1.1
+# weird-c6-shift0.75	4 frames	physics alone: grid 0.5 s, drops 1.1 s
+weird	3	grid	0.00	0	0.0	0	0.0	0	0.0
+weird	3	drops	0.00	0	0.0	0	0.0	0	0.0
+weird	3	grid	1.00	7240	1608.1	3343	-551.1	0	0.4
+weird	3	drops	1.00	7345	1416.0	4683	-550.8	0	0.8
+weird	3	grid	2.00	14481	1552.9	3940	-532.6	0	0.8
+weird	3	drops	2.00	14703	1283.3	4739	-530.5	0	1.6
+weird	3	grid	3.00	21722	1242.5	3503	-510.7	0	1.2
+weird	3	drops	3.00	22061	1068.4	4298	-509.1	0	2.5
+# weird-c3-shift0.75	4 frames	physics alone: grid 1.2 s, drops 2.5 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 15.41s
+
+# shots took 15 s, exit 0: {"WATER_SECONDS":3,"WATER_SHIFT":"0.75","WATER_FILM":0,"WATER_CELLS":"6,3","WATER_TAG":"shift0.75","WATER_FPS":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_SHOTS":"slope,weird","WATER_STICK":"0.5","WATER_STILLS":"3"}

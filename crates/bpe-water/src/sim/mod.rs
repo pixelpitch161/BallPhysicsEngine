@@ -451,6 +451,14 @@ impl Water {
         new
     }
 
+    /// Waits until the card has done every step sent so far (for timing).
+    pub fn wait(&mut self) {
+        if let Some(last) = self.in_flight.pop_back() {
+            let _ = self.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(last), timeout: None });
+        }
+        self.in_flight.clear();
+    }
+
     /// Waits for the card and reads `bytes` of `buffer` (tests and measuring only).
     fn read_buffer(&self, buffer: &wgpu::Buffer, bytes: u64) -> Vec<u8> {
         let device = &self.gpu.device;

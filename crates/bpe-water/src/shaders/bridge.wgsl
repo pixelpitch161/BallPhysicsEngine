@@ -13,7 +13,7 @@ struct Drop {
 };
 
 struct Bridge {
-    // columns and rows of nodes, drops, 0
+    // columns and rows of nodes, drops, 1 when a drop holds its own fullness (the all-drops trial)
     grid: vec4<u32>,
 };
 
@@ -41,11 +41,17 @@ fn cs_bridge(@builtin(global_invocation_id) id: vec3<u32>) {
     let lo = clamp(vec2<i32>(floor(p.x - 0.5)), vec2<i32>(0), vec2<i32>(i32(br.grid.x) - 2, i32(br.grid.y) - 2));
     let f = clamp(p.x - 0.5 - vec2<f32>(lo), vec2<f32>(0.0), vec2<f32>(1.0));
     var full = 0.0;
+    var c = p.c;
+    if br.grid.w == 1u {
+        full = p.c.x;
+        c = vec4<f32>(0.0);
+    } else {
     for (var a = 0; a < 2; a = a + 1) {
-        for (var b = 0; b < 2; b = b + 1) {
-            let k = u32(lo.y + b) * br.grid.x + u32(lo.x + a);
-            let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
-            full = full + w * vel_out[k].z;
+            for (var b = 0; b < 2; b = b + 1) {
+                let k = u32(lo.y + b) * br.grid.x + u32(lo.x + a);
+                let w = select(1.0 - f.x, f.x, a == 1) * select(1.0 - f.y, f.y, b == 1);
+                full = full + w * vel_out[k].z;
+            }
         }
     }
     if !(full > 0.0) {
@@ -55,10 +61,10 @@ fn cs_bridge(@builtin(global_invocation_id) id: vec3<u32>) {
     out[at + 1u] = p.x.y;
     out[at + 2u] = p.v.x;
     out[at + 3u] = p.v.y;
-    out[at + 4u] = p.c.x;
-    out[at + 5u] = p.c.y;
-    out[at + 6u] = p.c.z;
-    out[at + 7u] = p.c.w;
+    out[at + 4u] = c.x;
+    out[at + 5u] = c.y;
+    out[at + 6u] = c.z;
+    out[at + 7u] = c.w;
     out[at + 8u] = f32(p.colour & 255u) / 255.0;
     out[at + 9u] = f32((p.colour >> 8u) & 255u) / 255.0;
     out[at + 10u] = f32((p.colour >> 16u) & 255u) / 255.0;

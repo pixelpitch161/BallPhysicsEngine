@@ -1,0 +1,44 @@
+﻿
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (but `rate`: the steps a second follow the cell size, printed by scene)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+# file	Fine	the new core steps 480 times a second (6 px cells)
+# file	Fine	the drops core steps 960 times a second (6 px cells)
+file	Fine	old	2	3620	2083	109	0.191	0.046	1624	0 0 0 0 0 154
+file	Fine	new	2	3620	1957	83	0.208	0.036	1514	0 0 0 0 0 214
+file	Fine	drops	2	3390	1609	330	0.214	0.227	1152	0 15 9 0 0 0
+file	Fine	old	4	7240	5392	86	0.749	0.011	1578	0 0 0 0 0 717
+file	Fine	new	4	7240	4751	33	0.506	0.004	1543	0 0 0 0 0 628
+file	Fine	drops	4	6786	3907	321	0.352	0.094	1674	0 0 0 0 0 510
+file	Fine	old	6	10861	8676	69	0.868	0.007	1603	0 0 0 0 0 795
+file	Fine	new	6	10861	7886	14	0.879	0.001	1550	0 0 0 0 0 796
+file	Fine	drops	6	10182	7182	310	0.786	0.048	1622	0 0 0 0 0 796
+# C:\Users\aedan\AppData\Local\Temp\alldrops-trial\out\file-fine	181 frames	28 s in all	today's core 1.1 s	the new core with its pictures 3.9 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 33.81s
+
+# side_by_side took 35 s, exit 0: {"WATER_SCENE":"C:\\Users\\aedan\\AppData\\Local\\Temp\\alldrops-trial\\weird.ron","WATER_SECONDS":6,"WATER_SHOTS":"file","WATER_SIZE":"540x960","WATER_FPS":30,"WATER_DETAILS":"fine","WATER_MEASURE":"2,4,6","WATER_STICK":"0.5","WATER_CORES":"old,new,drops"}
+
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (but `rate`: the steps a second follow the cell size, printed by scene)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+# file	Extreme	the new core steps 960 times a second (3 px cells)
+# file	Extreme	the drops core steps 1920 times a second (3 px cells)
+file	Extreme	old	2	14481	10171	155	0.219	0.012	1616	0 0 0 0 0 219
+file	Extreme	new	2	14481	9804	384	0.157	0.040	1139	0 19 12 0 0 0
+file	Extreme	drops	2	14703	9380	373	0.167	0.033	1138	0 18 11 0 0 0
+file	Extreme	old	4	28963	23283	103	0.759	0.004	1583	0 0 0 0 0 814
+file	Extreme	new	4	28963	23253	254	0.680	0.011	1513	0 0 0 0 0 743
+file	Extreme	drops	4	29406	22825	253	0.561	0.008	1673	0 0 0 0 0 583
+file	Extreme	old	6	43444	37333	89	0.855	0.002	1518	0 0 0 0 0 814
+file	Extreme	new	6	43444	37248	155	0.767	0.004	1575	0 0 0 0 0 697
+file	Extreme	drops	6	44122	36821	301	0.831	0.006	1622	0 0 0 0 0 814
+# C:\Users\aedan\AppData\Local\Temp\alldrops-trial\out\file-extreme	181 frames	34 s in all	today's core 2.4 s	the new core with its pictures 8.7 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 34.03s
+
+# side_by_side took 34 s, exit 0: {"WATER_SCENE":"C:\\Users\\aedan\\AppData\\Local\\Temp\\alldrops-trial\\weird.ron","WATER_SECONDS":6,"WATER_SHOTS":"file","WATER_SIZE":"540x960","WATER_FPS":30,"WATER_DETAILS":"extreme","WATER_MEASURE":"2,4,6","WATER_STICK":"0.5","WATER_CORES":"old,new,drops"}
