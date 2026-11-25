@@ -99,22 +99,25 @@ fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>) {
     let q = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5);
     let walls = wallc[k].z;
     let rho = liquid + 1.0 - (1.0 - walls) * (1.0 - edge_share(q));
-    // How full the place is: the liquid and solids of this cell and the eight round it, a full
-    // one 1. In the body of a pool it is 1; at a flat surface, in a film on a solid and in a
-    // thread in the air it is well under.
-    var near = 0.0;
+    // How full the place is: the liquid of this cell and the eight round it, as a share of the room
+    // the solids leave there. In the body of a pool it is 1; at a flat surface, in a film on a solid
+    // and in a thread in the air it is well under. (With the solids counted as liquid a film on a
+    // slope or a curve read as a body, and the full push kicked it off in bursts.)
+    var held = 0.0;
+    var room = 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
-            var full = 1.0;
             if x + dx >= 0 && y + dy >= 0 && x + dx < cols - 1 && y + dy < rows - 1 {
                 let n = node(x + dx, y + dy);
                 let own = f32(atomicLoad(&sums[SUMS * n + 4u])) / S_M;
                 let at = vec2<f32>(f32(x + dx) + 0.5, f32(y + dy) + 0.5);
-                full = min(own + 1.0 - (1.0 - wallc[n].z) * (1.0 - edge_share(at)), 1.0);
+                let free = (1.0 - wallc[n].z) * (1.0 - edge_share(at));
+                held = held + min(own, free);
+                room = room + free;
             }
-            near = near + full / 9.0;
         }
     }
+    let near = held / max(room, 0.5);
     let solved = liquid > 1e-4 && diag > 1e-3;
     var want = 0.0;
     var p = 0.0;

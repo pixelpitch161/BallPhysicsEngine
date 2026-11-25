@@ -82,7 +82,7 @@ impl Default for Numbers {
             omega: 1.0,
             push_out: 0.25,
             most_out: 0.1,
-            fill: 0.25,
+            fill: 1.0,
             most_out_thin: 0.005,
             face_floor: 0.005,
             sub_move: 0.4,
