@@ -1,0 +1,44 @@
+﻿
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	engine	drops	steps a second	wall s for a scene second
+weird	6	grid	5430	480	0.159
+weird	6	drops	5088	960	0.400
+weird	3	grid	21722	960	0.390
+weird	3	drops	22061	1920	0.866
+slope	6	grid	3959	480	0.150
+slope	6	drops	4240	960	0.354
+slope	3	grid	15839	960	0.388
+slope	3	drops	15273	1920	0.811
+ledge	6	grid	9050	480	0.152
+ledge	6	drops	9328	960	0.363
+ledge	3	grid	36203	960	0.391
+ledge	3	drops	35637	1920	0.853
+pool	6	grid	41180	480	0.180
+pool	6	drops	40886	960	0.425
+pool	3	grid	165126	960	0.529
+pool	3	drops	165690	1920	1.472
+course	6	grid	21097	480	0.164
+course	6	drops	21097	960	0.389
+course	3	grid	84534	960	0.482
+course	3	drops	84534	1920	1.002
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 28.78s
+
+# pace took 29 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,ledge,pool,course","WATER_CELLS":"6,3","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	engine	drops	steps a second	wall s for a scene second
+weird	2	grid	48875	1440	0.829
+weird	2	drops	48355	1920	0.956
+slope	2	grid	35638	1440	0.813
+slope	2	drops	35630	1920	0.996
+pool	2	grid	373138	1440	1.381
+pool	2	drops	373098	1920	2.507
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 20.65s
+
+# pace took 21 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,pool","WATER_CELLS":"2","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}
