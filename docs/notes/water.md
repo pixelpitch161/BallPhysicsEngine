@@ -222,7 +222,8 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
 - **The step** (`src/drops/shaders/`, joined in `drops/passes.rs`): every drop falls and moves to where it would
   be in short sub-moves kept off the solids (`cs_predict`, which also copies in the step's births); the drops
   are counted into bins one reach wide and sorted by bin and then by serial (`cs_sum_a/b/c`, `cs_scatter`,
-  `cs_order`, no cap on drops a bin, the bin of drops that left last); four sweeps of position-based pressure,
+  `cs_order`, no cap on drops a bin, the bin of drops that left last and unranked: they take no part, so
+  their order needn't repeat, and `read()` returns only drops in the course); four sweeps of position-based pressure,
   one-sided (a multiplier never above nothing), the solids counted by their share from a table
   (`cs_lambda`, `cs_apply`); then the speeds, their evening by Thickness, the skin (a pull between drops and a
   bend term), grip and drag (`cs_finish`). The spiky kernel for both density and push, softening `eps` 4.
@@ -243,7 +244,9 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
   pours (copies carry them) and builds every step's births on the host. A spout with no room (judged a reach
   behind it, counting the new drop itself) owes at most `held_rows` rows. `Pour::width` is the stream's width:
   Rate × Width is applied by whoever builds the pour.
-- **Fills** (`fill_stacked`): each lattice column stacked on the face below it, a quarter cell off.
+- **Fills** (`fill_stacked`): the box's resting lattice, each column set down on a face within `FILL_SNAP`
+  (16 px, or two cells) below the box's foot, a quarter cell off it, keeping the box's amount; a column over an
+  opening or in mid-air stays in the box, one whose foot is in a solid starts on its face.
 - **Thin walls are 1.5 cells thick for this engine** (`drops::LEAST_WALL`, `SolidField::build_least`): a one-cell
   wall can have a hole in its gradient where its middle falls between node rows, and fast drops crossed there.
 - **A step's end joined with the next fall** (`cs_finish_predict`, births by `cs_born`): one pass fewer a step,
@@ -252,11 +255,16 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
   `plain.rs`), `pace` (wall seconds a scene second, steps a frame, ms a step), `pools`, `openings`, `repeats`; the
   trial's shots are `scenes::shot`. `water_core.rs` plays `old`, `grid` and `drops` side by side through the
   bridge (`Bridge::new(device, field)`, `update(&body.feed())`, `source()`); its all-drops body pours its own rows
-  from today's spouts. The card run's script is the plan's Task 8 (`card/all-drops-core-c1/run.ps1` while the
-  pull request is open).
+  from today's spouts, gets walls `LEAST_WALL` cells thick, and leaves out today's starting drops inside that
+  thicker band (they would be thrown out of it). Through the bridge a drop's fullness counts the solids' share,
+  so films on walls draw a little fuller than the grid core's (C3 removes the bridge). The card run's script
+  is the plan's Task 8 (`card/all-drops-core-c1/run.ps1` while the pull request is open).
 - **Handed to C2** (measured here): a pool still squeezes a few per cent under its weight and bounces for about
   0.2 s after the start, its speed peaking near 100 px/s; during that bounce a drop by a side wall is thrown up
   the wall, the faster the wider the gap between the wall and the fill's nearest column (0.67 cell: 600 px/s).
+  That gap is the fill's (its columns are the global lattice, not snapped to side faces): C2's fill should sit
+  snugly against side faces as well as on the floor. A restart point must keep `nf` too (the bend term reads
+  the step before's `n.xy`).
 - **Pitfall**: a new physics number goes in `drops::numbers::Numbers`, its default, `from_env_for` and, if a
   shader reads it, `FrameGpu` (matching `Fr` in `common.wgsl`). A pass lists its bindings in
   `passes.rs::ENTRIES`, at most 8 storage buffers.
@@ -267,6 +275,8 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
 pour, copied at frame 7); a heap on one point spreads and repeats; a lone drop falls freely; a thin wall holds a
 2000 px/s pour; an empty body moves on; the clock takes more steps for faster water; drops that leave are
 counted out; a tap pours its amount, is born even, and is narrower turned down; a submerged spout holds back; a
-fill is stacked on the floor; the joined pass changes nothing. Unit tests in `drop.rs` (rows pour their amount,
-a thin tap pours single drops, a pour starts at its time, rows are even), `drops/numbers.rs` and
+fill is stacked on the floor; the joined pass changes nothing; a run whose steps a frame change while drops
+leave the course repeats (twice and from a copy). Unit tests in `drop.rs` (rows pour their amount,
+a thin tap pours single drops, a pour starts at its time, rows are even, a fill is set down on a floor but not
+through an opening, a fill in mid-air stays in its box), `drops/numbers.rs` and
 `drops/passes.rs`. `bpe-kit/tests/water_core.rs::the_bridge_draws_every_drop` runs for both engines.
