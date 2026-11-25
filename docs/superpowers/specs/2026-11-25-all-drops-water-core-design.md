@@ -317,8 +317,8 @@ The measuring may find other causes. The fix follows what it finds, and the plan
   Below one drop the stream becomes a row of single drops with gaps between them.
 - **Spread** fans the columns smoothly, as `Pour::fanned` does today.
 - **Only where there is room (My call).** A drop is not born where the liquid is already full (a spout under the
-  surface). What it owes is kept and born when there is room, judged from the water as it was two frames before,
-  the same way the clock reads.
+  surface). What it owes is kept, up to a few rows so a freed spout never bursts, and born when there is room,
+  judged from the water as it was two frames before, the same way the clock reads.
 - **A fill at the start** is the fill box laid with the resting lattice, its lowest row a quarter cell off the
   floor. Every birth (later rain, drips and bursts in part 4 as well) is a patch of the lattice the resting
   density is worked out from. A drop's place never comes from a random number.
