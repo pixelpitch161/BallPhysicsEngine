@@ -393,3 +393,8 @@ Inputs the spec implies but does not spell out. Each has a test in the task that
   still box no longer rested (3.2 to 3.6 px/s against 0.3 to 0.5, and its top moved by up to 8 px), and the
   splash's loops stayed. A pool's own surface is thin liquid too, so anything that loosens thin liquid's
   fullness loosens every pool's top.
+- **Thin liquid resisting only a share of its squeeze (a quarter), to soften where a flying film lands on the
+  disc.** The pour's turn on the block became lossy: its films slowed, the arc off the block's corner fell short
+  and curled round the corner, and the spikes over the disc stayed.
+- A weaker push everywhere from over-full cells (`most_out` 0.02): the spikes over the disc stayed and the thread
+  wobbled more.

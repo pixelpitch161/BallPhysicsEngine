@@ -64,6 +64,31 @@ fn a_sheet_stays_a_sheet() {
     assert!(s.strays < 0.1, "with no rain of droplets: {}", s.strays);
 }
 
+/// Water running up a tilted block leaves its top corner as one arc, not a fan: the solid neither
+/// steers nor slows the drops nearest it as they leave (the owner's Water Weird layout).
+#[test]
+fn water_leaves_a_corner_as_one_arc() {
+    let Some(gpu) = card() else { return };
+    let mut run = scenes::weird(6.0).start(&gpu, Numbers::default());
+    run.run_to(3.0);
+    let layout = run.water.layout();
+    // The air between the block's top right corner (210, -330) and the box's right wall (420).
+    let (lo, hi) = (Vec2::new(230.0, -420.0), Vec2::new(400.0, -200.0));
+    let air = probe::inside(&run.water.read(), &layout, lo, hi);
+    let s = Stream::of(&air, &layout, (lo.y, hi.y), 1.5, 1);
+    assert!(s.drops > 30, "liquid flies off the corner: {}", s.drops);
+    assert!(s.whole > 0.8, "as one piece: {}", s.whole);
+    // How thick the arc is: the drops' spread in height in each 20 px of its way across.
+    let mut spans = [(f32::MAX, f32::MIN); 8];
+    for d in &air {
+        let p = layout.to_world(Vec2::from(d.x));
+        let span = &mut spans[(((p.x - lo.x) / 20.0) as usize).min(7)];
+        *span = (span.0.min(p.y), span.1.max(p.y));
+    }
+    let thickest = spans.iter().map(|(a, b)| (b - a).max(0.0)).fold(0.0, f32::max);
+    assert!(thickest < 30.0, "a thin arc all the way across, not a fan: {thickest} px at its thickest");
+}
+
 /// A drop by itself flies as if nothing else were there: the pull and the spacing act on nothing.
 #[test]
 fn a_lone_drop_pulls_on_nothing() {
