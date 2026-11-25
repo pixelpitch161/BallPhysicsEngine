@@ -162,7 +162,7 @@ Plan and measurements: `docs/superpowers/plans/water-mode/part2a2-thin-spacing.m
   (`cs_hold_p2g` adds them atomically, `cs_clear` clears them), so a drop reads the nine spots round it and
   takes each spot's drops together at their middle (its own spot without itself). No lists, nothing that
   depends on the order drops are handled in. The move is scaled by the drop's own speed (`apart_pace`: none under
-  50 px/s, in full from 150), so a pool at rest is left exactly as it lies; it is capped a step (`apart_most`)
+  100 px/s, in full from 300), so a pool at rest is left exactly as it lies; it is capped a step (`apart_most`)
   and goes through `keep_off`. Drops on the very same point part each its own way (an angle from its serial).
   A course too big for the spots buffer (over about 2.8 million cells on a card with wgpu's default limits)
   goes without (`sim::spots_bytes`, `Step.r.x` 0).
@@ -181,10 +181,18 @@ Plan and measurements: `docs/superpowers/plans/water-mode/part2a2-thin-spacing.m
   jolts and leaves in ribs. `Numbers::default()` is still 240 (the behaviour tests' grids are coarse); whoever
   makes a body for a detail calls `for_cell`. This stands in for "the water picks its own step" (spec section
   3), which needs the fastest drop read back: part 2b's.
+- **`fill` is 0.5** (was 1): a cell pushes back once half its room would fill in a step. At 1 a film thinner
+  than a cell met a shape with no pressure until a cell was full, and whether it then left in ripples hung on
+  where the cells lay under it (the owner's file showed teeth at Fine that the hand-built layout did not, until
+  its grid was moved a quarter of a cell: `WATER_SHIFT`). **Check anything about thin water on several grid
+  shifts**, not one.
+- **Not cured: barbs at Extreme.** A film one to three cells thick that meets a shape head-on piles up where
+  it lands and is let go in pulses, each a barb across the film a little further on (the plan's "Not cured in
+  this part"). No number changes it; it needs its own design.
 - **Measures** (`probe.rs`): `Spacing` (each drop's distance to its nearest other: the median, and the share
   within a quarter of a cell) and `along` (drops by stretch along a line: how even a film is). `measure.rs`:
-  `look` prints the spacing and writes the drops themselves with `WATER_DUMP`; `pace` times scenes with no
-  read-back (the core's speed).
+  `look` prints the spacing, how ragged the Water Weird layout's film and thread are (`probe::ragged`), and
+  writes the drops themselves with `WATER_DUMP`; `pace` times scenes with no read-back (the core's speed).
 - **Pitfall**: `SPOT` and `SPOT_ONE` in `common.wgsl` and `SPOT_WORDS` in `sim/mod.rs` go together. A drop's
   place within its spot must be worked out the same way where it is added (`cs_hold_p2g`) and where it is taken
   off again (`elbow_room`): both call `spot_of`.

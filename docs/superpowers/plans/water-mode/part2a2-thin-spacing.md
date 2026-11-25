@@ -120,12 +120,14 @@ they say otherwise; the layout shows the owner's fault there too. Tools: `measur
    step and dropped if it is no number. The moved place then goes through `keep_off` like every sub-move, so
    elbow room cannot put a drop in a solid.
 4. **Only on the move.** The move is scaled by `smoothstep(apart_pace / 3, apart_pace, speed)` of the drop's own
-   gathered speed (`apart_pace` 150 px/s): water at rest is not touched at all (still pools are the same to the
-   bit), water flowing has it in full.
+   gathered speed (`apart_pace` 300 px/s: none under 100, in full from 300): water at rest is not touched at
+   all (a settled pool is the same to the bit), films and threads (500 px/s and up) have it in full. (At 150
+   a deep pool took seconds longer to settle: its first slosh was fast enough to be nudged, and the nudges
+   kept its top moving. At 300 it settles as with no elbow room.)
 5. **The numbers** (`Numbers`, all replaceable by `BPE_WATER_*` in the measuring tests): `apart` 150 a second (the
    share of an overlap undone a step is `1 - exp(-apart * dt)`, so the same in a second at any step rate),
    `apart_reach` 0.45 cell (held to 0.5: nine spots reach no further), `apart_most` 0.25 cell a step,
-   `apart_pace` 150 px/s. On the card they travel in a new `Step.r` (`StepGpu.r`): gain, reach, most, pace in
+   `apart_pace` 300 px/s. On the card they travel in a new `Step.r` (`StepGpu.r`): gain, reach, most, pace in
    cells a second.
 6. **Too big a course.** `spots` is `cells * 4 * 12` bytes. When that is over the device's
    `max_storage_buffer_binding_size`, the body is made with a small stand-in buffer and `Step.r.x` 0;
@@ -156,6 +158,18 @@ they say otherwise; the layout shows the owner's fault there too. Tools: `measur
     `apart_most` are caps a step and stay so (2a measured pools at 240, 960 and 1920 steps with them); `apart`
     and `even` are rates a second already.
 
+### The liquid pushes back before a cell is full
+
+10a. `Numbers::fill` 1 becomes 0.5 (the share of a cell's room that may fill in a step before the cell pushes
+    back). Found on the owner's file at Fine: the film over the disc left in teeth there, but not on the
+    hand-built layout. The only difference was where the grid's cells lay: the hand-built layout with its grid
+    moved a quarter of a cell (`WATER_SHIFT=0.25`) showed the same teeth. A film thinner than a cell (5 px on
+    6 px cells) met the disc with no pressure at all until a cell was full, then all at once, and when that
+    happened hung on the cells' places. At 0.5 (and 0.25) the film is turned smoothly on all four shifts
+    tried; the thread below is cleaner and alike across shifts (how ragged, `probe::ragged`, mean of four
+    shifts: 0.84 px at fill 1, 0.58 at 0.5). Part 2a chose 1 because water landing on a shape left it in
+    bursts at less: that was the sprayed pour at 240 steps, and is not so now (2a's tests pass at 0.5).
+
 ### Measuring
 
 11. `probe::Spacing::of(drops: &[Drop]) -> Spacing { median: f32, close: f32 }`: each drop's distance to its
@@ -166,9 +180,30 @@ they say otherwise; the layout shows the owner's fault there too. Tools: `measur
     test) and prints `Spacing`; a new ignored `pace` test times a scene with no read-back until the end
     (`WATER_SCENES`, `WATER_CELLS`, `WATER_SECONDS`): wall seconds a second of scene.
 
+13. `probe::ragged(drops, layout, reach) -> (f32, f32)`: for each drop, how far the drops within `reach`
+    pixels lie off the line through them (the lesser spread of that little cloud): the mean and the value nine
+    tenths are under. `look` prints it for the Water Weird layout's film over the disc and its thread.
+    `measure.rs` also takes `WATER_SHIFT` (the grid moved by a part of a cell), `WATER_SPRAY`, `WATER_SETTLES`.
+
+## Not cured in this part: barbs at Extreme
+
+At 3 px cells the film is 1.6 cells thick where it meets the disc nearly head-on. Seen step by step
+(`/tmp`-scale close-ups, 8 steps apart): a small knot of slow drops sits where the film lands, grows, and is
+carried off up the disc as a bulge about every 25 thousandths of a second; each bulge is thicker than the film,
+so its drops leave the disc's curve at different places and it opens into a short row across the film: a barb.
+The thread below the disc is whole and mostly clean; the film over the top of the disc carries a barb every
+30 to 40 px. Tried without effect on the barbs (how ragged the film reads stays 2.7 to 3.5 px): `fill` 1, 0.75,
+0.5; the over-full push off, gentle everywhere, strong everywhere; six multigrid cycles; the pull off; the
+along-flight evening off; 480 steps; elbow room for slow drops too. Tried and worse: giving thin fast liquid
+back the speed it loses where a solid turns it (more splash, the thread ragged too). At 8 and 6 px cells the
+film is thinner than a cell, each drop is turned by the solid alone, and there are no barbs. So the fault is
+in how the pressure handles a film one to three cells thick that is stopped head-on, and it is the next thing
+to design, not a number to tune.
+
 ## Things not to do
 
 - Do not edit today's Liquid code or its births, even to fix its fan: Balls scenes do not change.
+- Do not give thin liquid back the speed a solid's turn costs it (tried: worse).
 - Do not gate the elbow room on "thin" by a density measure: a two-cell film on a wall reads as full liquid by
   every kernel wide enough to be smooth, and a pool's top reads as thin. The gate is the drop's speed.
 - Do not turn the elbow room into a push on speeds, or let it act on still water.

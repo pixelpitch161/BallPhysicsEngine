@@ -175,7 +175,7 @@ impl Water {
             usage: STORE,
         });
         let room = room_for(0);
-        let spots = spots_bytes(cells, u64::from(device.limits().max_storage_buffer_binding_size));
+        let spots = spots_bytes(cells, device.limits().max_storage_buffer_binding_size);
         let mut water = Water {
             layout,
             numbers,

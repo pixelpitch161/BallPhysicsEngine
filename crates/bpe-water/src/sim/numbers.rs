@@ -39,7 +39,10 @@ pub struct Numbers {
     /// The share of a cell's excess density pushed out a step, and the most a step.
     pub push_out: f32,
     pub most_out: f32,
-    /// The share of a cell's room that may fill a step before it pushes back.
+    /// The share of a cell's room that may fill a step before it pushes back. (At 1 a film
+    /// thinner than a cell met a shape with no pressure at all, and whether it left in ripples
+    /// hung on where the cells happened to lie under it; at a half it is turned the same wherever
+    /// they lie.)
     pub fill: f32,
     /// The most of a cell's volume an over-full cell pushes out a step where the liquid is thin (a
     /// thread, a film, a surface): gentler than `most_out`, which bodies of liquid keep.
@@ -102,7 +105,7 @@ impl Default for Numbers {
             omega: 1.0,
             push_out: 0.25,
             most_out: 0.1,
-            fill: 1.0,
+            fill: 0.5,
             most_out_thin: 0.005,
             face_floor: 0.005,
             sub_move: 0.4,
@@ -119,7 +122,7 @@ impl Default for Numbers {
             apart: 150.0,
             apart_reach: 0.45,
             apart_most: 0.25,
-            apart_pace: 150.0,
+            apart_pace: 300.0,
             hold_join: 0.6,
             tear_calm: 2.0,
             tear_spray: 0.2,
