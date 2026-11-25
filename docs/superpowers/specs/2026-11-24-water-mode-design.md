@@ -184,12 +184,22 @@ Drops carried on a grid stay (it is what gives streams, splashes and colour carr
   draft a fair preview of a final.
 - **The gap that decides it: thin streams and films.** The trial core breaks a thin pour into lumps and a rain
   of drops; today's core keeps clean streams (that comes from its wide 3-cell reach and springy pressure, so
-  there is no separate hold-together force to copy over). Two quick tries in the trial did not fix it. So the
-  first physics part (2a below) builds a real hold-together for streams and films on the new core, and its pass
-  mark is **Water Weird's pour looks as clean as it does on today's core**, judged on full-size frames and a
-  side-by-side clip on the RX 9070 XT, with the table above still holding. **If it fails, Water mode is built on
-  today's core** (moved into `bpe-water`, off the ball clock), and the rest of this design is unchanged.
-  (Aedan's choice between these is on a decision card, 2026-11-25; this text is the recommended option.)
+  there is no separate hold-together force to copy over). Two quick tries in the trial did not fix it.
+- **Aedan's choice** (2026-11-25): the new core, streams fixed first. "The pools do look much much better now.
+  The goal should be for the streams to be even better than todays. The liquid should be as good as you can
+  possibly make it." So the first physics part (2a below) builds a real hold-together for streams and films on
+  the new core, with two marks, judged on full-size frames and side-by-side clips on the RX 9070 XT with the
+  table above still holding:
+  - **Pass mark** (the least that keeps the new core): Water Weird's pour looks as clean as on today's core.
+    **If 2a cannot reach it, Water mode is built on today's core** (moved into `bpe-water`, off the ball
+    clock), and the rest of this design is unchanged.
+  - **Goal: better than today's.** A pour two cells wide stays one unbroken stream down a whole screen. A sheet
+    running off an edge stays a sheet until it meets something. A stream keeps a steady width, without the
+    jitter and beading today's shows, and stays clean at draft detail as well as final. A stream breaks into
+    drops only when the liquid's Surface pull says it should (low for spray, high for ropes), so breaking up is
+    a look Aedan chooses, never an accident of the method. Each of these gets its own test scene and clip.
+  - 2a keeps working past the pass mark toward the goal, and says plainly in its report which of the goal's
+    lines it reached and which it did not.
 - **Smaller gaps to close in 2a or note:** a slosh dies down about a third sooner than it should; 34 of 21,170
   drops crossed walls at Fine; one drop went missing in a still pool. **Not built in the trial:** moving walls
   (part 5), thick liquids, slime and ice (part 4), forces (part 4).
@@ -391,11 +401,11 @@ part adds its own tools to the rail.
    water stage as an empty shell with the tool rail, ball-only jobs and tests gated by kind. Balls goldens and
    pictures shown unchanged.
 2. In two halves, because the stream question has to be settled before anything is built on the core:
-   - **2a. The water core, with clean streams.** `bpe-water` with the pressure-solving core from the trial
-     (tiles from the start, whole-number or fixed-order sums) and a hold-together for thin streams and films.
-     Pass mark: Water Weird's pour as clean as on today's core, and the trial's table still holding, on the
-     RX 9070 XT. Ends with a side-by-side clip for Aedan. If it fails, 2a instead moves today's core into
-     `bpe-water`.
+   - **2a. The water core, with streams better than today's.** `bpe-water` with the pressure-solving core from
+     the trial (tiles from the start, whole-number or fixed-order sums) and a hold-together for thin streams
+     and films. Pass mark and goal as in section 3, with the trial's table still holding, on the RX 9070 XT.
+     Ends with side-by-side clips for Aedan. If the pass mark cannot be reached, 2a instead moves today's core
+     into `bpe-water`.
    - **2b. Water runs in a Water scene.** The Course with carving, Liquid (Feel), Pour (tap and fill at the
      start), a plain look, in place of part 1's empty stand-in.
 3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
@@ -432,6 +442,9 @@ whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished w
 
 - The app opens on the Balls or Water chooser.
 - Text is left out of Water scenes for now.
+
+- 2026-11-25, after the physics trial: the new pressure-solving core, with streams fixed first and the goal
+  "even better than todays"; "the liquid should be as good as you can possibly make it".
 
 Still to be measured and reported before anything is built on them: how much disk room a final uses (several GB
 is the estimate) and how long Make final takes.
