@@ -17,7 +17,7 @@ fn card() -> Option<Arc<WaterGpu>> {
 #[test]
 fn still_water_rests() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::still_box(8.0, 0.3).start(&gpu, Numbers::default());
+    let mut run = scenes::still_box(8.0, 0.3).start_grid(&gpu, Numbers::default());
     run.run_to(2.0);
     let s = Stats::of(&run.water.read(), &run.water.layout());
     assert_eq!(s.broken, 0);
@@ -28,7 +28,7 @@ fn still_water_rests() {
 #[test]
 fn a_pool_keeps_its_height() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::still_box(8.0, 0.3).start(&gpu, Numbers::default());
+    let mut run = scenes::still_box(8.0, 0.3).start_grid(&gpu, Numbers::default());
     let layout = run.water.layout();
     let before = Stats::of(&run.water.read(), &layout);
     run.run_to(3.0);
@@ -47,7 +47,7 @@ fn a_pool_keeps_its_height() {
 fn two_runs_are_the_same() {
     let Some(gpu) = card() else { return };
     let play = || {
-        let mut run = scenes::weird(8.0).start(&gpu, Numbers::default());
+        let mut run = scenes::weird(8.0).start_grid(&gpu, Numbers::default());
         run.run_to(0.6);
         probe::print_of(&run.water.read())
     };
@@ -57,7 +57,7 @@ fn two_runs_are_the_same() {
 #[test]
 fn a_copy_plays_on_the_same() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::weird(8.0).start(&gpu, Numbers::default());
+    let mut run = scenes::weird(8.0).start_grid(&gpu, Numbers::default());
     run.run_to(0.3);
     let mut copy = run.copy();
     run.run_to(0.6);
@@ -73,7 +73,7 @@ fn pour_in_a_box(aim: f32, speed: f32) -> Scene {
     scene
 }
 
-fn outside(run: &scenes::Running, half: Vec2) -> usize {
+fn outside(run: &scenes::GridRunning, half: Vec2) -> usize {
     let layout = run.water.layout();
     run.water.read().iter().filter(|d| layout.to_world(Vec2::from(d.x)).abs().cmpgt(half).any()).count()
 }
@@ -82,7 +82,7 @@ fn outside(run: &scenes::Running, half: Vec2) -> usize {
 fn a_thin_wall_holds_a_fast_pour() {
     let Some(gpu) = card() else { return };
     // Straight at the side wall at 2,500 px/s: over a cell a liquid step.
-    let mut run = pour_in_a_box(0.0, 2500.0).start(&gpu, Numbers::default());
+    let mut run = pour_in_a_box(0.0, 2500.0).start_grid(&gpu, Numbers::default());
     run.run_to(1.0);
     assert!(run.water.count() > 1000, "the pour pours: {}", run.water.count());
     assert_eq!(outside(&run, Vec2::new(300.0, 450.0)), 0, "no drop is past the wall's line");
@@ -91,7 +91,7 @@ fn a_thin_wall_holds_a_fast_pour() {
 #[test]
 fn a_full_box_stays_shut() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::boxed(8.0, 240.0, 3.0, 0.97).start(&gpu, Numbers::default());
+    let mut run = scenes::boxed(8.0, 240.0, 3.0, 0.97).start_grid(&gpu, Numbers::default());
     let n = run.water.count();
     run.run_to(1.5);
     assert_eq!(run.water.count(), n);
@@ -109,7 +109,7 @@ fn water_runs_through_a_narrow_opening() {
     scene.solids.push(shelf(-200.0, -8.0));
     scene.solids.push(shelf(8.0, 200.0));
     scene.fills = vec![(Vec2::new(-190.0, -160.0), Vec2::new(190.0, -2.0))];
-    let mut run = scene.start(&gpu, Numbers::default());
+    let mut run = scene.start_grid(&gpu, Numbers::default());
     let n = run.water.count();
     run.run_to(2.0);
     let layout = run.water.layout();
@@ -122,7 +122,7 @@ fn water_runs_through_a_narrow_opening() {
 #[test]
 fn the_air_does_not_brake_a_pour() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::thin_pour(8.0, 2.0).start(&gpu, Numbers::default());
+    let mut run = scenes::thin_pour(8.0, 2.0).start_grid(&gpu, Numbers::default());
     run.run_to(1.0);
     let layout = run.water.layout();
     let (top, _) = scenes::THIN_POUR;
@@ -147,7 +147,7 @@ fn the_air_does_not_brake_a_pour() {
 fn still_water_is_left_alone() {
     let Some(gpu) = card() else { return };
     let without = Numbers { apart: 0.0, ..Numbers::default() };
-    let mut run = scenes::still_box(8.0, 0.3).start(&gpu, without);
+    let mut run = scenes::still_box(8.0, 0.3).start_grid(&gpu, without);
     // (Its first moments are the fill's own drops finding their places, some at over 50 px/s.)
     run.run_to(0.5);
     let mut with = run.copy();
@@ -207,7 +207,7 @@ fn a_heap_on_one_spot_spreads_without_a_burst() {
 #[test]
 fn drops_at_the_grids_edge_are_safe() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::weird(8.0).start(&gpu, Numbers::default());
+    let mut run = scenes::weird(8.0).start_grid(&gpu, Numbers::default());
     let layout = run.water.layout();
     let (cols, rows) = (layout.cols as f32, layout.rows as f32);
     let fast = Vec2::new(40.0, 40.0);
@@ -244,7 +244,7 @@ fn drops_at_the_grids_edge_are_safe() {
 #[test]
 fn no_elbow_room_still_runs() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::weird(8.0).start(&gpu, Numbers { apart: 0.0, ..Numbers::default() });
+    let mut run = scenes::weird(8.0).start_grid(&gpu, Numbers { apart: 0.0, ..Numbers::default() });
     run.run_to(0.3);
     let s = Stats::of(&run.water.read(), &run.water.layout());
     assert!(s.drops > 100, "{}", s.drops);

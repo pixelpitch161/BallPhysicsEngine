@@ -10,12 +10,11 @@ use std::sync::Arc;
 use bpe_core::maths::Maths;
 use wgpu::util::DeviceExt;
 
-pub mod drop;
 pub mod numbers;
 mod passes;
 
+use crate::drop::Drop;
 use crate::solid::{Layout, SolidField};
-use drop::Drop;
 use numbers::{Feel, FeelGpu, MOST_LEVELS, MOST_LIQUIDS, Numbers, StepGpu};
 use passes::{ENTRIES, P, Pipelines, TICK, TICK_BYTES};
 

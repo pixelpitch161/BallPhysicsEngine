@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::sim::drop::{Pour, Poured, STOPS, fill};
-use crate::sim::numbers::{Feel, Numbers};
-use crate::sim::{Water, WaterGpu};
+use crate::drop::{Pour, Poured, STOPS, fill};
+use crate::grid::numbers::{Feel, Numbers};
+use crate::grid::{Water, WaterGpu};
 use crate::solid::{Layout, Solid, SolidField};
 
 /// The course's gravity in the test scenes: the Balls scenes' 500 at today's Bucket size (x 8).
@@ -32,7 +32,7 @@ pub struct Scene {
 }
 
 /// A scene being played.
-pub struct Running {
+pub struct GridRunning {
     pub water: Water,
     pub field: SolidField,
     pours: Vec<(Pour, Poured)>,
@@ -40,7 +40,7 @@ pub struct Running {
 
 impl Scene {
     /// Starts the scene on `gpu` with the solver's `numbers`.
-    pub fn start(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> Running {
+    pub fn start_grid(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> GridRunning {
         let field = SolidField::build(self.layout, &self.solids);
         let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &self.feels);
         let mut born = 0u32;
@@ -49,11 +49,11 @@ impl Scene {
             born = born.wrapping_add(water.add(&drops));
         }
         let pours = self.pours.iter().map(|p| (*p, Poured { owed: 0.0, born: 1 << 24 })).collect();
-        Running { water, field, pours }
+        GridRunning { water, field, pours }
     }
 }
 
-impl Running {
+impl GridRunning {
     /// One liquid step: the pours' births, then the step.
     pub fn step(&mut self) {
         let (dt, step, layout) = (self.water.numbers().dt(), self.water.steps(), self.water.layout());
@@ -73,8 +73,8 @@ impl Running {
     }
 
     /// A copy that plays on exactly as this one does.
-    pub fn copy(&self) -> Running {
-        Running { water: self.water.copy(), field: self.field.clone(), pours: self.pours.clone() }
+    pub fn copy(&self) -> GridRunning {
+        GridRunning { water: self.water.copy(), field: self.field.clone(), pours: self.pours.clone() }
     }
 }
 

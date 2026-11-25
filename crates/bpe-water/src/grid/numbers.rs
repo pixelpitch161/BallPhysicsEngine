@@ -161,7 +161,7 @@ impl Numbers {
 
     fn with_env(self) -> Numbers {
         fn num<T: std::str::FromStr>(name: &str, or: T) -> T {
-            std::env::var(format!("BPE_WATER_{name}")).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
+            std::env::var(format!("BPE_GRID_{name}")).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
         }
         let d = self;
         Numbers {

@@ -100,7 +100,7 @@ fn look() {
     for name in list::<String>("WATER_SCENES", "weird") {
         for cell in list::<f32>("WATER_CELLS", "8") {
             let scene = scene_named(&name, cell);
-            let mut run = scene.start(&gpu, Numbers::from_env_for(cell));
+            let mut run = scene.start_grid(&gpu, Numbers::from_env_for(cell));
             let began = Instant::now();
             for t in list::<f32>("WATER_TIMES", "1,2,4") {
                 run.run_to(t);
@@ -174,7 +174,7 @@ fn bands() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 8.0);
     let scene = scenes::thin_pour(cell, num("WATER_POUR_CELLS", 2.0));
-    let mut run = scene.start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scene.start_grid(&gpu, Numbers::from_env_for(cell));
     run.run_to(num("WATER_TIME", 1.5));
     let drops = run.water.read();
     let layout = run.water.layout();
@@ -216,7 +216,7 @@ fn bands() {
 fn strands() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 8.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scenes::weird(cell).start_grid(&gpu, Numbers::from_env_for(cell));
     let (lo, hi) = (Vec2::new(-80.0, 60.0), Vec2::new(330.0, 620.0));
     let bands = 8usize;
     let mut spread = vec![0.0f64; bands];
@@ -269,7 +269,7 @@ fn strands() {
 fn kicks() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 6.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scenes::weird(cell).start_grid(&gpu, Numbers::from_env_for(cell));
     run.run_to(num("WATER_TIME", 3.0));
     let layout = run.water.layout();
     let (centre, radius) = (Vec2::new(-180.0, -120.0), 120.0);
@@ -321,7 +321,7 @@ fn kicks() {
 fn across() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 6.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scenes::weird(cell).start_grid(&gpu, Numbers::from_env_for(cell));
     println!("# time\tdrops\tmean speed\trms along\trms across\tshare > 45 deg");
     for time in list::<f32>("WATER_TIMES", "2,3,4") {
         run.run_to(time);
@@ -378,7 +378,7 @@ fn pace() {
     println!("# scene\tcell\tsteps/s\tseconds\tdrops\twall s\twall s a second");
     for name in list::<String>("WATER_SCENES", "weird") {
         for cell in list::<f32>("WATER_CELLS", "8,6,3") {
-            let mut run = scene_named(&name, cell).start(&gpu, Numbers::from_env_for(cell));
+            let mut run = scene_named(&name, cell).start_grid(&gpu, Numbers::from_env_for(cell));
             let began = Instant::now();
             run.run_to(seconds);
             let drops = run.water.read().len();

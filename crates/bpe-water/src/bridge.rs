@@ -10,7 +10,7 @@
 use bpe_gfx::liquid_sim::DropsSource;
 use bytemuck::{Pod, Zeroable};
 
-use crate::sim::Water;
+use crate::grid::Water;
 use crate::solid::SolidField;
 
 /// Numbers one of today's drops takes (bpe-gfx's `DROP_FLOATS`).

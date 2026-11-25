@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use glam::Vec2;
 
-use crate::sim::drop::Drop;
+use crate::drop::Drop;
 use crate::solid::{Layout, SolidField};
 
 /// What a body's drops are doing as a whole.
