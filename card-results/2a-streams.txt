@@ -1,0 +1,12 @@
+
+running 6 tests
+test a_lone_drop_pulls_on_nothing ... ok
+test a_sheet_stays_a_sheet ... ok
+test a_stream_keeps_its_width ... ok
+test a_thin_pour_is_clean_at_draft_detail ... ok
+test a_thin_pour_stays_one_stream ... ok
+test water_leaves_a_corner_as_one_arc ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.89s
+
+streams rc=0

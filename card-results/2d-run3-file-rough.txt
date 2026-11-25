@@ -1,0 +1,17 @@
+
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 1.0, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+file	Rough	old	2	905	326	40	0.261	0.095	1174	0 18 0 0 0 0
+file	Rough	new	2	905	322	39	0.267	0.084	1172	0 18 0 0 0 0
+file	Rough	old	4	1810	972	30	0.752	0.026	1649	0 0 0 0 0 651
+file	Rough	new	4	1810	834	31	0.553	0.025	1623	0 0 0 0 0 481
+file	Rough	old	6	2715	1722	30	0.859	0.016	1619	0 0 0 0 0 752
+file	Rough	new	6	2715	1594	52	0.837	0.026	1584	0 0 0 0 0 732
+# C:\Users\aedan\AppData\Local\Temp\water-2a\frames\file-rough	241 frames	136 s in all	today's core 0.8 s	the new core with its pictures 1.4 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 136.16s
+
+run3 rc=0
