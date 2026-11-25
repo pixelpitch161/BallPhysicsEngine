@@ -12,6 +12,7 @@ bpe-core = { path = "crates/bpe-core" }
 bpe-settings-derive = { path = "crates/bpe-settings-derive" }
 bpe-runtime = { path = "crates/bpe-runtime" }
 bpe-gfx = { path = "crates/bpe-gfx" }
+bpe-water = { path = "crates/bpe-water" }
 bpe-kit = { path = "crates/bpe-kit" }
 bpe-cli = { path = "crates/bpe-cli" }
 bpe-dsp = { path = "crates/bpe-dsp" }

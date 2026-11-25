@@ -31,4 +31,6 @@ test-scenes = []
 
 [dev-dependencies]
 bpe-kit = { path = ".", features = ["test-scenes"] }
+# Water mode part 2a: the new water core beside today's (tests/water_core.rs).
+bpe-water = { workspace = true, features = ["test-scenes"] }
 ron.workspace = true
