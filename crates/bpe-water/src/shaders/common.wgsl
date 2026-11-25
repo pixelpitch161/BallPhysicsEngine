@@ -54,6 +54,10 @@ struct Step {
     // drop from which it is inside full liquid, how fast thin liquid evens out its spacing (cells
     // squared a second), the furthest that moves a drop a step (cells)
     h2: vec4<f32>,
+    // the drops' elbow room: the share of an overlap undone a step (0: there is none, and `spots`
+    // is not touched), how near two drops may be before they part (cells), the furthest that moves
+    // a drop a step (cells), the speed from which a drop has it in full (cells a second)
+    r: vec4<f32>,
     // the pressure's levels (0 the cells themselves, each next one half as many each way): where
     // the level starts in `cellp` and `coef`, its columns, its rows, 0
     lv: array<vec4<u32>, 12>,
@@ -80,6 +84,28 @@ const SUMS: u32 = 6u;
 const HOLD: u32 = 4u;
 // A drop's volume, in cells (four drops fill a cell).
 const VOL: f32 = 0.25;
+// Words a spot in `spots`.
+const SPOT: u32 = 3u;
+// A spot's width, as a drop's place within it is summed.
+const SPOT_ONE: f32 = 4096.0;
+
+// The spot a drop at `x` is in (held inside the grid), and its place within it in whole numbers
+// (0 to SPOT_ONE).
+struct Spot {
+    at: vec2<i32>,
+    within: vec2<i32>,
+};
+
+fn spot_of(x: vec2<f32>) -> Spot {
+    let q = x * 2.0;
+    let at = clamp(vec2<i32>(floor(q)), vec2<i32>(0), vec2<i32>(2 * i32(st.grid.x) - 1, 2 * i32(st.grid.y) - 1));
+    let within = clamp(vec2<i32>((q - vec2<f32>(at)) * SPOT_ONE), vec2<i32>(0), vec2<i32>(i32(SPOT_ONE) - 1));
+    return Spot(at, within);
+}
+
+fn spot_index(at: vec2<i32>) -> u32 {
+    return SPOT * (u32(at.y) * 2u * st.grid.x + u32(at.x));
+}
 
 @group(0) @binding(0) var<uniform> st: Step;
 @group(0) @binding(1) var<storage, read_write> drops: array<Drop>;
@@ -103,6 +129,13 @@ const VOL: f32 = 0.25;
 // per node: the pull's change of speed x and y, the liquid at the node (its volume, a full one 1,
 // with the solids' share), the drops' own volume there
 @group(0) @binding(11) var<storage, read_write> hold_out: array<vec4<f32>>;
+
+// per spot (a square half a cell wide, four a cell: spot (i, j) of the 2 x cols by 2 x rows is the
+// square from (i, j) / 2 to (i + 1, j + 1) / 2): how many drops are in it, the sum of their places
+// across and down within it (0 to SPOT_ONE each). Whole numbers, added atomically: the sums are
+// the same whatever order the drops are handled in. (A stand-in a few words long when the course
+// is too big for it: then `st.r.x` is 0.)
+@group(0) @binding(12) var<storage, read_write> spots: array<atomic<i32>>;
 
 fn finite2(v: vec2<f32>) -> bool {
     return abs(v.x) < 1e30 && abs(v.y) < 1e30;

@@ -68,6 +68,72 @@ pub fn inside(drops: &[Drop], layout: &Layout, lo: Vec2, hi: Vec2) -> Vec<Drop> 
         .collect()
 }
 
+/// How evenly drops are spaced: each drop's distance to its nearest other, in cells. (Liquid at
+/// rest has four drops a cell, half a cell apart; drops strewn at random at that density have a
+/// median of about a quarter of a cell, and a third of them within a fifth.)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Spacing {
+    /// The median distance to the nearest other drop (0 with fewer than two drops).
+    pub median: f32,
+    /// The share of the drops with another within a quarter of a cell.
+    pub close: f32,
+}
+
+impl Spacing {
+    pub fn of(drops: &[Drop]) -> Spacing {
+        let drops: Vec<Vec2> = drops.iter().map(|d| Vec2::from(d.x)).filter(|x| x.is_finite()).collect();
+        if drops.len() < 2 {
+            return Spacing::default();
+        }
+        let key = |x: Vec2| (x.x.floor() as i32, x.y.floor() as i32);
+        let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        for (i, x) in drops.iter().enumerate() {
+            cells.entry(key(*x)).or_default().push(i as u32);
+        }
+        // (A drop with no other within a cell of it counts as a cell away.)
+        let mut nearest: Vec<f32> = drops
+            .iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let (cx, cy) = key(*x);
+                let mut least = 1.0f32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        for &j in cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                            if j as usize != i {
+                                least = least.min((drops[j as usize] - *x).length());
+                            }
+                        }
+                    }
+                }
+                least
+            })
+            .collect();
+        let close = nearest.iter().filter(|d| **d < 0.25).count() as f32 / nearest.len() as f32;
+        nearest.sort_by(f32::total_cmp);
+        Spacing { median: nearest[nearest.len() / 2], close }
+    }
+}
+
+/// How many drops lie within `reach` pixels of the world segment `from` to `to`, by `bins` equal
+/// stretches along it: how even a film or a thread is along its length.
+pub fn along(drops: &[Drop], layout: &Layout, from: Vec2, to: Vec2, reach: f32, bins: usize) -> Vec<u32> {
+    let mut counts = vec![0u32; bins];
+    let length = (to - from).length();
+    if bins == 0 || length.is_nan() || length <= 0.0 {
+        return counts;
+    }
+    let way = (to - from) / length;
+    for d in drops {
+        let p = layout.to_world(Vec2::from(d.x)) - from;
+        let (s, off) = (p.dot(way), p.perp_dot(way));
+        if p.is_finite() && (0.0..length).contains(&s) && off.abs() <= reach {
+            counts[((s / length * bins as f32) as usize).min(bins - 1)] += 1;
+        }
+    }
+    counts
+}
+
 /// How whole a stream is: the drops of one region of air, grouped into pieces.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stream {

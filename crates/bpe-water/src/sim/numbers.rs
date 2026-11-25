@@ -7,8 +7,16 @@ pub const MOST_LIQUIDS: usize = 16;
 /// The most levels the pressure's ladder has.
 pub const MOST_LEVELS: usize = 12;
 
-/// The solver's numbers. The defaults are the ones the liquid ships with; the measuring tests may
-/// replace any by a `BPE_WATER_*` environment variable ([`Numbers::from_env`]).
+/// Fast water on one screen, pixels a second: what [`Numbers::for_cell`] picks the steps for.
+const PACE_SPEED: f32 = 2000.0;
+/// The most cells that water should cross in one liquid step.
+const PACE_CELLS: f32 = 0.75;
+/// The most times 240 the liquid steps a second.
+const PACE_MOST: u32 = 8;
+
+/// The solver's numbers. The defaults are the ones the liquid ships with ([`Numbers::for_cell`]
+/// picks the steps a second for a cell size); the measuring tests may replace any by a
+/// `BPE_WATER_*` environment variable ([`Numbers::from_env`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Numbers {
     /// Liquid steps a second.
@@ -62,6 +70,18 @@ pub struct Numbers {
     /// never), and the furthest that moves a drop in a liquid step, in cells.
     pub even: f32,
     pub even_most: f32,
+    /// The drops' elbow room: drops on the move that are nearer each other than `apart_reach`
+    /// (cells; four drops a cell at rest are half a cell apart) move apart, their places only,
+    /// never their speeds. `apart` is how fast an overlap is undone, a second (0: no elbow room),
+    /// `apart_most` the furthest that moves a drop in a liquid step, in cells. Without it the
+    /// drops of a thin film sit wherever chance put them, in bunches, and each bunch is thrown
+    /// off as a hair when the pressure parts it.
+    pub apart: f32,
+    pub apart_reach: f32,
+    pub apart_most: f32,
+    /// The speed (pixels a second) from which a drop keeps its elbow room in full; under a third
+    /// of it not at all (water at rest is left exactly as it lies).
+    pub apart_pace: f32,
     /// The density at which a torn drop joins the liquid again.
     pub hold_join: f32,
     /// The stretch a liquid tears at with no Spray, and with all of it.
@@ -96,6 +116,10 @@ impl Default for Numbers {
             hold_full: 0.9,
             even: 12.0,
             even_most: 0.15,
+            apart: 150.0,
+            apart_reach: 0.45,
+            apart_most: 0.25,
+            apart_pace: 150.0,
             hold_join: 0.6,
             tear_calm: 2.0,
             tear_spray: 0.2,
@@ -108,10 +132,35 @@ impl Numbers {
     /// (`BPE_WATER_CYCLES`, `BPE_WATER_PULL`, `BPE_WATER_HOLD=0`...): tuning without building again.
     /// For the measuring tests only.
     pub fn from_env() -> Numbers {
+        Numbers::default().with_env()
+    }
+
+    /// [`Numbers::for_cell`], each replaced by its `BPE_WATER_*` environment variable when that
+    /// is set. For the measuring tests only.
+    pub fn from_env_for(cell: f32) -> Numbers {
+        Numbers::for_cell(cell).with_env()
+    }
+
+    /// The defaults for a grid of `cell`-pixel cells: the liquid steps often enough that fast
+    /// water (2000 pixels a second) crosses no more than three quarters of a cell a step, in whole
+    /// multiples of 240 (12 px cells 240 steps a second, 8 px and 6 px 480, 3 px 960, never over
+    /// 1920). A film that meets a shape head-on is then turned over several steps; at more than a
+    /// cell a step it is stopped in jolts and leaves the shape in ribs. (Until the water picks its
+    /// own step from how fast it is moving: part 2b.)
+    pub fn for_cell(cell: f32) -> Numbers {
+        let times = if cell.is_finite() && cell > 0.0 {
+            ((PACE_SPEED / (PACE_CELLS * cell * 240.0)).ceil() as u32).clamp(1, PACE_MOST)
+        } else {
+            1
+        };
+        Numbers { rate: 240 * times, ..Numbers::default() }
+    }
+
+    fn with_env(self) -> Numbers {
         fn num<T: std::str::FromStr>(name: &str, or: T) -> T {
             std::env::var(format!("BPE_WATER_{name}")).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
         }
-        let d = Numbers::default();
+        let d = self;
         Numbers {
             rate: num("RATE", d.rate),
             cycles: num("CYCLES", d.cycles),
@@ -137,6 +186,10 @@ impl Numbers {
             hold_full: num("HOLD_FULL", d.hold_full),
             even: num("EVEN", d.even),
             even_most: num("EVEN_MOST", d.even_most),
+            apart: num("APART", d.apart),
+            apart_reach: num("APART_REACH", d.apart_reach),
+            apart_most: num("APART_MOST", d.apart_most),
+            apart_pace: num("APART_PACE", d.apart_pace),
             hold_join: num("HOLD_JOIN", d.hold_join),
             tear_calm: num("TEAR_CALM", d.tear_calm),
             tear_spray: num("TEAR_SPRAY", d.tear_spray),
@@ -207,6 +260,21 @@ pub struct StepGpu {
     pub b: [f32; 4],
     pub h: [f32; 4],
     pub h2: [f32; 4],
+    pub r: [f32; 4],
     pub lv: [[u32; 4]; MOST_LEVELS],
     pub feels: [FeelGpu; MOST_LIQUIDS],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finer_cells_step_more_often() {
+        let rate = |cell: f32| Numbers::for_cell(cell).rate;
+        assert_eq!([rate(12.0), rate(8.0), rate(6.0), rate(3.0)], [240, 480, 480, 960]);
+        assert_eq!(rate(0.5), 1920, "never more than eight times 240");
+        assert_eq!([rate(0.0), rate(-3.0), rate(f32::NAN), rate(f32::INFINITY)], [240; 4]);
+        assert_eq!(Numbers { rate: 240, ..Numbers::for_cell(3.0) }, Numbers::default(), "nothing else differs");
+    }
 }

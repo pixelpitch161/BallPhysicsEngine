@@ -30,11 +30,11 @@ pub(super) enum P {
 /// The entry points in [`P`]'s order, and the bindings each uses: 0 the step, 1 the drops, 2 the
 /// solid field, 3 the sums, 4 the solids by cell, 5 the faces' speeds, 6 the pressure, 7 the faces'
 /// open shares, 8 the speeds the drops gather, 9 the pass's number, 10 the hold nodes' sums, 11 the
-/// hold nodes.
+/// hold nodes, 12 the drops by spot.
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_walls", &[0, 2, 4]),
-    ("cs_clear", &[0, 3, 10]),
-    ("cs_hold_p2g", &[0, 1, 10]),
+    ("cs_clear", &[0, 3, 10, 12]),
+    ("cs_hold_p2g", &[0, 1, 10, 12]),
     ("cs_hold_grid", &[0, 4, 10, 11]),
     ("cs_p2g", &[0, 1, 3, 11]),
     ("cs_grid", &[0, 3, 4, 5, 6, 7]),
@@ -43,7 +43,7 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_up", &[0, 6, 9]),
     ("cs_proj", &[0, 4, 5, 6]),
     ("cs_slip", &[0, 2, 4, 5, 8]),
-    ("cs_g2p", &[0, 1, 2, 4, 8, 11]),
+    ("cs_g2p", &[0, 1, 2, 4, 8, 11, 12]),
 ];
 
 /// Bytes of the pass's number (`Tick`).

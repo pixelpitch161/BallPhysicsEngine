@@ -114,7 +114,7 @@ impl Default for Pour {
             aim: 90.0,
             width: 40.0,
             speed: 300.0,
-            spread: 4.0,
+            spread: 0.0,
             from: 0.0,
             until: f32::MAX,
             kind: STOPS,
@@ -155,7 +155,7 @@ impl Pour {
             // Spread along the way it travels this step too, so drops don't come out in rows.
             let along = dice.unit() * self.speed * dt;
             let at = self.place + across * (u * self.width) + way * along;
-            let v = way_at(self.aim + self.spread * dice.signed()) * self.speed;
+            let v = self.fanned(u) * self.speed;
             out.push(Drop::new(layout.to_grid(at), v / layout.cell, self.kind, state.born, self.colour));
             state.born = state.born.wrapping_add(1);
         }
@@ -163,8 +163,59 @@ impl Pour {
     }
 }
 
+impl Pour {
+    /// The way a drop born at `u` across the spout (-0.5 at one edge, 0.5 at the other) sets off:
+    /// the stream fans out smoothly from its middle to `spread` degrees at its edges. (A way
+    /// picked at random for each drop is not a fan but drops knocking into each other all the way
+    /// down: the stream then lands in pulses, and whatever it feeds comes out in lumps.)
+    pub fn fanned(&self, u: f32) -> Vec2 {
+        let u = if u.is_finite() { u.clamp(-0.5, 0.5) } else { 0.0 };
+        way_at(self.aim + self.spread * 2.0 * u)
+    }
+}
+
 /// The unit vector at `degrees`, the same on every platform.
 fn way_at(degrees: f32) -> Vec2 {
     let (sin, cos) = degrees.to_radians().det_sin_cos();
     Vec2::new(cos, sin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn degrees(way: Vec2) -> f32 {
+        way.y.det_atan2(way.x).to_degrees()
+    }
+
+    #[test]
+    fn a_pour_fans_out_smoothly() {
+        assert_eq!(Pour::default().spread, 0.0, "a pour is one stream unless a Spread is asked for");
+        let pour = Pour { aim: 90.0, spread: 10.0, ..Pour::default() };
+        for (u, at) in [(-0.5, 80.0), (0.0, 90.0), (0.5, 100.0)] {
+            assert!((degrees(pour.fanned(u)) - at).abs() < 1e-3, "{u}: {}", degrees(pour.fanned(u)));
+        }
+        assert_eq!(pour.fanned(3.0), pour.fanned(0.5), "held to the spout's edge");
+        assert_eq!(pour.fanned(f32::NAN), pour.fanned(0.0));
+
+        let layout = Layout { cell: 8.0, cols: 64, rows: 64, origin: Vec2::ZERO };
+        let born = |pour: &Pour| pour.drops(&mut Poured::default(), &layout, 1.0 / 240.0, 0, 7);
+        // No Spread: every drop sets off the same way.
+        let spout = Pour { place: Vec2::new(256.0, 64.0), width: 80.0, speed: 1200.0, ..Pour::default() };
+        let straight = born(&spout);
+        assert!(straight.len() > 10);
+        assert!(straight.iter().all(|d| d.v == straight[0].v));
+        // A wide Spread from a spout with no width: every way finite and inside the Spread.
+        let fan = Pour { spread: 45.0, ..spout };
+        assert!(born(&fan).len() > 10);
+        for d in born(&Pour { width: 0.0, ..fan }).iter().chain(&born(&fan)) {
+            let v = Vec2::from(d.v);
+            assert!(v.is_finite());
+            assert!(v.length() == 0.0 || (degrees(v) - 90.0).abs() <= 45.0 + 1e-3);
+        }
+        // The fan is in order across the spout: a drop further along it leans further that way.
+        let mut drops = born(&fan);
+        drops.sort_by(|a, b| a.x[0].total_cmp(&b.x[0]));
+        assert!(drops.windows(2).all(|w| w[0].v[0] <= w[1].v[0] + 1e-6), "left of the spout leans left");
+    }
 }

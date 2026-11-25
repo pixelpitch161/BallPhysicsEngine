@@ -6,12 +6,16 @@
 //! - `WATER_CELLS=8,6` the cell sizes in pixels.
 //! - `WATER_TIMES=1,2,4` when to measure, seconds.
 //! - `WATER_OUT=<folder>` where debug pictures go (none without it).
-//! - `BPE_WATER_*` replace the solver's numbers (`Numbers::from_env`).
+//! - `WATER_DUMP=<folder>` where `look` writes the drops themselves (none without it).
+//! - `BPE_WATER_*` replace the solver's numbers (`Numbers::from_env_for`: the steps a second
+//!   follow the cell size unless `BPE_WATER_RATE` says otherwise).
+//!
+//! `pace` times scenes with no read-back until the end (`WATER_SECONDS`): the core's speed.
 
 use std::time::Instant;
 
 use bpe_core::maths::Maths;
-use bpe_water::probe::{self, Stats, Stream};
+use bpe_water::probe::{self, Spacing, Stats, Stream};
 use bpe_water::scenes::{self, Scene};
 use bpe_water::{Numbers, WaterGpu};
 use glam::Vec2;
@@ -60,7 +64,7 @@ fn card() -> std::sync::Arc<WaterGpu> {
     let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
     let info = device.adapter_info();
     println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
-    println!("# numbers\t{:?}", Numbers::from_env());
+    println!("# numbers (the steps a second follow the cell size)\t{:?}", Numbers::from_env());
     WaterGpu::new(&device, &queue)
 }
 
@@ -72,12 +76,12 @@ fn look() {
     let out = std::env::var("WATER_OUT").ok();
     let tag: String = num("WATER_TAG", String::new());
     println!(
-        "# scene\tcell\tseconds\tdrops\trms px/s\tfastest\ttop\tcrowded\tbroken\tin air\tpieces\twhole\tstrays\tgap px\twidths\twall s"
+        "# scene\tcell\tseconds\tdrops\trms px/s\tfastest\ttop\tcrowded\tbroken\tin air\tpieces\twhole\tstrays\tgap px\twidths\twall s\tsteps/s\tnearest (cells)\twithin 1/4 cell"
     );
     for name in list::<String>("WATER_SCENES", "weird") {
         for cell in list::<f32>("WATER_CELLS", "8") {
             let scene = scene_named(&name, cell);
-            let mut run = scene.start(&gpu, Numbers::from_env());
+            let mut run = scene.start(&gpu, Numbers::from_env_for(cell));
             let began = Instant::now();
             for t in list::<f32>("WATER_TIMES", "1,2,4") {
                 run.run_to(t);
@@ -90,8 +94,9 @@ fn look() {
                 });
                 let st = stream.unwrap_or_default();
                 let widths: Vec<String> = st.widths.iter().map(|w| format!("{w:.0}")).collect();
+                let spacing = Spacing::of(&drops);
                 println!(
-                    "{name}\t{cell}\t{t}\t{}\t{:.1}\t{:.0}\t{:.1}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.0}\t{}\t{:.1}",
+                    "{name}\t{cell}\t{t}\t{}\t{:.1}\t{:.0}\t{:.1}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.0}\t{}\t{:.1}\t{}\t{:.3}\t{:.3}",
                     s.drops,
                     s.rms,
                     s.fastest,
@@ -104,8 +109,19 @@ fn look() {
                     st.strays,
                     st.gap,
                     widths.join(" "),
-                    began.elapsed().as_secs_f32()
+                    began.elapsed().as_secs_f32(),
+                    run.water.numbers().rate,
+                    spacing.median,
+                    spacing.close
                 );
+                // The drops themselves (`WATER_DUMP=<folder>`): 12 numbers a drop as on the card, for
+                // a closer look outside the test.
+                if let Ok(dir) = std::env::var("WATER_DUMP") {
+                    std::fs::create_dir_all(&dir).expect("the dump's folder");
+                    let file = format!("{name}-{cell}-{t}{tag}.drops");
+                    std::fs::write(std::path::Path::new(&dir).join(file), bytemuck::cast_slice::<_, u8>(&drops))
+                        .expect("the dump");
+                }
                 if let Some(dir) = &out {
                     let tear = bpe_water::Feel::default().gpu(run.water.numbers(), cell).a[2];
                     let (pixels, w, h) = probe::picture(&drops, &run.field, num("WATER_SCALE", 0.5), tear);
@@ -125,7 +141,7 @@ fn bands() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 8.0);
     let scene = scenes::thin_pour(cell, num("WATER_POUR_CELLS", 2.0));
-    let mut run = scene.start(&gpu, Numbers::from_env());
+    let mut run = scene.start(&gpu, Numbers::from_env_for(cell));
     run.run_to(num("WATER_TIME", 1.5));
     let drops = run.water.read();
     let layout = run.water.layout();
@@ -167,7 +183,7 @@ fn bands() {
 fn strands() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 8.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env());
+    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
     let (lo, hi) = (Vec2::new(-80.0, 60.0), Vec2::new(330.0, 620.0));
     let bands = 8usize;
     let mut spread = vec![0.0f64; bands];
@@ -220,7 +236,7 @@ fn strands() {
 fn kicks() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 6.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env());
+    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
     run.run_to(num("WATER_TIME", 3.0));
     let layout = run.water.layout();
     let (centre, radius) = (Vec2::new(-180.0, -120.0), 120.0);
@@ -272,7 +288,7 @@ fn kicks() {
 fn across() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 6.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env());
+    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
     println!("# time\tdrops\tmean speed\trms along\trms across\tshare > 45 deg");
     for time in list::<f32>("WATER_TIMES", "2,3,4") {
         run.run_to(time);
@@ -315,5 +331,30 @@ fn across() {
             (across / m).sqrt(),
             wide as f32 / m
         );
+    }
+}
+
+/// How fast the core is: each scene played for `WATER_SECONDS` with no read-back until the end
+/// (the drops are read once then, which waits for every step sent). Wall seconds a second of
+/// scene, by scene and cell size.
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn pace() {
+    let gpu = card();
+    let seconds: f32 = num("WATER_SECONDS", 4.0);
+    println!("# scene\tcell\tsteps/s\tseconds\tdrops\twall s\twall s a second");
+    for name in list::<String>("WATER_SCENES", "weird") {
+        for cell in list::<f32>("WATER_CELLS", "8,6,3") {
+            let mut run = scene_named(&name, cell).start(&gpu, Numbers::from_env_for(cell));
+            let began = Instant::now();
+            run.run_to(seconds);
+            let drops = run.water.read().len();
+            let wall = began.elapsed().as_secs_f32();
+            println!(
+                "{name}\t{cell}\t{}\t{seconds}\t{drops}\t{wall:.2}\t{:.3}",
+                run.water.numbers().rate,
+                wall / seconds
+            );
+        }
     }
 }
