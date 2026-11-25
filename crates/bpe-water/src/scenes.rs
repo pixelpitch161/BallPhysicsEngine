@@ -9,9 +9,9 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use crate::drop::{Pour, Poured, STOPS, fill};
-use crate::drops::numbers::Feel;
+use crate::drops::numbers::{FRAME, Feel, Numbers};
+use crate::drops::{LEAST_WALL, Water, WaterGpu};
 use crate::grid;
-use crate::grid::{Water, WaterGpu};
 use crate::solid::{Layout, Solid, SolidField};
 
 /// The course's gravity in the test scenes: the Balls scenes' 500 at today's Bucket size (x 8).
@@ -32,19 +32,37 @@ pub struct Scene {
     pub pours: Vec<Pour>,
 }
 
-/// A scene being played.
-pub struct GridRunning {
+/// A scene being played by the all-drops engine.
+pub struct Running {
     pub water: Water,
     pub field: SolidField,
     pours: Vec<(Pour, Poured)>,
 }
 
+/// A scene being played by the grid core.
+pub struct GridRunning {
+    pub water: grid::Water,
+    pub field: SolidField,
+    pours: Vec<(Pour, Poured)>,
+}
+
 impl Scene {
-    /// Starts the scene on `gpu` with the solver's `numbers`.
-    pub fn start_grid(&self, gpu: &Arc<WaterGpu>, numbers: grid::Numbers) -> GridRunning {
+    /// Starts the scene on `gpu` with the all-drops engine's `numbers`.
+    pub fn start(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> Running {
+        let field = SolidField::build_least(self.layout, &self.solids, LEAST_WALL * self.layout.cell);
+        let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &self.feels);
+        for (lo, hi) in &self.fills {
+            water.add(&fill(&self.layout, &field, *lo, *hi, STOPS, 0));
+        }
+        let pours = self.pours.iter().map(|p| (*p, Poured::default())).collect();
+        Running { water, field, pours }
+    }
+
+    /// Starts the scene on `gpu` with the grid core's `numbers`.
+    pub fn start_grid(&self, gpu: &Arc<grid::WaterGpu>, numbers: grid::Numbers) -> GridRunning {
         let field = SolidField::build(self.layout, &self.solids);
         let feels: Vec<grid::Feel> = self.feels.iter().map(grid::Feel::from).collect();
-        let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &feels);
+        let mut water = grid::Water::new(gpu.clone(), &field, self.gravity, numbers, &feels);
         let mut born = 0u32;
         for (lo, hi) in &self.fills {
             let drops = fill(&self.layout, &field, *lo, *hi, STOPS, born);
@@ -52,6 +70,31 @@ impl Scene {
         }
         let pours = self.pours.iter().map(|p| (*p, Poured { owed: 0.0, born: 1 << 24 })).collect();
         GridRunning { water, field, pours }
+    }
+}
+
+impl Running {
+    /// One frame: the pours' births, then the frame.
+    pub fn frame(&mut self) {
+        let (frame, layout) = (self.water.frames(), self.water.layout());
+        for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
+            let drops = pour.drops(state, &layout, FRAME, frame, k as u32 + 1);
+            self.water.add(&drops);
+        }
+        self.water.frame();
+    }
+
+    /// Plays on to `seconds` from the start, in whole frames.
+    pub fn run_to(&mut self, seconds: f32) {
+        let until = (seconds / FRAME).round() as u32;
+        while self.water.frames() < until {
+            self.frame();
+        }
+    }
+
+    /// A copy that plays on exactly as this one does.
+    pub fn copy(&self) -> Running {
+        Running { water: self.water.copy(), field: self.field.clone(), pours: self.pours.clone() }
     }
 }
 
