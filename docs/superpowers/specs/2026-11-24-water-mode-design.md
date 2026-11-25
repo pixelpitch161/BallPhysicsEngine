@@ -165,21 +165,55 @@ Drops carried on a grid stay (it is what gives streams, splashes and colour carr
   that only holds today because sums are done in whole numbers (`liquid.md`), so the new core keeps whole-number
   or fixed-order sums everywhere, the pressure solve included. A take records the program version, card and
   driver it was made with and counts as out of date when any of them changes.
-- **Which pressure method** is the trial's question. Candidate A solves the pressure on the grid each step so the
-  liquid cannot squash (no springy pools, no patches for packing at walls). Candidate B is today's method (the
-  liquid is slightly squashy and pushes back). The trial thread compares them side by side on Aedan's card for
-  speed, thin streams and openings 2, 4 and 8 cells wide, pools at rest, volume kept over 20 seconds, and feel.
-  **Its verdict is copied here before part 2 is planned.** Everything else in this design holds for either.
+- **The pressure method: the trial's verdict** (2026-11-25, record in
+  `docs/superpowers/plans/water-mode/physics-trial.md`, results page
+  https://claude.ai/artifact/6sgerUCgwjRnvsX1ZWRjBR): **adopt the pressure-solving core, with named gaps.** The
+  trial core is drops on a staggered grid, the pressure solved each step so the liquid cannot squash (one-sided:
+  it pushes but never pulls), solved by multigrid with no substeps, with walls as part-open cell faces. Measured
+  on the RX 9070 XT, physics only, at Normal / Fine / Extreme:
+
+  | | Today's core | Trial core |
+  | --- | --- | --- |
+  | Seconds to work out one second (the course) | 0.29 / 0.51 / 1.40 | 0.08 / 0.09 / 0.15 |
+  | Still deep pool after 20 s, movement left | 32 / 63 / 29 px/s | 0 / 1.8 / 0.6 px/s |
+  | Pool height kept | 95 to 97 % | 98 to 99.7 % |
+  | Share through a 12 px opening in 30 s | 0.7 / 2 / 23 % | 36 / 33 / 33 % |
+  | Drops lost through walls | 25 / 0.5 / 0.4 % | 0 / 0.16 / 0 % |
+
+  Both repeat exactly on one machine. The trial core's answers hardly change with Detail, which is what makes a
+  draft a fair preview of a final.
+- **The gap that decides it: thin streams and films.** The trial core breaks a thin pour into lumps and a rain
+  of drops; today's core keeps clean streams (that comes from its wide 3-cell reach and springy pressure, so
+  there is no separate hold-together force to copy over). Two quick tries in the trial did not fix it.
+- **Aedan's choice** (2026-11-25): the new core, streams fixed first. "The pools do look much much better now.
+  The goal should be for the streams to be even better than todays. The liquid should be as good as you can
+  possibly make it." So the first physics part (2a below) builds a real hold-together for streams and films on
+  the new core, with two marks, judged on full-size frames and side-by-side clips on the RX 9070 XT with the
+  table above still holding:
+  - **Pass mark** (the least that keeps the new core): Water Weird's pour looks as clean as on today's core.
+    **If 2a cannot reach it, Water mode is built on today's core** (moved into `bpe-water`, off the ball
+    clock), and the rest of this design is unchanged.
+  - **Goal: better than today's.** A pour two cells wide stays one unbroken stream down a whole screen. A sheet
+    running off an edge stays a sheet until it meets something. A stream keeps a steady width, without the
+    jitter and beading today's shows, and stays clean at draft detail as well as final. A stream breaks into
+    drops only when the liquid's Surface pull says it should (low for spray, high for ropes), so breaking up is
+    a look Aedan chooses, never an accident of the method. Each of these gets its own test scene and clip.
+  - 2a keeps working past the pass mark toward the goal, and says plainly in its report which of the goal's
+    lines it reached and which it did not.
+- **Smaller gaps to close in 2a or note:** a slosh dies down about a third sooner than it should; 34 of 21,170
+  drops crossed walls at Fine; one drop went missing in a still pool. **Not built in the trial:** moving walls
+  (part 5), thick liquids, slime and ice (part 4), forces (part 4).
 - **Detail.** Cell size at 1080 wide: Draft 12, 8 (default) or 6 px; Final 3, 2 (default) or 1.5 px. About four
   drops a cell. A one-screen course two thirds full is about 86,000 drops in draft and 1.4 million in the default
   final. Caps: 500,000 draft drops, 8 million final drops (**my call**, from memory on a 16 GB card).
 - **Same water at every detail** stays a rule: a setting means the same thing in draft and final (today's "the
   same water at every Detail" work carries over), so the draft is a fair preview of everything bigger than a
   couple of draft cells.
-- **Speed** is not promised here. Today about 140,000 drops at Extreme take 1.4 to 2.6 seconds per second of
-  liquid on the RX 9070 XT, so a final with ten times the drops and finer cells may take many minutes for a
-  30 second video. The trial's numbers set the real targets, and the default final detail is chosen from them.
-  The one firm target: the draft plays at full speed with the default course.
+- **Speed.** The trial core works out the physics faster than real time at every Detail it was run at. A final
+  has about ten times the drops of the trial's Extreme, which nobody has timed, so how long Make final takes is
+  still measured in part 8 before it is promised. The firm target stays: the draft plays at full speed with the
+  default course. The trial also found that export time is mostly drawing, so the renderer (part 6) is where
+  export speed is won or lost, and it is timed there.
 - **Several liquids.** Each drop carries its Liquid, its colour and its heat. Feel settings (Thickness, Surface
   pull, Weight, Stickiness) are per Liquid and blend where liquids mix. Weight lets one liquid float on another
   if the chosen core supports it; otherwise it is left for later and said so in the notes.
@@ -366,8 +400,14 @@ part adds its own tools to the rail.
    the one line in `CLAUDE.md` that says the editor always opens to a blank project), the Water things as data, the
    water stage as an empty shell with the tool rail, ball-only jobs and tests gated by kind. Balls goldens and
    pictures shown unchanged.
-2. **Water runs.** `bpe-water` with the chosen physics core at draft detail and tiles from the start, the Course
-   with carving, Liquid (Feel), Pour (tap and fill at the start), a plain look.
+2. In two halves, because the stream question has to be settled before anything is built on the core:
+   - **2a. The water core, with streams better than today's.** `bpe-water` with the pressure-solving core from
+     the trial (tiles from the start, whole-number or fixed-order sums) and a hold-together for thin streams
+     and films. Pass mark and goal as in section 3, with the trial's table still holding, on the RX 9070 XT.
+     Ends with side-by-side clips for Aedan. If the pass mark cannot be reached, 2a instead moves today's core
+     into `bpe-water`.
+   - **2b. Water runs in a Water scene.** The Course with carving, Liquid (Feel), Pour (tap and fill at the
+     start), a plain look, in place of part 1's empty stand-in.
 3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
 4. **Everything today's liquid can do.** Mixing and Un-mix, rain, drips, bursts, drains, leaks, Forces, heat,
    freezing, drying, stains, fizz, wet marks.
@@ -381,13 +421,13 @@ part adds its own tools to the rail.
 10. **Video mode and clean-up.** Water clips in a video and the Scenes window, and, once Aedan agrees Water mode
     is at least as good, removing the old Liquid thing from Balls scenes.
 
-Order: 1, 2, 3 in a row. Then 4, 5, 6 and 7 side by side (the Molten look's crust from heat is finished by
+Order: 1, 2a, 2b, 3 in a row. Then 4, 5, 6 and 7 side by side (the Molten look's crust from heat is finished by
 whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished water video after part 8.
 
 ## Risks
 
-- **The pressure method's speed** at 1.4 million drops is unknown until the trial reports. If Candidate A loses,
-  part 1 builds on Candidate B and the design is otherwise unchanged.
+- **Thin streams on the new core** are the main risk of the whole build. Part 2a exists to settle it first, with
+  a pass mark Aedan can see and today's core as the way back.
 - **Make final may be slow.** Nobody has timed 1.4 million drops yet. If it is too slow to be pleasant, the
   default final becomes coarser and the finest setting stays for the last pass before a post.
 - **Take size.** If packing cannot get the size down, finals store every other frame.
@@ -402,6 +442,9 @@ whichever of 4 and 6 lands second). Then 8, 9, 10. Aedan can export a finished w
 
 - The app opens on the Balls or Water chooser.
 - Text is left out of Water scenes for now.
+
+- 2026-11-25, after the physics trial: the new pressure-solving core, with streams fixed first and the goal
+  "even better than todays"; "the liquid should be as good as you can possibly make it".
 
 Still to be measured and reported before anything is built on them: how much disk room a final uses (several GB
 is the estimate) and how long Make final takes.
