@@ -361,6 +361,53 @@ fn a_copy_with_pours_plays_on_the_same() {
     assert_eq!(probe::print_of(&first), probe::print_of(&c.water.read()), "from a copy made at frame 7");
 }
 
+/// A run whose steps a frame change (a burst of fast drops onto a slab) while a pour sends drops
+/// out of the course all the while plays the same twice and from a copy made part way.
+#[test]
+fn a_run_whose_steps_change_and_whose_drops_leave_repeats() {
+    let Some(gpu) = card() else { return };
+    let cell = 12.0;
+    let layout = Layout::cover(Vec2::new(-300.0, -1200.0), Vec2::new(300.0, 1200.0), cell);
+    let slab = [Solid::rect(Vec2::new(-260.0, 900.0), Vec2::new(260.0, 1000.0), true, 0.0)];
+    let field = SolidField::build_least(layout, &slab, LEAST_WALL * cell);
+    let start = || {
+        let mut w = Water::new(gpu.clone(), &field, scenes::GRAVITY, Numbers::for_cell(cell), &[Feel::default()]);
+        w.set_edges_shut(false);
+        let fired: Vec<Drop> = (0..600)
+            .map(|k| {
+                let at = Vec2::new(-150.0 + (k % 50) as f32 * 6.0, -1100.0 + (k / 50) as f32 * 6.0);
+                Drop::new(layout.to_grid(at), Vec2::new(0.0, 2500.0) / cell, STOPS, 0, WATER)
+            })
+            .collect();
+        w.add(&fired);
+        // (Out of the side: these drops leave the course.)
+        w.set_pours(&[Pour { place: Vec2::new(200.0, 0.0), aim: 0.0, width: 24.0, speed: 600.0, ..Pour::default() }]);
+        w
+    };
+    let mut a = start();
+    let mut steps = Vec::new();
+    let mut left = 0;
+    for _ in 0..40 {
+        a.frame();
+        steps.push(a.steps_last_frame());
+        left = left.max(a.count() as usize - a.read().len());
+    }
+    assert!(steps.iter().max() > steps.iter().min(), "the steps a frame change: {steps:?}");
+    assert!(left > 20, "drops leave the course: at most {left} out at once");
+    let mut b = start();
+    for _ in 0..13 {
+        b.frame();
+    }
+    let mut c = b.copy();
+    for _ in 13..40 {
+        b.frame();
+        c.frame();
+    }
+    let first = probe::print_of(&a.read());
+    assert_eq!(first, probe::print_of(&b.read()), "twice from the start");
+    assert_eq!(first, probe::print_of(&c.read()), "from a copy made at frame 13");
+}
+
 /// A fill starts stacked on the floor at its resting spacing: its lowest row a quarter cell off the
 /// floor, its rows and columns half a cell apart, and no drop nearer a solid than that.
 /// (Starting without a bounce is part C2's, with the fill's pressure worked out before the first

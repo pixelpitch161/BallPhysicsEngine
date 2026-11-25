@@ -48,8 +48,10 @@ fn cs_report(@builtin(global_invocation_id) gid: vec3<u32>) {
     if i < fr.grid.z {
         let both = fr.spouts[i / 2u];
         let at = select(both.xy, both.zw, (i & 1u) == 1u);
-        if alive(at) {
-            report.spout[i] = fullness_at(at);
+        if finite2(at) {
+            // (A spout whose room lies outside the course is judged at the course's edge.)
+            let q = clamp(at, vec2<f32>(0.0), vec2<f32>(fr.grid.xy) - vec2<f32>(1.0));
+            report.spout[i] = fullness_at(q);
         }
     }
     if i >= st.n.x {

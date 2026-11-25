@@ -87,50 +87,51 @@ pub fn fill(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kind: u32, 
     out
 }
 
+/// How far below a fill's foot a face may be for the fill to be set down on it, pixels (or two
+/// cells, when more): a fill drawn a little above a floor starts on it, one in mid-air falls.
+pub const FILL_SNAP: f32 = 16.0;
+
 /// A fill for the all-drops engine: the drops' resting lattice (half a cell apart) over the world
-/// rectangle `lo` to `hi`, each column stacked on the face below it (or from the rectangle's
-/// bottom when none is within its height), its lowest drop a quarter cell (`rest_off` cells) off
-/// the face, bottom row first. A drop is never placed nearer a solid than `rest_off`.
+/// rectangle `lo` to `hi`, bottom row first. A column whose foot is just above a face (within
+/// [`FILL_SNAP`] pixels or two cells) is moved down onto it, as many drops as the rectangle holds,
+/// its lowest drop `rest_off` cells off the face; a column over nothing near (in mid-air, over an
+/// opening) stays in the rectangle; a column whose foot is inside a solid starts on that solid's
+/// face and goes up to the rectangle's top. A drop is never placed nearer a solid than `rest_off`.
 pub fn fill_stacked(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kind: u32, rest_off: f32) -> Vec<Drop> {
     let (g_lo, g_hi) = (layout.to_grid(lo), layout.to_grid(hi));
-    let height = (g_hi.y - g_lo.y).max(0.0);
+    // The rows the rectangle holds, half a cell each.
+    let held = ((g_hi.y - g_lo.y).max(0.0) * 2.0).floor() as usize;
+    // How far down a column's foot looks for a face, in cells.
+    let snap = (FILL_SNAP / layout.cell).max(2.0);
     let (c0, c1) = ((g_lo.x * 2.0).ceil() as i64, (g_hi.x * 2.0).floor() as i64);
     // How far a grid point is from the solids, in cells, less how far a drop rests off them.
     let clear = |g: Vec2| field.at(layout.to_world(g)) / layout.cell - rest_off;
+    let step = 0.05;
     let mut columns: Vec<(f32, Vec<f32>)> = Vec::new();
     for c in c0..c1 {
         let x = c as f32 * 0.5 + 0.25;
-        // The lowest place a drop may rest in this column: on the face at or below the
-        // rectangle's bottom (searched a rectangle's height down), else the bottom itself.
-        let mut bottom = g_hi.y;
-        if clear(Vec2::new(x, bottom)) >= 0.0 {
-            let step = 0.05;
-            let mut y = bottom;
-            while y < g_hi.y + height && clear(Vec2::new(x, y + step)) >= 0.0 {
+        // The column's lowest drop and how many it holds.
+        let (bottom, rows) = if clear(Vec2::new(x, g_hi.y)) >= 0.0 {
+            // The foot is clear: onto the face just below, else a quarter cell in from the foot.
+            let mut y = g_hi.y;
+            while y < g_hi.y + snap && clear(Vec2::new(x, y + step)) >= 0.0 {
                 y += step;
             }
-            if y < g_hi.y + height {
-                bottom = settle_on(&clear, x, y, y + step);
-            }
+            let bottom = if y < g_hi.y + snap { settle_on(&clear, x, y, y + step) } else { g_hi.y - 0.25 };
+            (bottom, held)
         } else {
-            let step = 0.05;
-            let mut y = bottom;
+            // The foot is in a solid: up onto its face, and up to the rectangle's top from there.
+            let mut y = g_hi.y;
             while y > g_lo.y && clear(Vec2::new(x, y - step)) < 0.0 {
                 y -= step;
             }
             if y <= g_lo.y {
                 continue;
             }
-            bottom = settle_on(&clear, x, y - step, y);
-        }
-        let mut ys = Vec::new();
-        let mut y = bottom;
-        while y >= g_lo.y {
-            if clear(Vec2::new(x, y)) >= -1e-4 {
-                ys.push(y);
-            }
-            y -= 0.5;
-        }
+            let bottom = settle_on(&clear, x, y - step, y);
+            (bottom, ((bottom - g_lo.y) * 2.0).floor() as usize + 1)
+        };
+        let ys = (0..rows).map(|k| bottom - 0.5 * k as f32).filter(|&y| clear(Vec2::new(x, y)) >= -1e-4).collect();
         columns.push((x, ys));
     }
     // Bottom row first: by how far each drop is above its column's lowest.
@@ -499,6 +500,55 @@ mod tests {
             for w in rows.windows(2) {
                 assert!(((w[0][0].y - w[1][0].y).abs() - 4.0).abs() < 1e-3, "along: {} {}", w[0][0].y, w[1][0].y);
             }
+        }
+    }
+
+    /// A floor at y = 100 with an opening from x = 40 to 60, and a fill box over it.
+    fn floor_with_opening(cell: f32) -> (Layout, SolidField) {
+        let layout = Layout::cover(Vec2::new(-100.0, -200.0), Vec2::new(200.0, 300.0), cell);
+        let solids = [
+            crate::solid::Solid::rect(Vec2::new(-100.0, 100.0), Vec2::new(40.0, 130.0), true, 0.0),
+            crate::solid::Solid::rect(Vec2::new(60.0, 100.0), Vec2::new(200.0, 130.0), true, 0.0),
+        ];
+        (layout, SolidField::build_least(layout, &solids, 1.5 * cell))
+    }
+
+    #[test]
+    fn a_fill_is_set_down_on_a_floor_but_not_through_an_opening() {
+        for cell in [6.0, 3.0] {
+            let (layout, field) = floor_with_opening(cell);
+            // Drawn 12 px above the floor, the opening under its middle.
+            let (lo, hi) = (Vec2::new(0.0, 28.0), Vec2::new(100.0, 88.0));
+            let drops = fill_stacked(&layout, &field, lo, hi, STOPS, 0.25);
+            let world = |d: &Drop| layout.to_world(Vec2::from(d.x));
+            // The amount is the box's: as many rows a column as the box holds.
+            let columns = ((layout.to_grid(hi).x * 2.0).floor() - (layout.to_grid(lo).x * 2.0).ceil()) as usize;
+            let rows = ((hi.y - lo.y) / cell * 2.0).floor() as usize;
+            assert_eq!(drops.len(), columns * rows, "{cell} px");
+            for d in &drops {
+                let p = world(d);
+                // (One at the opening's very corner may sit level with the floor's top.)
+                assert!(p.y < 100.0 + 0.1 * cell, "{cell} px: no drop below the floor's top, one at {p}");
+                if (42.0..58.0).contains(&p.x) {
+                    assert!(p.y < hi.y, "{cell} px: over the opening the fill stays in its box, one at {p}");
+                }
+            }
+            // Beside the opening, the lowest drops rest a quarter cell off the floor.
+            let lowest = drops.iter().map(world).filter(|p| p.x < 30.0).map(|p| p.y).fold(f32::MIN, f32::max);
+            assert!((lowest - (100.0 - 0.25 * cell)).abs() < 0.05 * cell, "{cell} px: {lowest}");
+        }
+    }
+
+    #[test]
+    fn a_fill_in_mid_air_stays_in_its_box() {
+        let (layout, field) = floor_with_opening(6.0);
+        let (lo, hi) = (Vec2::new(-80.0, -80.0), Vec2::new(20.0, 20.0));
+        let drops = fill_stacked(&layout, &field, lo, hi, STOPS, 0.25);
+        let columns = ((layout.to_grid(hi).x * 2.0).floor() - (layout.to_grid(lo).x * 2.0).ceil()) as usize;
+        assert_eq!(drops.len(), columns * ((hi.y - lo.y) / 6.0 * 2.0).floor() as usize);
+        for d in &drops {
+            let p = layout.to_world(Vec2::from(d.x));
+            assert!(p.y > lo.y && p.y < hi.y, "{p}");
         }
     }
 }

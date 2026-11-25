@@ -374,8 +374,9 @@ pub fn beads(cell: f32) -> Scene {
     }
 }
 
-/// The all-drops trial's shots by name (`docs/superpowers/plans/water-mode/all-drops-trial.md`): `slope`, `ledge`, `pool`, `course`, `beads`, `weird`, `deep` (the
-/// deep pool at rest), `thin` (a two-cell pour down a whole screen).
+/// The all-drops trial's shots by name (`docs/superpowers/plans/water-mode/all-drops-trial.md`):
+/// `slope`, `ledge`, `pool`, `course`, `beads`, `weird`, `deep` (the deep pool at rest), `thin` (a
+/// two-cell pour down a whole screen).
 pub fn shot(name: &str, cell: f32) -> Option<Scene> {
     Some(match name {
         "slope" => slope(cell),

@@ -28,6 +28,9 @@ use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
 /// The most drops a body holds: each of its drops' buffers (16 bytes a drop) stays within the
 /// 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
 pub const MOST_DROPS: u32 = 8_388_608;
+/// The most drops born in one frame (the births buffer's binding stays within 128 MiB); any more
+/// are let go.
+const MOST_BIRTHS: u32 = 1 << 22;
 /// How thick a thin solid is taken to be, in cells, for this engine ([`SolidField::build_least`]).
 ///
 /// A wall exactly a cell thick whose middle line falls half way between two rows of nodes has
@@ -146,7 +149,9 @@ impl Water {
     pub fn new(gpu: Arc<WaterGpu>, field: &SolidField, gravity: glam::Vec2, numbers: Numbers, feels: &[Feel]) -> Water {
         let device = &gpu.device;
         let layout = field.layout;
-        let reach = numbers.reach.max(0.5);
+        // (The bins and the card's kernel take the same reach.)
+        let numbers = Numbers { reach: numbers.reach.max(0.5), ..numbers };
+        let reach = numbers.reach;
         let cells =
             (((layout.cols as f32 / reach).ceil() as u32).max(1), ((layout.rows as f32 / reach).ceil() as u32).max(1));
         // (The bins, and one more for drops that left the course.)
@@ -471,7 +476,9 @@ impl Water {
                 fastest = fastest.max(p.speed);
             }
         }
-        let fastest = fastest + self.gravity.length() * 2.0 * FRAME;
+        // (The strongest of the liquids' Gravity, and never less than the course's.)
+        let pull = self.feels.iter().map(|f| f.gravity.abs()).filter(|g| g.is_finite()).fold(1.0f32, f32::max);
+        let fastest = fastest + self.gravity.length() * pull * 2.0 * FRAME;
         self.numbers.steps_for(fastest, &self.feels, self.layout.cell).min(MOST_STEPS)
     }
 
@@ -506,7 +513,7 @@ impl Water {
                     continue;
                 }
                 for d in pour.rows(state, &self.layout, from, dt) {
-                    if count + (born.len() as u32 - start) >= MOST_DROPS {
+                    if count + (born.len() as u32 - start) >= MOST_DROPS || born.len() as u32 >= MOST_BIRTHS {
                         break;
                     }
                     born.push(Born { xv: [d.x[0], d.x[1], d.v[0], d.v[1]], id: [d.kind, self.serial, d.colour, 0] });
@@ -672,9 +679,10 @@ impl Water {
         staging.slice(..).get_mapped_range().expect("mapped").to_vec()
     }
 
-    /// Every drop, once the frames sent so far are done, in the grid core's layout: its `c` is
-    /// (how full its neighbourhood is, 0, which way the liquid lies from it), its `e` 0. Waits for
-    /// the card: for tests and measuring, never for a frame.
+    /// Every drop in the course, once the frames sent so far are done, in the grid core's layout:
+    /// its `c` is (how full its neighbourhood is, 0, which way the liquid lies from it), its `e` 0.
+    /// (Drops that left are not read: their order among themselves does not repeat.) Waits for the
+    /// card: for tests and measuring, never for a frame.
     pub fn read(&self) -> Vec<Drop> {
         let mut all = Vec::with_capacity(self.count as usize);
         let size = std::mem::size_of::<Drop>() as u64;
@@ -686,6 +694,12 @@ impl Water {
             all.extend(bytemuck::pod_collect_to_vec::<u8, Drop>(&self.read_buffer(&out, u64::from(n) * size)));
             from += n;
         }
+        // (As the card's `alive`.)
+        let (cols, rows) = ((self.layout.cols - 1) as f32, (self.layout.rows - 1) as f32);
+        all.retain(|d| {
+            let [x, y] = d.x;
+            x.is_finite() && y.is_finite() && (0.0..=cols).contains(&x) && (0.0..=rows).contains(&y)
+        });
         all
     }
 

@@ -149,7 +149,9 @@ fn cs_scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // Each drop to its sorted place: by bin, and within a bin by serial (with no cap on how many a bin
-// holds), so every sum over neighbours adds in the same order on every run.
+// holds), so every sum over neighbours adds in the same order on every run. Drops that left the
+// course keep the place the scatter gave them: they take no part, so their order needn't repeat
+// (and ranking them pair by pair would cost the square of how many there are).
 @compute @workgroup_size(256)
 fn cs_order(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s = gid.x;
@@ -159,20 +161,23 @@ fn cs_order(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = idx[s];
     let q = xp[i];
     let c = bin_of(q.xy);
-    let a = starts[c];
-    let b = starts[c + 1u];
     let me = id_cur[i];
-    var rank = 0u;
-    for (var t = a; t < b; t = t + 1u) {
-        let j = idx[t];
-        if j != i {
-            let other = id_cur[j].y;
-            if other < me.y || (other == me.y && j < i) {
-                rank = rank + 1u;
+    var dest = s;
+    if c < fr.cells.z {
+        let a = starts[c];
+        let b = starts[c + 1u];
+        var rank = 0u;
+        for (var t = a; t < b; t = t + 1u) {
+            let j = idx[t];
+            if j != i {
+                let other = id_cur[j].y;
+                if other < me.y || (other == me.y && j < i) {
+                    rank = rank + 1u;
+                }
             }
         }
+        dest = a + rank;
     }
-    let dest = a + rank;
     let n = nf[i];
     id_nxt[dest] = me;
     y_in[dest] = vec4<f32>(q.xy, n.xy);

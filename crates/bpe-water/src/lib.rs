@@ -3,8 +3,9 @@
 //! The all-drops engine ([`Water`], [`drops`]: every drop feels its neighbours directly); the grid
 //! core of parts 2a and 2a-2 ([`grid`]: drops on a grid, the pressure solved so the liquid cannot
 //! squash), kept for comparisons and for part C2's pressure solve; where drops are born ([`drop`]);
-//! the solid field the physics reads ([`solid`]); and measurements for tests ([`probe`]). Nothing here knows about scenes, cards or the editor: a
-//! later part turns a Water scene into a [`SolidField`], pours and [`Feel`]s.
+//! the solid field the physics reads ([`solid`]); and measurements for tests ([`probe`]). Nothing
+//! here knows about scenes, cards or the editor: a later part turns a Water scene into a
+//! [`SolidField`], pours and [`Feel`]s.
 
 pub mod bridge;
 pub mod drop;

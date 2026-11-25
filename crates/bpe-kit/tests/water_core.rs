@@ -172,7 +172,10 @@ impl NewCore {
         // them, each replaceable by its `BPE_GRID_*`.)
         let numbers = numbers.unwrap_or_else(|| Numbers::from_env_for(l.cell));
         let walls = walls_now(world);
-        let field = SolidField::from_distance(layout, |p, least| wall_distance(&walls, p, least));
+        // Thin walls a cell thick for the grid core, `LEAST_WALL` cells for the all-drops engine
+        // (one-cell walls leak drops: see there).
+        let least = if engine == "drops" { bpe_water::drops::LEAST_WALL * l.cell } else { l.cell };
+        let field = SolidField::from_distance(layout, |p, _| wall_distance(&walls, p, least));
         let mut liquids: Vec<LiquidState> = scene
             .order
             .iter()
@@ -215,6 +218,11 @@ impl NewCore {
                     .collect();
                 let numbers = bpe_water::Numbers::from_env_for(l.cell);
                 let mut water = DropsWater::new(cards.drops.clone(), &field, world.gravity * size, numbers, &feels);
+                // (Today's fill lies against walls a cell thick: the drops inside the thicker
+                // walls' band would be thrown out of it, so they are left out.)
+                let clear =
+                    |d: &bpe_water::Drop| field.at(layout.to_world(Vec2::from(d.x))) >= numbers.wall_off * layout.cell;
+                let first: Vec<bpe_water::Drop> = first.into_iter().filter(clear).collect();
                 water.add(&first);
                 let pours = pours_of(&mut liquids, world, &l, size);
                 water.set_pours(&pours);
