@@ -1,11 +1,12 @@
-//! The water core's own checks (Water mode part 2a): pools rest and keep their height, walls hold,
-//! narrow openings flow, and a run repeats exactly.
+//! The water core's own checks (Water mode parts 2a and 2a-2): pools rest and keep their height,
+//! walls hold, narrow openings flow, a run repeats exactly, and the drops' elbow room leaves still
+//! water alone and never bursts.
 
 use std::sync::Arc;
 
-use bpe_water::probe::{self, Stats};
+use bpe_water::probe::{self, Spacing, Stats};
 use bpe_water::scenes::{self, Scene};
-use bpe_water::{Numbers, Pour, Solid, WaterGpu};
+use bpe_water::{Drop, Feel, Layout, Numbers, Pour, STOPS, Solid, SolidField, WATER, Water, WaterGpu};
 use glam::Vec2;
 
 fn card() -> Option<Arc<WaterGpu>> {
@@ -138,4 +139,114 @@ fn the_air_does_not_brake_a_pour() {
     let mean = falls.iter().sum::<f32>() / falls.len() as f32;
     let free = (scenes::POUR_SPEED * scenes::POUR_SPEED + 2.0 * scenes::GRAVITY.y * 1400.0).sqrt();
     assert!((mean / free - 1.0).abs() < 0.04, "it falls freely: {mean} px/s against {free}");
+}
+
+/// Elbow room is for water on the move: a pool at rest is left exactly as it lies. A settled pool
+/// plays on the same to the bit with it and without it.
+#[test]
+fn still_water_is_left_alone() {
+    let Some(gpu) = card() else { return };
+    let without = Numbers { apart: 0.0, ..Numbers::default() };
+    let mut run = scenes::still_box(8.0, 0.3).start(&gpu, without);
+    // (Its first moments are the fill's own drops finding their places, some at over 50 px/s.)
+    run.run_to(0.5);
+    let mut with = run.copy();
+    with.water.set_numbers(Numbers::default());
+    run.run_to(2.0);
+    with.run_to(2.0);
+    assert_eq!(probe::print_of(&with.water.read()), probe::print_of(&run.water.read()));
+}
+
+/// An empty box with room to fall in, and `drops` put in it.
+fn in_the_air(gpu: &Arc<WaterGpu>, numbers: Numbers, drops: &[Drop]) -> Water {
+    let layout = Layout::cover(Vec2::new(-200.0, -400.0), Vec2::new(200.0, 400.0), 8.0);
+    let field = SolidField::build(layout, &[]);
+    let mut water = Water::new(gpu.clone(), &field, scenes::GRAVITY, numbers, &[Feel::default()]);
+    water.add(drops);
+    water
+}
+
+/// Many drops born on one point (a pour into a corner does it): they take their room without a
+/// burst. (With no elbow room they stay on that one point for good: drops at one place gather the
+/// same speed, so nothing the grid does can part them.)
+#[test]
+fn a_heap_on_one_spot_spreads_without_a_burst() {
+    let Some(gpu) = card() else { return };
+    let play = |numbers: Numbers| {
+        let layout = Layout::cover(Vec2::new(-200.0, -400.0), Vec2::new(200.0, 400.0), 8.0);
+        let at = layout.to_grid(Vec2::new(3.3, -300.7));
+        let heap: Vec<Drop> = (0..400).map(|k| Drop::new(at, Vec2::new(0.0, 600.0) / 8.0, STOPS, k, WATER)).collect();
+        let mut water = in_the_air(&gpu, numbers, &heap);
+        for _ in 0..48 {
+            water.step();
+        }
+        let drops = water.read();
+        let s = Stats::of(&drops, &layout);
+        let (mut lo, mut hi) = (Vec2::MAX, Vec2::MIN);
+        for d in &drops {
+            lo = lo.min(Vec2::from(d.x));
+            hi = hi.max(Vec2::from(d.x));
+        }
+        (s, (hi - lo).max_element(), Spacing::of(&drops))
+    };
+    let (with, span, spacing) = play(Numbers::default());
+    let (without, span_without, _) = play(Numbers { apart: 0.0, ..Numbers::default() });
+    println!("a heap of 400: {span} cells across, fastest {} px/s, {spacing:?}", with.fastest);
+    println!("with no elbow room: {span_without} cells across, fastest {} px/s", without.fastest);
+    assert_eq!((with.broken, with.drops), (0, 400));
+    // (400 drops are 100 cells of liquid: a patch 10 cells across at rest.)
+    assert!(span > 5.0, "the heap has spread: {span} cells across");
+    assert!(span < 30.0, "and has not been blown apart: {span} cells across");
+    assert!(spacing.close < 0.2, "its drops have their room: {spacing:?}");
+    // A free fall from 600 px/s for 48 steps is at 1,400 px/s.
+    assert!(with.fastest < 1400.0 + 500.0, "none was thrown: the fastest is at {} px/s", with.fastest);
+}
+
+/// A drop at the grid's very edge, or off it, among a pour: nothing reads or writes outside the
+/// spots, the drops that step stay numbers and none is lost.
+#[test]
+fn drops_at_the_grids_edge_are_safe() {
+    let Some(gpu) = card() else { return };
+    let mut run = scenes::weird(8.0).start(&gpu, Numbers::default());
+    let layout = run.water.layout();
+    let (cols, rows) = (layout.cols as f32, layout.rows as f32);
+    let fast = Vec2::new(40.0, 40.0);
+    let odd: Vec<Drop> =
+        [(0.0, 0.0), (cols - 1.0, rows - 1.0), (-0.4, 3.0), (cols + 5.0, rows + 5.0), (3.0, rows - 0.999)]
+            .iter()
+            .enumerate()
+            .map(|(k, &(x, y))| Drop::new(Vec2::new(x, y), fast, 0, 9000 + k as u32, WATER))
+            .collect();
+    run.water.add(&odd);
+    for _ in 0..60 {
+        run.step();
+    }
+    let drops = run.water.read();
+    // The two on the grid's corners step with the rest (and, not stopping at the edge, may leave
+    // the grid): they are numbers still.
+    let on_grid = |d: &Drop| d.x[0] >= 0.0 && d.x[0] <= cols - 1.0 && d.x[1] >= 0.0 && d.x[1] <= rows - 1.0;
+    for serial in [9000, 9001] {
+        let d = drops.iter().find(|d| d.serial == serial).expect("the corner drop is kept");
+        assert!(Vec2::from(d.x).is_finite() && Vec2::from(d.v).is_finite(), "{d:?}");
+        assert!(Vec2::from(d.x) != Vec2::ZERO, "it has stepped: {d:?}");
+    }
+    // The ones off the grid are kept as they were (they do not step).
+    for serial in [9002, 9003] {
+        let d = drops.iter().find(|d| d.serial == serial).expect("the drop off the grid is kept");
+        assert!(!on_grid(d) && Vec2::from(d.v) == fast, "{d:?}");
+    }
+    let pour: Vec<&Drop> = drops.iter().filter(|d| d.serial >= 1 << 24).collect();
+    assert!(pour.len() > 50, "the pour pours: {}", pour.len());
+    assert!(pour.iter().all(|d| Vec2::from(d.x).is_finite() && Vec2::from(d.v).is_finite()));
+    assert!(pour.iter().all(|d| on_grid(d)));
+}
+
+#[test]
+fn no_elbow_room_still_runs() {
+    let Some(gpu) = card() else { return };
+    let mut run = scenes::weird(8.0).start(&gpu, Numbers { apart: 0.0, ..Numbers::default() });
+    run.run_to(0.3);
+    let s = Stats::of(&run.water.read(), &run.water.layout());
+    assert!(s.drops > 100, "{}", s.drops);
+    assert_eq!(s.broken, 0);
 }

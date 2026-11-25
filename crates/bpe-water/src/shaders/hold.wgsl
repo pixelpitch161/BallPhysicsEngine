@@ -20,6 +20,19 @@ fn cs_clear(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var c = 0u; c < HOLD; c = c + 1u) {
         atomicStore(&hold[HOLD * k + c], 0);
     }
+    // The node's four spots.
+    if st.r.x > 0.0 {
+        let x = i32(k % st.grid.x);
+        let y = i32(k / st.grid.x);
+        for (var b = 0; b < 2; b = b + 1) {
+            for (var a = 0; a < 2; a = a + 1) {
+                let s = spot_index(vec2<i32>(2 * x + a, 2 * y + b));
+                for (var c = 0u; c < SPOT; c = c + 1u) {
+                    atomicStore(&spots[s + c], 0);
+                }
+            }
+        }
+    }
 }
 
 // The pressure a drop's stretch gives (below 0: a pull), with the damping of its own spreading.
@@ -42,6 +55,14 @@ fn cs_hold_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = drops[i];
     if !steps(p) {
         return;
+    }
+    // Where it is, for its neighbours' elbow room.
+    if st.r.x > 0.0 {
+        let sp = spot_of(p.x);
+        let s = spot_index(sp.at);
+        atomicAdd(&spots[s], 1);
+        atomicAdd(&spots[s + 1u], sp.within.x);
+        atomicAdd(&spots[s + 2u], sp.within.y);
     }
     let feel = st.feels[liquid_of(p)];
     let mass = feel.b.x * VOL;

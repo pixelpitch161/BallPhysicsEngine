@@ -1,9 +1,10 @@
-//! Thin streams and films (Water mode part 2a): a pour stays one narrow stream down a whole
-//! screen, a sheet off an edge stays whole, and a drop alone is left alone.
+//! Thin streams and films (Water mode parts 2a and 2a-2): a pour stays one narrow stream down a
+//! whole screen, a sheet off an edge stays whole, a drop alone is left alone, drops on the move
+//! keep their elbow room and a film leaves a block evenly.
 
 use std::sync::Arc;
 
-use bpe_water::probe::{self, Stream};
+use bpe_water::probe::{self, Spacing, Stream};
 use bpe_water::scenes;
 use bpe_water::{Drop, Feel, Layout, Numbers, SolidField, WATER, Water, WaterGpu};
 use glam::Vec2;
@@ -128,4 +129,74 @@ fn a_lone_drop_pulls_on_nothing() {
         assert!(off < most, "stretched {stretch}, it is where a free fall puts it all the way: {off} px off");
         assert!(off_speed < 4.0 * most, "at a free fall's speed: {off_speed} px/s off");
     }
+}
+
+/// Drops on the move keep their elbow room: in the films and the thread of the Water Weird layout
+/// few fast drops have another right beside them. (Without it they sit where chance put them:
+/// most have another within a quarter of a cell.)
+#[test]
+fn drops_on_the_move_keep_apart() {
+    let Some(gpu) = card() else { return };
+    let fast = |numbers: Numbers| {
+        let mut run = scenes::weird(8.0).start(&gpu, numbers);
+        run.run_to(1.2);
+        let drops: Vec<Drop> =
+            run.water.read().into_iter().filter(|d| Vec2::from(d.v).length() * 8.0 > 300.0).collect();
+        (drops.len(), Spacing::of(&drops))
+    };
+    let (n, with) = fast(Numbers::default());
+    let (_, without) = fast(Numbers { apart: 0.0, ..Numbers::default() });
+    println!("{n} fast drops: {with:?}; with no elbow room {without:?}");
+    assert!(n > 500, "the liquid is on the move: {n}");
+    assert!(with.close < 0.15, "few have another within a quarter of a cell: {}", with.close);
+    assert!(with.median > 0.3, "the usual gap is over 0.3 cell: {}", with.median);
+    assert!(without.close > 2.0 * with.close, "and it is the elbow room that does it: {without:?}");
+}
+
+/// Two drops born on the very same point part, and neither is kicked: each still falls freely.
+#[test]
+fn two_drops_on_one_spot_part_without_a_kick() {
+    let Some(gpu) = card() else { return };
+    let layout = Layout::cover(Vec2::new(-200.0, -400.0), Vec2::new(200.0, 400.0), 8.0);
+    let field = SolidField::build(layout, &[]);
+    let gravity = Vec2::new(0.0, 4000.0);
+    let mut water = Water::new(gpu.clone(), &field, gravity, Numbers::default(), &[Feel::default()]);
+    let v0 = Vec2::new(0.0, 600.0);
+    let at = layout.to_grid(Vec2::new(-3.3, -350.7));
+    water.add(&[Drop::new(at, v0 / 8.0, 0, 0, WATER), Drop::new(at, v0 / 8.0, 0, 1, WATER)]);
+    let steps = 36;
+    for _ in 0..steps {
+        water.step();
+    }
+    let drops = water.read();
+    let gap = (Vec2::from(drops[0].x) - Vec2::from(drops[1].x)).length();
+    let free = v0 + gravity * steps as f32 * water.numbers().dt();
+    let off = drops.iter().map(|d| (Vec2::from(d.v) * 8.0 - free).length()).fold(0.0, f32::max);
+    println!("two drops born on one point: {gap} cells apart, at most {off} px/s off a free fall of {} px/s", free.y);
+    assert!(gap > 0.3, "they have parted: {gap} cells");
+    // (The grid's own share of this is about 10 px/s on the cloud's card; a kick from being
+    // parted would be the 400 px/s the parting moves them at.)
+    assert!(off < 0.04 * free.length(), "and fall freely still: {off} px/s off {}", free.length());
+}
+
+/// A film leaves the block's corner evenly (the Water Weird layout): along the first stretch of
+/// its flight no part of it is much thinner than another. (The elbow room, the one-stream pour and
+/// the steps by detail together make it so; the plan has what each was measured to do.)
+#[test]
+fn a_film_leaves_a_block_even() {
+    let Some(gpu) = card() else { return };
+    let mut run = scenes::weird(6.0).start(&gpu, Numbers::for_cell(6.0));
+    // The block's top edge runs from its right corner (210, -330) down to its left one (0, -240);
+    // the film runs down it and flies on along the same line.
+    let (corner, way) = (Vec2::new(0.0, -240.0), Vec2::new(-210.0, 90.0).normalize());
+    let mut evenness = 0.0;
+    for k in 0..10 {
+        run.run_to(1.0 + 0.1 * k as f32);
+        let bins = probe::along(&run.water.read(), &run.water.layout(), corner, corner + way * 78.0, 30.0, 13);
+        let (least, most) = (*bins.iter().min().expect("bins"), *bins.iter().max().expect("bins"));
+        assert!(most > 0, "the film flies off the corner");
+        evenness += least as f32 / most as f32 / 10.0;
+    }
+    println!("the film off the block: its thinnest stretch is {evenness} of its thickest, on average");
+    assert!(evenness > 0.3, "the film is even along its flight: thinnest {evenness} of thickest");
 }

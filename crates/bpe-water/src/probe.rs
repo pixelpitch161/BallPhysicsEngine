@@ -68,6 +68,117 @@ pub fn inside(drops: &[Drop], layout: &Layout, lo: Vec2, hi: Vec2) -> Vec<Drop> 
         .collect()
 }
 
+/// How evenly drops are spaced: each drop's distance to its nearest other, in cells. (Liquid at
+/// rest has four drops a cell, half a cell apart; drops strewn at random at that density have a
+/// median of about a quarter of a cell, and a third of them within a fifth.)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Spacing {
+    /// The median distance to the nearest other drop (0 with fewer than two drops).
+    pub median: f32,
+    /// The share of the drops with another within a quarter of a cell.
+    pub close: f32,
+}
+
+impl Spacing {
+    pub fn of(drops: &[Drop]) -> Spacing {
+        let drops: Vec<Vec2> = drops.iter().map(|d| Vec2::from(d.x)).filter(|x| x.is_finite()).collect();
+        if drops.len() < 2 {
+            return Spacing::default();
+        }
+        let key = |x: Vec2| (x.x.floor() as i32, x.y.floor() as i32);
+        let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        for (i, x) in drops.iter().enumerate() {
+            cells.entry(key(*x)).or_default().push(i as u32);
+        }
+        // (A drop with no other within a cell of it counts as a cell away.)
+        let mut nearest: Vec<f32> = drops
+            .iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let (cx, cy) = key(*x);
+                let mut least = 1.0f32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        for &j in cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                            if j as usize != i {
+                                least = least.min((drops[j as usize] - *x).length());
+                            }
+                        }
+                    }
+                }
+                least
+            })
+            .collect();
+        let close = nearest.iter().filter(|d| **d < 0.25).count() as f32 / nearest.len() as f32;
+        nearest.sort_by(f32::total_cmp);
+        Spacing { median: nearest[nearest.len() / 2], close }
+    }
+}
+
+/// How many drops lie within `reach` pixels of the world segment `from` to `to`, by `bins` equal
+/// stretches along it: how even a film or a thread is along its length.
+pub fn along(drops: &[Drop], layout: &Layout, from: Vec2, to: Vec2, reach: f32, bins: usize) -> Vec<u32> {
+    let mut counts = vec![0u32; bins];
+    let length = (to - from).length();
+    if bins == 0 || length.is_nan() || length <= 0.0 {
+        return counts;
+    }
+    let way = (to - from) / length;
+    for d in drops {
+        let p = layout.to_world(Vec2::from(d.x)) - from;
+        let (s, off) = (p.dot(way), p.perp_dot(way));
+        if p.is_finite() && (0.0..length).contains(&s) && off.abs() <= reach {
+            counts[((s / length * bins as f32) as usize).min(bins - 1)] += 1;
+        }
+    }
+    counts
+}
+
+/// How ragged a film or a thread is: for each drop, how far the drops within `reach` pixels of
+/// it lie off the line through them (pixels: the lesser spread of that little cloud). A clean
+/// thread reads about a third of its own thickness; barbs, ribs and teeth read more. Returns the
+/// mean and the value nine tenths of the drops are under (0 with too few drops to tell).
+pub fn ragged(drops: &[Drop], layout: &Layout, reach: f32) -> (f32, f32) {
+    let at: Vec<Vec2> = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).filter(|x| x.is_finite()).collect();
+    let key = |x: Vec2| ((x.x / reach).floor() as i32, (x.y / reach).floor() as i32);
+    let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    for (i, x) in at.iter().enumerate() {
+        cells.entry(key(*x)).or_default().push(i as u32);
+    }
+    let mut off: Vec<f32> = Vec::with_capacity(at.len());
+    for x in &at {
+        let (cx, cy) = key(*x);
+        let (mut n, mut sum, mut sq, mut xy) = (0.0f64, glam::DVec2::ZERO, glam::DVec2::ZERO, 0.0f64);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for &j in cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                    let q = at[j as usize] - *x;
+                    if q.length_squared() <= reach * reach {
+                        let q = q.as_dvec2();
+                        n += 1.0;
+                        sum += q;
+                        sq += q * q;
+                        xy += q.x * q.y;
+                    }
+                }
+            }
+        }
+        if n < 4.0 {
+            continue;
+        }
+        // The lesser eigenvalue of the cloud's 2 x 2 spread.
+        let mean = sum / n;
+        let (a, b, c) = (sq.x / n - mean.x * mean.x, xy / n - mean.x * mean.y, sq.y / n - mean.y * mean.y);
+        let less = 0.5 * (a + c) - (0.25 * (a - c) * (a - c) + b * b).sqrt();
+        off.push(less.max(0.0).sqrt() as f32);
+    }
+    if off.is_empty() {
+        return (0.0, 0.0);
+    }
+    off.sort_by(f32::total_cmp);
+    (off.iter().sum::<f32>() / off.len() as f32, off[off.len() * 9 / 10])
+}
+
 /// How whole a stream is: the drops of one region of air, grouped into pieces.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stream {

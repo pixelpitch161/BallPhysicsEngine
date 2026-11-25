@@ -11,7 +11,9 @@
 //! - `WATER_DETAILS=normal,fine,extreme` the liquid's Detail.
 //! - `WATER_SECONDS`, `WATER_FPS`, `WATER_SIZE=540x960`, `WATER_CORES=old,new`.
 //! - `WATER_MEASURE=1,2,4` when the streams are measured (seconds).
-//! - `BPE_WATER_*` replace the new core's numbers.
+//! - `WATER_FAN=1` the new core's pours keep the scene's Spread (see `NewCore::step`).
+//! - `BPE_WATER_*` replace the new core's numbers (its steps a second follow the detail's cell
+//!   size, `Numbers::for_cell`, unless `BPE_WATER_RATE` says otherwise).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ use bpe_kit::{Kit, kit, scenes};
 use bpe_runtime::{Playback, Wall};
 use bpe_water::bridge::Bridge;
 use bpe_water::probe::{self, Stream};
-use bpe_water::{Feel, Layout, Numbers, SolidField, Water, WaterGpu};
+use bpe_water::{Feel, Layout, Numbers, Pour, SolidField, Water, WaterGpu};
 use glam::Vec2;
 
 /// How far `p` is from the nearest of `walls`' faces (pixels, below 0 inside), with hollow walls
@@ -79,7 +81,7 @@ fn as_water(born: &[bpe_gfx::liquid_sim::Drop]) -> Vec<bpe_water::Drop> {
 }
 
 impl NewCore {
-    fn new(scene: &Scene, resolved: &Resolved, kit: &Kit, gpu: &Arc<WaterGpu>, numbers: Numbers) -> NewCore {
+    fn new(scene: &Scene, resolved: &Resolved, kit: &Kit, gpu: &Arc<WaterGpu>, numbers: Option<Numbers>) -> NewCore {
         let mut start = Playback::new(scene, resolved, kit.sims.clone());
         start.seek(0.0);
         let world = start.world();
@@ -87,6 +89,9 @@ impl NewCore {
         let host = host_st.host.as_ref().expect("its host");
         let l = host.layout;
         let layout = Layout { origin: l.origin, cell: l.cell, cols: l.cols, rows: l.rows };
+        // (With no numbers given: the liquid's own for this cell size, the steps a second among
+        // them, each replaceable by its `BPE_WATER_*`.)
+        let numbers = numbers.unwrap_or_else(|| Numbers::from_env_for(l.cell));
         let walls = walls_now(world);
         let field = SolidField::from_distance(layout, |p, least| wall_distance(&walls, p, least));
         let liquids: Vec<LiquidState> = scene
@@ -125,7 +130,27 @@ impl NewCore {
             st.owed.resize(st.pours.len(), 0.0);
             for k in 0..st.pours.len() {
                 let born = births::pour(st, k, world, &self.layout, dt, step, self.size);
-                self.water.add(&as_water(&born));
+                let mut born = as_water(&born);
+                // The drops are today's (their places, colours, serials); their ways are Water
+                // mode's: a pour there does not fan out unless its Spread says so (the Pour card's
+                // default is 0, where today's is 4 degrees, each drop's way picked at random), and
+                // a Spread fans the stream smoothly across the spout (`bpe_water::Pour::fanned`).
+                // `WATER_FAN=1` keeps the scene's own Spread.
+                let p = &st.pours[k];
+                let anchor = world.anchor(st.id);
+                let aim = p.aim + anchor.angle.to_degrees();
+                let speed = p.speed * self.size.max(0.0).sqrt();
+                let width = births::pour_width(p).max(1e-3);
+                let spread = if std::env::var("WATER_FAN").is_ok() { p.spread } else { 0.0 };
+                let fan = Pour { aim, spread, ..Pour::default() };
+                let spout = anchor.position + Vec2::from_angle(anchor.angle).rotate(p.place);
+                let across = fan.fanned(0.0).perp();
+                let layout = self.water.layout();
+                for d in &mut born {
+                    let u = (layout.to_world(Vec2::from(d.x)) - spout).dot(across) / width;
+                    d.v = (fan.fanned(u) * speed / layout.cell).to_array();
+                }
+                self.water.add(&born);
             }
         }
         self.water.step();
@@ -303,7 +328,10 @@ fn side_by_side() {
     let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
     let info = device.adapter_info();
     println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
-    println!("# numbers\t{:?}", Numbers::from_env());
+    println!(
+        "# numbers (but `rate`: the steps a second follow the cell size, printed by scene)\t{:?}",
+        Numbers::from_env()
+    );
     let _card = use_for_now(Some(SwarmGpu::for_device(&device, &queue)));
     let gpu = WaterGpu::new(&device, &queue);
     let kit = kit();
@@ -324,7 +352,11 @@ fn side_by_side() {
             let resolved = resolve(&scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
             let mut today = old.then(|| Playback::new(&scene, &resolved, kit.sims.clone()));
-            let mut water = new.then(|| NewCore::new(&scene, &resolved, &kit, &gpu, Numbers::from_env()));
+            let mut water = new.then(|| NewCore::new(&scene, &resolved, &kit, &gpu, None));
+            if let Some(core) = &water {
+                let (rate, cell) = (core.water.numbers().rate, core.water.layout().cell);
+                println!("# {name}\t{detail:?}\tthe new core steps {rate} times a second ({cell} px cells)");
+            }
             let dir = out.join(format!("{name}-{detail:?}").to_lowercase());
             std::fs::create_dir_all(&dir).expect("the frames' folder");
             let began = Instant::now();
@@ -486,7 +518,7 @@ fn the_bridge_draws_every_drop() {
     let (mut scene, shape) = scenes::liquid_box(&kit.registry);
     scenes::add_liquid(&mut scene, &kit.registry, shape, |f| f.level = 0.5, |_| {});
     let resolved = resolve(&scene, &kit.registry);
-    let mut core = NewCore::new(&scene, &resolved, &kit, &gpu, Numbers::default());
+    let mut core = NewCore::new(&scene, &resolved, &kit, &gpu, Some(Numbers::default()));
     assert!(core.water.count() > 500, "the fill's drops are in the new core: {}", core.water.count());
     core.run_to(0.25);
     let mut renderer = Renderer::new(&device, 270, 480);

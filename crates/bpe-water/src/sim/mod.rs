@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use bpe_core::maths::Maths;
 use wgpu::util::DeviceExt;
 
 pub mod drop;
@@ -125,6 +126,10 @@ pub struct Water {
     vel_out: wgpu::Buffer,
     hold: wgpu::Buffer,
     hold_out: wgpu::Buffer,
+    /// The drops by spot (four spots a cell), for their elbow room; a stand-in a few words long
+    /// when the course is too big for it (`elbow` is then false).
+    spots: wgpu::Buffer,
+    elbow: bool,
     groups: Vec<wgpu::BindGroup>,
     in_flight: VecDeque<wgpu::SubmissionIndex>,
 }
@@ -133,6 +138,16 @@ impl std::fmt::Debug for Water {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Water({} drops, {} x {})", self.count, self.layout.cols, self.layout.rows)
     }
+}
+
+/// Words a spot (`SPOT` in common.wgsl).
+const SPOT_WORDS: u64 = 3;
+
+/// The bytes the spots of a grid of `cells` take (four spots a cell), or `None` when that is more
+/// than the card binds as one buffer (`limit` bytes): the body then goes without elbow room.
+pub fn spots_bytes(cells: u64, limit: u64) -> Option<u64> {
+    let bytes = cells.checked_mul(4 * SPOT_WORDS * 4)?;
+    (bytes <= limit).then_some(bytes)
 }
 
 fn room_for(n: u32) -> u32 {
@@ -160,6 +175,7 @@ impl Water {
             usage: STORE,
         });
         let room = room_for(0);
+        let spots = spots_bytes(cells, device.limits().max_storage_buffer_binding_size);
         let mut water = Water {
             layout,
             numbers,
@@ -182,6 +198,8 @@ impl Water {
             vel_out: storage(device, "water speeds out", cells * 16),
             hold: storage(device, "water hold sums", cells * 16),
             hold_out: storage(device, "water hold nodes", cells * 16),
+            spots: storage(device, "water spots", spots.unwrap_or(4 * SPOT_WORDS * 4)),
+            elbow: spots.is_some(),
             groups: Vec::new(),
             in_flight: VecDeque::new(),
             gpu,
@@ -224,7 +242,8 @@ impl Water {
                             }),
                         },
                         10 => whole(10, &self.hold),
-                        _ => whole(11, &self.hold_out),
+                        11 => whole(11, &self.hold_out),
+                        _ => whole(12, &self.spots),
                     })
                     .collect();
                 gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -242,6 +261,11 @@ impl Water {
 
     pub fn numbers(&self) -> &Numbers {
         &self.numbers
+    }
+
+    /// Replaces the solver's numbers from the next step on.
+    pub fn set_numbers(&mut self, numbers: Numbers) {
+        self.numbers = numbers;
     }
 
     pub fn gpu(&self) -> &Arc<WaterGpu> {
@@ -320,6 +344,12 @@ impl Water {
             b: [n.fill, n.sub_move, n.scale, n.most_out_thin.max(0.0)],
             h: [n.hold_damp, n.hold_settle, n.hold_join, if n.hold { 1.0 } else { 0.0 }],
             h2: [n.hold_relax, n.hold_full, n.even.max(0.0), n.even_most.max(0.0)],
+            r: [
+                if self.elbow { 1.0 - (-n.apart.max(0.0) * dt).det_exp() } else { 0.0 },
+                n.apart_reach.clamp(0.0, 0.5),
+                n.apart_most.max(0.0),
+                n.apart_pace.max(0.0) / self.layout.cell,
+            ],
             lv,
             feels,
         }
@@ -458,5 +488,17 @@ impl Water {
             _ => &self.hold_out,
         };
         bytemuck::pod_collect_to_vec(&self.read_buffer(from, from.size()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spots_fit_or_are_left_out() {
+        assert_eq!(spots_bytes(1000, 1 << 27), Some(48_000));
+        assert_eq!(spots_bytes(3_000_000, 1 << 27), None, "too big to bind: no elbow room, never a failed buffer");
+        assert_eq!(spots_bytes(u64::MAX, 1 << 27), None);
     }
 }

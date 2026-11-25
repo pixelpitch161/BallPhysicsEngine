@@ -131,6 +131,8 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
   pressure does not keep its drops evenly spaced, and the film gathers into humps that leave the disc as
   pieces. The likely cure is a soft crowding push between neighbouring drops in thin liquid (the plan's "Why
   the owner's thread breaks at Extreme"). `water_core.rs` measures it: `WATER_ACROSS=1`, `WATER_DOTS`.
+  Part 2a-2 (below) added that push: the thread is whole and clean at Fine on the owner's card, whole but
+  knotted at Extreme.
 - **Not built yet: tiles.** The grid is dense (every cell of the course stored and stepped). The plan's tiles are
   their own part, before courses bigger than a screen.
 - **The bridge** (`bridge.rs`, `bridge.wgsl`): the drops rewritten in today's 112-byte layout with a wet grid made
@@ -150,3 +152,58 @@ leaves a corner as one arc, a lone drop is left alone), `bpe-kit/tests/water_cor
 `bpe-water/tests/measure.rs` (`look`, `bands`, `strands`) and `water_core.rs::side_by_side` (both cores drawn
 from one scene, joined left and right; its header lists the `WATER_*` variables).
 
+## Part 2a-2: thin water keeps its spacing (as built)
+
+Plan and measurements: `docs/superpowers/plans/water-mode/part2a2-thin-spacing.md` ("What the measuring found",
+"As built and measured"). Still only `bpe-water` and `water_core.rs`: nothing in the editor uses it yet.
+
+- **Elbow room** (`elbow_room` in `drops.wgsl`, called from `cs_g2p`): a drop on the move that is nearer other
+  drops than `Numbers::apart_reach` (0.45 cell; liquid at rest is half a cell apart) moves away from them, its
+  place only, never its speed. Neighbours are found through **spots** (`spots`, binding 12): squares half a cell
+  wide, each holding how many drops are in it and the whole-number sums of their places within it
+  (`cs_hold_p2g` adds them atomically, `cs_clear` clears them), so a drop reads the nine spots round it and
+  takes each spot's drops together at their middle (its own spot without itself). No lists, nothing that
+  depends on the order drops are handled in. The move is scaled by the drop's own speed (`apart_pace`: none under
+  100 px/s, in full from 300), so a pool at rest is left exactly as it lies; it is capped a step (`apart_most`)
+  and goes through `keep_off`. Drops on the very same point part each its own way (an angle from its serial).
+  A course too big for the spots buffer (over about 2.8 million cells on a card with wgpu's default limits)
+  goes without (`sim::spots_bytes`, `Step.r.x` 0).
+- **Why places and not speeds**: where a bunch fills a cell the pressure parts it by giving the drops speed,
+  and in the air nothing takes that speed back, so each bunch flew on as a short row across the stream (the
+  "hairs" of part 2a). Moved apart before they are ever crowded, they are never thrown.
+- **A pour is a stream** (`Pour::fanned`): a Pour's Spread fans the stream smoothly across the spout (the drop
+  at the spout's edge leans `spread` degrees, the middle none); `Pour::default().spread` is 0, like the Pour
+  card's. Today's Liquid thing gives each drop a random way within its Spread (4 degrees by default): on this
+  core that is sideways speed in every drop, a stream three times wider and a quarter as dense by the time it
+  lands, landing in pulses. `water_core.rs` hands the new core today's births with Water mode's ways (Spread 0;
+  `WATER_FAN=1` keeps the scene's Spread, fanned smoothly).
+- **Steps by detail** (`Numbers::for_cell`): the liquid steps often enough that water at 2000 px/s crosses no
+  more than three quarters of a cell a step, in whole multiples of 240: 12 px cells 240 steps a second, 8 and
+  6 px 480, 3 px 960 (never over 1920). A film that hits a shape head-on at over a cell a step is stopped in
+  jolts and leaves in ribs. `Numbers::default()` is still 240 (the behaviour tests' grids are coarse); whoever
+  makes a body for a detail calls `for_cell`. This stands in for "the water picks its own step" (spec section
+  3), which needs the fastest drop read back: part 2b's.
+- **`fill` is 0.5** (was 1): a cell pushes back once half its room would fill in a step. At 1 a film thinner
+  than a cell met a shape with no pressure until a cell was full, and whether it then left in ripples hung on
+  where the cells lay under it (the owner's file showed teeth at Fine that the hand-built layout did not, until
+  its grid was moved a quarter of a cell: `WATER_SHIFT`). **Check anything about thin water on several grid
+  shifts**, not one.
+- **Not cured: barbs at Extreme.** A film one to three cells thick that meets a shape head-on piles up where
+  it lands and is let go in pulses, each a barb across the film a little further on (the plan's "Not cured in
+  this part"). No number changes it; it needs its own design. On the owner's card the barbs ride down the
+  thread as knots (five at 6 s), so the Extreme half of the pass mark is not reached; Fine's is.
+- **Measures** (`probe.rs`): `Spacing` (each drop's distance to its nearest other: the median, and the share
+  within a quarter of a cell) and `along` (drops by stretch along a line: how even a film is). `measure.rs`:
+  `look` prints the spacing, how ragged the Water Weird layout's film and thread are (`probe::ragged`), and
+  writes the drops themselves with `WATER_DUMP`; `pace` times scenes with no read-back (the core's speed).
+- **Pitfall**: `SPOT` and `SPOT_ONE` in `common.wgsl` and `SPOT_WORDS` in `sim/mod.rs` go together. A drop's
+  place within its spot must be worked out the same way where it is added (`cs_hold_p2g`) and where it is taken
+  off again (`elbow_room`): both call `spot_of`.
+
+### Tests
+
+`core.rs`: a settled pool plays on the same to the bit with elbow room and without, a heap of 400 drops on one
+point spreads without a burst, drops at the grid's edge are safe, the core runs with elbow room off.
+`streams.rs`: drops on the move keep apart, two drops on one point part and still fall freely, a film leaves
+the block evenly. Unit tests: `finer_cells_step_more_often`, `a_pour_fans_out_smoothly`,
+`spots_fit_or_are_left_out`.

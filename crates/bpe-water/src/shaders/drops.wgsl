@@ -152,6 +152,62 @@ fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
     return Kept(x, v);
 }
 
+// How far a drop moves this step to keep its elbow room: away from the other drops of the nine
+// spots round it that are nearer than `st.r.y` (each spot's drops taken together, at their middle;
+// its own spot's without itself).
+fn elbow_room(p: Drop) -> vec2<f32> {
+    let reach = st.r.y;
+    if !(st.r.x > 0.0) || !(reach > 0.0) {
+        return vec2<f32>(0.0);
+    }
+    let sp = spot_of(p.x);
+    let me = (vec2<f32>(sp.at) + vec2<f32>(sp.within) / SPOT_ONE) * 0.5;
+    var push = vec2<f32>(0.0);
+    for (var b = -1; b <= 1; b = b + 1) {
+        for (var a = -1; a <= 1; a = a + 1) {
+            let at = sp.at + vec2<i32>(a, b);
+            if at.x < 0 || at.y < 0 || at.x >= i32(2u * st.grid.x) || at.y >= i32(2u * st.grid.y) {
+                continue;
+            }
+            let s = spot_index(at);
+            var n = atomicLoad(&spots[s]);
+            var sum = vec2<i32>(atomicLoad(&spots[s + 1u]), atomicLoad(&spots[s + 2u]));
+            if a == 0 && b == 0 {
+                n = n - 1;
+                sum = sum - sp.within;
+            }
+            if n <= 0 {
+                continue;
+            }
+            let middle = (vec2<f32>(at) + vec2<f32>(sum) / (f32(n) * SPOT_ONE)) * 0.5;
+            var off = me - middle;
+            var far = length(off);
+            if far >= reach {
+                continue;
+            }
+            if far < 1e-3 {
+                // On top of each other: each its own way, by its serial (scrambled, so drops born
+                // one after the other part widely).
+                let turn = f32((p.serial * 2654435761u) >> 22u) * 0.006135923;
+                off = vec2<f32>(cos(turn), sin(turn));
+                far = 0.0;
+            } else {
+                off = off / far;
+            }
+            push = push + off * (f32(min(n, 4)) * (reach - far));
+        }
+    }
+    var shift = st.r.x * push;
+    let len = length(shift);
+    if len > st.r.z {
+        shift = shift * (st.r.z / len);
+    }
+    if !finite2(shift) {
+        return vec2<f32>(0.0);
+    }
+    return shift;
+}
+
 @compute @workgroup_size(256)
 fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
@@ -257,6 +313,14 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
             v = v + fall * moment;
         }
     }
+    // Elbow room: drops nearer each other than `st.r.y` move apart (their places only, never
+    // their speeds: liquid that was squeezed takes its room back without being thrown).
+    // Only on the move, and only at a speed that is a number (no speed yet stops a drop from
+    // moving: a place that is no number would take it out of the liquid for good).
+    var apart = vec2<f32>(0.0);
+    if st.r.w > 0.0 && finite2(v) {
+        apart = elbow_room(p) * smoothstep(0.33 * st.r.w, st.r.w, length(v));
+    }
     v = v * exp(-feel.b.y * dt);
     let speed = length(v);
     if speed > st.time.w {
@@ -271,7 +335,7 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let stops = (p.kind & STOPS) != 0u;
     let moves = clamp(u32(ceil(length(v) * dt / max(st.b.y, 0.05))), 1u, 24u);
     let h = dt / f32(moves);
-    var x = keep_off(p.x + even, v, stops).x;
+    var x = keep_off(p.x + even + apart, v, stops).x;
     for (var m = 0u; m < moves; m = m + 1u) {
         let kept = keep_off(x + v * h, v, stops);
         x = kept.x;
