@@ -15,7 +15,8 @@ mod passes;
 
 use crate::drop::Drop;
 use crate::solid::{Layout, SolidField};
-use numbers::{Feel, FeelGpu, MOST_LEVELS, MOST_LIQUIDS, Numbers, StepGpu};
+pub use numbers::{Feel, Numbers};
+use numbers::{FeelGpu, MOST_LEVELS, MOST_LIQUIDS, StepGpu};
 use passes::{ENTRIES, P, Pipelines, TICK, TICK_BYTES};
 
 /// The most drops a body holds: its drops' buffer (48 bytes a drop) stays under the 128 MiB a

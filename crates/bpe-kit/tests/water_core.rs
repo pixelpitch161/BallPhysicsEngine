@@ -12,8 +12,8 @@
 //! - `WATER_SECONDS`, `WATER_FPS`, `WATER_SIZE=540x960`, `WATER_CORES=old,new`.
 //! - `WATER_MEASURE=1,2,4` when the streams are measured (seconds).
 //! - `WATER_FAN=1` the new core's pours keep the scene's Spread (see `NewCore::step`).
-//! - `BPE_WATER_*` replace the new core's numbers (its steps a second follow the detail's cell
-//!   size, `Numbers::for_cell`, unless `BPE_WATER_RATE` says otherwise).
+//! - `BPE_GRID_*` replace the new core's numbers (its steps a second follow the detail's cell
+//!   size, `Numbers::for_cell`, unless `BPE_GRID_RATE` says otherwise).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,8 +29,9 @@ use bpe_kit::things::shape::{ShapeFill, ShapeSettings, ShapeStart};
 use bpe_kit::{Kit, kit, scenes};
 use bpe_runtime::{Playback, Wall};
 use bpe_water::bridge::Bridge;
+use bpe_water::grid::{Feel, Numbers, Water, WaterGpu};
 use bpe_water::probe::{self, Stream};
-use bpe_water::{Feel, Layout, Numbers, Pour, SolidField, Water, WaterGpu};
+use bpe_water::{Layout, Pour, SolidField};
 use glam::Vec2;
 
 /// How far `p` is from the nearest of `walls`' faces (pixels, below 0 inside), with hollow walls
@@ -90,7 +91,7 @@ impl NewCore {
         let l = host.layout;
         let layout = Layout { origin: l.origin, cell: l.cell, cols: l.cols, rows: l.rows };
         // (With no numbers given: the liquid's own for this cell size, the steps a second among
-        // them, each replaceable by its `BPE_WATER_*`.)
+        // them, each replaceable by its `BPE_GRID_*`.)
         let numbers = numbers.unwrap_or_else(|| Numbers::from_env_for(l.cell));
         let walls = walls_now(world);
         let field = SolidField::from_distance(layout, |p, least| wall_distance(&walls, p, least));

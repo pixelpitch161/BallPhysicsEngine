@@ -7,19 +7,19 @@
 //! - `WATER_TIMES=1,2,4` when to measure, seconds.
 //! - `WATER_OUT=<folder>` where debug pictures go (none without it).
 //! - `WATER_DUMP=<folder>` where `look` writes the drops themselves (none without it).
-//! - `WATER_SPRAY`, `WATER_SETTLES` the liquid's Spray and Settles in every scene; `WATER_SHIFT`
+//! - `WATER_SETTLES` the liquid's Settles in every scene; `WATER_SHIFT`
 //!   moves the grid by that part of a cell.
-//! - `BPE_WATER_*` replace the solver's numbers (`Numbers::from_env_for`: the steps a second
-//!   follow the cell size unless `BPE_WATER_RATE` says otherwise).
+//! - `BPE_GRID_*` replace the grid core's numbers (`Numbers::from_env_for`: the steps a second
+//!   follow the cell size unless `BPE_GRID_RATE` says otherwise).
 //!
 //! `pace` times scenes with no read-back until the end (`WATER_SECONDS`): the core's speed.
 
 use std::time::Instant;
 
 use bpe_core::maths::Maths;
+use bpe_water::grid::{Numbers, WaterGpu};
 use bpe_water::probe::{self, Spacing, Stats, Stream};
 use bpe_water::scenes::{self, Scene};
-use bpe_water::{Numbers, WaterGpu};
 use glam::Vec2;
 
 fn list<T: std::str::FromStr>(name: &str, or: &str) -> Vec<T> {
@@ -33,10 +33,9 @@ fn num<T: std::str::FromStr>(name: &str, or: T) -> T {
 
 fn scene_named(name: &str, cell: f32) -> Scene {
     let mut scene = scene_plain(name, cell);
-    // The liquid's own feel, where asked for (today's Liquid thing is born with Spray 0.4 and
-    // Settles 0.1; the scenes here with `Feel::default()`).
+    // The liquid's own feel, where asked for (today's Liquid thing is born with Settles 0.1; the
+    // scenes here with none).
     for feel in &mut scene.feels {
-        feel.spray = num("WATER_SPRAY", feel.spray);
         feel.settles = num("WATER_SETTLES", feel.settles);
     }
     // The grid moved by a part of a cell (`WATER_SHIFT=0.5`): what depends on where the cells
@@ -156,7 +155,7 @@ fn look() {
                         .expect("the dump");
                 }
                 if let Some(dir) = &out {
-                    let tear = bpe_water::Feel::default().gpu(run.water.numbers(), cell).a[2];
+                    let tear = bpe_water::grid::Feel::default().gpu(run.water.numbers(), cell).a[2];
                     let (pixels, w, h) = probe::picture(&drops, &run.field, num("WATER_SCALE", 0.5), tear);
                     let file = format!("{name}-{cell}-{t}{tag}.png");
                     probe::save_png(&std::path::Path::new(dir).join(file), &pixels, w, h).expect("a picture");

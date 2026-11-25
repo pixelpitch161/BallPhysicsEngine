@@ -7,6 +7,7 @@
 
 pub mod bridge;
 pub mod drop;
+pub mod drops;
 pub mod grid;
 pub mod probe;
 #[cfg(feature = "test-scenes")]
@@ -14,6 +15,6 @@ pub mod scenes;
 pub mod solid;
 
 pub use drop::{Drop, Pour, Poured, STOPS, WATER, fill};
-pub use grid::numbers::{Feel, Numbers};
+pub use drops::numbers::{Feel, Numbers};
 pub use grid::{MOST_DROPS, Water, WaterGpu};
 pub use solid::{Layout, Solid, SolidField};

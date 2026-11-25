@@ -9,7 +9,8 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use crate::drop::{Pour, Poured, STOPS, fill};
-use crate::grid::numbers::{Feel, Numbers};
+use crate::drops::numbers::Feel;
+use crate::grid;
 use crate::grid::{Water, WaterGpu};
 use crate::solid::{Layout, Solid, SolidField};
 
@@ -40,9 +41,10 @@ pub struct GridRunning {
 
 impl Scene {
     /// Starts the scene on `gpu` with the solver's `numbers`.
-    pub fn start_grid(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> GridRunning {
+    pub fn start_grid(&self, gpu: &Arc<WaterGpu>, numbers: grid::Numbers) -> GridRunning {
         let field = SolidField::build(self.layout, &self.solids);
-        let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &self.feels);
+        let feels: Vec<grid::Feel> = self.feels.iter().map(grid::Feel::from).collect();
+        let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &feels);
         let mut born = 0u32;
         for (lo, hi) in &self.fills {
             let drops = fill(&self.layout, &field, *lo, *hi, STOPS, born);
@@ -78,8 +80,10 @@ impl GridRunning {
     }
 }
 
+/// The test scenes' water: Surface pull 0.2, as Aedan's Water Weird file has it and as the grid
+/// core's tests were tuned at (the reference shots set their own).
 fn water() -> Vec<Feel> {
-    vec![Feel::default()]
+    vec![Feel { surface_pull: 0.2, ..Feel::default() }]
 }
 
 /// A hollow box (the Balls test scenes' `liquid_box`: 600 x 900, its wall 3 thick) filled to

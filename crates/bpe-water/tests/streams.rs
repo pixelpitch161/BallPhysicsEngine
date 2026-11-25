@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
+use bpe_water::grid::{Feel, Numbers, Water, WaterGpu};
 use bpe_water::probe::{self, Spacing, Stream};
 use bpe_water::scenes;
-use bpe_water::{Drop, Feel, Layout, Numbers, SolidField, WATER, Water, WaterGpu};
+use bpe_water::{Drop, Layout, SolidField, WATER};
 use glam::Vec2;
 
 fn card() -> Option<Arc<WaterGpu>> {

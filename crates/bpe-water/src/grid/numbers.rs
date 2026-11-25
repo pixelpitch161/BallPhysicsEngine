@@ -16,7 +16,7 @@ const PACE_MOST: u32 = 8;
 
 /// The solver's numbers. The defaults are the ones the liquid ships with ([`Numbers::for_cell`]
 /// picks the steps a second for a cell size); the measuring tests may replace any by a
-/// `BPE_WATER_*` environment variable ([`Numbers::from_env`]).
+/// `BPE_GRID_*` environment variable ([`Numbers::from_env`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Numbers {
     /// Liquid steps a second.
@@ -131,14 +131,14 @@ impl Default for Numbers {
 }
 
 impl Numbers {
-    /// The defaults, each replaced by its `BPE_WATER_*` environment variable when that is set
-    /// (`BPE_WATER_CYCLES`, `BPE_WATER_PULL`, `BPE_WATER_HOLD=0`...): tuning without building again.
+    /// The defaults, each replaced by its `BPE_GRID_*` environment variable when that is set
+    /// (`BPE_GRID_CYCLES`, `BPE_GRID_PULL`, `BPE_GRID_HOLD=0`...): tuning without building again.
     /// For the measuring tests only.
     pub fn from_env() -> Numbers {
         Numbers::default().with_env()
     }
 
-    /// [`Numbers::for_cell`], each replaced by its `BPE_WATER_*` environment variable when that
+    /// [`Numbers::for_cell`], each replaced by its `BPE_GRID_*` environment variable when that
     /// is set. For the measuring tests only.
     pub fn from_env_for(cell: f32) -> Numbers {
         Numbers::for_cell(cell).with_env()
