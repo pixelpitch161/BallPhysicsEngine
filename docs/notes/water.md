@@ -234,7 +234,10 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
 - **Frames, and the water picks its steps** (`drops/clock.rs`): `frame()` moves on 1/60 s in `n` equal steps,
   all sent as one submission with each step's numbers at its own uniform offset. `n` is the most of the floor
   (8 a frame at 12 px cells, 16 at 8 and 6, 32 finer), enough for the fastest drop to move at most
-  `move_most` spacings a step, and enough for the skin. The fastest speed comes from frame `k - 2`'s report
+  `move_most` spacings a step, and enough for the skin, but **never more than `most_steps` = 32** (the trial's
+  1920 a second): the skin's bend term is only calm up to about 40 steps a frame (above that it throws a pour's
+  drops back out of the spout and sideways), so a skin that wants more steps is capped instead, as in the trial.
+  At 3 px and finer every frame is 32 steps. The fastest speed comes from frame `k - 2`'s report
   (read back without waiting), the drops added since and the pours running, plus two frames of fall. Drops
   that left the course are let go from the end at a frame boundary, two frames late.
 - **Births** (`Pour::rows`, `Water::set_pours`): a pour is born as rows across its spout at exactly the resting
@@ -274,7 +277,8 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
 `tests/engine.rs`: a pool stays in its box and keeps its height; two runs and a copy are the same (and with a
 pour, copied at frame 7); a heap on one point spreads and repeats; a lone drop falls freely; a thin wall holds a
 2000 px/s pour; an empty body moves on; the clock takes more steps for faster water; drops that leave are
-counted out; a tap pours its amount, is born even, and is narrower turned down; a submerged spout holds back; a
+counted out; a tap pours its amount, is born even, and is narrower turned down; a 2 px pour with the strongest
+skin stays calm at the most steps a frame (it burst at the old ceiling of 128); a submerged spout holds back; a
 fill is stacked on the floor; the joined pass changes nothing; a run whose steps a frame change while drops
 leave the course repeats (twice and from a copy). Unit tests in `drop.rs` (rows pour their amount,
 a thin tap pours single drops, a pour starts at its time, rows are even, a fill is set down on a floor but not

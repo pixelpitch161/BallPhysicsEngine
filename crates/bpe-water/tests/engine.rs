@@ -287,6 +287,37 @@ fn a_tap_is_born_even() {
     }
 }
 
+/// A thin pour at the finest detail with the strongest skin, at the most steps a frame, stays a
+/// stream: none of it is thrown back above the spout or out to the side. (The skin's bend is only
+/// calm up to about 40 steps a frame: at the 75 this pour once took, drops flew 1400 px/s sideways
+/// and 30 px up.)
+#[test]
+fn a_pour_stays_calm_at_the_most_steps_a_frame() {
+    let Some(gpu) = card() else { return };
+    let mut scene = scenes::thin_pour(2.0, 7.0);
+    for feel in &mut scene.feels {
+        feel.surface_pull = 1.0;
+    }
+    let pour = scene.pours[0];
+    let numbers = Numbers { floor: 1024, ..Numbers::for_cell(2.0) };
+    let mut run = scene.start(&gpu, numbers);
+    for frame in 0..10 {
+        run.frame();
+        let layout = run.water.layout();
+        for d in run.water.read() {
+            let at = layout.to_world(Vec2::from(d.x));
+            let sideways = d.v[0].abs() * layout.cell;
+            assert!(
+                at.y >= pour.place.y - layout.cell,
+                "frame {frame}: a drop {} px above the spout",
+                pour.place.y - at.y
+            );
+            assert!(sideways <= 0.75 * pour.speed, "frame {frame}: a drop goes sideways at {sideways} px/s");
+        }
+    }
+    assert_eq!(run.water.steps_last_frame(), numbers.most_steps);
+}
+
 /// How wide the stream is `below` pixels under its spout: its outer drops' distance apart, and a
 /// drop's own spacing.
 fn stream_width(run: &scenes::Running, pour: &Pour, below: f32) -> f32 {

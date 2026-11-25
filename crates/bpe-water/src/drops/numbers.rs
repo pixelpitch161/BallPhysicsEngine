@@ -51,7 +51,9 @@ impl From<&Feel> for crate::grid::Feel {
 pub struct Numbers {
     /// The fewest steps a frame.
     pub floor: u32,
-    /// The most steps a frame.
+    /// The most steps a frame: the trial's 32 (1920 a second). The skin's bend is only calm up to
+    /// about 40 steps a frame (above that it throws a pour's drops back out of the spout), so a
+    /// frame never takes more, and a skin that wants more steps is capped instead.
     pub most_steps: u32,
     /// The furthest the fastest drop moves in a step, in drop spacings (half a cell).
     pub move_most: f32,
@@ -108,7 +110,7 @@ impl Default for Numbers {
     fn default() -> Self {
         Numbers {
             floor: 16,
-            most_steps: 128,
+            most_steps: 32,
             move_most: 1.3,
             iters: 4,
             reach: 1.5,
@@ -330,9 +332,10 @@ mod tests {
 
     #[test]
     fn the_skin_gets_its_steps() {
+        // (The skin's own rule, with no ceiling on the steps...)
         let at = |sp: f32, cell: f32| {
             let feel = Feel { surface_pull: sp, ..Feel::default() };
-            Numbers::for_cell(cell).steps_for(0.0, &[feel], cell)
+            Numbers { most_steps: 1024, ..Numbers::for_cell(cell) }.steps_for(0.0, &[feel], cell)
         };
         let near = |got: u32, want: u32| got.abs_diff(want) <= 1;
         assert!(near(at(1.0, 3.0), 41), "{}", at(1.0, 3.0));
@@ -340,6 +343,9 @@ mod tests {
         assert!(near(at(1.0, 1.5), 115), "{}", at(1.0, 1.5));
         assert_eq!(at(0.5, 6.0), 16);
         assert_eq!(at(0.0, 1.5), 32, "no skin, no steps for it");
+        // (...and with it: the skin is capped instead.)
+        let feel = Feel { surface_pull: 1.0, ..Feel::default() };
+        assert_eq!(Numbers::for_cell(1.5).steps_for(0.0, &[feel], 1.5), 32);
     }
 
     #[test]
@@ -347,9 +353,9 @@ mod tests {
         let n = Numbers::for_cell(6.0);
         let feels = [Feel::default()];
         assert_eq!(n.steps_for(3900.0, &feels, 6.0), 17);
-        assert_eq!(n.steps_for(1e7, &feels, 6.0), 128);
-        assert_eq!(n.steps_for(f32::INFINITY, &feels, 6.0), 128);
-        assert_eq!(n.steps_for(f32::NAN, &feels, 6.0), 128);
+        assert_eq!(n.steps_for(1e7, &feels, 6.0), 32);
+        assert_eq!(n.steps_for(f32::INFINITY, &feels, 6.0), 32);
+        assert_eq!(n.steps_for(f32::NAN, &feels, 6.0), 32);
         assert_eq!(n.steps_for(0.0, &[], 6.0), 16);
     }
 
