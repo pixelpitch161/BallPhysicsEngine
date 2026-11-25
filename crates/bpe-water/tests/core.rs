@@ -222,11 +222,23 @@ fn drops_at_the_grids_edge_are_safe() {
         run.step();
     }
     let drops = run.water.read();
-    assert_eq!(drops.len() as u32, run.water.count());
+    // The two on the grid's corners step with the rest (and, not stopping at the edge, may leave
+    // the grid): they are numbers still.
+    let on_grid = |d: &Drop| d.x[0] >= 0.0 && d.x[0] <= cols - 1.0 && d.x[1] >= 0.0 && d.x[1] <= rows - 1.0;
+    for serial in [9000, 9001] {
+        let d = drops.iter().find(|d| d.serial == serial).expect("the corner drop is kept");
+        assert!(Vec2::from(d.x).is_finite() && Vec2::from(d.v).is_finite(), "{d:?}");
+        assert!(Vec2::from(d.x) != Vec2::ZERO, "it has stepped: {d:?}");
+    }
+    // The ones off the grid are kept as they were (they do not step).
+    for serial in [9002, 9003] {
+        let d = drops.iter().find(|d| d.serial == serial).expect("the drop off the grid is kept");
+        assert!(!on_grid(d) && Vec2::from(d.v) == fast, "{d:?}");
+    }
     let pour: Vec<&Drop> = drops.iter().filter(|d| d.serial >= 1 << 24).collect();
     assert!(pour.len() > 50, "the pour pours: {}", pour.len());
     assert!(pour.iter().all(|d| Vec2::from(d.x).is_finite() && Vec2::from(d.v).is_finite()));
-    assert!(pour.iter().all(|d| d.x[0] >= 0.0 && d.x[0] <= cols - 1.0 && d.x[1] >= 0.0 && d.x[1] <= rows - 1.0));
+    assert!(pour.iter().all(|d| on_grid(d)));
 }
 
 #[test]

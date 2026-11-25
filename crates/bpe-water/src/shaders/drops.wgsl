@@ -315,7 +315,12 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     // Elbow room: drops nearer each other than `st.r.y` move apart (their places only, never
     // their speeds: liquid that was squeezed takes its room back without being thrown).
-    let apart = elbow_room(p) * smoothstep(0.33 * st.r.w, st.r.w, length(v));
+    // Only on the move, and only at a speed that is a number (no speed yet stops a drop from
+    // moving: a place that is no number would take it out of the liquid for good).
+    var apart = vec2<f32>(0.0);
+    if st.r.w > 0.0 && finite2(v) {
+        apart = elbow_room(p) * smoothstep(0.33 * st.r.w, st.r.w, length(v));
+    }
     v = v * exp(-feel.b.y * dt);
     let speed = length(v);
     if speed > st.time.w {

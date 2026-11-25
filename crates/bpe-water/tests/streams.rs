@@ -150,6 +150,7 @@ fn drops_on_the_move_keep_apart() {
     assert!(n > 500, "the liquid is on the move: {n}");
     assert!(with.close < 0.15, "few have another within a quarter of a cell: {}", with.close);
     assert!(with.median > 0.3, "the usual gap is over 0.3 cell: {}", with.median);
+    assert!(without.close > 2.0 * with.close, "and it is the elbow room that does it: {without:?}");
 }
 
 /// Two drops born on the very same point part, and neither is kicked: each still falls freely.
@@ -173,7 +174,9 @@ fn two_drops_on_one_spot_part_without_a_kick() {
     let off = drops.iter().map(|d| (Vec2::from(d.v) * 8.0 - free).length()).fold(0.0, f32::max);
     println!("two drops born on one point: {gap} cells apart, at most {off} px/s off a free fall of {} px/s", free.y);
     assert!(gap > 0.3, "they have parted: {gap} cells");
-    assert!(off < 0.01 * free.length(), "and fall freely still: {off} px/s off {}", free.length());
+    // (The grid's own share of this is about 10 px/s on the cloud's card; a kick from being
+    // parted would be the 400 px/s the parting moves them at.)
+    assert!(off < 0.04 * free.length(), "and fall freely still: {off} px/s off {}", free.length());
 }
 
 /// A film leaves the block's corner evenly (the Water Weird layout): along the first stretch of

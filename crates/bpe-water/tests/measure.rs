@@ -80,7 +80,10 @@ fn card() -> std::sync::Arc<WaterGpu> {
     let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
     let info = device.adapter_info();
     println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
-    println!("# numbers (the steps a second follow the cell size)\t{:?}", Numbers::from_env());
+    println!(
+        "# numbers (but `rate`: the steps a second follow the cell size, printed by scene)\t{:?}",
+        Numbers::from_env()
+    );
     WaterGpu::new(&device, &queue)
 }
 
