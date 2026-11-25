@@ -7,6 +7,8 @@
 //! - `WATER_TIMES=1,2,4` when to measure, seconds.
 //! - `WATER_OUT=<folder>` where debug pictures go (none without it).
 //! - `WATER_DUMP=<folder>` where `look` writes the drops themselves (none without it).
+//! - `WATER_SPRAY`, `WATER_SETTLES` the liquid's Spray and Settles in every scene; `WATER_SHIFT`
+//!   moves the grid by that part of a cell.
 //! - `BPE_WATER_*` replace the solver's numbers (`Numbers::from_env_for`: the steps a second
 //!   follow the cell size unless `BPE_WATER_RATE` says otherwise).
 //!
@@ -30,6 +32,20 @@ fn num<T: std::str::FromStr>(name: &str, or: T) -> T {
 }
 
 fn scene_named(name: &str, cell: f32) -> Scene {
+    let mut scene = scene_plain(name, cell);
+    // The liquid's own feel, where asked for (today's Liquid thing is born with Spray 0.4 and
+    // Settles 0.1; the scenes here with `Feel::default()`).
+    for feel in &mut scene.feels {
+        feel.spray = num("WATER_SPRAY", feel.spray);
+        feel.settles = num("WATER_SETTLES", feel.settles);
+    }
+    // The grid moved by a part of a cell (`WATER_SHIFT=0.5`): what depends on where the cells
+    // happen to lie shows up as a difference between shifts.
+    scene.layout.origin -= Vec2::splat(num("WATER_SHIFT", 0.0) * cell);
+    scene
+}
+
+fn scene_plain(name: &str, cell: f32) -> Scene {
     match name {
         "box" => scenes::still_box(cell, 0.3),
         "deep" => scenes::still_box(cell, 0.6),
@@ -114,6 +130,20 @@ fn look() {
                     spacing.median,
                     spacing.close
                 );
+                // The Water Weird layout's film over the disc and its thread below: how ragged.
+                if name == "weird" {
+                    let part = |lo: (f32, f32), hi: (f32, f32)| {
+                        let drops = probe::inside(&drops, &layout, Vec2::from(lo), Vec2::from(hi));
+                        let (mean, most) = probe::ragged(&drops, &layout, 15.0);
+                        format!("{}\t{mean:.2}\t{most:.2}", drops.len())
+                    };
+                    println!(
+                        "ragged\t{cell}\t{t}\t{}\tfilm\t{}\tthread\t{}",
+                        run.water.numbers().rate,
+                        part((-390.0, -520.0), (-80.0, -235.0)),
+                        part((-60.0, -60.0), (330.0, 500.0))
+                    );
+                }
                 // The drops themselves (`WATER_DUMP=<folder>`): 12 numbers a drop as on the card, for
                 // a closer look outside the test.
                 if let Ok(dir) = std::env::var("WATER_DUMP") {

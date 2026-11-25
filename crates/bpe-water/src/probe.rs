@@ -134,6 +134,51 @@ pub fn along(drops: &[Drop], layout: &Layout, from: Vec2, to: Vec2, reach: f32, 
     counts
 }
 
+/// How ragged a film or a thread is: for each drop, how far the drops within `reach` pixels of
+/// it lie off the line through them (pixels: the lesser spread of that little cloud). A clean
+/// thread reads about a third of its own thickness; barbs, ribs and teeth read more. Returns the
+/// mean and the value nine tenths of the drops are under (0 with too few drops to tell).
+pub fn ragged(drops: &[Drop], layout: &Layout, reach: f32) -> (f32, f32) {
+    let at: Vec<Vec2> = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).filter(|x| x.is_finite()).collect();
+    let key = |x: Vec2| ((x.x / reach).floor() as i32, (x.y / reach).floor() as i32);
+    let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    for (i, x) in at.iter().enumerate() {
+        cells.entry(key(*x)).or_default().push(i as u32);
+    }
+    let mut off: Vec<f32> = Vec::with_capacity(at.len());
+    for x in &at {
+        let (cx, cy) = key(*x);
+        let (mut n, mut sum, mut sq, mut xy) = (0.0f64, glam::DVec2::ZERO, glam::DVec2::ZERO, 0.0f64);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for &j in cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                    let q = at[j as usize] - *x;
+                    if q.length_squared() <= reach * reach {
+                        let q = q.as_dvec2();
+                        n += 1.0;
+                        sum += q;
+                        sq += q * q;
+                        xy += q.x * q.y;
+                    }
+                }
+            }
+        }
+        if n < 4.0 {
+            continue;
+        }
+        // The lesser eigenvalue of the cloud's 2 x 2 spread.
+        let mean = sum / n;
+        let (a, b, c) = (sq.x / n - mean.x * mean.x, xy / n - mean.x * mean.y, sq.y / n - mean.y * mean.y);
+        let less = 0.5 * (a + c) - (0.25 * (a - c) * (a - c) + b * b).sqrt();
+        off.push(less.max(0.0).sqrt() as f32);
+    }
+    if off.is_empty() {
+        return (0.0, 0.0);
+    }
+    off.sort_by(f32::total_cmp);
+    (off.iter().sum::<f32>() / off.len() as f32, off[off.len() * 9 / 10])
+}
+
 /// How whole a stream is: the drops of one region of air, grouped into pieces.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stream {
