@@ -379,6 +379,40 @@ Inputs the spec implies but does not spell out. Each has a test in the task that
    bunch in a thread or a film was thrown sideways by it. Where the cell and the eight round it are under about
    0.65 to 0.9 full (`near` in `cs_grid`), the push is `most_out_thin` (0.005) instead.
 
+4. **A film on a slope or a curve read as a body of liquid.** `near` counted the solids as liquid, so a film a
+   drop thick on the tilted block or on the disc was "not thin" and got the full push. `near` is now the drops'
+   own volume as a share of the room the solids leave in the nine cells.
+5. **A cell with room pushed back before it was full.** The trial let a cell fill by a quarter of its room a step
+   (`fill` 0.25) and resisted the rest, so water arriving on the disc met pressure in half-empty cells and left
+   in bursts: the thread below zig-zagged and broke into pulses, and the landing threw loops of thin sheet with
+   holes in the pool. With `fill` 1 (a cell pushes back only when it is full) the thread leaves the disc as one
+   smooth line, the pool it lands in lies flat, and the still boxes rest as before (box 0.4 to 0.7 px/s, deep 0.9
+   to 1.7).
+6. **A solid steered and slowed the liquid leaving it.** `cs_slip` gave a shut face the liquid's speed less its
+   part *into or out of* the solid. Past a corner or over the top of a curve the solid's "out" turns, so the
+   drops nearest the solid were steered round it and slowed, the outer ones not: the film left as a fan (the
+   feathery arc off the block's top corner). Only the part into the solid is taken off now; the arc is one line
+   (`water_leaves_a_corner_as_one_arc`, which fails with the old line).
+
+### Where the Water Weird layout stands (lavapipe, 6 px cells, drawn through the bridge)
+
+- The thread off the disc: one continuous line most of the way to the floor, where today's core breaks into
+  dashes about half way down. Low down it still has a kink or a lump now and then.
+- The arc off the block's top corner to the right wall, and the water down both walls: clean single lines, as
+  today's.
+- The pool: flat and calm, like today's.
+- **Not as clean as today's:** the film that goes left over the top of the disc. Where the flying film lands on
+  the disc some drops are squeezed out along the disc's "out" and fly on as short spikes above the film; today's
+  soft core swallows that. Softer pressure in thin liquid and a weaker push do not cure it (below).
+
+### Tiles: not built in this part
+
+The plan's Task 3 (16 x 16 cell tiles in a pool, only wet tiles stored and stepped) is **not done**: the grid is
+dense. The stream work took the part's effort, tiles change no picture, and on one screen the dense core is
+already several times faster than today's. It is a rewrite of every pass's addressing and of the pressure's
+levels, so it is its own part, before Water mode gets courses bigger than a screen. The whole-number sums are in
+(`sums`, `hold`: fixed-point atomics), so two runs are the same to the bit (`two_runs_are_the_same`).
+
 ### Tried and dropped
 
 - **The carried stretch with a pull that grows to a tear at about 1 (the first hold-together).** It ropes a

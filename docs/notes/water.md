@@ -120,8 +120,14 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
 - **What keeps streams whole** (all in the plan's "As built"): a face no drop reaches counts as air, not as still
   liquid (the trial's fault: fast lone drops were braked and a thin pour fell as slow flat clusters); thin moving
   liquid evens out its own spacing along its flight (`Numbers::even`, in `cs_g2p`); crowded drops in thin liquid
-  part gently (`most_out_thin`). A drop's carried stretch (`Drop::e`) pulls through the hold nodes (`hold.wgsl`):
-  weak at the default Surface pull.
+  part gently (`most_out_thin`); a cell pushes back only when it is full (`fill` 1: resisted earlier, water
+  landing on a shape left it in bursts); "thin" is the drops' share of the room the solids leave round a cell
+  (`near` in `cs_grid`), so a film on a slope is thin too; and a shut face gives the drops the liquid's speed less
+  only its part *into* the solid (`cs_slip`: with the part out of it taken off as well, a film left a corner as a
+  fan). A drop's carried stretch (`Drop::e`) pulls through the hold nodes (`hold.wgsl`): weak at the default
+  Surface pull.
+- **Not built yet: tiles.** The grid is dense (every cell of the course stored and stepped). The plan's tiles are
+  their own part, before courses bigger than a screen.
 - **The bridge** (`bridge.rs`, `bridge.wgsl`): the drops rewritten in today's 112-byte layout with a wet grid made
   from the solid field, as a `bpe_gfx::liquid_sim::DropsSource`, so today's liquid drawing draws the new core.
   No wetness through it (Wet walls shows nothing), and a thin wall's water stops at the cell-thick face.
@@ -134,8 +140,8 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
 
 `bpe-water/tests/core.rs` (still water rests, a pool keeps its height, two runs and a copy are the same to the
 bit, a thin wall holds a fast pour, a full box stays shut, a two-cell opening flows, the air does not brake a
-pour), `tests/streams.rs` (a thin pour is one narrow stream at 8 and 12 px cells, a sheet stays a sheet, a lone
-drop is left alone), `bpe-kit/tests/water_core.rs` (`the_bridge_draws_every_drop`). By hand, in release:
+pour), `tests/streams.rs` (a thin pour is one narrow stream at 8 and 12 px cells, a sheet stays a sheet, water
+leaves a corner as one arc, a lone drop is left alone), `bpe-kit/tests/water_core.rs` (`the_bridge_draws_every_drop`). By hand, in release:
 `bpe-water/tests/measure.rs` (`look`, `bands`, `strands`) and `water_core.rs::side_by_side` (both cores drawn
 from one scene, joined left and right; its header lists the `WATER_*` variables).
 
