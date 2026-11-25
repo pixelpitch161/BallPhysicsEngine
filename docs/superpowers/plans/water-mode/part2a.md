@@ -389,3 +389,7 @@ Inputs the spec implies but does not spell out. Each has a test in the task that
 - **Only solving cells near a body of liquid (thin liquid fully loose).** Loose drops stack on one spot, and the
   first step they count as a body the push throws them apart: puffs all down the stream.
 - More sweeps, a bigger or smaller fill allowance: no change to the bunching.
+- **Letting thin liquid crowd past full before it pushes back (a `soft` allowance), to soften landings.** A
+  still box no longer rested (3.2 to 3.6 px/s against 0.3 to 0.5, and its top moved by up to 8 px), and the
+  splash's loops stayed. A pool's own surface is thin liquid too, so anything that loosens thin liquid's
+  fullness loosens every pool's top.

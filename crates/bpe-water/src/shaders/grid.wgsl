@@ -131,12 +131,13 @@ fn cs_grid(@builtin(global_invocation_id) id: vec3<u32>) {
         let out = a_r * u_r - a_l * u_l + a_b * v_b - a_t * v_t;
         // What must flow out: an over-full cell empties (a share of its excess a step, capped); one
         // with room may fill (a share of its room a step) before it pushes back.
+        let thin = 1.0 - smoothstep(0.65, 0.9, near);
         let e = rho - 1.0;
         var s = 0.0;
         if e > 0.0 {
             // Crowded drops in thin liquid part gently (`st.b.w` of a cell a step at most): there is
             // room all round, and the full push threw a bunch in a thread or a film apart sideways.
-            let most = mix(min(st.b.w, st.a.z), st.a.z, smoothstep(0.65, 0.9, near));
+            let most = mix(st.a.z, min(st.b.w, st.a.z), thin);
             s = min(st.a.y * e, most) / dt;
         } else {
             s = st.b.x * e / dt;
