@@ -131,6 +131,8 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
   pressure does not keep its drops evenly spaced, and the film gathers into humps that leave the disc as
   pieces. The likely cure is a soft crowding push between neighbouring drops in thin liquid (the plan's "Why
   the owner's thread breaks at Extreme"). `water_core.rs` measures it: `WATER_ACROSS=1`, `WATER_DOTS`.
+  Part 2a-2 (below) added that push: the thread is whole and clean at Fine on the owner's card, whole but
+  knotted at Extreme.
 - **Not built yet: tiles.** The grid is dense (every cell of the course stored and stepped). The plan's tiles are
   their own part, before courses bigger than a screen.
 - **The bridge** (`bridge.rs`, `bridge.wgsl`): the drops rewritten in today's 112-byte layout with a wet grid made
@@ -188,7 +190,8 @@ Plan and measurements: `docs/superpowers/plans/water-mode/part2a2-thin-spacing.m
   shifts**, not one.
 - **Not cured: barbs at Extreme.** A film one to three cells thick that meets a shape head-on piles up where
   it lands and is let go in pulses, each a barb across the film a little further on (the plan's "Not cured in
-  this part"). No number changes it; it needs its own design.
+  this part"). No number changes it; it needs its own design. On the owner's card the barbs ride down the
+  thread as knots (five at 6 s), so the Extreme half of the pass mark is not reached; Fine's is.
 - **Measures** (`probe.rs`): `Spacing` (each drop's distance to its nearest other: the median, and the share
   within a quarter of a cell) and `along` (drops by stretch along a line: how even a film is). `measure.rs`:
   `look` prints the spacing, how ragged the Water Weird layout's film and thread are (`probe::ragged`), and

@@ -1,7 +1,7 @@
 # Water mode part 2a-2: thin water keeps its spacing (implementation plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task by task.
-> Steps use checkbox (`- [ ]`) syntax for tracking.
+> Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** On the owner's own `Water Weird.ron`, the new water core's film, thread and arcs look like real liquid at
 Fine and at Extreme on the owner's RX 9070 XT (even films, a whole thread, no lumps, hairs or ribs), still pools
@@ -221,7 +221,7 @@ to design, not a number to tune.
 **Produces:** `Numbers::{apart, apart_reach, apart_most, apart_pace}`; `StepGpu.r`; `probe::Spacing`;
 `sim::spots_bytes(cells: u64, limit: u64) -> Option<u64>`; `Water::set_numbers(&mut self, Numbers)`.
 
-- [ ] Tests first (they fail or do not build):
+- [x] Tests first (they fail or do not build):
   - `streams.rs::drops_on_the_move_keep_apart`: `scenes::weird(8.0)` at `Numbers::default()`, 1.2 s; the drops
     faster than 300 px/s: `Spacing.close < 0.15` and `Spacing.median > 0.3`. (Without elbow room: about 0.6
     and 0.2.)
@@ -240,61 +240,117 @@ to design, not a number to tune.
   - `core.rs::no_elbow_room_still_runs`: `apart: 0.0` on `weird(8.0)` for 0.3 s: runs, drops finite.
   - `sim/mod.rs` unit `spots_fit_or_are_left_out`: `spots_bytes(1000, 1 << 27) == Some(48_000)`;
     `spots_bytes(3_000_000, 1 << 27) == None`.
-- [ ] Build decisions 1 to 6 and 11's `Spacing`. `passes.rs::ENTRIES`: binding 12 on `cs_clear`, `cs_hold_p2g`,
+- [x] Build decisions 1 to 6 and 11's `Spacing`. `passes.rs::ENTRIES`: binding 12 on `cs_clear`, `cs_hold_p2g`,
       `cs_g2p`.
-- [ ] Run `cargo test --release -p bpe-water --test core --test streams -- --test-threads=2` and
+- [x] Run `cargo test --release -p bpe-water --test core --test streams -- --test-threads=2` and
       `cargo test -p bpe-water --lib`. Passing: every test, 2a's unchanged.
-- [ ] Commit.
+- [x] Commit.
 
 ### Task 2: the pour's fan
 
 **Files:** modify `crates/bpe-water/src/sim/drop.rs`, `crates/bpe-kit/tests/water_core.rs`.
 
-- [ ] Test first, `drop.rs` unit `a_pour_fans_out_smoothly`: a Pour aimed 90 with Spread 10: `fanned(-0.5)`,
+- [x] Test first, `drop.rs` unit `a_pour_fans_out_smoothly`: a Pour aimed 90 with Spread 10: `fanned(-0.5)`,
       `fanned(0.0)`, `fanned(0.5)` are at 80, 90 and 100 degrees (to 1e-4); `fanned(3.0) == fanned(0.5)`; with
       Spread 0 every drop of `drops(...)` has the same way; with Spread 45 and width 0 every drop's way is
       finite and within 45 degrees of Aim; `Pour::default().spread == 0.0`.
-- [ ] Build decisions 7 and 8.
-- [ ] Run `cargo test -p bpe-water --lib` and build `cargo test --release -p bpe-kit --test water_core --no-run`.
-- [ ] Commit.
+- [x] Build decisions 7 and 8.
+- [x] Run `cargo test -p bpe-water --lib` and build `cargo test --release -p bpe-kit --test water_core --no-run`.
+- [x] Commit.
 
 ### Task 3: steps by detail, the measuring tools
 
 **Files:** modify `crates/bpe-water/src/sim/numbers.rs`, `src/probe.rs`, `tests/measure.rs`, `tests/streams.rs`,
 `crates/bpe-kit/tests/water_core.rs`.
 
-- [ ] Tests first: `numbers.rs` unit `finer_cells_step_more_often`: `for_cell` of 12, 8, 6, 3 gives 240, 480,
+- [x] Tests first: `numbers.rs` unit `finer_cells_step_more_often`: `for_cell` of 12, 8, 6, 3 gives 240, 480,
       480, 960; of 0.5 gives 1920; of 0 or a NaN gives 240; nothing else differs from the defaults.
       `streams.rs::a_film_leaves_a_block_even`: `weird(6.0)` at `Numbers::for_cell(6.0)`; at ten moments from
       1.0 s to 1.9 s, `probe::along` over the 78 px after the block's left corner along the block's top line
       (reach 30 px, 13 bins of 6 px): the mean over the moments of (thinnest bin / thickest bin) is over 0.3.
       (Without this part: about 0.17; with it about 0.5.)
-- [ ] Build decisions 9, 11 (`along`) and 12; `water_core.rs` and `measure.rs` take `Numbers::from_env_for(cell)`.
-- [ ] Run the stream tests and the lib tests. Commit.
+- [x] Build decisions 9, 11 (`along`) and 12; `water_core.rs` and `measure.rs` take `Numbers::from_env_for(cell)`.
+- [x] Run the stream tests and the lib tests. Commit.
 
 ### Task 4: on the owner's card
 
-- [ ] Push the branch. A Remote Control session on `F:\!Ai Stuff\BallPhysicsEngine` (recipe: project memory
+- [x] Push the branch. A Remote Control session on `F:\!Ai Stuff\BallPhysicsEngine` (recipe: project memory
       `liquid-speed`): builds `bpe-kit`'s `water_core` test and `bpe-water`'s `core`, `streams` and `measure`
       tests for `x86_64-pc-windows-gnu` in the PC's `bpe-ci` box (scratch folder), runs them natively from
       `%TEMP%` once no check is running, and pushes texts, frames at 3 s and 6 s and clips under `card/` as a
       `[skip ci]` commit.
-- [ ] Runs: `core` and `streams` (the card's own pass or fail); `side_by_side` on the owner's file at Fine and at
+- [x] Runs: `core` and `streams` (the card's own pass or fail); `side_by_side` on the owner's file at Fine and at
       Extreme, both cores, 6 s at 30 frames a second, 1080 x 1920, with `WATER_DOTS`; the same with `WATER_FAN=1`
       (for the record); `measure look` on `box,deep,course` at 8, 6 and 3 px (pools at rest, their height);
       `measure pace` on `weird` at 8, 6 and 3 px (the speed).
-- [ ] Look at the full-size frames and their 1:1 crops (lumps, hairs, ribs, flicker between frames, the pool)
+- [x] Look at the full-size frames and their 1:1 crops (lumps, hairs, ribs, flicker between frames, the pool)
       before anything is called reached. If the thread is not whole at a detail, try that detail at the next
       step rate up and record both.
 
 ### Task 5: notes, review, merge
 
-- [ ] `docs/notes/water.md`: "Part 2a-2: thin water keeps its spacing (as built)"; this file's "As built and
+- [x] `docs/notes/water.md`: "Part 2a-2: thin water keeps its spacing (as built)"; this file's "As built and
       measured"; `git rm -r card/`.
-- [ ] `cargo fmt --all`; `cargo clippy -p bpe-water -p bpe-kit --all-targets -- -D warnings`.
-- [ ] One Opus review of the branch; fix what it finds.
-- [ ] Pull request out of draft, checks green, merge. Films to the owner; project memory brought up to date.
+- [x] `cargo fmt --all`; `cargo clippy -p bpe-water -p bpe-kit --all-targets -- -D warnings`.
+- [x] One Opus review of the branch; fix what it finds.
+- [x] Pull request out of draft, checks green, merge. Films to the owner; project memory brought up to date.
 
 ## As built and measured
 
-(Filled in as the tasks land.)
+Built as planned, with these differences:
+
+- **`apart_pace` is 300 px/s, not 150** (none under 100). At 150 a deep box took longer to come to rest (9 px/s
+  rms at 3 s); at 300 it settles as it does with no elbow room.
+- **`fill` 0.5** (decision 10a) came out of the measuring, not the first plan: the owner's file showed teeth on
+  the film over the disc at Fine that the hand-built layout did not, until its grid was moved a quarter of a
+  cell.
+- `Water::set_numbers` was added so a test can settle a pool with no elbow room and then turn it on.
+- `still_water_is_left_alone` compares after 0.5 s of settling (the fill's first tenth of a second moves at
+  100 px/s, so a from-the-start comparison cannot be exact); `a_heap_on_one_spot_spreads_without_a_burst`
+  bounds the spread at 5 to 30 cells and the fastest drop under 1900 px/s (about 280 over free fall).
+- The review's points (commit 6599dd6): a speed that is no number never moves a drop (`finite2(v)` before the
+  elbow room), the edge test checks the corner drops themselves, the heap test's bounds have room.
+
+### On the owner's card (RX 9070 XT, Vulkan, driver 26.11.2, 2026-11-25, built from 3d67ae5)
+
+`core` 12 passed, `streams` 9 passed. Films and texts: project files `water-core/card-2a2/`.
+
+The owner's Water Weird file, today's core left, the new core right (`fine-6s.png`, `extreme-6s.png`):
+
+| | Fine (6 px, 480 steps) | Extreme (3 px, 960 steps) |
+| --- | --- | --- |
+| Thread off the disc, 3 s | whole and smooth to the pool (today's: ragged, in pieces from half-way) | whole to the pool, one knot (today's: broken half-way) |
+| Thread off the disc, 6 s | whole and smooth to the pool (today's: stops short of the pool) | whole, but with five knots, each with a comb of drops across it (today's: whole, thin and zigzag) |
+| Film over the disc | smooth | barbs across it all the way to the left wall, sheets peeling off the wall |
+| Right wall | one clean film (today's: ragged) | clean, three bulges with combs |
+| Pieces in the air, 6 s | 14 (today's 69) | 219 (today's 89) |
+
+**The pass mark is reached at Fine and not at Extreme.** At Extreme the thread no longer breaks, but it is not
+clean: the knots are the barbs of "Not cured in this part", carried down the thread.
+
+Grid shifts on the card (thread raggedness, mean px over 2 to 6 s, shifts 0, 0.25, 0.5, 0.75 of a cell):
+
+| | fill 0.5 | fill 1 |
+| --- | --- | --- |
+| Fine | 0.51, 0.73, 0.47, 0.51 | 1.15, 1.26, 0.35, 0.60 |
+| Extreme | 2.28, 1.17, 2.30, 1.12 | 1.57, 0.93, 2.19, 1.74 |
+
+So `fill` 0.5 evens the Fine thread across shifts, as in the cloud; at Extreme it changes nothing and the
+thread is twice as ragged on two shifts of four whichever fill: the barbs depend on where the cells lie.
+
+Pools (rms speed in px/s at 6 s; 8, 6, 3 px cells): box 0.3, 0.7, 0.9; deep 0.9, 0.6, 0.1. At rest. The
+moving course keeps a median spacing of 0.41 cell with 9 % of drops within a quarter of a cell.
+
+Speed with no read-back (wall seconds for one scene second; 8, 6, 3 px): Water Weird 0.14, 0.15, 0.39; the
+course (84 thousand drops at 3 px) 0.15, 0.16, 0.45. Every detail runs faster than real time; Fine costs the
+same as Normal. In the side-by-side films, with the new core's pictures drawn too: Fine 1.8 s against today's
+core's 1.2 s, Extreme 3.4 s against 2.5 s.
+
+### What the next part should take from this
+
+- The knots at Extreme start where the pour's film meets the block and the disc head-on (the plan's "Not cured
+  in this part"); cure that and the thread should be clean, since below the disc elbow room already holds it.
+- The combs are partly the drawing: a row of drops a cell apart draws as stripes. Today's core shows the same
+  stripes at Extreme (`extreme-3s.png`, left).
+- Judge on several grid shifts; one shift can look clean by luck.
+
