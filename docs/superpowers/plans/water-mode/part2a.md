@@ -411,6 +411,25 @@ hold nodes' weights could go below nothing for a drop within half a cell of the 
 heavier than 16 could clip the whole-number momentum sums at the speed cap (Weight is held to 16); a pour's
 direction used the platform's sine (now `bpe_core::maths`); and four comments or docs that no longer matched.
 
+### The owner's real scene: a thin film hitting the disc head-on (found on the owner's card)
+
+The first films from the owner's RX 9070 XT (their `Water Weird.ron` at Fine and Extreme) showed the new core
+clearly less clean than today's, though the hand-built layout at 8 px cells looked right: the thread off the disc
+starved and broken into lumps, spikes over the top of the disc. Measured with `measure.rs::kicks` (every drop by
+the disc whose speed out of it jumps in one step): the film flying off the block's lower corner hits the disc
+almost head-on at 1,000 to 1,500 px/s, about a cell a liquid step at 6 px cells. All the kicks are at that one
+spot, in drops that are already on the disc, thrown out by 150 to 250 px/s and sped up along the disc both ways in
+the same step. It is the pressure where the film is stopped, as it should be, but arriving a cell at a time it
+comes as jolts. Today's soft core takes the same hit over several steps.
+
+- With no pressure at all the same scene is perfectly clean lines (so the drops' own moves, the keeping off
+  solids and the spacing step are not the cause), but then nothing turns the pour on the block.
+- A more thorough solve (6 cycles, 30 more sweeps) changes little: 40 kicks in a second become 29.
+- **Smaller liquid steps cure the thread**: at 480 steps a second it is mostly whole, at 960 one clean line to
+  the floor as today's, and the film over the disc is tidier though still feathery. Still pools rest at both
+  (box 0.4 to 0.8 px/s, deep 0.2 to 1.0). The cost is the step count itself: at 960 the new core is about as
+  fast as today's at Normal and Fine rather than three to five times faster.
+
 ### Where the Water Weird layout stands (lavapipe, 6 px cells, drawn through the bridge)
 
 - The thread off the disc: one continuous line most of the way to the floor, where today's core breaks into
@@ -447,5 +466,11 @@ levels, so it is its own part, before Water mode gets courses bigger than a scre
 - **Thin liquid resisting only a share of its squeeze (a quarter), to soften where a flying film lands on the
   disc.** The pour's turn on the block became lossy: its films slowed, the arc off the block's corner fell short
   and curled round the corner, and the spikes over the disc stayed.
+- **Not counting the solids' share towards "full" in thin liquid** (so a mostly solid cell would not push back
+  at a film): the spikes stayed and three pool tests failed (a pool's edge against a wall is thin liquid too).
+- **Measuring a cell's room against how full the arriving liquid is** (a quarter-dense film brings a quarter of
+  what its speed says): no change to the spikes.
+- **Landing thin liquid on a solid drop by drop** (the speed into the solid taken off before the grid hears of
+  it): no fewer kicks, for thin liquid only or for all of it. The kicks are in drops already on the disc.
 - A weaker push everywhere from over-full cells (`most_out` 0.02): the spikes over the disc stayed and the thread
   wobbled more.

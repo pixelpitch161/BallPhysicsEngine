@@ -211,3 +211,55 @@ fn strands() {
         drops_in as f32 / moments as f32
     );
 }
+
+/// Where drops by the Water Weird disc are thrown off it: every drop within 3 cells of the disc's
+/// upper half whose speed out of the disc jumps in one liquid step.
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn kicks() {
+    let gpu = card();
+    let cell: f32 = num("WATER_CELL", 6.0);
+    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env());
+    run.run_to(num("WATER_TIME", 3.0));
+    let layout = run.water.layout();
+    let (centre, radius) = (Vec2::new(-180.0, -120.0), 120.0);
+    let mut before: std::collections::HashMap<u32, (Vec2, Vec2)> = std::collections::HashMap::new();
+    println!("# step\tangle\toff px\tout before\tout after\talong before\talong after\tnear drops");
+    let mut shown = 0;
+    for step in 0..num("WATER_STEPS", 240u32) {
+        let drops = run.water.read();
+        let mut now = std::collections::HashMap::new();
+        let places: Vec<Vec2> = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).collect();
+        let mut events = 0;
+        for (d, p) in drops.iter().zip(&places) {
+            let v = Vec2::from(d.v) * cell;
+            now.insert(d.serial, (*p, v));
+            let out = (*p - centre).normalize_or_zero();
+            let off = (*p - centre).length() - radius;
+            if off > 3.0 * cell || p.y > centre.y {
+                continue;
+            }
+            let Some((_, was)) = before.get(&d.serial) else { continue };
+            let (a, b) = (was.dot(out), v.dot(out));
+            if b - a > num("WATER_KICK", 120.0) && b > 60.0 {
+                events += 1;
+                if shown < num("WATER_SHOW", 40) {
+                    shown += 1;
+                    let near = places.iter().filter(|q| (**q - *p).length() < 1.5 * cell).count();
+                    let angle = (p.y - centre.y).atan2(p.x - centre.x).to_degrees();
+                    let along = out.perp();
+                    println!(
+                        "{step}\t{angle:.0}\t{off:.1}\t{a:.0}\t{b:.0}\t{:.0}\t{:.0}\t{near}",
+                        was.dot(along),
+                        v.dot(along)
+                    );
+                }
+            }
+        }
+        if events > 0 && shown >= num("WATER_SHOW", 40) {
+            println!("{step}\t{events} kicks");
+        }
+        before = now;
+        run.step();
+    }
+}
