@@ -1,0 +1,17 @@
+
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers	Numbers { rate: 480, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 1.0, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+file	Fine	old	2	3620	2083	109	0.191	0.046	1624	0 0 0 0 0 154
+file	Fine	new	2	3620	1788	113	0.225	0.049	1616	0 0 0 0 0 274
+file	Fine	old	4	7240	5392	86	0.749	0.011	1578	0 0 0 0 0 717
+file	Fine	new	4	7240	4536	78	0.604	0.016	1617	0 0 0 0 0 616
+file	Fine	old	6	10861	8676	69	0.868	0.007	1603	0 0 0 0 0 795
+file	Fine	new	6	10861	7973	99	0.869	0.009	1552	0 0 0 0 0 796
+# C:\Users\aedan\AppData\Local\Temp\water-2a\frames\fine-480\file-fine	241 frames	136 s in all	today's core 1.8 s	the new core with its pictures 2.2 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 136.67s
+
+film-fine-480 rc=0

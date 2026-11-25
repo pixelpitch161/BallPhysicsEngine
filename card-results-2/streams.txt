@@ -1,0 +1,20 @@
+
+running 6 tests
+test a_lone_drop_pulls_on_nothing ... a lone drop stretched 0: at most 0.0014535148 px and 0.039148536 px/s off a free fall
+a lone drop stretched 0.5: at most 0.025093587 px and 0.19524828 px/s off a free fall
+ok
+test a_sheet_stays_a_sheet ... the sheet: Stream { drops: 217, pieces: 3, whole: 0.97235024, strays: 0.00921659, widths: [342.0816, 26.734253, 0.0, 0.0, 0.0, 0.0], gap: 608.9842 }
+ok
+test a_stream_keeps_its_width ... a thin pour at 8 px cells: Stream { drops: 550, pieces: 2, whole: 0.9836364, strays: 0.0, widths: [14.596771, 9.708649, 7.5181274, 11.404083, 10.298798, 6.906769], gap: 9.927429 }
+ok
+test a_thin_pour_is_clean_at_draft_detail ... a thin pour at 12 px cells: Stream { drops: 463, pieces: 3, whole: 0.7796976, strays: 0.0, widths: [23.61496, 11.24173, 10.046448, 12.085022, 9.521851, 1.9654846], gap: 12.459961 }
+ok
+test a_thin_pour_stays_one_stream ... a thin pour at 8 px cells: Stream { drops: 550, pieces: 2, whole: 0.9836364, strays: 0.0, widths: [14.596771, 9.708649, 7.5181274, 11.404083, 10.298798, 6.906769], gap: 9.927429 }
+ok
+test water_leaves_a_corner_as_one_arc ... the corner's arc: 94 drops, whole 1
+the corner's arc: 14.373779 px at its thickest
+ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.57s
+
+streams rc=0
