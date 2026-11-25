@@ -1,0 +1,50 @@
+﻿
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	steps a frame	ms a step	wall s for a scene second
+weird	6	5433	16.1	0.319	0.307
+weird	3	21734	38.4	0.335	0.771
+slope	6	3962	16.0	0.295	0.284
+slope	3	15848	38.0	0.324	0.738
+ledge	6	9056	17.9	0.315	0.339
+ledge	3	36224	36.3	0.352	0.765
+pool	6	41194	16.2	0.395	0.385
+pool	3	166240	34.7	0.613	1.276
+course	6	21097	16.2	0.343	0.333
+course	3	84534	36.7	0.449	0.987
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 18.39s
+
+# pace took 19 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,ledge,pool,course","WATER_CELLS":"6,3","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	steps a frame	ms a step	wall s for a scene second
+weird	2	41280	62.6	0.402	1.508
+slope	2	29162	58.9	0.370	1.308
+pool	2	374420	59.8	1.079	3.871
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 16.75s
+
+# pace took 17 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,pool","WATER_CELLS":"2","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	steps a frame	ms a step	wall s for a scene second
+weird	6	5433	16.1	0.337	0.325
+weird	3	21734	38.4	0.348	0.803
+slope	6	3962	16.0	0.310	0.298
+slope	3	15848	38.0	0.342	0.778
+ledge	6	9056	17.9	0.331	0.356
+ledge	3	36224	36.3	0.367	0.799
+pool	6	41194	16.2	0.393	0.383
+pool	3	166240	34.7	0.611	1.271
+course	6	21097	16.2	0.359	0.348
+course	3	84534	36.7	0.442	0.973
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 17.90s
+
+# pace took 18 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,ledge,pool,course","WATER_CELLS":"6,3","BPE_WATER_JOIN":0,"WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}

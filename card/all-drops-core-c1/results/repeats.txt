@@ -1,0 +1,26 @@
+﻿
+running 1 test
+test repeats ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	first run	second run	from a copy at half time	repeats
+weird	6	3622	146a2a2adc94dbcc	146a2a2adc94dbcc	146a2a2adc94dbcc	yes
+weird	3	14489	d9b022d2a9cc2cdc	d9b022d2a9cc2cdc	d9b022d2a9cc2cdc	yes
+pool	6	34590	e06b02904412541e	e06b02904412541e	e06b02904412541e	yes
+pool	3	139826	8ddd37710f3cbb2a	8ddd37710f3cbb2a	8ddd37710f3cbb2a	yes
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 12.07s
+
+# repeats took 12 s, exit 0: {"WATER_PULL":"0.5","WATER_CELLS":"6,3","WATER_SHOTS":"weird,pool","WATER_SECONDS":2,"WATER_STICK":"0.5"}
+
+running 1 test
+test repeats ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	first run	second run	from a copy at half time	repeats
+weird	6	3622	146a2a2adc94dbcc	146a2a2adc94dbcc	146a2a2adc94dbcc	yes
+weird	3	14489	d9b022d2a9cc2cdc	d9b022d2a9cc2cdc	d9b022d2a9cc2cdc	yes
+pool	6	34590	e06b02904412541e	e06b02904412541e	e06b02904412541e	yes
+pool	3	139826	8ddd37710f3cbb2a	8ddd37710f3cbb2a	8ddd37710f3cbb2a	yes
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 12.07s
+
+# repeats took 12 s, exit 0: {"WATER_PULL":"0.5","WATER_CELLS":"6,3","WATER_SHOTS":"weird,pool","WATER_SECONDS":2,"WATER_STICK":"0.5"}
