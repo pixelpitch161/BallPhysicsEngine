@@ -1,0 +1,19 @@
+
+running 1 test
+test look ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (the steps a second follow the cell size)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# scene	cell	seconds	drops	rms px/s	fastest	top	crowded	broken	in air	pieces	whole	strays	gap px	widths	wall s	steps/s	nearest (cells)	within 1/4 cell
+weird	6	2	3620	1470.8	3310	-530.6	6	0	503	48	0.421	0.091	33	39 43 37 27 31 79	0.3	480	0.439	0.025
+ragged	6	2	480	film	227	3.21	5.24	thread	148	0.43	1.05
+weird	6	3	5430	1209.7	3161	-509.3	2	0	586	13	0.739	0.020	599	0 0 0 0 0 218	0.5	480	0.420	0.030
+ragged	6	3	480	film	220	2.76	4.72	thread	143	0.33	0.74
+weird	6	4	7240	1106.8	3174	-486.9	16	0	476	9	0.477	0.011	608	0 0 0 0 0 127	0.8	480	0.419	0.034
+ragged	6	4	480	film	200	3.01	4.43	thread	146	0.51	1.08
+weird	6	5	9050	1011.2	3118	-462.2	0	0	883	14	0.410	0.012	562	0 0 0 0 0 119	1.0	480	0.423	0.028
+ragged	6	5	480	film	206	2.83	4.29	thread	144	0.58	1.42
+weird	6	6	10861	961.2	3055	-437.2	0	0	1063	9	0.958	0.007	7	43 45 33 28 40 168	1.2	480	0.417	0.024
+ragged	6	6	480	film	229	2.87	4.06	thread	151	0.48	1.49
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 1.56s
+

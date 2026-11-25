@@ -1,0 +1,25 @@
+
+running 9 tests
+test a_film_leaves_a_block_even ... the film off the block: its thinnest stretch is 0.6 of its thickest, on average
+ok
+test a_lone_drop_pulls_on_nothing ... a lone drop stretched 0: at most 0.0014535148 px and 0.039148536 px/s off a free fall
+a lone drop stretched 0.5: at most 0.025093587 px and 0.19524828 px/s off a free fall
+ok
+test a_sheet_stays_a_sheet ... the sheet: Stream { drops: 260, pieces: 2, whole: 0.91923076, strays: 0.0, widths: [362.3177, 23.847961, 0.0, 0.0, 0.0, 0.0], gap: 606.44324 }
+ok
+test a_stream_keeps_its_width ... a thin pour at 8 px cells: Stream { drops: 709, pieces: 13, whole: 0.76304656, strays: 0.014104372, widths: [14.931366, 7.4064636, 5.258362, 4.239502, 3.308197, 3.9672546], gap: 6.055176 }
+ok
+test a_thin_pour_is_clean_at_draft_detail ... a thin pour at 12 px cells: Stream { drops: 415, pieces: 3, whole: 0.8674699, strays: 0.0, widths: [23.417755, 13.312073, 8.381348, 7.786682, 5.6915283, 6.4105225], gap: 9.835571 }
+ok
+test a_thin_pour_stays_one_stream ... a thin pour at 8 px cells: Stream { drops: 709, pieces: 13, whole: 0.76304656, strays: 0.014104372, widths: [14.931366, 7.4064636, 5.258362, 4.239502, 3.308197, 3.9672546], gap: 6.055176 }
+ok
+test drops_on_the_move_keep_apart ... 1185 fast drops: Spacing { median: 0.44923845, close: 0.025316456 }; with no elbow room Spacing { median: 0.27083525, close: 0.47598627 }
+ok
+test two_drops_on_one_spot_part_without_a_kick ... two drops born on one point: 1.7846853 cells apart, at most 9.4464 px/s off a free fall of 1200 px/s
+ok
+test water_leaves_a_corner_as_one_arc ... the corner's arc: 89 drops, whole 0.96629214
+the corner's arc: 28.206299 px at its thickest
+ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.44s
+

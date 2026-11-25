@@ -1,0 +1,5 @@
+Card run for water part 2a-2 (pull request 227).
+Built from commit 3d67ae50093d8d6fc23545f33b72d68e32384680 (release, x86_64-pc-windows-gnu, built in WSL, run natively on Windows).
+Card: AMD Radeon RX 9070 XT, Vulkan, driver 26.11.2 (LLPC).
+Run on 2026-11-25, 10:25 to 10:31 UTC; runs.log has each run's start, end and exit code (local time, UTC-8).
+films/ keeps the frames at 1 to 6 seconds; weird-fine.mp4 and weird-extreme.mp4 are all 181 frames at 30 a second.

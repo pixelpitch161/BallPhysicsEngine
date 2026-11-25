@@ -1,0 +1,48 @@
+02:25:31 start core
+02:25:38 end   core exit=0 took=7s runners after: wsl=0 win=0
+02:25:39 start streams
+02:25:44 end   streams exit=0 took=6s runners after: wsl=0 win=0
+02:25:44 done: 1
+02:26:06 start films
+02:29:37 end   films exit=0 took=211s runners after: wsl=0 win=0
+02:29:38 start fan
+02:29:47 end   fan exit=0 took=9s runners after: wsl=0 win=0
+02:29:48 start pools
+02:30:01 end   pools exit=0 took=13s runners after: wsl=0 win=0
+02:30:02 start pace 1
+02:30:08 end   pace 1 exit=0 took=6s runners after: wsl=0 win=0
+02:30:08 start pace 2
+02:30:15 end   pace 2 exit=0 took=7s runners after: wsl=0 win=0
+02:30:15 start shift c6-s0
+02:30:17 end   shift c6-s0 exit=0 took=2s runners after: wsl=0 win=0
+02:30:17 start shift c6-s0.25
+02:30:19 end   shift c6-s0.25 exit=0 took=2s runners after: wsl=0 win=0
+02:30:19 start shift c6-s0.5
+02:30:21 end   shift c6-s0.5 exit=0 took=2s runners after: wsl=0 win=0
+02:30:21 start shift c6-s0.75
+02:30:23 end   shift c6-s0.75 exit=0 took=2s runners after: wsl=0 win=0
+02:30:24 start shift c3-s0
+02:30:27 end   shift c3-s0 exit=0 took=3s runners after: wsl=0 win=0
+02:30:27 start shift c3-s0.25
+02:30:31 end   shift c3-s0.25 exit=0 took=4s runners after: wsl=0 win=0
+02:30:31 start shift c3-s0.5
+02:30:34 end   shift c3-s0.5 exit=0 took=3s runners after: wsl=0 win=0
+02:30:35 start shift c3-s0.75
+02:30:38 end   shift c3-s0.75 exit=0 took=3s runners after: wsl=0 win=0
+02:30:39 start shiftfill1 c6-s0
+02:30:40 end   shiftfill1 c6-s0 exit=0 took=1s runners after: wsl=0 win=0
+02:30:41 start shiftfill1 c6-s0.25
+02:30:42 end   shiftfill1 c6-s0.25 exit=0 took=1s runners after: wsl=0 win=0
+02:30:43 start shiftfill1 c6-s0.5
+02:30:44 end   shiftfill1 c6-s0.5 exit=0 took=2s runners after: wsl=0 win=0
+02:30:44 start shiftfill1 c6-s0.75
+02:30:46 end   shiftfill1 c6-s0.75 exit=0 took=2s runners after: wsl=0 win=0
+02:30:46 start shiftfill1 c3-s0
+02:30:49 end   shiftfill1 c3-s0 exit=0 took=3s runners after: wsl=0 win=0
+02:30:50 start shiftfill1 c3-s0.25
+02:30:53 end   shiftfill1 c3-s0.25 exit=0 took=3s runners after: wsl=0 win=0
+02:30:53 start shiftfill1 c3-s0.5
+02:30:56 end   shiftfill1 c3-s0.5 exit=0 took=3s runners after: wsl=0 win=0
+02:30:57 start shiftfill1 c3-s0.75
+02:31:00 end   shiftfill1 c3-s0.75 exit=0 took=3s runners after: wsl=0 win=0
+02:31:00 done: 2 3 4 5 6 7

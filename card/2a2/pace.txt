@@ -1,0 +1,30 @@
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (the steps a second follow the cell size)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# scene	cell	steps/s	seconds	drops	wall s	wall s a second
+weird	8	480	4	4072	0.57	0.142
+weird	6	480	4	7240	0.62	0.154
+weird	3	960	4	28963	1.54	0.385
+course	8	480	4	11935	0.58	0.146
+course	6	480	4	21097	0.63	0.158
+course	3	960	4	84534	1.82	0.454
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 6.15s
+
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (the steps a second follow the cell size)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# scene	cell	steps/s	seconds	drops	wall s	wall s a second
+weird	8	480	4	4072	0.57	0.143
+weird	6	480	4	7240	0.61	0.153
+weird	3	960	4	28963	1.52	0.380
+course	8	480	4	11935	0.59	0.148
+course	6	480	4	21097	0.63	0.158
+course	3	960	4	84534	1.81	0.454
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 6.15s
+
