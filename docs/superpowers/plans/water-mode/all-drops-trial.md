@@ -169,4 +169,49 @@ not change (its tests still pass). No exe built or installed. Not merged.
 
 ### On the RX 9070 XT
 
-(Filled in after the card runs: `card/all-drops-trial/`.)
+Run on 2026-11-25 by `card/all-drops-trial/run.ps1`, built from e6ee31b; everything is in
+`card/all-drops-trial/results/` (28 films, 160 stills, the tables). Card line: AMD Radeon RX 9070 XT, Vulkan,
+26.11.2 (LLPC). Surface pull 0.5 and Stickiness 0.5 for both engines unless said. Results page for the owner:
+https://claude.ai/artifact/EuVFgnGuuBRmZw6AfYD2kP
+
+**Shots (plain drawing, grid core left, all drops right), judged against real water:** all drops is clearly
+closer on the tap stream, the ledge sheet, the course, the beads (the widest gap: the grid core flattens every
+bead to a one-drop film) and Water Weird; the thick pour is split (clean column and calm pool, but the pool sits
+low; the grid core's pool is full of trapped holes); the deep pool at rest goes to the grid core. All drops gets
+better from Fine to Extreme to 2 px; the grid core's thin water gets knots and barbs at Extreme.
+
+**Speed** (wall seconds a scene second, physics alone, grid core / all drops): Fine weird 0.16 / 0.40, slope
+0.15 / 0.35, ledge 0.15 / 0.36, pool (41 000 drops) 0.18 / 0.43, course 0.16 / 0.39. Extreme weird 0.39 / 0.87,
+slope 0.39 / 0.81, ledge 0.39 / 0.85, pool (166 000) 0.53 / 1.47, course (85 000) 0.48 / 1.00. 2 px weird
+0.83 / 0.96, slope 0.81 / 1.00, pool (373 000) 1.38 / 2.51. So 2.2 to 2.8 times slower at Fine and Extreme, most
+of it the doubled steps a second; small scenes are bound by the step count on both engines (about 0.3 and 0.4 ms
+a step whatever the drops).
+
+**Deep pool** (after 20 s, grid / all drops): movement left 1.08 / 0.65 px/s at Fine, 1.06 / 0.76 at Extreme;
+height kept 99.2 / 95.8 % at Fine, 99.8 / 96.8 % at Extreme (up to half a point of the all-drops' loss is its
+drops resting a quarter cell off the faces, where the fill starts half a cell off); 98.0 % at Extreme with 8
+sweeps. At 2 px it does not settle in 8 s at 4 sweeps (38.7 px/s), and does with 10 (1.8 px/s, 96.6 %). Slosh
+left after four half swings: 78 / 61 % at Fine, 95 / 62 % at Extreme.
+
+**Course after 30 s** (Extreme, grid / all drops): top shelf 0.4 / 7.3 %, lower pool 0.7 / 3.2 %, through the
+12 px opening 35.9 / 37.9 %, through the 24 px opening 62.8 / 51.6 %.
+
+**Repeats:** both engines, Water Weird and the pool pour at Fine and Extreme: the same drops twice from the
+start, from a copy made half way, and between two runs of the program. **Layout position:** four positions give
+the same look from both engines (`*-shift*` stills).
+
+**Surface pull** 0.2 / 0.5 / 1 on all drops: the stream holds to the plate, wets it as a film and sprays where
+it lands / holds then beads, smooth sheet, rounded puddles / thick ropes and fat round beads.
+
+**The owner's Water Weird file in today's drawing** (`films/file-*.mp4`, Surface pull 0.2, the scene's own): at
+Fine the all-drops pour shatters on the block into rain; at Extreme it holds as two streams of beads. With a
+weak skin nothing soaks up a hard landing. Today's drawing streaks lone drops, which makes it look worse.
+
+### Verdict
+
+Recommended to the owner: build Water mode on the all-drops engine (Option C), and borrow the grid core's
+pressure solve under deep water only (a starting pressure for the drops where the liquid is deep) to end the
+squash. Option B would need this engine for its thin water anyway and adds a hand-over between two engines where
+a stream meets a pool. Weak spots to carry into the design: pools squash 3 to 4 %; rain at a weak skin on hard
+landings; pours must be born at the resting spacing; a strong skin needs more steps; 2.2 to 2.8 times slower;
+water sticks more than it should on shelves. The owner's choice is pending (decision cards in the thread).
