@@ -501,3 +501,7 @@ spacing at every detail, so the same share a step is the same water at every det
 at 3 px it changes little (fewer stray droplets at the floor's splash). The deep pool at 6 px keeps 100 % of its
 height either way. `a_hard_landing_stays_whole` asks under 30 % above the pool at 6 px and Surface pull 0.2 (the
 mean of 1, 1.25 and 1.5 s: C1 38 %, now 23 %).
+
+The C1 shots at 2 s (slope, ledge, beads, weird; 6 and 3 px; `meet_even` 0.3 against 0) by eye: no worse
+anywhere, and at 6 px clearly less spray (the slope's and the weird's floors, the weird's disc), with the ledge's
+run-off a smooth sheet down to the wall where it was ragged. At 3 px little changes.
