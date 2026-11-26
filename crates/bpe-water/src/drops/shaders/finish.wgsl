@@ -84,7 +84,7 @@ fn finish_at(i: u32) -> Finished {
     if total > 0.0 {
         v = v + fr.deep2.y * meet / total;
     }
-    var a = -feel.a.y * pull - feel.a.z * f32(st.n.w >> 2u) * bend;
+    var a = -feel.a.y * pull - feel.a.z * bend;
     let s = solid_at(xi);
     if s.z < h {
         // Grip: a pull toward a near face, none at the face itself.

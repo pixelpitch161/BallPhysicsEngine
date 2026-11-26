@@ -65,8 +65,7 @@ struct Fr {
 
 // A step's numbers (one for each step of the frame, at its own offset): the drops this step, the
 // drops before this step's births, where its births start in the births buffer, and bit 0 the
-// frame's last step, bit 1 its first, the bits from 2 on how many steps' bend this step takes (0:
-// none, `bend_steps`). The export takes (the first drop, how many, 0, 0); a pass of
+// frame's last step, bit 1 its first. The export takes (the first drop, how many, 0, 0); a pass of
 // the deep water's pressure (its number, 0, 0, 0).
 struct St {
     n: vec4<u32>,
