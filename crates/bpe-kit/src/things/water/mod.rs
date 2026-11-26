@@ -5,6 +5,8 @@
 
 use bpe_core::{Registry, Scene, SettingDef, SimKind, SlotId, ThingId, ThingKind, Value};
 
+pub mod draft;
+
 pub use crate::modules::water::StartingLook;
 use crate::modules::water::{BACK, LIGHT, WORLD};
 

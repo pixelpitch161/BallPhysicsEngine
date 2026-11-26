@@ -67,8 +67,9 @@ Lines marked **(My call)** are choices Aedan was not asked about; they are cheap
    draft a fast drop may cross it (said in the notes; trouble marks are Later).
 5. **Liquids** are numbered in the scene's order, enabled ones only, at most 16 (`MOST_LIQUIDS`); a 17th is not poured
    and the stage says so. A Feel card maps one to one: `Feel { gravity: 1, surface_pull, thickness, stickiness, weight,
-   settles: 0 }`. A drop's colour is its Liquid's Look Colour (linear rgba8), for part 4's mixing; the plain drawing
-   reads each Liquid's Colour, Deep colour and Clarity by its number.
+   settles: 0 }`. The plain drawing reads each Liquid's Colour, Deep colour and Clarity by the drop's liquid number, so
+   drops are born with the engine's own colour (`bpe_water::WATER`); part 4's mixing gives them their Liquid's colour
+   and puts it in the fingerprint (Decision 9) then.
 6. **Pours.** A **Tap** is `bpe_water::Pour { place: the Pour's own place, aim, width: Rate × Width, speed, spread,
    from: Starts at, until: Stops at, kind: liquid | STOPS, colour }` (all-drops spec section 8: "half the Rate is a
    stream half as wide"). **Fill at the start** is `fill_stacked` over the box `place ± Fill size / 2` with `rest_off =
@@ -259,7 +260,7 @@ settings contract covers the new card: `simple` count, sections in `SECTION_ORDE
   - `pub struct LiquidSetup { pub id: ThingId, pub feel: Feel, pub colour: u32 }`
   - `pub enum PourKindSetup { Tap(bpe_water::Pour), Fill { lo: Vec2, hi: Vec2, kind: u32, colour: u32 }, Later }`,
     `pub struct PourSetup { pub id: ThingId, pub liquid: Option<usize>, pub kind: PourKindSetup }`
-  - `WaterSetup::of(scene: &Scene, resolved: &Resolved, reg: &Registry) -> WaterSetup` (draft detail)
+  - `WaterSetup::of(scene: &Scene, resolved: &Resolved) -> WaterSetup` (draft detail)
   - `fn layout(&self) -> Layout`, `fn mask(&self) -> Arc<CarveMask>`, `fn field(&self) -> SolidField`,
     `fn numbers(&self) -> Numbers` (`Numbers::for_cell(cell)`),
     `fn start(&self, gpu: Arc<WaterGpu>, field: &SolidField) -> Water` (body with the fills added and the frame-0
