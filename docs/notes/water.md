@@ -546,3 +546,66 @@ catches up, a tap in the rock is named and pours nothing), `water_mode/picture` 
 `water_mode/tests.rs` (Carve: one stroke one undo step, an undo while painting kept, Alt and the strip, Straight,
 Smooth, Escape, a Course without the card; the all-rock words; a first Pour brings Water; a pour's note), `app/water_tests.rs` (a physics edit restarts
 and a look edit doesn't, a Balls scene has no draft, the readout).
+
+## Part 2c: trapped air and Wetting (as built)
+
+Plan: `docs/superpowers/plans/water-mode/part2c-air-and-wetting.md` ("As built and measured" there has every number).
+Air caught under the water rises out as bubbles and bursts at the top, and each solid has a **Wetting**: water beads
+up and rolls on a waxy one and spreads into a film on a soaked one.
+
+### Trapped air (`bpe-water drops/air.rs`, `shaders/air.wgsl`, `sort`, `sweep`, `finish`, `deep`, `report`)
+
+- **Air drops**: drops with the `AIR` bit (128) in their kind. They fall upward at `air_lift` times the course's
+  gravity (the Water card's Bubbles rise, `Water::set_air_lift`). **One-way pressure**: the liquid counts air in its
+  fullness and makes way for it, but air is pushed only by air and the solids, so a pocket rises through the water and
+  keeps its room (with the pressure both ways, air that broke off sat in the water's lattice and rode its flow down).
+  The liquid's skin leaves air out (a pocket's wall is a surface to it, so bubbles keep round); air has no skin, grip or
+  Wetting. Air and liquid even out their speeds and close on each other by `air_drag` (0.2) of the share liquid has
+  with liquid (`finish_at`): small bubbles slip up through the water instead of riding its flow (at 1 the air of a
+  72 px hole was still spread through the pool 3 s on). The deep part gathers air as full water, so a pocket is no
+  longer the liquid's edge.
+- **Bursting** (`sweep.wgsl` `bursts`, `finish_at`): an air drop is let go (moved off the course, counted out two
+  frames on like a drop that left) when it is less than `air_pop` (0.75) full; out of the water (no deep water there)
+  when the drops alone are less than that full (so air thrown out against a ceiling bursts and air held under a solid
+  deep in the water stays); and when liquid over it (within 60° of straight up) is less than `air_pop` full: a film or
+  the water's top, which a real bubble's film drains through and breaks.
+- **Finding** (`cs_air_find`, on the last step of every frame with deep cells, from the deep sums before
+  `cs_deep_across` empties them): a cell neither full nor solid, with full liquid over it (not rock: air under a ledge
+  is the course's) and full liquid or a solid under and beside it within `air_reach` (48 px, 3 to 64 cells), is trapped
+  air. Its lattice spots clear of the solids and of every drop by 0.4 cell (`AIR_CLEAR`, under a spacing) are marked,
+  so the air fills the pocket out to its water (air that stopped short of the water had open room beside it and
+  burst at once); a pocket part filled is filled the rest of the way the next frame. Whole-number running sums over
+  the cells and blocks (`cs_air_sum_a`, `_b`) give each spot its slot.
+- **Births** (`cs_air_dead`, `cs_air_born`, after the frame's last finish): the host keeps `slots_for(found, deep)`
+  slots after the frame's drops (the spots the report two frames back found and a quarter more, plus room for
+  pockets that closed since: a quarter of the deep cells, 64 to 2048; none when it found none); each spot is born in
+  its slot at the liquid's speed round it, the rest hold drops that left. The report counts the births as live and
+  reports the spots found (`Report.air`, `Water::air_found`). Everything a frame finds is born in its own submission,
+  so a copy at a frame boundary needs nothing and runs repeat. An empty hole falls in for the two frames the count
+  takes to come back (at 12 px a 72 px hole keeps about 47 air drops of the 113 it would hold).
+- **Off** (`Numbers::air` 0, the Water card's Trapped air): none of the passes run and no slot is kept: C2's water to
+  the bit. Water in the open (slopes, thin pours, still pools) never gets air and plays the same with it on.
+- **Not drawn**: the plain drawing skips air drops (`plain.wgsl` `drawn`), so a pocket shows as a hole. `probe`'s
+  measures leave air out (`probe::liquid`, `probe::air`); `probe::pockets` measures trapped room; `probe::picture`
+  draws air as small pale yellow dots.
+
+### Wetting (`bpe-water solid.rs`, `numbers.rs` `wet_table`, `finish.wgsl`)
+
+- A wetted face is resting liquid to the liquid's skin, as much as it is wet (0 to 1): within a reach of a face a water
+  drop's skin pull gains `wet × thin × S(d)` toward the face (adhesion, `thin` the pair number with a full neighbour)
+  and the way the liquid lies gains `wet × L(d)` toward it, so a puddle's foot is no surface for the bend to hold up.
+  `S` and `L` are what a resting lattice filling the solid behind a flat face would add (`Numbers::wet_table`, 33
+  distances, sent in `Fr.wet`). Wetting 0 is C2's water to the bit; water further than a reach from every face plays
+  the same at any Wetting. `wet_drag` (1) is the share of the drag along a face a waxy face keeps: beads already roll
+  off a waxy slope at 1, so it stays.
+- `SolidField.wetting` is one value per node (`with_wetting`, `wetting_at`, read between nodes on the card from the
+  second half of the solid buffer). In 2c every node takes the Course's Rock card's Wetting; part 3 gives Pieces and
+  Walls their own (the nearest face's solid). `DEFAULT_WETTING` is the Material card's default.
+
+### Cards and the editor (`bpe-kit modules/water/{scene,solids}.rs`, `things/water/draft.rs`, `bpe-studio`)
+
+- **Water card**, group **Trapped air** (after "Carving" in `SECTION_ORDER`): **Trapped air** (on) and **Bubbles rise**
+  (0 to 4 times, 1, keyframed). **Material card**: **Wetting** (0 to 1, simple). `WaterSetup` keeps the Course's Rock
+  card: `print` hashes Trapped air, Bubbles rise and the Rock's Wetting (a Piece's or Wall's Material does not restart
+  the draft yet); `numbers()` sets `air` from Trapped air; `field()` takes the Rock's Wetting;
+  `FrameInputs::air_lift` is Bubbles rise at the frame's start, which the draft sets on the body each frame.

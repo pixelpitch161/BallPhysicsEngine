@@ -8,6 +8,7 @@ pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/sweep.wgsl"),
     include_str!("shaders/finish.wgsl"),
     include_str!("shaders/deep.wgsl"),
+    include_str!("shaders/air.wgsl"),
     include_str!("shaders/report.wgsl"),
 );
 
@@ -37,6 +38,11 @@ pub(super) enum P {
     DeepDown,
     DeepUp,
     DeepPush,
+    AirFind,
+    AirSumA,
+    AirSumB,
+    AirDead,
+    AirBorn,
     Report,
     Export,
 }
@@ -49,7 +55,8 @@ pub(super) enum P {
 /// frame's report; for the deep water (deep.wgsl) 19 the cells' sums, 20 the solids by cell, 21 the
 /// pressure, 22 the faces' open shares, 23 how full each cell is and then its depth share, 24 how far
 /// down its column a cell that is not full is, 25 the cells deep at the frame's end, 26 how full the
-/// drops-only water just above the deep water is.
+/// drops-only water just above the deep water is; for trapped air (air.wgsl) 27 each cell's spots,
+/// 28 the blocks' running sums and every spot.
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_predict", &[0, 1, 2, 3, 4, 6, 7, 15, 16]),
     ("cs_sum_a", &[0, 1, 7, 8, 9]),
@@ -74,7 +81,12 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_deep_down", &[0, 1, 21, 22]),
     ("cs_deep_up", &[0, 1, 21]),
     ("cs_deep_push", &[0, 1, 11, 14, 15, 21, 22, 23]),
-    ("cs_report", &[0, 1, 2, 8, 15, 18, 25]),
+    ("cs_air_find", &[0, 1, 8, 11, 15, 19, 20, 27]),
+    ("cs_air_sum_a", &[0, 1, 27, 28]),
+    ("cs_air_sum_b", &[0, 1, 28]),
+    ("cs_air_dead", &[0, 1, 2, 3, 5, 28]),
+    ("cs_air_born", &[0, 1, 2, 3, 5, 27, 28]),
+    ("cs_report", &[0, 1, 2, 8, 15, 18, 25, 28]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
 ];
 
@@ -164,6 +176,8 @@ mod tests {
         assert_eq!(ENTRIES[P::Born as usize].0, "cs_born");
         assert_eq!(ENTRIES[P::DeepWalls as usize].0, "cs_deep_walls");
         assert_eq!(ENTRIES[P::DeepPush as usize].0, "cs_deep_push");
+        assert_eq!(ENTRIES[P::AirFind as usize].0, "cs_air_find");
+        assert_eq!(ENTRIES[P::AirBorn as usize].0, "cs_air_born");
         assert_eq!(ENTRIES[P::Report as usize].0, "cs_report");
         for (name, bindings) in ENTRIES {
             let storage = bindings.iter().filter(|&&b| b > STEP).count();

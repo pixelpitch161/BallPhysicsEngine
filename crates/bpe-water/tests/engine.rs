@@ -27,7 +27,7 @@ fn a_pool_stays_in_its_box_and_keeps_its_height() {
     let drops = run.water.read();
     let after = Stats::of(&drops, &layout);
     assert_eq!(after.broken, 0);
-    for d in &drops {
+    for d in drops.iter() {
         let p = layout.to_world(Vec2::from(d.x));
         assert!(p.x.abs() < 300.0 && p.y.abs() < 450.0, "a drop left the box: {p}");
     }
@@ -80,9 +80,11 @@ fn a_heap_on_one_point_spreads_and_repeats() {
         }
         (layout, water.read())
     };
-    let (layout, drops) = play();
+    let (layout, all) = play();
+    // (The bursting heap shuts a little air in for a moment: the liquid is what is kept.)
+    let drops = probe::liquid(&all);
     assert_eq!(drops.len(), 2000);
-    for d in &drops {
+    for d in all.iter() {
         let p = layout.to_world(Vec2::from(d.x));
         assert!(p.is_finite() && p.x.abs() < 300.0 && p.y.abs() < 450.0, "a drop left the box: {p}");
     }
@@ -102,7 +104,7 @@ fn a_heap_on_one_point_spreads_and_repeats() {
         }
     }
     assert!(close * 100 <= drops.len(), "the heap is parted: {close} pairs of drops within 0.05 cell");
-    assert_eq!(probe::print_of(&drops), probe::print_of(&play().1), "twice the same");
+    assert_eq!(probe::print_of(&all), probe::print_of(&play().1), "twice the same");
 }
 
 /// One drop with nothing near it falls as a stone does.
@@ -460,7 +462,7 @@ fn a_fill_is_stacked_on_the_floor() {
     }
     // (Each column stacked on its own face: down a column, the drops are half a cell apart.)
     let mut columns: std::collections::BTreeMap<i64, Vec<f32>> = Default::default();
-    for d in &drops {
+    for d in drops.iter() {
         columns.entry((d.x[0] * 2.0).floor() as i64).or_default().push(d.x[1]);
     }
     assert!(columns.len() > 40, "{}", columns.len());
@@ -514,7 +516,7 @@ fn a_deep_pool_keeps_its_height() {
     let layout = scene.layout;
     assert!(kept >= 0.985, "the pool keeps its height with the deep part: {kept}");
     assert_eq!(Stats::of(&drops, &layout).broken, 0);
-    for d in &drops {
+    for d in drops.iter() {
         let p = layout.to_world(Vec2::from(d.x));
         assert!(p.x.abs() < 300.0 && p.y.abs() < 450.0, "a drop left the box: {p}");
     }

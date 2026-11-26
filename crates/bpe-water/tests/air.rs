@@ -93,13 +93,119 @@ fn a_stronger_skin_holds_a_bubble_whole_longer() {
         scene.feels[0].surface_pull = surface_pull;
         let mut run = scene.start(&gpu, Numbers { air: 0, ..Numbers::for_cell(12.0) });
         let start = probe::pockets(&run.water.read(), &run.field).biggest;
-        run.run_to(0.5);
+        run.run_to(0.25);
         let p = probe::pockets(&run.water.read(), &run.field);
-        eprintln!("Surface pull {surface_pull}: the pocket {start} px2, at 0.5 s {p:?}");
+        eprintln!("Surface pull {surface_pull}: the pocket {start} px2, at 0.25 s {p:?}");
         p.biggest / start
     };
     let (weak, strong) = (whole_at(0.2), whole_at(1.0));
     assert!(strong > weak + 0.2, "a stronger skin keeps more of the pocket whole: {weak} and {strong}");
+}
+
+/// A hole left in a still pool is found and filled with air within a few frames, only there (what
+/// is left of it: an empty hole falls in for the two frames the card's count of trapped air takes
+/// to come back); the air rises out, and the water is kept.
+#[test]
+fn a_hole_in_a_pool_fills_with_air() {
+    let Some(gpu) = card() else { return };
+    let mut run = scenes::pool_with_hole(12.0, false).start(&gpu, Numbers::for_cell(12.0));
+    let layout = run.water.layout();
+    let first = run.water.read();
+    assert!(probe::air(&first).is_empty());
+    let water = first.len();
+    let top = Stats::of(&first, &layout).top;
+    for _ in 0..4 {
+        run.frame();
+    }
+    let drops = run.water.read();
+    let air = air_at(&drops, &layout);
+    assert!(air.len() > 30, "the hole is filled with air: {}", air.len());
+    let (centre, radius) = scenes::HOLE;
+    for p in &air {
+        assert!(p.distance(centre) < radius + layout.cell, "air only in the hole: {p}");
+    }
+    assert_eq!(probe::liquid(&drops).len(), water);
+    for k in 1..=12 {
+        run.run_to(0.25 * k as f32);
+        let drops = run.water.read();
+        assert_eq!(probe::liquid(&drops).len(), water, "the water is kept at {} s", 0.25 * k as f32);
+        for p in air_at(&drops, &layout) {
+            assert!(p.y > top - 2.0 * layout.cell, "no air above the pool's top ({top}): {p}");
+        }
+    }
+    assert!(probe::air(&run.water.read()).is_empty(), "the air has gone by 3 s");
+}
+
+/// Water in the open (a stream onto a slope, a thin pour down a screen, a still pool) never gets
+/// air, and plays the same to the bit with trapped air on and off.
+#[test]
+fn open_water_gets_no_air() {
+    let Some(gpu) = card() else { return };
+    for scene in [scenes::slope(12.0), scenes::thin_pour(12.0, 2.0), scenes::still_box(12.0, 0.3)] {
+        let on = Numbers::for_cell(12.0);
+        let mut a = scene.start(&gpu, on);
+        let mut b = scene.start(&gpu, Numbers { air: 0, ..on });
+        for k in 1..=6 {
+            a.run_to(k as f32 / 6.0);
+            b.run_to(k as f32 / 6.0);
+            let drops = a.water.read();
+            assert!(probe::air(&drops).is_empty(), "{}: air at {} s", scene.name, k as f32 / 6.0);
+            assert_eq!(probe::print_of(&drops), probe::print_of(&b.water.read()), "{}: on and off alike", scene.name);
+        }
+    }
+}
+
+/// With trapped air off, a hole is left a hole.
+#[test]
+fn trapped_air_off_leaves_the_hole() {
+    let Some(gpu) = card() else { return };
+    let mut run = scenes::pool_with_hole(12.0, false).start(&gpu, Numbers { air: 0, ..Numbers::for_cell(12.0) });
+    for k in 1..=4 {
+        run.run_to(0.125 * k as f32);
+        assert!(probe::air(&run.water.read()).is_empty());
+    }
+}
+
+/// Air found and born repeats: twice from the start, and from a copy made while its births' reports
+/// are still on their way.
+#[test]
+fn air_repeats() {
+    let Some(gpu) = card() else { return };
+    let scene = scenes::pool_with_hole(12.0, false);
+    let numbers = Numbers::for_cell(12.0);
+    let mut a = scene.start(&gpu, numbers);
+    a.run_to(0.75);
+    let mut b = scene.start(&gpu, numbers);
+    for _ in 0..3 {
+        b.frame();
+    }
+    let mut c = b.copy();
+    b.run_to(0.75);
+    c.run_to(0.75);
+    let first = a.water.read();
+    assert!(!probe::air(&first).is_empty(), "there is air to repeat");
+    assert_eq!(probe::print_of(&first), probe::print_of(&b.water.read()), "twice from the start");
+    assert_eq!(probe::print_of(&first), probe::print_of(&c.water.read()), "from a copy at frame 3");
+}
+
+/// A thick pour into a pool for a second traps air, and the air leaves once the pour stops (the
+/// pool sloshes for a while after, and its breaking waves trap a little more).
+#[test]
+fn a_pour_into_a_pool_loses_its_air() {
+    let Some(gpu) = card() else { return };
+    let mut scene = scenes::pool_pour(12.0);
+    scene.pours[0].until = 1.0;
+    let mut run = scene.start(&gpu, Numbers::for_cell(12.0));
+    let mut seen = Vec::new();
+    for k in 1..=16 {
+        run.run_to(0.25 * k as f32);
+        seen.push(probe::air(&run.water.read()).len());
+    }
+    eprintln!("air every 0.25 s: {seen:?}");
+    let most = seen.iter().copied().max().unwrap_or(0);
+    assert!(most > 20, "the pour traps air: {most}");
+    let left = seen[15];
+    assert!(left * 10 < most, "the air leaves after the pour: {left} of {most} at 4 s");
 }
 
 #[test]
@@ -146,4 +252,38 @@ fn trace_air() {
             s.rms
         );
     }
+}
+
+#[test]
+#[ignore]
+fn trace_pool() {
+    let Some(gpu) = card() else { return };
+    let cell: f32 = std::env::var("WATER_CELL").ok().and_then(|s| s.parse().ok()).unwrap_or(12.0);
+    let shot = std::env::var("WATER_SHOT").unwrap_or_else(|_| "pool".into());
+    let mut run = scenes::shot(&shot, cell).expect("a shot").start(&gpu, Numbers::from_env_for(cell));
+    let layout = run.water.layout();
+    let mut most = 0usize;
+    for k in 0..=24 {
+        run.run_to(0.25 * k as f32);
+        let drops = run.water.read();
+        let air = air_at(&drops, &layout);
+        most = most.max(air.len());
+        let p = probe::pockets(&drops, &run.field);
+        let s = Stats::of(&drops, &layout);
+        let m = mean(&air);
+        eprintln!(
+            "{:5.2} s air {:6} mid {:7.1} | pockets {:7.0} px2, biggest {:6.0} at {:7.1} | water {} top {:.1} rms {:.0} | steps {}",
+            0.25 * k as f32,
+            air.len(),
+            m.y,
+            p.area,
+            p.biggest,
+            p.middle.y,
+            probe::liquid(&drops).len(),
+            s.top,
+            s.rms,
+            run.water.steps_last_frame()
+        );
+    }
+    eprintln!("most air {most}");
 }

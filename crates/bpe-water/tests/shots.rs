@@ -11,11 +11,12 @@
 //!   name), `WATER_FILM=0` (no film frames, stills only), `WATER_FILM_SCALE=0.5` (a film frame's size
 //!   against the screen's), `WATER_DOTS=0` (no pictures of the drops as dots beside the stills).
 //! - `WATER_PULL`, `WATER_STICK`, `WATER_THICK`, `WATER_SETTLES` the liquid's feel in every shot;
-//!   `WATER_SHIFT` moves the layout by that part of a cell.
+//!   `WATER_WETTING` every solid's Wetting; `WATER_SHIFT` moves the layout by that part of a cell.
 //! - `BPE_WATER_*` replace the engine's numbers (`Numbers::from_env_for`).
 
 use std::time::Instant;
 
+use bpe_core::maths::Maths;
 use bpe_water::draw::{Plain, PlainGpu, PlainLook, View, sets, stored};
 use bpe_water::probe::{self, Stats};
 use bpe_water::scenes::{self, Running, Scene};
@@ -40,6 +41,7 @@ fn scene_for(name: &str, cell: f32) -> Scene {
         feel.settles = num("WATER_SETTLES", feel.settles);
     }
     scene.layout.origin -= Vec2::splat(num("WATER_SHIFT", 0.0) * cell);
+    scene.wetting = num("WATER_WETTING", scene.wetting);
     scene
 }
 
@@ -284,17 +286,18 @@ fn openings() {
 /// The course's top shelf as it drains (part C2, Task 7): every 10 s up to `WATER_SECONDS` (30),
 /// the share of the drops left on it and the height of its water every 10 px along it (the
 /// topmost drop over the shelf's face, counting only a column with at least 3 drops), the
-/// tallest and the mean. `WATER_STICK` sets the Stickiness (run it at 0 and at 0.5).
+/// tallest and the mean. `WATER_STICK` sets the Stickiness (run it at 0 and at 0.5), `WATER_WETTING`
+/// the rock's Wetting (part 2c).
 #[test]
 #[ignore = "a measuring run: by hand"]
 fn shelves() {
     let gpu = card();
     let seconds: f32 = num("WATER_SECONDS", 30.0);
     let (shelf, _, _) = scenes::COURSE_LINES;
-    println!("# cell\tstickiness\tseconds\tleft on the shelf %\ttallest px\tmean px\tcolumns\twall s");
+    println!("# cell\tstickiness\twetting\tseconds\tleft on the shelf %\ttallest px\tmean px\tcolumns\twall s");
     for cell in list::<f32>("WATER_CELLS", "6") {
         let scene = scene_for("course", cell);
-        let stick = scene.feels[0].stickiness;
+        let (stick, wetting) = (scene.feels[0].stickiness, scene.wetting);
         let mut run = start(&scene, &gpu);
         let layout = run.water.layout();
         let began = Instant::now();
@@ -319,7 +322,7 @@ fn shelves() {
             let tallest = heights.iter().copied().fold(0.0f32, f32::max);
             let mean = heights.iter().sum::<f32>() / heights.len().max(1) as f32;
             println!(
-                "{cell}\t{stick}\t{t}\t{:.1}\t{tallest:.1}\t{mean:.1}\t{}\t{:.0}",
+                "{cell}\t{stick}\t{wetting}\t{t}\t{:.1}\t{tallest:.1}\t{mean:.1}\t{}\t{:.0}",
                 100.0 * on as f32 / drops.len().max(1) as f32,
                 heights.len(),
                 began.elapsed().as_secs_f64()
@@ -423,6 +426,123 @@ fn landing() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// Trapped air (part 2c, Task 4): in the pool shot (a thick pour plunging into a pool), every
+/// 0.25 s from 1 s to `WATER_SECONDS` (6), the air drops, the trapped room the liquid leaves
+/// (`probe::pockets`: its area, the biggest piece and its middle's height) and the wall seconds,
+/// then the mean and the most room over the run. `BPE_WATER_AIR=0` gives C2's water beside it.
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn air() {
+    let gpu = card();
+    let seconds: f32 = num("WATER_SECONDS", 6.0);
+    println!("# shot\tcell\ttrapped air\tseconds\tair drops\tpockets px2\tbiggest px2\tits middle y\tliquid\twall s");
+    for name in list::<String>("WATER_SHOTS", "pool") {
+        for cell in list::<f32>("WATER_CELLS", "6,3,2") {
+            let scene = scene_for(&name, cell);
+            let mut run = start(&scene, &gpu);
+            let on = Numbers::from_env_for(cell).air;
+            let began = Instant::now();
+            let (mut sum, mut most, mut n) = (0.0f32, 0.0f32, 0u32);
+            let mut k = 4;
+            while 0.25 * k as f32 <= seconds + 1e-3 {
+                let t = 0.25 * k as f32;
+                run.run_to(t);
+                let drops = run.water.read();
+                let p = probe::pockets(&drops, &run.field);
+                println!(
+                    "{name}\t{cell}\t{on}\t{t}\t{}\t{:.0}\t{:.0}\t{:.1}\t{}\t{:.0}",
+                    probe::air(&drops).len(),
+                    p.area,
+                    p.biggest,
+                    p.middle.y,
+                    probe::liquid(&drops).len(),
+                    began.elapsed().as_secs_f64()
+                );
+                sum += p.area;
+                most = most.max(p.area);
+                n += 1;
+                k += 1;
+            }
+            println!("# {name}\t{cell}\ttrapped air {on}\tpockets: mean {:.0} px2, most {most:.0} px2", sum / n as f32);
+        }
+    }
+}
+
+/// Wetting (part 2c, Task 6), at each of `WATER_WETTINGS` (0, 0.25, 0.5, 0.75, 1) and
+/// `WATER_CELLS` (6, 3) after `WATER_SECONDS` (3):
+/// - a 12, 24 and 48 px blob (`WATER_BLOBS`) on a level floor: width, height (`probe::puddle`) and
+///   the angle its edge makes with the floor (a circle's cap: `2 atan(2h / w)`);
+/// - the `beads` shot's tilted plate after `WATER_PLATE_SECONDS` (1): the share of the drops set on
+///   it still on it, how far down it they are on average (pixels along it from where they started),
+///   and the share of those on it that lie in a film (no more than two spacings deep where they
+///   are).
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn wetting() {
+    let gpu = card();
+    let seconds: f32 = num("WATER_SECONDS", 3.0);
+    println!("# cell\twetting\tblob px\twidth px\theight px\tangle deg\twall s");
+    println!("# cell\twetting\tplate\ton it %\tdown it px\tfilm %\twall s");
+    for cell in list::<f32>("WATER_CELLS", "6,3") {
+        let spacing = 0.5 * cell;
+        for wetting in list::<f32>("WATER_WETTINGS", "0,0.25,0.5,0.75,1") {
+            for side in list::<f32>("WATER_BLOBS", "12,24,48") {
+                let began = Instant::now();
+                let mut run = start(&scenes::blob(cell, side, wetting), &gpu);
+                run.run_to(seconds);
+                let (floor, half) = scenes::BLOB;
+                let inside = (-half + 2.0 * cell, half - 2.0 * cell);
+                let (w, h) = probe::puddle(&run.water.read(), &run.water.layout(), floor, inside);
+                let angle = 2.0 * (2.0 * h / w).det_atan().to_degrees();
+                println!("{cell}\t{wetting}\t{side}\t{w:.1}\t{h:.1}\t{angle:.0}\t{:.0}", began.elapsed().as_secs_f64());
+            }
+            // The tilted plate of the beads shot (scenes::beads: from a to b, its face on that line).
+            let began = Instant::now();
+            let mut run = start(&scenes::blobs(cell, wetting), &gpu);
+            let layout = run.water.layout();
+            let (a, b) = (Vec2::new(-380.0, -200.0), Vec2::new(380.0, -38.0));
+            let u = (b - a).normalize();
+            let up = Vec2::new(u.y, -u.x);
+            let first: std::collections::HashMap<u32, f32> = run
+                .water
+                .read()
+                .iter()
+                .filter_map(|d| {
+                    let p = layout.to_world(Vec2::from(d.x));
+                    (p.y < 100.0).then_some((d.serial, (p - a).dot(u)))
+                })
+                .collect();
+            run.run_to(num("WATER_PLATE_SECONDS", 1.0));
+            let on: Vec<(f32, f32, f32)> = probe::liquid(&run.water.read())
+                .iter()
+                .filter_map(|d| {
+                    let from = *first.get(&d.serial)?;
+                    let p = layout.to_world(Vec2::from(d.x));
+                    let (along, above) = ((p - a).dot(u), (p - a).dot(up));
+                    (p.is_finite() && (0.0..=(b - a).length()).contains(&along) && (-spacing..80.0).contains(&above))
+                        .then_some((along, above, along - from))
+                })
+                .collect();
+            let bin = |along: f32| (along / (2.0 * spacing)) as usize;
+            let mut deepest = std::collections::HashMap::<usize, f32>::new();
+            for &(along, above, _) in &on {
+                let e = deepest.entry(bin(along)).or_insert(f32::MIN);
+                *e = e.max(above);
+            }
+            let film = on.iter().filter(|&&(along, _, _)| deepest[&bin(along)] <= 2.0 * spacing).count();
+            let left = probe::liquid(&run.water.read()).iter().filter(|d| first.contains_key(&d.serial)).count();
+            eprintln!("# plate: {} drops set on it, {left} still in the course, {} on it", first.len(), on.len());
+            println!(
+                "{cell}\t{wetting}\tplate\t{:.1}\t{:.1}\t{:.1}\t{:.0}",
+                100.0 * on.len() as f32 / first.len().max(1) as f32,
+                on.iter().map(|o| o.2).sum::<f32>() / on.len().max(1) as f32,
+                100.0 * film as f32 / on.len().max(1) as f32,
+                began.elapsed().as_secs_f64()
+            );
         }
     }
 }

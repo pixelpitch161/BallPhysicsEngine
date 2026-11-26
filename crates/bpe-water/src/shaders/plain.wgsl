@@ -90,6 +90,15 @@ fn alive(g: vec2<f32>) -> bool {
     return finite2(g) && all(g >= vec2<f32>(0.0)) && all(g <= last);
 }
 
+// The kind bit of trapped air (drop.rs `AIR`): air is not drawn (part 2c; part 6 draws bubbles), so a
+// pocket of it shows as the hole it is.
+const AIR: u32 = 128u;
+
+// Whether drop `i` is drawn: liquid, in the course.
+fn drawn(i: u32) -> bool {
+    return alive(xv[i].xy) && (ids[i].x & AIR) == 0u;
+}
+
 // The liquid a drop of `kind` is: past the looks given, the last given.
 fn liquid_of(kind: u32) -> Liquid {
     let n = max(u32(u.splat.w), 1u);
@@ -116,9 +125,9 @@ fn vs_splat(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> S
     var out: SplatOut;
     out.off = c;
     let g = xv[i].xy;
-    // A drop that is not a number or has left the course (the engine's `alive`) is not drawn: all six
-    // corners on one point off the picture make nothing.
-    if !alive(g) {
+    // A drop that is not a number, has left the course (the engine's `alive`) or is air is not drawn:
+    // all six corners on one point off the picture make nothing.
+    if !drawn(i) {
         out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
         out.colour = vec3<f32>(0.0);
         out.deep = vec4<f32>(0.0);
@@ -168,7 +177,7 @@ fn vs_world(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> N
     var out: NodeOut;
     out.off = c;
     let g = xv[i].xy;
-    if !alive(g) {
+    if !drawn(i) {
         out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
         return out;
     }

@@ -280,7 +280,7 @@ impl PlainGpu {
         );
         let world = pipeline(
             "water plain nodes",
-            layout("water plain nodes", &[(0, B::Uniform), (1, B::Storage)]),
+            layout("water plain nodes", &[(0, B::Uniform), (1, B::Storage), (2, B::Storage)]),
             "vs_world",
             "fs_world",
             &[summed_as(NODES)],
@@ -542,7 +542,11 @@ impl Plain {
         let world_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water plain nodes"),
             layout: &gpu.world.1,
-            entries: &[entry(0, self.uniform.as_entire_binding()), entry(1, drops.xv.as_entire_binding())],
+            entries: &[
+                entry(0, self.uniform.as_entire_binding()),
+                entry(1, drops.xv.as_entire_binding()),
+                entry(2, drops.id.as_entire_binding()),
+            ],
         });
         let base_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water plain ladder base"),

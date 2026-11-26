@@ -34,6 +34,8 @@ fn finish_at(i: u32) -> Finished {
     var lies = vec2<f32>(0.0);
     var pull = vec2<f32>(0.0);
     var bend = vec2<f32>(0.0);
+    // (Air under the water's open top: liquid over it that is not full, a film or the surface.)
+    var film = false;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         let y = c.y + dy;
         if y < 0 || y >= i32(fr.cells.y) {
@@ -62,8 +64,9 @@ fn finish_at(i: u32) -> Finished {
                 way = -any_way(i, j);
                 far = 1e-5;
             }
-            let wj = weight(far);
             let vj = velb[j];
+            // (Air and liquid even out and close on each other only by a share: a bubble's drag.)
+            let wj = weight(far) * select(1.0, fr.air.w, air != is_air(u32(vj.z)));
             let rel = vj.xy - vi;
             even = even + rel * wj;
             // (Drops with little liquid round them pull harder: a surface's drops have fewer
@@ -77,6 +80,10 @@ fn finish_at(i: u32) -> Finished {
                 meet = meet + closing * way * (wj * thin);
             }
             if air || is_air(u32(vj.z)) {
+                // (The other over this air drop, liquid, with room beside it: it is a film or the
+                // water's top, and the bubble bursts through it, as a real one's film drains and
+                // breaks.)
+                film = film || (air && !is_air(u32(vj.z)) && r.y > 0.5 * far && lj.z < fr.air.y);
                 continue;
             }
             // (Which way the liquid lies, by a smooth kernel: by the steep one it is mostly the
@@ -90,11 +97,25 @@ fn finish_at(i: u32) -> Finished {
     // (The evening of speeds is the liquid's own: its Thickness. Drops that meet do not bounce
     // apart: a share of the speed at which they close is taken away, over the neighbours' weight
     // a drop deep in the liquid has, the same for every drop.)
-    if air && li.w > 1.5 {
-        // Air with open air beside it bursts: it leaves the course (and is let go with the drops
-        // that left).
+    if air && (li.w > 1.5 || film) {
+        // Air with open air beside it, or under the water's open top, bursts: it leaves the course
+        // (and is let go with the drops that left).
         nf[i] = vec4<f32>(0.0);
         return Finished(vec4<f32>(-1e6, -1e6, 0.0, 0.0), kind);
+    }
+    let s = solid_at(xi);
+    // Wetting: a wetted face is liquid to the liquid's skin, as much as it is wet. It pulls the
+    // drops near it as the liquid does (adhesion), and the liquid lies toward it, so a puddle's
+    // foot is no surface for the bend to hold up.
+    var wet = 0.0;
+    if s.z < h && !air {
+        wet = wet_at(xi);
+        if wet > 0.0 {
+            let t = wet_table(s.z / h);
+            let thin_w = 2.0 / max(li.z + 1.0, 0.5);
+            pull = pull + (wet * thin_w * t.x) * s.xy;
+            lies = lies - (wet * t.y) * s.xy;
+        }
     }
     var v = vi + feel.b.z * even / rho0;
     v = v + fr.deep2.y * meet / max(rho0 - weight(0.0), 1e-6);
@@ -102,7 +123,6 @@ fn finish_at(i: u32) -> Finished {
     if !air {
         a = -feel.a.y * pull - feel.a.z * bend;
     }
-    let s = solid_at(xi);
     if s.z < h && !air {
         // Grip: a pull toward a near face, none at the face itself.
         let off = fr.w.y;
@@ -121,7 +141,9 @@ fn finish_at(i: u32) -> Finished {
         // Drag: speed along a near face is lost.
         let near = 1.0 - smoothstep(fr.w.y, fr.s.y, s.z);
         let along = v - dot(v, s.xy) * s.xy;
-        v = v - along * (1.0 - exp(-feel.b.y * near * dt));
+        // (A waxy face keeps only a share of the drag every liquid has.)
+        let drag = feel.b.y - fr.s.w * (1.0 - wet) * (1.0 - fr.w.x);
+        v = v - along * (1.0 - exp(-max(drag, 0.0) * near * dt));
     }
     if !finite2(v) {
         v = vec2<f32>(0.0);

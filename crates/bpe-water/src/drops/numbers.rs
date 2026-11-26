@@ -145,9 +145,13 @@ pub struct Numbers {
     /// An air drop whose neighbourhood is less full than this has open air beside it and bursts (a
     /// drop at a flat open surface is about 0.67 full, one inside a pocket about 1).
     pub air_pop: f32,
-    /// How far from an empty cell the card looks for the water over it and round it, pixels (at
-    /// least three cells): a hole wider or taller than twice this is left as a hole.
+    /// How far from a cell that is not full the card looks for the water over it and round it,
+    /// pixels (at least three cells): a hole wider or taller than twice this is left as a hole.
     pub air_reach: f32,
+    /// The share of the evening of speeds and of the closing loss that air and liquid have between
+    /// them (1 as liquid has with liquid): air slips through the water this much more freely, so
+    /// small bubbles rise rather than ride the water's flow.
+    pub air_drag: f32,
     /// The most air drops born in a frame.
     pub air_most: u32,
     /// The share of the drag along a face every liquid has that a waxy face (Wetting 0) keeps; a
@@ -205,6 +209,7 @@ impl Default for Numbers {
             air_lift: 1.0,
             air_pop: 0.75,
             air_reach: 48.0,
+            air_drag: 0.2,
             air_most: 65_536,
             wet_drag: 1.0,
         }
@@ -284,6 +289,7 @@ impl Numbers {
             air_lift: num("AIR_LIFT", d.air_lift),
             air_pop: num("AIR_POP", d.air_pop),
             air_reach: num("AIR_REACH", d.air_reach),
+            air_drag: num("AIR_DRAG", d.air_drag),
             air_most: num("AIR_MOST", d.air_most),
             wet_drag: num("WET_DRAG", d.wet_drag),
         }
@@ -342,6 +348,58 @@ impl Numbers {
                     behind += chord(s) / (32.0 * fine as f64);
                 }
             }
+        }
+        let mut out = [[0.0f32; 4]; 17];
+        for (k, v) in flat.iter().enumerate() {
+            out[k / 4][k % 4] = *v;
+        }
+        out
+    }
+
+    /// A wetted solid as resting liquid to a drop's skin (Wetting, part 2c): for 33 distances from a
+    /// flat face (0 to a reach), what the drops of a resting lattice filling the solid behind the
+    /// face (rows half a cell apart from a quarter cell in) would add to the drop's skin, each as a
+    /// number times the face's outward way: (x) the skin's pull (`skin`, summed as `finish_at` sums
+    /// it, so a pull toward the face is above 0), and (y) the smooth kernel's slope (as `finish_at`'s
+    /// `lies`: the liquid lies toward the face by this much). Averaged over where along the lattice
+    /// the drop is; for this reach, two to an entry.
+    pub fn wet_table(&self) -> [[f32; 4]; 17] {
+        let h = f64::from(self.reach.max(0.5));
+        let skin = |q: f64| {
+            let t = (1.0 - q) * q;
+            let c = 64.0 * t * t * t;
+            if q > 0.5 { c } else { 2.0 * c - 1.0 }
+        };
+        let smooth = 24.0 / (std::f64::consts::PI * h * h * h * h);
+        let across = (h / 0.5).ceil() as i64 + 1;
+        let phases = 16;
+        let mut flat = [0.0f32; 68];
+        for k in 0..=32usize {
+            let d = k as f64 / 32.0 * h;
+            let (mut pull, mut lies) = (0.0f64, 0.0f64);
+            for phase in 0..phases {
+                let x0 = (phase as f64 + 0.5) / phases as f64 * 0.5;
+                for row in 0.. {
+                    let dy = d + 0.25 + 0.5 * f64::from(row);
+                    if dy >= h {
+                        break;
+                    }
+                    for c in -across..=across {
+                        let dx = x0 + 0.5 * c as f64;
+                        let r2 = dx * dx + dy * dy;
+                        if r2 >= h * h {
+                            continue;
+                        }
+                        let far = r2.sqrt();
+                        let along = dy / far;
+                        let t = 1.0 - r2 / (h * h);
+                        pull += skin(far / h) * along;
+                        lies += far * smooth * t * t * along;
+                    }
+                }
+            }
+            flat[2 * k] = (pull / f64::from(phases)) as f32;
+            flat[2 * k + 1] = (lies / f64::from(phases)) as f32;
         }
         let mut out = [[0.0f32; 4]; 17];
         for (k, v) in flat.iter().enumerate() {
@@ -527,6 +585,50 @@ mod tests {
             assert!((d - (24.0 / cell).max(2.0)).abs() < 1e-5, "{cell} px");
         }
         assert_eq!(n.deep_window(12.0), (2.0, 2.0, 5));
+    }
+
+    #[test]
+    fn a_wetted_face_is_resting_liquid_to_the_skin() {
+        let n = Numbers::default();
+        let table = n.wet_table();
+        let at = |k: usize| {
+            let (e, i) = (k / 2, (k % 2) * 2);
+            (table[e][i], table[e][i + 1])
+        };
+        // (A drop resting on the face, a quarter cell off it: 0.25 / 1.5 of a reach.)
+        let rest = at(((0.25 / n.reach) * 32.0).round() as usize);
+        assert!(rest.0 > 0.0, "the liquid in the face pulls a drop resting on it: {rest:?}");
+        assert!(rest.1 > 0.0, "and the liquid lies toward the face: {rest:?}");
+        assert_eq!(at(32), (0.0, 0.0), "a reach off the face, nothing");
+        for k in 0..32 {
+            assert!(at(k).1 >= at(k + 1).1 - 1e-6, "the slope falls off the face: {k} {:?} {:?}", at(k), at(k + 1));
+        }
+        // A drop resting on a wetted face feels, from the lattice in it, what a drop in a resting
+        // pool's top row feels from the rows under it: the same lattice, half a cell on.
+        let h = n.reach;
+        let (mut below, mut lies) = (0.0f32, 0.0f32);
+        for row in 1..4 {
+            for c in -4..=4 {
+                for phase in 0..16 {
+                    let dx = (phase as f32 + 0.5) / 16.0 * 0.5 + 0.5 * c as f32;
+                    let dy = 0.5 * row as f32;
+                    let far = (dx * dx + dy * dy).sqrt();
+                    if far < h {
+                        let q = far / h;
+                        let t = (1.0 - q) * q;
+                        let c3 = 64.0 * t * t * t;
+                        below += if q > 0.5 { c3 } else { 2.0 * c3 - 1.0 } * dy / far / 16.0;
+                        let s = 1.0 - far * far / (h * h);
+                        lies += far * 24.0 / (std::f32::consts::PI * h * h * h * h) * s * s * dy / far / 16.0;
+                    }
+                }
+            }
+        }
+        let k = ((0.25 / h) * 32.0) as usize;
+        let f = (0.25 / h) * 32.0 - k as f32;
+        let mid = (at(k).0 + (at(k + 1).0 - at(k).0) * f, at(k).1 + (at(k + 1).1 - at(k).1) * f);
+        assert!((mid.0 - below).abs() < 0.05 * below.abs(), "{mid:?} against {below}");
+        assert!((mid.1 - lies).abs() < 0.05 * lies.abs(), "{mid:?} against {lies}");
     }
 
     #[test]

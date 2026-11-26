@@ -17,11 +17,13 @@ const SLOTS: usize = 3;
 pub struct Report {
     /// The bits of the fastest drop's speed in the course, pixels a second.
     pub fastest: u32,
-    /// The drops in the course after the frame's last sort (the rest sit last).
+    /// The drops in the course after the frame's last sort (the rest sit last), and the air born
+    /// after it.
     pub live: u32,
     /// The cells deep at the frame's last step (when it measured them: see `Water::frame`).
     pub deep: u32,
-    pub spare: u32,
+    /// The spots of trapped air the frame's last step found (born or not).
+    pub air: u32,
     /// Each pour's fullness at its spout (1 is full).
     pub spout: [f32; MOST_POURS],
 }
@@ -34,7 +36,7 @@ impl Report {
     }
 
     fn of(live: u32) -> Report {
-        Report { fastest: 0, live, deep: 0, spare: 0, spout: [0.0; MOST_POURS] }
+        Report { fastest: 0, live, deep: 0, air: 0, spout: [0.0; MOST_POURS] }
     }
 }
 
@@ -68,9 +70,10 @@ pub(super) struct Clock {
     /// a second) in the report it read then.
     settled: Option<u32>,
     reported: f32,
-    /// The pours' fullness at their spouts in that report, and its deep cells.
+    /// The pours' fullness at their spouts in that report, its deep cells and its trapped air.
     pub(super) spouts: [f32; MOST_POURS],
     pub(super) deep: u32,
+    pub(super) air: u32,
     pub(super) last_steps: u32,
 }
 
@@ -103,6 +106,7 @@ impl Clock {
             reported: 0.0,
             spouts: [0.0; MOST_POURS],
             deep: 0,
+            air: 0,
             last_steps: 0,
         }
     }
@@ -192,6 +196,7 @@ impl Clock {
         self.reported = 0.0;
         self.spouts = [0.0; MOST_POURS];
         self.deep = 0;
+        self.air = 0;
         let mut go = 0;
         if k >= 2
             && let Some((report, count)) = self.report_of(device, k - 2)
@@ -199,6 +204,7 @@ impl Clock {
             self.reported = report.fastest_px();
             self.spouts = report.spout;
             self.deep = report.deep;
+            self.air = report.air;
             // (The dead at the end of frame k - 2, less those let go at the last boundary: they were
             // among them.)
             go = count.saturating_sub(report.live).saturating_sub(self.let_go);
@@ -227,6 +233,7 @@ impl Clock {
         to.reported = self.reported;
         to.spouts = self.spouts;
         to.deep = self.deep;
+        to.air = self.air;
         to.last_steps = self.last_steps;
     }
 }

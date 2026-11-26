@@ -363,4 +363,56 @@ The draft in the editor is not timed again unless `pace` shows air costing more 
 
 ## As built and measured
 
-(Filled in as the tasks land.)
+### What changed from the design, and why (measured on the software card at 12 and 6 px)
+
+1. **One-way pressure.** With air pushed by the water as water is, air that broke off a pocket sat in the water's
+   lattice and rode its flow down. Now the liquid counts air in its fullness and makes way for it, but air is pushed
+   only by air and the solids (`lambda_at` leaves liquid out of an air drop's density, `apply_at` its push).
+2. **Bursting where the water's top or a film is over it.** Air thrown out of the water against the box's lid stayed
+   (the wall's share made it full): out of deep water a solid no longer counts toward an air drop's fullness
+   (`bursts`). And air that reached the top spread under it as a raft held by a film of water: an air drop now also
+   bursts when liquid over it (within 60° of straight up) is less than `air_pop` full (`finish_at`), as a real
+   bubble's film drains and breaks.
+3. **The finding fills a pocket out to its water.** Air born only in the cells no drop reaches stopped about a cell
+   short of the water round it, so it had open room beside it and burst at once (at 12 px a 72 px hole's 16 air drops
+   were gone the frame after they were born). Now any cell neither full nor solid that the water shuts in is trapped,
+   and its spots clear of every drop by 0.4 cell (`AIR_CLEAR`) are born: the air reaches the water and stays; a pocket
+   part filled is filled the rest of the way the next frame. (Filling cells beside empty ones only was tried first: it
+   left the rest of a pocket that had begun to close.)
+4. **Room for new pockets.** The slots now add a quarter of the deep cells (64 to 2048) to the air found two frames
+   back and a quarter more, so a pocket that closes while air is being found is filled in the frame it is found (at
+   Fine a 72 px hole got 144 of its 201 spots at first, all 201 with the room).
+5. **`air_drag` (0.2).** At the liquid's own evening and closing loss, air that broke into small bubbles rode the
+   water's flow: the 72 px hole's air was spread through the top of the pool 3 s on (42 drops left). Air and liquid
+   now even out and close on each other by a fifth of the share liquid has with liquid: the hole rises at about
+   400 px/s and its air is gone by 2.25 s at Fine. (The interior of a big pocket is air against air, so its rise is
+   the same; 2D theory for a 72 px cap is about 200 to 280 px/s, so Bubbles rise below 1 is there for slower.)
+6. **The marks' tests.** At 12 px an empty hole falls in for the two frames the count takes to come back, so
+   `a_hole_in_a_pool_fills_with_air` asks for 30 air drops, not 60 (47 come). The pool shot keeps sloshing for
+   seconds after its 3 s pour and its breaking waves trap air all along, so `a_pour_into_a_pool_loses_its_air`
+   pours for one second (most air 177 at 1.5 s, 11 at 4 s). A 48 px blob is too big to stand up (the skin of C2's
+   water holds about 20 px up), so the blob test is 24 px: at Wetting 0 its edge is near square to the floor (36 px
+   wide, 17 px tall), at 0.5 lower (42 x 15), at 1 a film (117 x 3). `a_stronger_skin_holds_a_bubble_whole_longer`
+   looks at 0.25 s, since bubbles rise faster.
+7. **`wet_drag` stays 1.** On the tilted plate after 1 s at Fine, beads at Wetting 0 already run 334 px down it with
+   none of it a film (56 % still on it), and at Wetting 1, 256 px with 58 % of what is on it a film: waxy beads roll
+   without taking drag away.
+
+### Measured on the software card (lavapipe), Fine (6 px)
+
+- The pool shot (a 70 px pour plunging for 3 s), trapped room (`probe::pockets`, px²) every 0.25 s from 3.25 s:
+
+  | | 3.25 | 3.5 | 3.75 | 4.0 | 4.25 | 4.5 | 4.75 | 5.0 | 5.25 | 5.5 | 5.75 | 6.0 | mean |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | air off (C2) | 34,209 | 31,833 | 84,735 | 111,258 | 85,014 | 17,082 | 16,236 | 32,193 | 30,861 | 5,544 | 5,940 | 36,621 | 40,960 |
+  | air on | 84,195 | 69,876 | 29,601 | 14,742 | 30,555 | 59,706 | 43,362 | 3,438 | 3,600 | 4,023 | 8,937 | 261 | 29,358 |
+
+  The air's own room counts as trapped room (air is not drawn: a pocket full of air is a hole), so while the pool
+  churns (about 1,000 px/s rms) the two are alike; from 2 s after the pour the pockets are about a tenth of air
+  off's. The plan's mark (under a tenth of the most 1.5 s after the pour, under 1 % at 2.5 s) is missed on this shot
+  while it sloshes. Air's reach: 160 px found about ten times the air of 48 px but left the pockets as they were, so
+  it stays 48 px.
+- Wetting 0 is C2's water: the course's top shelf after 10 s is 5.6 % of the water, its tallest puddle 13.5 px
+  (C2's card: 5.6 %, 13.4 px).
+
+(The card run, Task 8, follows.)

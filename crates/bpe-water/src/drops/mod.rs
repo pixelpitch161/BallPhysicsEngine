@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+mod air;
 mod buffers;
 mod clock;
 pub mod deep;
@@ -20,6 +21,7 @@ mod passes;
 
 use crate::drop::{Drop, Pour, Poured};
 use crate::solid::{Layout, SolidField};
+use air::Air;
 pub use buffers::DropBuffers;
 use buffers::{ByDrop, room_for, storage};
 use clock::Clock;
@@ -64,6 +66,7 @@ struct FrameGpu {
     s: [f32; 4],
     feels: [FeelGpu; MOST_LIQUIDS],
     wall: [[f32; 4]; 17],
+    wet: [[f32; 4]; 17],
     spouts: [[f32; 4]; MOST_POURS / 2],
     deep: [f32; 4],
     deep2: [f32; 4],
@@ -131,9 +134,11 @@ pub struct Water {
     frames: u32,
     /// The bins across and down (each a reach wide).
     cells: (u32, u32),
-    /// The density at rest and a drop's stiffness there, and the solids' share by distance.
+    /// The density at rest and a drop's stiffness there, the solids' share by distance, and what a
+    /// wetted face adds to a drop's skin by distance.
     rest: (f32, f32),
     wall: [[f32; 4]; 17],
+    wet: [[f32; 4]; 17],
     frame_uniform: wgpu::Buffer,
     step_uniform: wgpu::Buffer,
     solid: wgpu::Buffer,
@@ -154,6 +159,8 @@ pub struct Water {
     last: Option<wgpu::SubmissionIndex>,
     /// The deep water's cells and pressure.
     deep: Deep,
+    /// The cells of trapped air found at a frame's last step.
+    air: Air,
     /// Whether the last frame ran the deep part, its step then (the kept pressure is that step's
     /// pressure times it), whether drops were added since (the next deep frame primes), the frames
     /// still to run it whatever the reports say (an add's frame and the next: their reports come
@@ -198,7 +205,7 @@ impl Water {
         });
         let solid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water solid field"),
-            contents: bytemuck::cast_slice(&field.in_cells()),
+            contents: bytemuck::cast_slice(&field.for_card()),
             usage: buffers::STORE,
         });
         let room = room_for(0);
@@ -217,6 +224,7 @@ impl Water {
             cells,
             rest: numbers.at_rest(),
             wall: Numbers::wall_table(),
+            wet: numbers.wet_table(),
             frame_uniform,
             step_uniform,
             solid,
@@ -231,6 +239,7 @@ impl Water {
             clock: Mutex::new(Clock::new(device)),
             last: None,
             deep: Deep::new(device, &layout),
+            air: Air::new(device, &layout),
             deep_last: false,
             deep_dt: 0.0,
             prime_next: false,
@@ -300,6 +309,7 @@ impl Water {
                             8 => self.starts.as_entire_binding(),
                             15 => self.solid.as_entire_binding(),
                             25 => self.deep.count.as_entire_binding(),
+                            28 => self.air.blocks.as_entire_binding(),
                             _ => clock.on_card(slot).as_entire_binding(),
                         };
                         wgpu::BindGroupEntry { binding: b, resource }
@@ -353,6 +363,8 @@ impl Water {
                     23 => self.deep.dfa.as_entire_binding(),
                     24 => self.deep.dfb.as_entire_binding(),
                     26 => self.deep.rest.as_entire_binding(),
+                    27 => self.air.cells.as_entire_binding(),
+                    28 => self.air.blocks.as_entire_binding(),
                     _ => self.deep.count.as_entire_binding(),
                 };
                 wgpu::BindGroupEntry { binding: b, resource }
@@ -423,6 +435,12 @@ impl Water {
     /// From the next frame (pixels a second squared).
     pub fn set_gravity(&mut self, gravity: glam::Vec2) {
         self.gravity = gravity;
+    }
+
+    /// How many times the course's gravity air drops fall upward at, from the next frame (the
+    /// Water card's Bubbles rise; [`Numbers::air_lift`]).
+    pub fn set_air_lift(&mut self, lift: f32) {
+        self.numbers.air_lift = lift;
     }
 
     /// The pours (at most [`MOST_POURS`]), from the next frame. A pour that was there before (the
@@ -524,10 +542,11 @@ impl Water {
             cells: [self.cells.0, self.cells.1, self.cells.0 * self.cells.1, self.bins().div_ceil(BLOCK)],
             time: [dt, g.x, g.y, n.most_move / dt],
             k: [n.reach, rho0, n.eps.max(0.0) * stiff, n.relax],
-            w: [0.0, n.wall_off, n.sub_move, n.wall_share.max(0.0)],
-            s: [cell, n.drag_reach.max(n.wall_off + 0.01), n.most_fix, 0.0],
+            w: [n.wet_drag.clamp(0.0, 1.0), n.wall_off, n.sub_move, n.wall_share.max(0.0)],
+            s: [cell, n.drag_reach.max(n.wall_off + 0.01), n.most_fix, n.drag.max(0.0)],
             feels,
             wall: self.wall,
+            wet: self.wet,
             spouts,
             deep: [deep_d, deep_b, n.deep_full, n.deep_most.max(0.0)],
             deep2: [
@@ -546,7 +565,7 @@ impl Water {
                 if n.air_lift.is_finite() { n.air_lift.clamp(-1e3, 1e3) } else { 0.0 },
                 n.air_pop,
                 n.air_window(cell) as f32,
-                0.0,
+                if n.air_drag.is_finite() { n.air_drag.clamp(0.0, 1.0) } else { 1.0 },
             ],
             lv: self.deep.ladder(),
         }
@@ -586,6 +605,12 @@ impl Water {
     /// The frames that ran the deep part (deep water held up from below).
     pub fn deep_frames(&self) -> u32 {
         self.deep_frames
+    }
+
+    /// The spots of trapped air the card found at the end of the frame two before the last one
+    /// (each is born an air drop when there is room).
+    pub fn air_found(&self) -> u32 {
+        self.clock.lock().expect("the clock").air
     }
 
     /// The steps the last frame took.
@@ -659,10 +684,18 @@ impl Water {
         let measure_only = deep_on && !deep_frame;
         let prime = deep_frame && (!self.deep_last || self.prime_next);
         let kept = if self.deep_last && self.deep_dt > 0.0 { dt / self.deep_dt } else { 0.0 };
-        let frame = self.frame_gpu(dt, capped, kept);
+        // Trapped air is found on the last step whenever it measures the deep cells, and born in the
+        // slots kept after the frame's drops (as many as the report two frames back found, and some).
+        let air_on = self.numbers.air != 0 && deep_on;
+        let found = self.clock.get_mut().expect("the clock").air;
+        let slots =
+            if air_on { air::slots_for(found, reported_deep, MOST_DROPS - end, self.numbers.air_most) } else { 0 };
+        let mut frame = self.frame_gpu(dt, capped, kept);
+        frame.dgrid[2] = self.serial;
+        frame.dgrid[3] = slots;
         let mut done = None;
         if end > 0 {
-            self.grow_to(end);
+            self.grow_to(end + slots);
             self.births_room(born.len() as u32);
             let gpu = self.gpu.clone();
             let queue = &gpu.queue;
@@ -689,8 +722,11 @@ impl Water {
             let mut encoder =
                 gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water frame") });
             encoder.clear_buffer(clock.on_card(slot), 0, None);
-            // (Every frame, so a frame without the deep part reports no deep cells.)
+            // (Every frame, so a frame without the deep part reports no deep cells, and one that does
+            // not look for trapped air reports none.)
             encoder.clear_buffer(&self.deep.count, 0, None);
+            encoder.clear_buffer(&self.air.blocks, 0, None);
+            let by_air_block = (self.layout.nodes() as u32).div_ceil(BLOCK);
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("water frame"),
@@ -741,6 +777,12 @@ impl Water {
                         go!(P::DeepGather, now, y, j, by_drop);
                         go!(P::DeepCells, now, y, j, by_cell);
                         go!(P::DeepColumn, now, y, j, by_cell);
+                        // (From the cells' sums, before the across pass empties them.)
+                        if air_on && j + 1 == n {
+                            go!(P::AirFind, now, y, j, by_cell);
+                            go!(P::AirSumA, now, y, j, by_air_block);
+                            go!(P::AirSumB, now, y, j, 1);
+                        }
                         go!(P::DeepAcross, now, y, j, by_cell);
                     }
                     if deep_frame {
@@ -772,6 +814,12 @@ impl Water {
                     } else {
                         go!(P::Finish, now, iters % 2, j, by_drop);
                     }
+                    // (Into the kept buffers, after the step's drops: the kinds into the ones the
+                    // step sorted into.)
+                    if slots > 0 && j + 1 == n {
+                        go!(P::AirDead, now, 0, j, slots.div_ceil(WORKGROUP));
+                        go!(P::AirBorn, now, 0, j, by_cell);
+                    }
                 }
                 pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
                 pass.set_bind_group(0, &self.report_groups[slot], &[(n - 1) * STEP_ROOM as u32]);
@@ -783,6 +831,10 @@ impl Water {
             self.last = Some(index.clone());
             done = Some(index);
             self.now ^= n as usize & 1;
+        }
+        let end = if done.is_some() { end + slots } else { end };
+        if done.is_some() {
+            self.serial = self.serial.wrapping_add(slots);
         }
         self.count = end;
         self.clock.get_mut().expect("the clock").sent(k, end, done, n);
@@ -807,7 +859,8 @@ impl Water {
     /// A copy that plays on exactly as this body does, from the frame it is at. (Waits for the
     /// card.)
     pub fn copy(&self) -> Water {
-        let field = SolidField { layout: self.layout, distance: vec![0.0; self.layout.nodes()] };
+        let nodes = self.layout.nodes();
+        let field = SolidField { layout: self.layout, distance: vec![0.0; nodes], wetting: vec![0.0; nodes] };
         let mut new = Water::new(self.gpu.clone(), &field, self.gravity, self.numbers, &self.feels);
         let device = &self.gpu.device;
         if self.room > new.room {

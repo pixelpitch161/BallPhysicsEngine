@@ -245,8 +245,29 @@ impl Stream {
     }
 }
 
+/// How wide and how tall the liquid lying on a level floor at world height `floor` between world
+/// `x.0` and `x.1` is, pixels: its columns a spacing wide that hold a drop (gaps left out), and its
+/// tallest column's top above the floor (half a spacing added, a drop's own room). (Keep `x` two
+/// cells in from any wall: liquid climbing a wall is not the puddle's.)
+pub fn puddle(drops: &[Drop], layout: &Layout, floor: f32, x: (f32, f32)) -> (f32, f32) {
+    let spacing = 0.5 * layout.cell;
+    let mut tops = std::collections::BTreeMap::<i64, f32>::new();
+    for d in liquid(drops).iter() {
+        let p = layout.to_world(Vec2::from(d.x));
+        if !p.is_finite() || p.y > floor || p.x < x.0 || p.x > x.1 {
+            continue;
+        }
+        let top = tops.entry((p.x / spacing).floor() as i64).or_insert(f32::MAX);
+        *top = top.min(p.y);
+    }
+    let width = tops.len() as f32 * spacing;
+    let height = tops.values().map(|y| floor - y).fold(0.0f32, f32::max) + 0.5 * spacing;
+    (width, height)
+}
+
 /// A debug picture of `drops` on `field`'s solids: `scale` picture pixels a world pixel, rgba8.
-/// A drop is a dot: blue at rest, towards yellow as it stretches, red once it is at `tear`.
+/// A drop is a dot: blue at rest, towards yellow as it stretches, red once it is at `tear`; an air
+/// drop a smaller pale yellow dot.
 pub fn picture(drops: &[Drop], field: &SolidField, scale: f32, tear: f32) -> (Vec<u8>, u32, u32) {
     let l = &field.layout;
     let size = Vec2::new((l.cols - 1) as f32, (l.rows - 1) as f32) * l.cell * scale;
@@ -261,12 +282,17 @@ pub fn picture(drops: &[Drop], field: &SolidField, scale: f32, tear: f32) -> (Ve
         }
     }
     let radius = (0.3 * l.cell * scale).max(0.8);
-    for d in liquid(drops).iter() {
+    // (Liquid first, then air on top, a pale yellow, a little smaller.)
+    let air = air(drops);
+    for d in liquid(drops).iter().chain(air.iter()) {
         let p = (l.to_world(Vec2::from(d.x)) - l.origin) * scale;
         if !p.is_finite() {
             continue;
         }
-        let colour: [u8; 4] = if d.e >= tear {
+        let radius = if d.is_air() { (0.22 * l.cell * scale).max(0.6) } else { radius };
+        let colour: [u8; 4] = if d.is_air() {
+            [250, 215, 90, 255]
+        } else if d.e >= tear {
             [240, 70, 60, 255]
         } else if d.e > 0.02 {
             let t = (d.e / tear).clamp(0.0, 1.0);

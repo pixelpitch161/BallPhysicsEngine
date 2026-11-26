@@ -11,7 +11,7 @@ use glam::Vec2;
 use crate::drop::{AIR, Pour, STOPS, fill_stacked};
 use crate::drops::numbers::{FRAME, Feel, Numbers};
 use crate::drops::{LEAST_WALL, Water, WaterGpu};
-use crate::solid::{Layout, Solid, SolidField};
+use crate::solid::{DEFAULT_WETTING, Layout, Solid, SolidField};
 
 /// The course's gravity in the test scenes: the Balls scenes' 500 at today's Bucket size (x 8).
 pub const GRAVITY: Vec2 = Vec2::new(0.0, 4000.0);
@@ -31,6 +31,8 @@ pub struct Scene {
     /// Round holes in the fills: their drops left out, or made air.
     pub holes: Vec<Hole>,
     pub pours: Vec<Pour>,
+    /// How wet every solid is (part 2c).
+    pub wetting: f32,
 }
 
 /// A round hole in a scene's fills (part 2c): the fills' drops within `radius` pixels of `centre`
@@ -51,7 +53,8 @@ pub struct Running {
 impl Scene {
     /// Starts the scene on `gpu` with the all-drops engine's `numbers`.
     pub fn start(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> Running {
-        let field = SolidField::build_least(self.layout, &self.solids, LEAST_WALL * self.layout.cell);
+        let field = SolidField::build_least(self.layout, &self.solids, LEAST_WALL * self.layout.cell)
+            .with_wetting(self.wetting);
         let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &self.feels);
         for (lo, hi) in &self.fills {
             let mut drops = fill_stacked(&self.layout, &field, *lo, *hi, STOPS, numbers.wall_off);
@@ -119,6 +122,7 @@ pub fn boxed(cell: f32, width: f32, wall: f32, level: f32) -> Scene {
         feels: water(),
         fills: vec![(Vec2::new(-inner, floor - 2.0 * hh * level), Vec2::new(inner, floor))],
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: Vec::new(),
     }
 }
@@ -171,6 +175,7 @@ pub fn course(cell: f32) -> Scene {
         // The top pool, 870 x 220 of water.
         fills: vec![(Vec2::new(-435.0, -872.0), Vec2::new(435.0, -652.0))],
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: Vec::new(),
     }
 }
@@ -202,6 +207,7 @@ pub fn weird(cell: f32) -> Scene {
         fills: Vec::new(),
         // Width 60 at Rate 0.32: a stream 19.2 wide.
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: vec![Pour { place: Vec2::new(120.0, -570.0), width: 19.2, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -220,6 +226,7 @@ pub fn thin_pour(cell: f32, cells: f32) -> Scene {
         feels: water(),
         fills: Vec::new(),
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: vec![Pour { place: Vec2::new(0.0, top), width: cells * cell, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -243,6 +250,7 @@ pub fn sheet(cell: f32) -> Scene {
         feels: water(),
         fills: Vec::new(),
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: vec![Pour { place: Vec2::new(-250.0, -620.0), width: 32.0, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -289,6 +297,7 @@ pub fn slope(cell: f32) -> Scene {
         feels: vec![Feel::default()],
         fills: Vec::new(),
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: vec![Pour { place: Vec2::new(-200.0, -720.0), width: 14.0, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -314,6 +323,7 @@ pub fn pool_pour(cell: f32) -> Scene {
         feels: vec![Feel::default()],
         fills: vec![(Vec2::new(-inner, floor - POOL.2), Vec2::new(inner, floor))],
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: vec![Pour {
             place: Vec2::new(-90.0, -700.0),
             width: 70.0,
@@ -354,6 +364,7 @@ pub fn fill_pool(cell: f32) -> Scene {
         feels: water(),
         fills: Vec::new(),
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: vec![Pour { place: Vec2::new(-40.0, -170.0), width: 70.0, speed: 300.0, until: 2.0, ..Pour::default() }],
     }
 }
@@ -386,8 +397,36 @@ pub fn beads(cell: f32) -> Scene {
         feels: vec![Feel::default()],
         fills,
         holes: Vec::new(),
+        wetting: DEFAULT_WETTING,
         pours: Vec::new(),
     }
+}
+
+/// Where [`blob`]'s floor is (world y) and the half width of its box.
+pub const BLOB: (f32, f32) = (150.0, 300.0);
+
+/// A square blob of the engine's own water (Surface pull 0.5) `side` pixels across set on a level
+/// floor in a box, every solid `wetting` wet: how it settles (a bead or a film) is Wetting's to say.
+pub fn blob(cell: f32, side: f32, wetting: f32) -> Scene {
+    let (floor, hw) = BLOB;
+    let half = Vec2::new(hw, 250.0);
+    let lo = Vec2::new(-0.5 * side, floor - side);
+    Scene {
+        name: "blob",
+        layout: Layout::cover(Vec2::new(-hw, -250.0) - Vec2::splat(40.0), half + Vec2::splat(40.0), cell),
+        solids: vec![boxed_in(half), Solid::rect(Vec2::new(-hw, floor), Vec2::new(hw, 250.0), true, 0.0)],
+        gravity: GRAVITY,
+        feels: vec![Feel::default()],
+        fills: vec![(lo, Vec2::new(0.5 * side, floor - 0.5))],
+        holes: Vec::new(),
+        pours: Vec::new(),
+        wetting,
+    }
+}
+
+/// Shot 5's beads ([`beads`]) with every solid `wetting` wet.
+pub fn blobs(cell: f32, wetting: f32) -> Scene {
+    Scene { name: "blobs", wetting, ..beads(cell) }
 }
 
 /// The all-drops trial's shots by name (`docs/superpowers/plans/water-mode/all-drops-trial.md`):

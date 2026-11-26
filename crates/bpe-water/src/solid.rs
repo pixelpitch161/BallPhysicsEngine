@@ -118,11 +118,18 @@ fn polygon(points: &[Vec2], p: Vec2) -> (f32, bool) {
     (d, inside)
 }
 
-/// The distances at a layout's nodes, row by row, in pixels.
+/// How wet a solid is when nothing says otherwise (Wetting, part 2c): see [`SolidField::wetting`].
+pub const DEFAULT_WETTING: f32 = 0.0;
+
+/// The distances at a layout's nodes, row by row, in pixels, and how wet the nearest face is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SolidField {
     pub layout: Layout,
     pub distance: Vec<f32>,
+    /// At each node, how wet its nearest face is (the material's Wetting, 0 to 1, part 2c): how much
+    /// that solid counts as liquid to the liquid's skin. 0 is waxy (water beads up on it and rolls),
+    /// 1 soaked (water spreads over it into a film).
+    pub wetting: Vec<f32>,
 }
 
 impl SolidField {
@@ -145,7 +152,8 @@ impl SolidField {
                 distance.push(d);
             }
         }
-        SolidField { layout, distance }
+        let wetting = vec![DEFAULT_WETTING; distance.len()];
+        SolidField { layout, distance, wetting }
     }
 
     /// A field from any measure of the solids: `distance(p, least)` is how far world point `p` is
@@ -159,16 +167,34 @@ impl SolidField {
                 out.push(if d.is_finite() { d.min(SolidField::FAR) } else { SolidField::FAR });
             }
         }
-        SolidField { layout, distance: out }
+        let wetting = vec![DEFAULT_WETTING; out.len()];
+        SolidField { layout, distance: out, wetting }
+    }
+
+    /// The same field with every face `wetting` wet (0 to 1).
+    pub fn with_wetting(mut self, wetting: f32) -> SolidField {
+        let w = if wetting.is_finite() { wetting.clamp(0.0, 1.0) } else { DEFAULT_WETTING };
+        self.wetting.iter_mut().for_each(|v| *v = w);
+        self
+    }
+
+    /// How wet the face nearest world point `p` is (between the nodes round it).
+    pub fn wetting_at(&self, p: Vec2) -> f32 {
+        self.between(&self.wetting, p)
     }
 
     /// The distance at world point `p` (between the nodes round it), in pixels.
     pub fn at(&self, p: Vec2) -> f32 {
+        self.between(&self.distance, p)
+    }
+
+    /// `values` (one a node) at world point `p`, between the nodes round it.
+    fn between(&self, values: &[f32], p: Vec2) -> f32 {
         let l = &self.layout;
         let g = l.to_grid(p).clamp(Vec2::ZERO, Vec2::new(l.cols as f32 - 1.001, l.rows as f32 - 1.001));
         let (x, y) = (g.x.floor() as usize, g.y.floor() as usize);
         let f = g - Vec2::new(x as f32, y as f32);
-        let at = |x: usize, y: usize| self.distance[y * l.cols as usize + x];
+        let at = |x: usize, y: usize| values[y * l.cols as usize + x];
         let top = at(x, y) + (at(x + 1, y) - at(x, y)) * f.x;
         let bottom = at(x, y + 1) + (at(x + 1, y + 1) - at(x, y + 1)) * f.x;
         top + (bottom - top) * f.y
@@ -177,6 +203,14 @@ impl SolidField {
     /// The distances in cells, as the card takes them.
     pub fn in_cells(&self) -> Vec<f32> {
         self.distance.iter().map(|d| (d / self.layout.cell).clamp(-64.0, 64.0)).collect()
+    }
+
+    /// The field as the all-drops engine's card takes it: the distances in cells, then the
+    /// wettings (0 to 1).
+    pub fn for_card(&self) -> Vec<f32> {
+        let mut out = self.in_cells();
+        out.extend(self.wetting.iter().map(|w| if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 }));
+        out
     }
 }
 
@@ -201,6 +235,22 @@ mod tests {
         assert!((block.distance(Vec2::new(15.0, 0.0), 8.0) - 5.0).abs() < 1e-4);
         let disc = Solid::Circle { centre: Vec2::ZERO, radius: 10.0, filled: true, thickness: 0.0 };
         assert!((disc.distance(Vec2::new(0.0, 4.0), 8.0) + 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_field_carries_its_faces_wetting() {
+        let layout = Layout::cover(Vec2::new(-40.0, -40.0), Vec2::new(40.0, 40.0), 8.0);
+        let field = SolidField::build(layout, &[]);
+        assert!(field.wetting.iter().all(|w| *w == DEFAULT_WETTING));
+        assert_eq!(field.wetting.len(), layout.nodes());
+        let wet = field.clone().with_wetting(0.7);
+        assert!((wet.wetting_at(Vec2::new(3.0, 5.0)) - 0.7).abs() < 1e-6);
+        assert_eq!(field.clone().with_wetting(3.0).wetting[0], 1.0);
+        assert_eq!(field.clone().with_wetting(f32::NAN).wetting[0], DEFAULT_WETTING);
+        let card = wet.for_card();
+        assert_eq!(card.len(), 2 * layout.nodes());
+        assert_eq!(&card[..layout.nodes()], &wet.in_cells()[..]);
+        assert!(card[layout.nodes()..].iter().all(|w| (*w - 0.7).abs() < 1e-6));
     }
 
     #[test]
