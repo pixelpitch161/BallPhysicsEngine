@@ -505,3 +505,21 @@ mean of 1, 1.25 and 1.5 s: C1 38 %, now 23 %).
 The C1 shots at 2 s (slope, ledge, beads, weird; 6 and 3 px; `meet_even` 0.3 against 0) by eye: no worse
 anywhere, and at 6 px clearly less spray (the slope's and the weird's floors, the weird's disc), with the ledge's
 run-off a smooth sheet down to the wall where it was ragged. At 3 px little changes.
+
+### Task 8: a skin calm at any step count (time-boxed)
+
+Measured on the RX 9070 XT with a probe like `a_pour_stays_calm_at_the_most_steps_a_frame` (the thin pour at 2 px,
+Surface pull 1, 30 frames, with gravity and with none): at 64 steps a frame the pour stays a stream with gravity
+(no drop above the spout, the fastest sideways 0.58 of the pour's speed) and nearly so with none (1.8 px above,
+0.92 sideways at frame 30, over the test's 0.75); at 128 it bursts (drops 42 px above the spout, 3 to 7 times the
+pour's speed sideways), with gravity or without. The bend worked out on only 32 steps of the frame, each as strong
+as the steps since the last (a `bend_steps` knob), was worse: it burst at 64 too. So the cause is not how often the
+bend is taken, and `most_steps` stays 32; the knob was taken out again. The smoothed-directions bend was not tried
+in the time box.
+
+### Task 9: the grid core retired
+
+`src/grid/`, `tests/core.rs`, `tests/streams.rs` and `tests/measure.rs` are gone, with `start_grid`,
+`GridRunning`, the `Feel` conversion, and the random births only the grid used (`Pour::drops`, `Dice`);
+`a_pour_fans_out_smoothly` checks the rows instead. `fill` stays (the engine tests and the fill tests use it).
+C3 had merged, so `bridge.rs` and `water_core.rs` needed nothing.
