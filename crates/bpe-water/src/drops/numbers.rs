@@ -195,7 +195,11 @@ impl Numbers {
         } else {
             32
         };
-        Numbers { floor, ..Numbers::default() }
+        // (At 2 px, Final, the deep pool's pressure needs a second V-cycle a step: with one it
+        // moved at 15 to 20 px/s on the owner's card, with two at 5 to 6. At 3 px and coarser the
+        // second bought little for a fifth more time a step.)
+        let cycles = if cell < 2.5 { 2 } else { 1 };
+        Numbers { floor, cycles, ..Numbers::default() }
     }
 
     /// [`Numbers::for_cell`], each replaced by its `BPE_WATER_*` environment variable when that is
@@ -402,6 +406,9 @@ mod tests {
     fn floors_follow_the_detail() {
         for (cell, floor) in [(12.0, 8), (8.0, 16), (6.0, 16), (3.0, 32), (2.0, 32), (1.5, 32)] {
             assert_eq!(Numbers::for_cell(cell).floor, floor, "{cell} px");
+        }
+        for (cell, cycles) in [(12.0, 1), (6.0, 1), (3.0, 1), (2.0, 2), (1.5, 2)] {
+            assert_eq!(Numbers::for_cell(cell).cycles, cycles, "{cell} px");
         }
     }
 
