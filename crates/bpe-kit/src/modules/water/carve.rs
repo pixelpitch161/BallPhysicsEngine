@@ -123,7 +123,7 @@ impl CarveMask {
         let a = ((lo - Vec2::splat(reach) - self.lo) / STEP).floor().max(Vec2::ZERO);
         let b = ((hi + Vec2::splat(reach) - self.lo) / STEP).ceil();
         let b = b.min(Vec2::new(self.cols as f32 - 1.0, self.rows as f32 - 1.0));
-        (a.x <= b.x && a.y <= b.y).then(|| Area { x0: a.x as u32, y0: a.y as u32, x1: b.x as u32, y1: b.y as u32 })
+        (a.x <= b.x && a.y <= b.y).then_some(Area { x0: a.x as u32, y0: a.y as u32, x1: b.x as u32, y1: b.y as u32 })
     }
 }
 

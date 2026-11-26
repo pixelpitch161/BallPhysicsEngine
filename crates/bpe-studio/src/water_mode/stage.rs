@@ -170,10 +170,14 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     if job.busy() || studio.playing {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
+    let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
     if let Some(reached) = job.reached()
-        && reached + BEHIND < target
+        && (reached + BEHIND < target || restarting)
     {
-        let behind = format!("Working out the water… {:.1} s", f64::from(reached) / 60.0);
+        let behind = match restarting {
+            true => "Starting the water over…".to_owned(),
+            false => format!("Working out the water… {:.1} s", f64::from(reached) / 60.0),
+        };
         let at = view.rect.center_top() + vec2(0.0, 14.0);
         let small = egui::TextStyle::Small.resolve(ui.style());
         let text = painter.layout_no_wrap(behind, small, style::TEXT);

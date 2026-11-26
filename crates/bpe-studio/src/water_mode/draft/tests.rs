@@ -86,7 +86,7 @@ fn a_new_setup_replaces_the_body_and_its_drawing() {
         let live = job.live().lock().unwrap();
         let live = live.as_ref().unwrap();
         assert_eq!(live.field.layout.cell, 12.0);
-        (live.generation, live.print)
+        (live.generation, job.plays())
     };
     let fine = setup(&chamber(&reg, "fine"), &reg);
     job.restart(fine.clone());
@@ -94,8 +94,8 @@ fn a_new_setup_replaces_the_body_and_its_drawing() {
     let live = job.live().lock().unwrap();
     let live = live.as_ref().unwrap();
     assert!(live.generation > generation);
-    assert_eq!(live.print, fine.print);
-    assert_ne!(live.print, print);
+    assert_eq!(job.plays(), fine.print);
+    assert_ne!(job.plays(), print);
     assert_eq!(live.field.layout.cell, 6.0);
     assert_eq!(live.water.layout(), live.field.layout);
 }

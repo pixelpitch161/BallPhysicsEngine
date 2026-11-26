@@ -95,8 +95,6 @@ pub struct Live {
     pub plain: Plain,
     /// Goes up with every new body (a new setup).
     pub generation: u64,
-    /// The setup's print it plays.
-    pub print: u64,
 }
 
 /// What the thread and the editor share.
@@ -107,6 +105,8 @@ struct Shared {
     pending: Mutex<(Option<Arc<WaterSetup>>, u64)>,
     /// How many setups asked for the body is built from.
     built: AtomicU64,
+    /// The print of the setup the body plays.
+    plays: AtomicU64,
     live: Mutex<Option<Live>>,
     /// The body's frame (`u32::MAX`: none yet).
     reached: AtomicU32,
@@ -130,6 +130,7 @@ impl DraftJob {
             stop: AtomicBool::new(false),
             pending: Mutex::new((Some(setup), 1)),
             built: AtomicU64::new(0),
+            plays: AtomicU64::new(0),
             live: Mutex::new(None),
             reached: AtomicU32::new(u32::MAX),
             count: AtomicU32::new(0),
@@ -190,6 +191,11 @@ impl DraftJob {
     /// The frame asked for.
     pub fn target(&self) -> u32 {
         self.shared.target.load(Ordering::Acquire)
+    }
+
+    /// The print of the setup the body plays (`WaterSetup::print`).
+    pub fn plays(&self) -> u64 {
+        self.shared.plays.load(Ordering::Acquire)
     }
 
     /// How many drops the body holds.
@@ -297,10 +303,11 @@ impl Run {
         self.copies = Copies::default();
         self.copies.keep(0, copy_size(&water), water.copy());
         self.generation += 1;
-        let (count, generation, print) = (water.count(), self.generation, setup.print);
+        let (count, generation) = (water.count(), self.generation);
         if let Ok(mut live) = shared.live.lock() {
-            *live = Some(Live { water, field, plain, generation, print });
+            *live = Some(Live { water, field, plain, generation });
         }
+        shared.plays.store(setup.print, Ordering::Release);
         self.setup = Some(setup);
         shared.reached.store(0, Ordering::Release);
         shared.count.store(count, Ordering::Release);
