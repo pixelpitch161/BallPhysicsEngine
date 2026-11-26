@@ -70,6 +70,7 @@ struct FrameGpu {
     mg: [f32; 4],
     mg2: [f32; 4],
     dgrid: [u32; 4],
+    air: [f32; 4],
     lv: [[u32; 4]; MOST_LEVELS],
 }
 
@@ -541,6 +542,12 @@ impl Water {
             // edge, so the course's own liquid starts a quarter cell before that.)
             mg2: [n.fill_rate.max(0.0), n.face_floor.max(0.0), n.wall_off - 0.25, EDGE + 0.05 - 0.25],
             dgrid: [self.deep.levels.len() as u32, reach, 0, 0],
+            air: [
+                if n.air_lift.is_finite() { n.air_lift.clamp(-1e3, 1e3) } else { 0.0 },
+                n.air_pop,
+                n.air_window(cell) as f32,
+                0.0,
+            ],
             lv: self.deep.ladder(),
         }
     }

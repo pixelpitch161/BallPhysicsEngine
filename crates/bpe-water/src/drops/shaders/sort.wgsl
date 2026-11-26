@@ -45,7 +45,9 @@ fn fall(i: u32, p: vec4<f32>, kind: u32) {
     }
     let feel = fr.feels[kind & 15u];
     let dt = fr.time.x;
-    var v = p.zw + vec2<f32>(fr.time.y, fr.time.z) * feel.a.x * dt;
+    // (Air falls upward, by the course's gravity alone.)
+    let pull = select(feel.a.x, -fr.air.x, is_air(kind));
+    var v = p.zw + vec2<f32>(fr.time.y, fr.time.z) * pull * dt;
     v = v * exp(-feel.b.x * dt);
     let speed = length(v);
     if speed > fr.time.w {

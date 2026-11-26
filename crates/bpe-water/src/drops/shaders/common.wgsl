@@ -57,8 +57,13 @@ struct Fr {
     // speed, the liquid's edge off a solid's face (cells), the course's own liquid's edge from the
     // grid's edge (cells)
     mg2: vec4<f32>,
-    // the pressure's levels, how far the depth is looked for (cells), 0, 0
+    // the pressure's levels, how far the depth is looked for (cells), the serial the frame's first
+    // air drop takes, the slots kept for air drops after the frame's drops (air.wgsl)
     dgrid: vec4<u32>,
+    // trapped air (air.wgsl): how many gravities an air drop falls upward at, the fullness under
+    // which it bursts, how far round an empty cell the water over it is looked for (cells), 1 when
+    // the card looks for trapped air this frame
+    air: vec4<f32>,
     // each level of the pressure: where it starts in `cellp` and `coef`, its columns, its rows, 0
     lv: array<vec4<u32>, 12>,
 };
@@ -91,6 +96,9 @@ struct DropOut {
 };
 
 const STOPS: u32 = 256u;
+// An air drop (drop.rs `AIR`): it takes up room as the liquid does, falls upward and bursts at the
+// top; it has no skin of its own, and the liquid's skin leaves it out.
+const AIR: u32 = 128u;
 const EDGE: f32 = 2.0;
 const BLOCK: u32 = 512u;
 const PI: f32 = 3.14159265;
@@ -116,7 +124,7 @@ const PI: f32 = 3.14159265;
 // in and out of a sweep.
 @group(0) @binding(11) var<storage, read_write> y_in: array<vec4<f32>>;
 @group(0) @binding(12) var<storage, read_write> y_out: array<vec4<f32>>;
-// Per drop, sorted: this sweep's change of its multiplier, the multiplier, how full, 0.
+// Per drop, sorted: this sweep's change of its multiplier, the multiplier, how full, 1 when it is air.
 @group(0) @binding(13) var<storage, read_write> lamb: array<vec4<f32>>;
 // Per drop, sorted: where it was (until the last sweep, then its new speed), its kind, 0.
 @group(0) @binding(14) var<storage, read_write> velb: array<vec4<f32>>;
@@ -199,6 +207,10 @@ fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
         if x.y > hi.y - 0.05 { x.y = hi.y - 0.05; v.y = min(v.y, 0.0); }
     }
     return Kept(x, v);
+}
+
+fn is_air(kind: u32) -> bool {
+    return (kind & AIR) != 0u;
 }
 
 fn stops_at_edge(kind: u32) -> bool {

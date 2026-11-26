@@ -134,6 +134,25 @@ pub struct Numbers {
     /// as at rest). Resting any less full, the deep water is lighter than the water on it, and the
     /// pool's top turns over and over.
     pub rest_most: f32,
+    /// 1: the card finds trapped air under the water each frame and fills it with air drops
+    /// (part 2c, `shaders/air.wgsl`; it needs the deep part's cells, `deep` 1); 0: never. Air drops
+    /// already there rise and burst either way.
+    pub air: u32,
+    /// How many times the course's gravity an air drop falls upward at (the Water card's Bubbles
+    /// rise). At 1 a pocket starts up at one gravity, as real air under water does in the plane: its
+    /// lift and the water's push on it against its own and the water's inertia.
+    pub air_lift: f32,
+    /// An air drop whose neighbourhood is less full than this has open air beside it and bursts (a
+    /// drop at a flat open surface is about 0.67 full, one inside a pocket about 1).
+    pub air_pop: f32,
+    /// How far from an empty cell the card looks for the water over it and round it, pixels (at
+    /// least three cells): a hole wider or taller than twice this is left as a hole.
+    pub air_reach: f32,
+    /// The most air drops born in a frame.
+    pub air_most: u32,
+    /// The share of the drag along a face every liquid has that a waxy face (Wetting 0) keeps; a
+    /// soaked one (Wetting 1) keeps it all.
+    pub wet_drag: f32,
 }
 
 impl Default for Numbers {
@@ -182,6 +201,12 @@ impl Default for Numbers {
             face_floor: 0.005,
             meet_even: 0.3,
             rest_most: 0.02,
+            air: 1,
+            air_lift: 1.0,
+            air_pop: 0.75,
+            air_reach: 48.0,
+            air_most: 65_536,
+            wet_drag: 1.0,
         }
     }
 }
@@ -255,6 +280,12 @@ impl Numbers {
             face_floor: num("FACE_FLOOR", d.face_floor),
             meet_even: num("MEET_EVEN", d.meet_even),
             rest_most: num("REST_MOST", d.rest_most),
+            air: num("AIR", d.air),
+            air_lift: num("AIR_LIFT", d.air_lift),
+            air_pop: num("AIR_POP", d.air_pop),
+            air_reach: num("AIR_REACH", d.air_reach),
+            air_most: num("AIR_MOST", d.air_most),
+            wet_drag: num("WET_DRAG", d.wet_drag),
         }
     }
 
@@ -335,6 +366,13 @@ impl Numbers {
         let b = (self.deep_b / cell).max(2.0);
         let reach = ((d + b).ceil() as u32 + 1).min(256);
         (d, b, reach)
+    }
+
+    /// How far the card looks from an empty cell for trapped air on `cell`-pixel cells, in cells
+    /// (`air_reach`, at least three cells and at most 64).
+    pub fn air_window(&self, cell: f32) -> u32 {
+        let r = (self.air_reach / cell.max(1e-3)).round();
+        if r.is_finite() { (r as u32).clamp(3, 64) } else { 3 }
     }
 
     /// The share of drops' closing speed taken away in one step of `dt` seconds on `cell`-pixel
@@ -489,6 +527,17 @@ mod tests {
             assert!((d - (24.0 / cell).max(2.0)).abs() < 1e-5, "{cell} px");
         }
         assert_eq!(n.deep_window(12.0), (2.0, 2.0, 5));
+    }
+
+    #[test]
+    fn trapped_air_is_looked_for_a_few_cells_round() {
+        let n = Numbers::default();
+        assert_eq!(n.air_window(6.0), 8);
+        assert_eq!(n.air_window(3.0), 16);
+        assert_eq!(n.air_window(12.0), 4);
+        assert_eq!(n.air_window(24.0), 3, "at least three cells");
+        assert_eq!(n.air_window(0.5), 64, "at most 64");
+        assert_eq!(Numbers { air_reach: f32::NAN, ..n }.air_window(6.0), 3);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::drop::{Pour, STOPS, fill_stacked};
+use crate::drop::{AIR, Pour, STOPS, fill_stacked};
 use crate::drops::numbers::{FRAME, Feel, Numbers};
 use crate::drops::{LEAST_WALL, Water, WaterGpu};
 use crate::solid::{Layout, Solid, SolidField};
@@ -28,7 +28,18 @@ pub struct Scene {
     pub feels: Vec<Feel>,
     /// Rectangles filled with liquid at the start.
     pub fills: Vec<(Vec2, Vec2)>,
+    /// Round holes in the fills: their drops left out, or made air.
+    pub holes: Vec<Hole>,
     pub pours: Vec<Pour>,
+}
+
+/// A round hole in a scene's fills (part 2c): the fills' drops within `radius` pixels of `centre`
+/// are left out, or are made air drops when `air`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hole {
+    pub centre: Vec2,
+    pub radius: f32,
+    pub air: bool,
 }
 
 /// A scene being played by the all-drops engine (its pours are the body's own).
@@ -43,7 +54,17 @@ impl Scene {
         let field = SolidField::build_least(self.layout, &self.solids, LEAST_WALL * self.layout.cell);
         let mut water = Water::new(gpu.clone(), &field, self.gravity, numbers, &self.feels);
         for (lo, hi) in &self.fills {
-            water.add(&fill_stacked(&self.layout, &field, *lo, *hi, STOPS, numbers.wall_off));
+            let mut drops = fill_stacked(&self.layout, &field, *lo, *hi, STOPS, numbers.wall_off);
+            for hole in &self.holes {
+                let within =
+                    |d: &crate::drop::Drop| self.layout.to_world(Vec2::from(d.x)).distance(hole.centre) < hole.radius;
+                if hole.air {
+                    drops.iter_mut().filter(|d| within(d)).for_each(|d| d.kind |= AIR);
+                } else {
+                    drops.retain(|d| !within(d));
+                }
+            }
+            water.add(&drops);
         }
         water.set_pours(&self.pours);
         Running { water, field }
@@ -97,6 +118,7 @@ pub fn boxed(cell: f32, width: f32, wall: f32, level: f32) -> Scene {
         gravity: GRAVITY,
         feels: water(),
         fills: vec![(Vec2::new(-inner, floor - 2.0 * hh * level), Vec2::new(inner, floor))],
+        holes: Vec::new(),
         pours: Vec::new(),
     }
 }
@@ -148,6 +170,7 @@ pub fn course(cell: f32) -> Scene {
         feels: water(),
         // The top pool, 870 x 220 of water.
         fills: vec![(Vec2::new(-435.0, -872.0), Vec2::new(435.0, -652.0))],
+        holes: Vec::new(),
         pours: Vec::new(),
     }
 }
@@ -178,6 +201,7 @@ pub fn weird(cell: f32) -> Scene {
         feels: water(),
         fills: Vec::new(),
         // Width 60 at Rate 0.32: a stream 19.2 wide.
+        holes: Vec::new(),
         pours: vec![Pour { place: Vec2::new(120.0, -570.0), width: 19.2, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -195,6 +219,7 @@ pub fn thin_pour(cell: f32, cells: f32) -> Scene {
         gravity: GRAVITY,
         feels: water(),
         fills: Vec::new(),
+        holes: Vec::new(),
         pours: vec![Pour { place: Vec2::new(0.0, top), width: cells * cell, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -217,6 +242,7 @@ pub fn sheet(cell: f32) -> Scene {
         gravity: GRAVITY,
         feels: water(),
         fills: Vec::new(),
+        holes: Vec::new(),
         pours: vec![Pour { place: Vec2::new(-250.0, -620.0), width: 32.0, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -262,6 +288,7 @@ pub fn slope(cell: f32) -> Scene {
         gravity: GRAVITY,
         feels: vec![Feel::default()],
         fills: Vec::new(),
+        holes: Vec::new(),
         pours: vec![Pour { place: Vec2::new(-200.0, -720.0), width: 14.0, speed: POUR_SPEED, ..Pour::default() }],
     }
 }
@@ -286,6 +313,7 @@ pub fn pool_pour(cell: f32) -> Scene {
         gravity: GRAVITY,
         feels: vec![Feel::default()],
         fills: vec![(Vec2::new(-inner, floor - POOL.2), Vec2::new(inner, floor))],
+        holes: Vec::new(),
         pours: vec![Pour {
             place: Vec2::new(-90.0, -700.0),
             width: 70.0,
@@ -294,6 +322,18 @@ pub fn pool_pour(cell: f32) -> Scene {
             ..Pour::default()
         }],
     }
+}
+
+/// Where [`pool_with_hole`]'s hole is: its middle and its radius (world pixels).
+pub const HOLE: (Vec2, f32) = (Vec2::new(0.0, 290.0), 36.0);
+
+/// The still box filled to 0.6 of its height (about 540 px deep) with a round hole 72 px across in
+/// its water, its foot about 120 px above the floor: a pocket of air when `air`, nothing when not.
+pub fn pool_with_hole(cell: f32, air: bool) -> Scene {
+    let mut scene = still_box(cell, 0.6);
+    scene.name = "pool with a hole";
+    scene.holes = vec![Hole { centre: HOLE.0, radius: HOLE.1, air }];
+    scene
 }
 
 /// The deep pool (as [`still_box`] at 0.6) narrower, so that 2 px detail is quick to play: 240 px
@@ -313,6 +353,7 @@ pub fn fill_pool(cell: f32) -> Scene {
         gravity: GRAVITY,
         feels: water(),
         fills: Vec::new(),
+        holes: Vec::new(),
         pours: vec![Pour { place: Vec2::new(-40.0, -170.0), width: 70.0, speed: 300.0, until: 2.0, ..Pour::default() }],
     }
 }
@@ -344,6 +385,7 @@ pub fn beads(cell: f32) -> Scene {
         gravity: GRAVITY,
         feels: vec![Feel::default()],
         fills,
+        holes: Vec::new(),
         pours: Vec::new(),
     }
 }

@@ -17,7 +17,12 @@ fn finish_at(i: u32) -> Finished {
         nf[i] = vec4<f32>(0.0);
         return Finished(vec4<f32>(xi, 0.0, 0.0), u32(mv.z));
     }
-    let feel = fr.feels[u32(mv.z) & 15u];
+    let kind = u32(mv.z);
+    // (Air has no skin of its own, and the liquid's skin leaves it out: to the skin a pocket's wall
+    // is a surface, so a bubble keeps round. The evening of speeds and the closing loss act between
+    // every pair: a bubble's drag.)
+    let air = is_air(kind);
+    let feel = fr.feels[kind & 15u];
     let dt = fr.time.x;
     let h = fr.k.x;
     let rho0 = fr.k.y;
@@ -58,7 +63,8 @@ fn finish_at(i: u32) -> Finished {
                 far = 1e-5;
             }
             let wj = weight(far);
-            let rel = velb[j].xy - vi;
+            let vj = velb[j];
+            let rel = vj.xy - vi;
             even = even + rel * wj;
             // (Drops with little liquid round them pull harder: a surface's drops have fewer
             // neighbours to be pulled by. The pair's own number, so the two give and take alike.)
@@ -69,6 +75,9 @@ fn finish_at(i: u32) -> Finished {
             let closing = dot(rel, way);
             if closing > 0.0 {
                 meet = meet + closing * way * (wj * thin);
+            }
+            if air || is_air(u32(vj.z)) {
+                continue;
             }
             // (Which way the liquid lies, by a smooth kernel: by the steep one it is mostly the
             // nearest drop's way, and the bend's pull turns the surface ragged.)
@@ -81,11 +90,20 @@ fn finish_at(i: u32) -> Finished {
     // (The evening of speeds is the liquid's own: its Thickness. Drops that meet do not bounce
     // apart: a share of the speed at which they close is taken away, over the neighbours' weight
     // a drop deep in the liquid has, the same for every drop.)
+    if air && li.w > 1.5 {
+        // Air with open air beside it bursts: it leaves the course (and is let go with the drops
+        // that left).
+        nf[i] = vec4<f32>(0.0);
+        return Finished(vec4<f32>(-1e6, -1e6, 0.0, 0.0), kind);
+    }
     var v = vi + feel.b.z * even / rho0;
     v = v + fr.deep2.y * meet / max(rho0 - weight(0.0), 1e-6);
-    var a = -feel.a.y * pull - feel.a.z * bend;
+    var a = vec2<f32>(0.0);
+    if !air {
+        a = -feel.a.y * pull - feel.a.z * bend;
+    }
     let s = solid_at(xi);
-    if s.z < h {
+    if s.z < h && !air {
         // Grip: a pull toward a near face, none at the face itself.
         let off = fr.w.y;
         let t = clamp((s.z - off) / max(h - off, 1e-3), 0.0, 1.0);
@@ -109,7 +127,7 @@ fn finish_at(i: u32) -> Finished {
         v = vec2<f32>(0.0);
     }
     nf[i] = vec4<f32>(lies * (h / 4.0), li.z, 0.0);
-    return Finished(vec4<f32>(xi, v), u32(mv.z));
+    return Finished(vec4<f32>(xi, v), kind);
 }
 
 // The last step of a frame: its drops kept.

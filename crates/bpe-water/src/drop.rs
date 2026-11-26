@@ -8,6 +8,9 @@ use crate::solid::{Layout, SolidField};
 
 /// The bit of [`Drop::kind`] that makes a drop stop at the course's edge.
 pub const STOPS: u32 = 256;
+/// The bit of [`Drop::kind`] that makes a drop air (part 2c): trapped air under the water, which
+/// takes up room as the liquid does but falls upward and bursts at the top. It is not drawn.
+pub const AIR: u32 = 128;
 
 /// One drop of liquid, in grid units. Matches `Drop` in common.wgsl.
 #[repr(C)]
@@ -19,7 +22,8 @@ pub struct Drop {
     pub c: [f32; 4],
     /// How stretched the liquid at it is (J - 1).
     pub e: f32,
-    /// Bits 0 to 3 its liquid, bit 8 ([`STOPS`]) it stops at the course's edge.
+    /// Bits 0 to 3 its liquid, bit 7 ([`AIR`]) it is air, bit 8 ([`STOPS`]) it stops at the
+    /// course's edge.
     pub kind: u32,
     pub serial: u32,
     /// rgba8, linear.
@@ -33,6 +37,11 @@ impl Drop {
 
     pub fn liquid(&self) -> usize {
         (self.kind & 15) as usize
+    }
+
+    /// Whether it is trapped air, not liquid.
+    pub fn is_air(&self) -> bool {
+        self.kind & AIR != 0
     }
 }
 
@@ -355,6 +364,15 @@ mod tests {
 
     fn degrees(way: Vec2) -> f32 {
         way.y.det_atan2(way.x).to_degrees()
+    }
+
+    #[test]
+    fn air_is_its_own_bit() {
+        let air = Drop::new(Vec2::ZERO, Vec2::ZERO, AIR | STOPS | 3, 0, WATER);
+        assert!(air.is_air());
+        assert_eq!(air.liquid(), 3);
+        assert!(!Drop::new(Vec2::ZERO, Vec2::ZERO, STOPS | 15, 0, WATER).is_air());
+        assert_eq!(AIR & (STOPS | 15), 0);
     }
 
     #[test]
