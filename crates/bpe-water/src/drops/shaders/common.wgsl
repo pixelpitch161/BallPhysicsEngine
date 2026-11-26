@@ -47,7 +47,8 @@ struct Fr {
     // drop a step
     deep: vec4<f32>,
     // what the kept pressure is scaled by on a frame's first step (its dt over the last's; 0 when the
-    // deep part starts afresh), 0, 0, 0
+    // deep part starts afresh); the share of the speed at which drops close on each other taken
+    // away a step (`meet_even`); 0; 0
     deep2: vec4<f32>,
     // the pressure's sweeps: over-relaxation, the share of a coarser level's answer added, the share
     // of a cell's excess pushed out a step, the most a step (cells of volume)

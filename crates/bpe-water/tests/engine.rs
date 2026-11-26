@@ -730,3 +730,26 @@ fn deep_frames_follow_the_water() {
     deep.run_to(0.5);
     assert_eq!(deep.water.deep_frames(), deep.water.frames(), "a deep pool runs it every frame");
 }
+
+/// A hard landing at Fine lands as it does at Extreme: the weird shot's stream, at a weak skin, off
+/// its block and over its disc, with no more of it in small pieces than at 3 px (C1's water had 38 %
+/// of it in pieces under two draft cells across at 6 px against 30 % at 3 px; drops that meet now
+/// keep together, 23 % and 27 %).
+#[test]
+fn a_hard_landing_stays_whole() {
+    let Some(gpu) = card() else { return };
+    let mut scene = scenes::weird(6.0);
+    for feel in &mut scene.feels {
+        feel.surface_pull = 0.2;
+    }
+    let mut run = scene.start(&gpu, Numbers::for_cell(6.0));
+    let layout = run.water.layout();
+    let above_pool = (Vec2::new(-420.0, -840.0), Vec2::new(420.0, 600.0));
+    let mut shares = Vec::new();
+    for t in [1.0, 1.25, 1.5] {
+        run.run_to(t);
+        shares.push(probe::pieces(&run.water.read(), &layout, 1.6, 16.0, above_pool).small_share);
+    }
+    let mean = shares.iter().sum::<f32>() / shares.len() as f32;
+    assert!(mean < 0.30, "{:.1} % of the water in small pieces ({shares:?})", 100.0 * mean);
+}

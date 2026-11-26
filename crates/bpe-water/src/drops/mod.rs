@@ -519,7 +519,7 @@ impl Water {
             wall: self.wall,
             spouts,
             deep: [deep_d, deep_b, n.deep_full, n.deep_most.max(0.0)],
-            deep2: [if kept.is_finite() { kept.max(0.0) } else { 0.0 }, 0.0, 0.0, 0.0],
+            deep2: [if kept.is_finite() { kept.max(0.0) } else { 0.0 }, n.meet_even.clamp(0.0, 1.0), 0.0, 0.0],
             mg: [n.omega, n.scale, n.push_out.max(0.0), n.most_out.max(0.0)],
             // (Drops rest `wall_off` off a face and fill the half spacing round them: the liquid's
             // edge is a quarter cell nearer the face. Drops stop at `EDGE + 0.05` from the grid's

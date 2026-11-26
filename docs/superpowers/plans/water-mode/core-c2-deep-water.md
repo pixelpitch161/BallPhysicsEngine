@@ -439,6 +439,65 @@ the software card:
 Still box at 12 px, software card, 8 s: height kept 98.7 % (C1 96.1 %), rms 10 px/s (C1 2.2 px/s after its start
 bounce), the slosh keeps 93 % after four half swings (C1 83 %).
 
+The tests' bounds, set from this: `a_deep_pool_keeps_its_height` asks 98.5 % at 12 px (99 % is the pass mark at
+Fine and finer, checked by `pools` on the card); `no_drop_climbs_a_side_wall` asks no drop above 200 px/s (C1
+605; one frame at 177 now). `a_pool_filled_by_a_pour_gets_its_push_without_a_jolt` compares the pool with and
+without the deep part ten frames after its first deep frame (speeds within 30 px/s): a pool already sagged when
+the part starts holds less squeeze than the part expects, and the drops' own squeeze lets go upward, so the
+height alone is no test of a jolt.
+
 **Snug fills (Task 3):** `fill_stacked` finds each side's end along the rectangle's middle row; a side ending in a
 solid has its column exactly `rest_off` off the face, and with both snug the columns are spread evenly between
 them.
+
+### Task 5: a hard landing
+
+**Measured** (`landing`, software card, Water Weird's shot `weird`, the share of the water in pieces under 16 px
+across, the mean of the samples from 1 to 3 s):
+
+| Surface pull | Detail | Round the block | Above the floor's pool |
+| --- | --- | --- | --- |
+| 0.2 | 6 px | 5.9 % | 39.9 % |
+| 0.2 | 3 px | 4.6 % | 30.0 % |
+| 0.5 | 6 px | 10.1 % | 32.2 % |
+| 0.5 | 3 px | 16.4 % | 25.9 % |
+
+The block's own landing was already alike (no rain over the block at either detail; at 0.5 the 3 px numbers are
+higher only because its upslope jet ends in a line of round beads). What differed was the water's look and what
+followed: at 6 px the sheet running down the block is ragged, with loose clumps riding a drop or two above it,
+and where the sheet meets the disc it bursts into a fountain of spray; at 3 px the sheet is smooth and wraps the
+disc as an arc that breaks into a line of beads.
+
+**The causes, one knob each, at 6 px and Surface pull 0.2** (above the pool at 1, 1.5 and 2 s; 3 px: 34, 28, 31):
+
+| Knob | Above the pool | By eye |
+| --- | --- | --- |
+| none (C1) | 40, 34, 47 | ragged sheet, spray fountain at the disc |
+| 1. squeezed liquid evens its speeds (`part_even` 4, 20) | 34, 38, 38 / 34, 27, 33 | a little less ragged |
+| 2. thin liquid's skin times the detail (`thin_pull` 1) | 41, 44, 46 | worse: the stream and sheet pull into beads and clumps |
+| 3. the 3 px steps (`floor` 32) | 44, 45, 38 | no better (as expected: the steps are the same in spacings) |
+| the evening × 4 (`visc_base` 400) | 34, 33, 36 | the sheet smooth, as at 3 px; but the falling stream turns into a ladder of separate rows (the evening holds each row together as it stretches) |
+| the evening × 2 (`visc_base` 200) | 34, 32, 35 | half way |
+
+So none of the spec's three is the cause. The cause is that drops that meet bounce apart: at an impact and in the
+churned sheet, the sweeps push drops apart and that push becomes speed, and at 6 px nothing takes it back before
+it throws a drop clear (at 3 px the evening, four times faster there in pixels, mostly does). A stronger evening
+everywhere cures it but stiffens the stream, since the evening also resists drops parting and sliding past each
+other.
+
+**The fix: `meet_even`** (`finish.wgsl`): each step a share of the speed at which a drop and its neighbours close
+on each other, along the line between them and only while they close, is taken away (the mean of its
+neighbours' by the kernel). Pairs give and take alike, so momentum is kept. Drops that part or slide past each
+other are left alone, so the stream stretches and the slosh swings as before. A step crosses the same share of a
+spacing at every detail, so the same share a step is the same water at every detail.
+
+| `meet_even` | 6 px above the pool (1, 1.5, 2 s) | 3 px | Slosh at 6 px (left after four half swings) |
+| --- | --- | --- | --- |
+| 0 | 40, 34, 47 | 34, 28, 31 | 90 % |
+| 0.1 | 29, 23, 30 | | |
+| 0.3 | 25, 24, 22 | 27, 25, 29 | 88 % |
+
+0.3 is the default: at 6 px the sheet is smooth with small lumps, wraps the disc and breaks into beads as at 3 px;
+at 3 px it changes little (fewer stray droplets at the floor's splash). The deep pool at 6 px keeps 100 % of its
+height either way. `a_hard_landing_stays_whole` asks under 30 % above the pool at 6 px and Surface pull 0.2 (the
+mean of 1, 1.25 and 1.5 s: C1 38 %, now 23 %).

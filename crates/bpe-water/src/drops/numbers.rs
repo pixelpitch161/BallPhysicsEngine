@@ -134,6 +134,11 @@ pub struct Numbers {
     pub fill_rate: f32,
     /// The least mass on a face for it to have a speed (a drop's is 0.25).
     pub face_floor: f32,
+    /// The share of the speed at which drops close on each other (along the line between them,
+    /// and only while they close) taken away a step, as their neighbourhood's mean: drops that
+    /// meet do not bounce apart, at every detail alike (a step crosses the same share of a spacing
+    /// at every detail). Parting and sliding past each other are left alone.
+    pub meet_even: f32,
 }
 
 impl Default for Numbers {
@@ -180,6 +185,7 @@ impl Default for Numbers {
             most_out: 0.1,
             fill_rate: 0.5,
             face_floor: 0.005,
+            meet_even: 0.3,
         }
     }
 }
@@ -247,6 +253,7 @@ impl Numbers {
             most_out: num("MOST_OUT", d.most_out),
             fill_rate: num("FILL_RATE", d.fill_rate),
             face_floor: num("FACE_FLOOR", d.face_floor),
+            meet_even: num("MEET_EVEN", d.meet_even),
         }
     }
 

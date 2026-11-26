@@ -25,6 +25,8 @@ fn finish_at(i: u32) -> Finished {
     let vi = mv.xy;
     let li = lamb[i];
     var even = vec2<f32>(0.0);
+    var total = 0.0;
+    var meet = vec2<f32>(0.0);
     var lies = vec2<f32>(0.0);
     var pull = vec2<f32>(0.0);
     var bend = vec2<f32>(0.0);
@@ -56,7 +58,15 @@ fn finish_at(i: u32) -> Finished {
                 way = -any_way(i, j);
                 far = 1e-5;
             }
-            even = even + (velb[j].xy - vi) * weight(far);
+            let wj = weight(far);
+            let rel = velb[j].xy - vi;
+            even = even + rel * wj;
+            total = total + wj;
+            // (Drops that close on each other: `way` points from the other to this one.)
+            let closing = dot(rel, way);
+            if closing > 0.0 {
+                meet = meet + closing * way * wj;
+            }
             // (Which way the liquid lies, by a smooth kernel: by the steep one it is mostly the
             // nearest drop's way, and the bend's pull turns the surface ragged.)
             let t = 1.0 - r2 / (h * h);
@@ -68,8 +78,12 @@ fn finish_at(i: u32) -> Finished {
             bend = bend + thin * (me.zw - other.zw);
         }
     }
-    // (The evening of speeds is the liquid's own: its Thickness.)
+    // (The evening of speeds is the liquid's own: its Thickness. Drops that meet do not bounce
+    // apart: a share of the speed at which they close is taken away.)
     var v = vi + feel.b.z * even / rho0;
+    if total > 0.0 {
+        v = v + fr.deep2.y * meet / total;
+    }
     var a = -feel.a.y * pull - feel.a.z * bend;
     let s = solid_at(xi);
     if s.z < h {

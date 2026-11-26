@@ -314,7 +314,7 @@ fn repeats() {
 /// pieces (`probe::pieces`: drops within 1.6 spacings are one piece, under 16 px across is small),
 /// every 0.25 s, round the block and over everything above the floor's pool. `WATER_PULL=0.2,0.5`,
 /// `WATER_CELLS=8,6,3`; `WATER_DOTS=<folder>` also saves a dot picture of the block's surroundings
-/// every frame from 0.2 to 0.8 s.
+/// every frame from 0.2 to 0.8 s, and one of the whole course at the end.
 #[test]
 #[ignore = "a measuring run: by hand"]
 fn landing() {
@@ -357,6 +357,13 @@ fn landing() {
                     let drops = run.water.read();
                     let a = probe::pieces(&drops, &layout, 1.6, 16.0, block);
                     let b = probe::pieces(&drops, &layout, 1.6, 16.0, above_pool);
+                    if let Some(dir) = &dots
+                        && t + 0.25 > seconds
+                    {
+                        let (pixels, w, h) = probe::picture(&drops, &run.field, 0.5, f32::MAX);
+                        let name = format!("whole-pull{pull}-{cell}px-{t:.2}s.png");
+                        probe::save_png(&dir.join(name), &pixels, w, h).expect("a picture");
+                    }
                     println!(
                         "{pull}\t{cell}\t{t:.2}\t{}\t{}\t{:.1}\t{}\t{}\t{:.1}\t{}",
                         drops.len(),
