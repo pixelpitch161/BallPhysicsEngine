@@ -1,0 +1,21 @@
+﻿
+running 1 test
+test openings ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# cell	seconds	drops	top pool %	on the way %	bottom pool %	through 12 px %	through 24 px %	out %	wall s
+6	5	21097	21.8	47.0	25.0	2.9	3.3	0.0	2
+6	10	21097	8.3	5.1	43.3	18.8	24.6	0.0	4
+6	15	21097	7.8	0.5	11.0	32.6	48.2	0.0	5
+6	20	21097	7.5	0.3	7.2	34.8	50.2	0.0	7
+6	25	21097	7.5	0.1	5.6	34.8	51.9	0.0	9
+6	30	21097	7.5	0.0	5.6	34.8	52.0	0.0	11
+3	5	84534	21.6	46.9	25.0	2.0	4.5	0.0	5
+3	10	84534	7.4	6.1	43.3	19.4	23.6	0.0	11
+3	15	84534	7.3	0.1	9.2	35.1	48.5	0.0	16
+3	20	84534	7.3	0.0	3.4	38.2	51.1	0.0	21
+3	25	84534	7.3	0.0	3.4	38.2	51.1	0.0	27
+3	30	84534	7.3	0.0	3.4	38.2	51.1	0.0	32
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 43.33s
+
+# openings took 43 s, exit 0: {"WATER_PULL":"0.5","WATER_CELLS":"6,3","WATER_SECONDS":30,"WATER_STICK":"0.5"}

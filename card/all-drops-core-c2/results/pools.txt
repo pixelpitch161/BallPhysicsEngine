@@ -1,0 +1,33 @@
+﻿
+running 1 test
+test pools ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# cell	seconds	drops	rms px/s	fastest	height kept %	wall s
+6	5	35261	2.38	7.8	99.74	2
+6	10	35261	1.53	6.5	99.74	4
+6	15	35261	1.67	5.9	99.73	6
+6	20	35261	1.30	5.5	99.71	8
+# slosh	6	swings px: 21.4 -28.9 17.4 -27.1 16.4 -25.4 14.9 -24.7	left after four half swings: 77 %
+3	5	142521	3.10	15.4	99.70	7
+3	10	142521	2.61	13.9	99.69	13
+3	15	142521	2.14	13.8	99.69	20
+3	20	142521	2.28	14.8	99.69	27
+# slosh	3	swings px: 26.2 -24.1 22.4 -22.8 21.5 -21.3 19.9 -20.4	left after four half swings: 82 %
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 47.94s
+
+# pools took 48 s, exit 0: {"WATER_REST":20,"WATER_CELLS":"6,3"}
+
+running 1 test
+test pools ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# cell	seconds	drops	rms px/s	fastest	height kept %	wall s
+2	5	322380	4.82	39.6	99.03	13
+2	10	322380	7.97	112.5	99.04	25
+2	15	322380	6.77	151.5	99.04	38
+2	20	322380	6.13	35.7	99.04	51
+# slosh	2	swings px: 26.6 -21.7 22.0 -19.8 20.2 -18.0 18.9 -16.6	left after four half swings: 76 %
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 70.48s
+
+# pools took 71 s, exit 0: {"WATER_REST":20,"WATER_CELLS":"2"}
