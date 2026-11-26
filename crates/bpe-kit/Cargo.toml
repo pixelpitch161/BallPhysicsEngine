@@ -23,6 +23,8 @@ rustybuzz.workspace = true
 i_overlay.workspace = true
 # One lasting pool of worker threads for the air and particle steps (already in the build through other crates).
 rayon = "1"
+# Water mode: the carved course's solid field and a Water scene as the water engine's inputs (part 2b).
+bpe-water.workspace = true
 
 [features]
 # The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on. They are not the
@@ -31,6 +33,6 @@ test-scenes = []
 
 [dev-dependencies]
 bpe-kit = { path = ".", features = ["test-scenes"] }
-# Water mode part 2a: the new water core beside today's (tests/water_core.rs).
+# Water mode part 2a: the water core's test scenes (tests/water_core.rs).
 bpe-water = { workspace = true, features = ["test-scenes"] }
 ron.workspace = true
