@@ -417,23 +417,60 @@ part adds its own tools to the rail.
      (`2026-11-25-all-drops-water-core-design.md`, "Parts"). C2 and C3 run side by side after C1.
    - **2b. Water runs in a Water scene** (after C2 and C3, on the all-drops engine and the plain drawing). The
      Course with carving, Liquid (Feel), Pour (tap and fill at the start), a plain look, in place of part 1's
-     empty stand-in.
+     empty stand-in. 2b also times a full screen of draft water (about 86,000 drops at 8 px) on the RX 9070 XT;
+     the physics is made faster only if that draft cannot play live.
+   - **2c. Air and wetting** (added at the checkpoint, below; the tiles that used to be called 2c are now in part
+     9). Air trapped under a plunging pour rises and breaks up instead of lingering as big pockets, and each
+     material gets a **Wetting** setting: on a waxy surface water beads up and rolls, on a wet one it spreads
+     into a film. Wetting, not a weaker skin bend, is what settles C2's tall shelf puddles.
 3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
-4. **Everything today's liquid can do.** Mixing and Un-mix, rain, drips, bursts, drains, leaks, Forces, heat,
-   freezing, drying, stains, fizz, wet marks.
-5. **Moving parts.** Keyframed and Driven, joints, floats, wheels, buckets, gates.
+4. **More liquids.** Several liquids with mixing and Un-mix; **Weight** (one liquid floats on another, layers
+   settle by weight); thick liquids (honey, slime); rain, drips and bursts; drains and leaks; and **drains that feed
+   pours**, so water that leaves comes back and a course runs as long as the video. Heat (freezing, melting),
+   drying and stains, and reactions and fizz are **Later** (checkpoint). Forces moved to part 4b.
+   - **4b. Forces and ferrofluid.** Wind, whirlpool and magnet (heater and cooler wait for heat). **Ferrofluid**:
+     a black glossy liquid that a magnet pulls into rows of spikes, the magnet's strength on keyframes (water has
+     no sound). If strong forces need more than 32 steps a frame, the skin that stays calm at any step count
+     (C2's `most_steps` hand-on) is built here.
+5. **Moving parts.** Keyframed and Driven, joints, floats, wheels, buckets, gates. Part 8 comes first, so part 5
+   adds the driven parts' state to the take's restart points.
 6. **Light and the six looks.** The whole renderer of section 6, materials drawn, Back, Lamps, the looks table,
-   the shared finish and its masks.
-7. **Flow lines and trouble marks**, from the draft.
-8. **Make final and export.** Final detail, takes, the Final lane, partial remakes, the clip source in
-   `bpe-cli`, export of a Water scene from the editor and the command line, Preview final frame.
-9. **Big courses.** The editor's tools for courses over one screen: whole-course view, Camera path, Follow.
-10. **Video mode and clean-up.** Water clips in a video and the Scenes window, and, once Aedan agrees Water mode
-    is at least as good, removing the old Liquid thing from Balls scenes.
+   the shared finish and its masks, foam, bubbles, mist, sparks and wet marks. With heat Later, the Molten look
+   glows by its colour and has no crust from heat yet.
+7. **Flow lines and trouble marks**, from the draft: **Later** (checkpoint). The all-drops draft plays live and
+   lands within a few points of the final, so they are needed much less.
+8. **Make final and export**, **moved up to follow part 3** (checkpoint). Final detail, takes, the Final lane,
+   partial remakes, the clip source in `bpe-cli`, export of a Water scene from the editor and the command line,
+   Preview final frame, the time and disk room of a one-screen final at 2 px measured and reported (about 10 s a
+   scene second is the C2 estimate; it is made faster only if it is well over that). **Slow motion**: a stretch
+   of the final kept at 4 or 8 times the frames, so a splash plays slowly and smoothly, with speed ramps on the
+   timeline. Until part 6 lands, Make final and export draw with the plain look. The take's format leaves room for
+   what parts 4, 4b and 5 add (more liquids, heat later, driven parts).
+9. **Big courses.** The editor's tools for courses over one screen: whole-course view, Camera path, Follow, and
+   tiles for the deep-water grid and the solid field (drops need none).
+10. **Video mode and clean-up.** Water clips in a video and the Scenes window. Removing the old Liquid thing from
+    Balls scenes is **Later**: Aedan decides once Water mode is finished.
 
-Order: 1, 2a, then the all-drops core (C1, then C2 and C3 side by side), 2b, 3 in a row. Then 4, 5, 6 and 7
-side by side (the Molten look's crust from heat is finished by whichever of 4 and 6 lands second). Then 8, 9,
-10. Aedan can export a finished water video after part 8.
+Order (after the checkpoint): 1, 2a, the all-drops core (C1, then C2 and C3 side by side), all built. Then 2b,
+2c, 3 and 8 in a row, so a finished water video can be exported in the plain look after part 8. Then 6, 4, 5 and
+4b side by side. Then 9 and 10.
+
+## The water checkpoint (2026-11-26)
+
+Aedan asked for a progress check of all remaining water work before part 2b ("Just for the water") and marked every
+item Keep, Later or Cut on the page https://claude.ai/artifact/BJkTfdZBfoF1xtW3mg834q (his picks are in its
+`picks` store). The parts above already follow it. Besides those:
+
+- **Kept, from C2's hand-on:** air pockets (2c), the draft's speed (timed in 2b), the final's speed (measured in 8).
+- **Later:** C2's shelf puddles by the skin's bend (Wetting in 2c is the fix), ropes at the top of the Surface pull
+  slider at 2 px (`most_steps` above 32, unless 4b needs it), rain on a window, siphons and the greedy cup (the
+  pressure only pushes; a siphon needs a pull in a full pipe, untried), liquids whose thickness changes as they
+  move (oobleck, ketchup, stretchy slime), words and logos carved as courses, a spot check at full detail.
+- **Cut:** a still pool's last px/s of drift (it cannot be seen), the slosh's last few percent at Extreme, the
+  draft's extra spray at Surface pull 0.2, splitting drops where water is thin, and sounds in Water scenes (sound
+  stays a non-goal).
+- No longer needed (all settled by the all-drops engine): the grid core, grid tiles for speed, knots at Extreme,
+  matching the old liquid, the bridge to the old drawing, random births, splitting drops to fix landings.
 
 ## Risks
 
@@ -456,6 +493,8 @@ side by side (the Molten look's crust from heat is finished by whichever of 4 an
 
 - 2026-11-25, after the physics trial: the new pressure-solving core, with streams fixed first and the goal
   "even better than todays"; "the liquid should be as good as you can possibly make it".
+
+- 2026-11-26, at the water checkpoint: the picks and order in "The water checkpoint" above.
 
 Still to be measured and reported before anything is built on them: how much disk room a final uses (several GB
 is the estimate) and how long Make final takes.
