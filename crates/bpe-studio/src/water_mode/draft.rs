@@ -336,6 +336,7 @@ impl Run {
             let inputs = setup.inputs_on(at, &live.field);
             let water = &mut live.water;
             water.set_gravity(inputs.gravity);
+            water.set_air_lift(inputs.air_lift);
             if !inputs.feels.is_empty() {
                 water.set_feels(&inputs.feels);
             }

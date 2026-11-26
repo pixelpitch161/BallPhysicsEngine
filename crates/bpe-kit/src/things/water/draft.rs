@@ -1,5 +1,6 @@
-//! A Water scene as the water engine's inputs (Water mode part 2b): the carved course, the
-//! Liquids' Feel, the Pours, gravity read once a frame from its keyframes, and a fingerprint of
+//! A Water scene as the water engine's inputs (Water mode part 2b): the carved course and its
+//! Rock's Wetting, the Liquids' Feel, the Pours, Trapped air, gravity and Bubbles rise read once a
+//! frame from their keyframes, and a fingerprint of
 //! everything the physics reads ([`WaterSetup::print`]), so the editor's draft starts over for a
 //! physics edit and never for a look, a lamp or the camera.
 //!
@@ -106,6 +107,8 @@ pub struct PourSetup {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameInputs {
     pub gravity: Vec2,
+    /// How many times the gravity trapped air rises at (the Water card's Bubbles rise).
+    pub air_lift: f32,
     /// Each liquid's feel, by its number.
     pub feels: Vec<Feel>,
     /// Every tap, in the setup's order (which stays the same all run).
@@ -127,6 +130,8 @@ pub struct WaterSetup {
     /// Changes exactly when what the physics reads changes.
     pub print: u64,
     world: Keyed,
+    /// The Course's Rock card.
+    rock: Keyed,
 }
 
 impl WaterSetup {
@@ -135,11 +140,9 @@ impl WaterSetup {
         let world = Keyed::of(scene, resolved, ThingId::ROOT, SlotId::Water).unwrap_or_default();
         let w: WaterWorld = world.card(0.0);
         let (size, cell) = (w.course_size(), w.draft_detail.cell_px());
-        let strokes = Arc::new(if resolved.things.contains_key(&course_of(scene).unwrap_or(ThingId::ROOT)) {
-            carving_of(scene)
-        } else {
-            Strokes::default()
-        });
+        let course = course_of(scene).filter(|id| resolved.things.contains_key(id));
+        let strokes = Arc::new(if course.is_some() { carving_of(scene) } else { Strokes::default() });
+        let rock = course.and_then(|id| Keyed::of(scene, resolved, id, SlotId::Material)).unwrap_or_default();
         let on = |id: &ThingId| resolved.things.contains_key(id);
         let of_kind = |kind: &str| -> Vec<ThingId> {
             scene.order.iter().copied().filter(|id| scene.things[id].kind == kind && on(id)).collect()
@@ -173,8 +176,10 @@ impl WaterSetup {
             pours.push(PourSetup { id, liquid, kind: c.kind, place, card });
         }
         let mut h = DefaultHasher::new();
-        world.hash_into(Some(&["gravity", "screens_wide", "screens_tall", "draft_detail"]), &mut h);
+        let world_keys = ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"];
+        world.hash_into(Some(&world_keys), &mut h);
         strokes.hash64().hash(&mut h);
+        rock.hash_into(Some(&["wetting"]), &mut h);
         for l in &liquids {
             l.id.hash(&mut h);
             l.feel.hash_into(None, &mut h);
@@ -184,7 +189,7 @@ impl WaterSetup {
             p.card.hash_into(None, &mut h);
         }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, notes, print, world }
+        WaterSetup { size, cell, strokes, liquids, pours, notes, print, world, rock }
     }
 
     /// The grid the water runs on.
@@ -197,14 +202,20 @@ impl WaterSetup {
         mask_for(self.size, &self.strokes)
     }
 
-    /// The solid field the water feels and the drawing shows.
+    /// The solid field the water feels and the drawing shows, as wet as the Course's Rock.
     pub fn field(&self) -> SolidField {
-        self.mask().field(self.cell)
+        self.mask().field(self.cell).with_wetting(self.wetting())
     }
 
-    /// The engine's numbers for this detail.
+    /// The Course's Rock's Wetting (the Material card's default with no Course).
+    pub fn wetting(&self) -> f32 {
+        self.rock.card::<MaterialCard>(0.0).wetting
+    }
+
+    /// The engine's numbers for this detail, with trapped air as the Water card says.
     pub fn numbers(&self) -> Numbers {
-        Numbers::for_cell(self.cell)
+        let w: WaterWorld = self.world.card(0.0);
+        Numbers { air: u32::from(w.trapped_air), ..Numbers::for_cell(self.cell) }
     }
 
     /// What the stage says about pour `id`, if it can't pour.
@@ -251,7 +262,7 @@ impl WaterSetup {
                 })
             })
             .collect();
-        FrameInputs { gravity: w.gravity, feels, pours }
+        FrameInputs { gravity: w.gravity, air_lift: w.bubble_rise, feels, pours }
     }
 
     /// The physics inputs of frame `frame` on `field` (this setup's): each tap's stream as wide as
@@ -316,7 +327,8 @@ impl WaterSetup {
     pub fn start(&self, gpu: Arc<WaterGpu>, field: &SolidField, most: u32) -> Water {
         let inputs = self.inputs_on(0, field);
         let feels = if inputs.feels.is_empty() { vec![Feel::default()] } else { inputs.feels.clone() };
-        let mut water = Water::new(gpu, field, inputs.gravity, self.numbers(), &feels);
+        let numbers = Numbers { air_lift: inputs.air_lift, ..self.numbers() };
+        let mut water = Water::new(gpu, field, inputs.gravity, numbers, &feels);
         let mut fills = self.fills(&field.layout, field);
         fills.truncate(most as usize);
         if !fills.is_empty() {
