@@ -4,7 +4,9 @@
 #
 #   powershell -ExecutionPolicy Bypass -File run.ps1 -Exe <shots test exe> -Out <results folder> -Only shelves
 #   powershell -ExecutionPolicy Bypass -File run.ps1 -Exe <shots test exe> -Out <results folder> -Wetting <w>
-#       [-Only air,wetting,films,pace,pools,landing,openings,repeats]
+#
+# (A list of groups needs -Command, as -File passes `a,b` as one string:
+#   powershell -ExecutionPolicy Bypass -Command "& .\run.ps1 -Exe <exe> -Out <folder> -Wetting <w> -Only air,films")
 #
 # The first measures the course's top shelf at six Wettings; `<w>` for the second is the least of them whose
 # tallest puddle after 30 s is at most 7 px at 6 px cells and at most 5.5 px at 3 px cells (1 if none is). Every

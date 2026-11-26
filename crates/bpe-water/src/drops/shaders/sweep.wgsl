@@ -56,7 +56,6 @@ fn lambda_at(i: u32, first: bool) {
     }
     let wall = wall_density(xi);
     rho = rho + wall.z;
-    let drops_only = all;
     all = all + wall.z;
     sum = sum + wall.xy;
     let rho0 = fr.k.y;
@@ -74,21 +73,21 @@ fn lambda_at(i: u32, first: bool) {
     // (Whether air bursts is looked at for air alone: `select` would look for every drop.)
     var burst = 0.0;
     if air {
-        burst = select(1.0, 2.0, bursts(xi, all / rho0, drops_only / rho0));
+        burst = select(1.0, 2.0, bursts(xi, all / rho0));
     }
     lamb[i] = vec4<f32>(now - was, now, all / rho0, burst);
 }
 
-// Whether an air drop at `x`, `full` full (`drops` full by the drops alone), bursts: it has open air
-// beside it. Under the water's open top it is less full than `air.y`; out of the water (where no
-// deep water is) a solid beside it does not count, so air thrown out of the water against a ceiling
-// bursts too, and air held under a solid deep in the water stays.
-fn bursts(x: vec2<f32>, full: f32, drops: f32) -> bool {
+// Whether an air drop at `x`, `full` full, bursts: it has open air beside it (it is less full than
+// `air.y`), or it is out of the deep water, within the band under the water's open top that the
+// drops alone hold (`deep_d`, the same pixels at every detail; the deep part counts air as water, so
+// a pocket is deep and a foam under the top is not). A real bubble that comes up under the top
+// pushes it up into a cap that drains and breaks within a moment; in this water the liquid rests on
+// air (it makes way for it), so a cap or a foam's films would stand. Air thrown out of the water
+// against a ceiling bursts too, and air held under a solid deep in the water stays.
+fn bursts(x: vec2<f32>, full: f32) -> bool {
     if full < fr.air.y {
         return true;
-    }
-    if drops >= fr.air.y {
-        return false;
     }
     let off = vec2<f32>(0.5, 0.5);
     let b = base2(x, off);

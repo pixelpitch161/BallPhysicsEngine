@@ -119,7 +119,10 @@ fn polygon(points: &[Vec2], p: Vec2) -> (f32, bool) {
 }
 
 /// How wet a solid is when nothing says otherwise (Wetting, part 2c): see [`SolidField::wetting`].
-pub const DEFAULT_WETTING: f32 = 0.0;
+/// Fully wet, as stone and clean glass are: on the owner's card it is the least Wetting at which the
+/// course's top shelf drains to puddles at most 7 px tall at 6 px cells and 5.5 px at 3 px (part
+/// 2c's plan, "As built and measured").
+pub const DEFAULT_WETTING: f32 = 1.0;
 
 /// The distances at a layout's nodes, row by row, in pixels, and how wet the nearest face is.
 #[derive(Clone, Debug, PartialEq)]

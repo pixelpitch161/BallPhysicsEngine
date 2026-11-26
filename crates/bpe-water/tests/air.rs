@@ -119,6 +119,7 @@ fn a_hole_in_a_pool_fills_with_air() {
     }
     let drops = run.water.read();
     let air = air_at(&drops, &layout);
+    eprintln!("air in the hole: {}", air.len());
     assert!(air.len() > 30, "the hole is filled with air: {}", air.len());
     let (centre, radius) = scenes::HOLE;
     for p in &air {
