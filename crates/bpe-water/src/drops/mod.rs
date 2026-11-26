@@ -586,6 +586,11 @@ impl Water {
         let mut born = Vec::new();
         let mut steps = Vec::with_capacity(n as usize);
         let mut count = self.count;
+        // (The skin's bend on every `every`-th step and the last, each as strong as the steps since
+        // the one before.)
+        let most = self.numbers.bend_steps;
+        let every = if most == 0 { 1 } else { n.div_ceil(most) };
+        let mut bent = 0;
         for j in 0..n {
             let from = (f64::from(self.frames) + f64::from(j) / f64::from(n)) * f64::from(FRAME);
             let start = born.len() as u32;
@@ -604,7 +609,8 @@ impl Water {
             }
             let here = born.len() as u32 - start;
             let ends = u32::from(j + 1 == n) | (u32::from(j == 0) << 1);
-            steps.push([count + here, count, start, ends]);
+            let bend = if (j + 1) % every == 0 || j + 1 == n { j + 1 - std::mem::replace(&mut bent, j + 1) } else { 0 };
+            steps.push([count + here, count, start, ends | (bend << 2)]);
             count += here;
         }
         // (The reports of the next two frames do not see these drops yet.)

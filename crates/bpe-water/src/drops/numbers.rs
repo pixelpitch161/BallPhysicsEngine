@@ -130,6 +130,10 @@ pub struct Numbers {
     /// as at rest). Resting any less full, the deep water is lighter than the water on it, and the
     /// pool's top turns over and over.
     pub rest_most: f32,
+    /// The most steps a frame the skin's bend is worked out on (0: every step). With more steps
+    /// than this, the bend is worked out on every few steps only, as strong as those steps
+    /// together (for a skin calm at any step count; part C2's Task 8).
+    pub bend_steps: u32,
 }
 
 impl Default for Numbers {
@@ -178,6 +182,7 @@ impl Default for Numbers {
             face_floor: 0.005,
             meet_even: 0.3,
             rest_most: 0.02,
+            bend_steps: 0,
         }
     }
 }
@@ -247,6 +252,7 @@ impl Numbers {
             face_floor: num("FACE_FLOOR", d.face_floor),
             meet_even: num("MEET_EVEN", d.meet_even),
             rest_most: num("REST_MOST", d.rest_most),
+            bend_steps: num("BEND_STEPS", d.bend_steps),
         }
     }
 
