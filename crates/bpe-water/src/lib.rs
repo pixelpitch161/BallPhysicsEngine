@@ -8,6 +8,7 @@
 //! [`SolidField`], pours and [`Feel`]s.
 
 pub mod bridge;
+pub mod draw;
 pub mod drop;
 pub mod drops;
 pub mod grid;
