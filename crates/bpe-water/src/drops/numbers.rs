@@ -114,6 +114,8 @@ pub struct Numbers {
     pub omega: f32,
     pub scale: f32,
     /// The share of a cell's excess fill pushed out a step, and the most a step (cells of volume).
+    /// (0.05 left the deep pool moving at 3 to 4 px/s at Fine and Extreme on the owner's card; 0.02
+    /// at 1.5 to 3.)
     pub push_out: f32,
     pub most_out: f32,
     /// The share of a cell's room that may fill a step before it pushes back.
@@ -172,7 +174,7 @@ impl Default for Numbers {
             coarse: 8,
             omega: 1.0,
             scale: 1.0,
-            push_out: 0.05,
+            push_out: 0.02,
             most_out: 0.1,
             fill_rate: 0.5,
             face_floor: 0.005,
