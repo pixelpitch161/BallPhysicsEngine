@@ -555,7 +555,7 @@ impl Water {
             }
             queue.write_buffer(&self.step_uniform, 0, &steps);
             let by_bin = self.bins().div_ceil(WORKGROUP);
-            let by_block = self.bins().div_ceil(BLOCK).div_ceil(WORKGROUP);
+            let by_block = self.bins().div_ceil(BLOCK);
             let iters = self.numbers.iters.clamp(1, 16) as usize;
             let joined = self.numbers.join != 0;
             let clock = self.clock.get_mut().expect("the clock");
