@@ -80,8 +80,8 @@ one `WaterCard`; settings in `scene.rs`, `solids.rs`, `liquid.rs`, `places.rs`).
   kind's things (`k.in_sim(scene.sim)`); families "Course" and "Forces" are new.
 - **The Water stage** (`water_mode/stage.rs`, shown by `Studio::centre_shows() == Centre::Water` in place of the
   ball preview): a strip with the tool's hint, the rail (`rail.rs`, `Tool::ALL`: Select, Carve, Piece, Pen, Pour,
-  Drain, Lamp, Force, Camera path; `ready()` is Select, Pour, Drain, Lamp and Force, the rest are greyed with
-  "Arrives in a later part of Water mode"), and the course fitted to the room (`CourseView::fit`, `to_screen`,
+  Drain, Lamp, Force, Camera path; `ready()` is Select, Pour, Drain, Lamp and Force, and Carve since part 2b; the rest are greyed
+  with "Arrives in a later part of Water mode"), and the course fitted to the room (`CourseView::fit`, `to_screen`,
   `to_world`) with a line between its screens, the camera's 9:16 shot, and a marker with its name for every placed
   thing. Select picks a marker and drags it (`transform.position`, on the grid when Snap is on, one undo step); a
   placing tool adds its thing at the click and goes back to Select. `Studio.water_stage: WaterStage`.
@@ -96,8 +96,8 @@ one `WaterCard`; settings in `scene.rs`, `solids.rs`, `liquid.rs`, `places.rs`).
 
 - Part 2 (the physics, after the trial's verdict) reads `WaterWorld`, `FeelCard`, `MixingCard`, `HeatCard`, the
   Pour, Drain and Force cards and the solids; it gives the kinds their sims and replaces the stand-in for Water.
-- The rail's Carve, Piece, Pen and Camera path tools, the looks behind `StartingLook`, Draft | Final and Make
-  final, grading, sound and export are later parts (the spec's "Parts").
+- The rail's Piece, Pen and Camera path tools, the looks behind `StartingLook`, Draft | Final and Make final,
+  grading and export are later parts (the spec's "Parts"); Carve, the draft and pours came in part 2b (below).
 
 ## Part 2a: the water core (as built)
 
@@ -433,3 +433,91 @@ share a second is the same at any step), `drops/passes.rs` (every pass fits the 
 from spray). Also: water that meets keeps its momentum; thin water is left alone through the deep frames after an
 `add()`. By hand in `tests/shots.rs`: `landing` and `shelves` (new), and `pools`, `pace`, `openings`, `repeats` as in
 C1.
+
+## Part 2b: water runs in a Water scene (as built)
+
+Plan: `docs/superpowers/plans/water-mode/part2b-water-in-the-editor.md` (decisions 1 to 18 there). A Water scene's
+stage plays real water at draft detail on the all-drops engine (C1, C2) in the plain drawing (C3): the Course is carved
+out of solid rock with a brush, a Liquid's Feel and Look are read, and a Pour pours a tap or fills a box at the start.
+Balls scenes are untouched.
+
+### Carving (`bpe-core`, `bpe-kit modules/water/carve.rs`)
+
+- **The Course's Carving card** (`water.carve`, `CarveCard { carved: Strokes }`, slot `Form`, labelled "Carving"; the
+  Course's cards are Carving then Rock, `WaterKind.label` is a list now). `things::water::carving_of(scene)` reads it
+  (empty without the card: a part-1 Course is all rock). Strokes are in world pixels, the course centred on the world's
+  middle: `size` is the brush's radius, `softness` 1 - Hardness, `erase` is Fill, and the new `Stroke.square` (saved
+  and hashed only when on, so every older stroke and cached picture keeps its hash) is the square tip.
+- **`CarveMask`**: the rock's signed distance at one sample every 4 px (`STEP`) over the course, clamped to ±48 px
+  (`BAND`: the engine reads the field only near a face), above 0 open. Nothing carved is all rock and past the course's
+  edge is rock (`at` takes the edge as a face). Strokes apply in order on distances: a round tip is `radius - distance
+  to the path`, a square tip the exact distance to the square swept along each segment (a convex hull of four to six
+  corners); Dig is a smooth max, Fill a smooth min, over `k = softness × radius` (Hardness 100 % is a crisp corner where
+  strokes meet). A stroke touches only the samples within `radius + k + BAND` of its path. `field(cell)` is the
+  `SolidField` both the physics and the drawing read; thin rock is not thickened (a ridge under about 1.5 draft cells
+  can be crossed by a fast drop at draft).
+- **`CarvePaint`** keeps a stroke's own shape over the course and the mask with it carved in, a segment at a time:
+  painting point by point gives exactly what `apply` gives the whole stroke. **`mask_for(size, strokes)`** caches the
+  last four masks and builds on one whose strokes start the same way (a stroke added on the end costs that stroke).
+
+### The scene as the engine's inputs (`bpe-kit things/water/draft.rs`)
+
+- **`WaterSetup::of(scene, resolved)`** (cheap; built on every edit): the course size and Draft detail cell, the
+  strokes, the enabled Liquids in the scene's order (at most 16) with their Feel cards, every enabled Pour with its card,
+  place, kind and Liquid number, notes for pours that can't pour (`NO_LIQUID`, `LATER_KINDS` for Rain, Drip and Burst,
+  `TOO_MANY_LIQUIDS`, `TOO_MANY_TAPS`), and `print`. `inputs_at(frame)` reads gravity, Feels and Taps from their
+  keyframes at the frame's start (`frame / 60` s); `fills(layout, field)` fills each Fill at the start's box
+  (`fill_stacked`, rest off `Numbers::wall_off`) leaving out a later box's drops within 0.35 cell of an earlier box's;
+  `start(gpu, field, most)` is a new body with the fills and frame 0's inputs. A Tap is `Pour { width: Rate × Width,
+  .. }`; drops keep `STOPS` and are born with the engine's own colour (the plain drawing colours by liquid number).
+  A Pour's Liquid: a Liquid named by id, the first Liquid for its kind or Anything, the first with a tag.
+- **`print`** hashes exactly what the physics reads: the Water card's Gravity, Screens and Draft detail (and their
+  keys), the strokes, each Liquid's id and Feel (and keys), each Pour's id, place, Liquid and card (and keys). Not:
+  a look, the Rock, Back, Light, Final detail, Starting look, Mixing, Heat, Pieces, Walls, Drains, Forces, Lamps, the
+  camera. `what_restarts_the_draft` checks every setting of every Water card against that list (192 changes).
+- **`plain_look(scene, resolved, time)`**: each Liquid's Colour, Deep colour and Clarity, the Rock colour, the Back
+  (Darker rock, Colour, a Gradient's middle; a Picture shows as darker rock until part 6).
+
+### The draft in the editor (`bpe-studio water_mode/{draft,picture,carve_tool}.rs`)
+
+- **`DraftJob`**: a "water draft" thread on the window's own device (the drawing reads the drops' buffers on the card),
+  low priority. It steps a whole frame at a time under the body's lock (`Live { water, field, plain, generation }`) and
+  follows the playhead's frame (`frame_of(time)`); going back plays from the newest restart copy at or before the
+  playhead (one at the start and one every 120 frames reached, the copies kept under about 1 GiB by letting every other
+  one go). A new setup (`restart`) builds the body off the lock and swaps it in. Past 500,000 drops (`DRAFT_MOST`)
+  its pours stop. `busy()` counts setups asked for against built, so a test or the stage never sees an old body as
+  done. A panic marks it failed ("· Water draft stopped" in the status line).
+- **`WaterRun`** (`Studio.water_draft`): the newest setup, the job and the stage's picture. `restart_runs` builds a
+  setup on every edit and restarts the draft only when `print` changed, held like the balls' while a slider or a drag
+  is held (`hold_runs`); `replace_scene` starts it over (and stops it for a Balls scene). The stage starts the thread
+  once the window's graphics card is there.
+- **The picture** (`StagePicture`): the whole course at its size on screen in real pixels (at most 2048 a side, never
+  above two a world pixel, `picture_view`), drawn under `try_lock` (outright when the last picture is 250 ms old) only
+  when the body's frame, generation, size, look or field changed, registered with egui as a native texture. A pill says
+  "Working out the water… X s" when the draft is more than 15 frames behind, "Starting the water over…" while a new
+  setup builds. With nothing carved the course says `ALL_ROCK`. The status line adds "· Water: N drops (draft 8 px)".
+- **The Carve tool**: the strip has Dig | Fill, Brush size (8 to 600 px, 120), Hardness (100 %), Round | Square,
+  Straight (or Shift) and Smooth (a lazy brush on a string of half the radius); Alt does the other of Dig and Fill.
+  Points come every quarter radius (at least 2 px). While a stroke is painted the stage redraws the rock from
+  `CarvePaint` through the live drawing's `set_field` over the water still playing; letting go puts it on the Carving
+  card as one undo step (adding the card to a part-1 Course), Escape drops it, a click digs one dab. The brush's outline
+  follows the pointer.
+- **Pours**: placing the first Pour also adds a Liquid named "Water" in the same undo step. A Pour's marker shows its
+  aim and stream width (a Tap) or its box (a Fill at the start); a picked pour that can't pour says why in the strip.
+
+### Measured on the RX 9070 XT
+
+(To come: `bpe-kit tests/water_draft.rs::draft_pace`, one screen carved as one chamber, two thirds filled, a tap.)
+
+### Tests
+
+`bpe-core` `a_square_tip_is_saved_and_hashed_only_when_on`; `bpe-kit` `modules::water::carve` (the mask: all rock,
+round and square holes and their distances, fill after dig, order, hardness, past the course, painting equals building,
+a long stroke under a second, the field follows the mask, the cache), `things::water` (the Course's cards and labels,
+`carving_of`), `things::water::draft` (taps, fills where open and not doubled, a pour's Liquid, later kinds, keyframes,
+detail, what restarts, the plain look); `tests/water_draft.rs` `drops_stay_out_of_the_rock` (on the card) and
+`draft_pace` (by hand); `bpe-studio` `water_mode/draft` (follows and goes back, the same water from a copy and from the
+start, a new setup, stops at its most, the copies' memory rule), `water_mode/picture` (the picture covers the course),
+`water_mode/tests.rs` (Carve: one stroke one undo step, Alt and the strip, Straight, Smooth, Escape, a Course without
+the card; the all-rock words; a first Pour brings Water; a pour's note), `app/water_tests.rs` (a physics edit restarts
+and a look edit doesn't, a Balls scene has no draft, the readout).

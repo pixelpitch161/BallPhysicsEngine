@@ -86,8 +86,8 @@ Dependencies go bottom to top. `docs/notes/engine.md`, `sound.md` and `editor.md
   `shaders/lighting/`, pass names in `light_pass.rs`), effects, bake.
 - `bpe-water`: Water mode's own liquid physics on the card: the all-drops engine (`Water`, every drop feeling its
   neighbours, frames of steps it picks itself, deep water held up by a pressure solved on a grid in `drops/deep.rs`),
-  its solid field, and the plain drawing on the card (`draw/`). Nothing in the editor uses it yet
-  (`docs/notes/water.md`, parts 2a, C1, C3, C2).
+  its solid field, and the plain drawing on the card (`draw/`). The editor plays a Water scene's draft on it
+  (part 2b; `docs/notes/water.md`, parts 2a, C1, C3, C2, 2b).
 - `bpe-kit`: every plugin: one folder per thing kind in `src/things/`, per card kind in `src/modules/`, rule blocks
   in `src/rules/`, the text engine in `src/text/`, paint and gradients in `src/paint/`, starting cards in
   `starters.rs`, test scenes in `scenes.rs`.
