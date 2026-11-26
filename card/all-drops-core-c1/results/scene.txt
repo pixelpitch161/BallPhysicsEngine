@@ -1,0 +1,36 @@
+﻿
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (but `rate`: the steps a second follow the cell size, printed by scene)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+# file	Fine	the all-drops engine (6 px cells)
+file	Fine	old	2	3620	2083	109	0.191	0.046	1624	0 0 0 0 0 154
+file	Fine	drops	2	3622	1687	402	0.220	0.261	1151	0 18 9 0 0 0
+file	Fine	old	4	7240	5392	86	0.749	0.011	1578	0 0 0 0 0 717
+file	Fine	drops	4	7244	4406	335	0.373	0.082	1661	0 0 0 0 0 456
+file	Fine	old	6	10861	8676	69	0.868	0.007	1603	0 0 0 0 0 795
+file	Fine	drops	6	10867	7817	320	0.799	0.046	1629	0 0 0 0 0 796
+# F:\bpe-card\c1b\results\file-fine	181 frames	26 s in all	today's core 1.1 s	with their pictures: drops 2.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 34.51s
+
+# side_by_side took 35 s, exit 0: {"WATER_SCENE":"F:\\!Ai Stuff\\BallPhysicsEngine\\!Projects\\Water Weird.ron","WATER_SECONDS":6,"WATER_SHOTS":"file","WATER_SIZE":"540x960","WATER_FPS":30,"WATER_DETAILS":"fine","WATER_MEASURE":"2,4,6","WATER_STICK":"0.5","WATER_CORES":"old,drops"}
+
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# numbers (but `rate`: the steps a second follow the cell size, printed by scene)	Numbers { rate: 240, cycles: 2, pre: 2, post: 2, coarse: 16, iters: 0, scale: 1.0, omega: 1.0, push_out: 0.25, most_out: 0.1, fill: 0.5, most_out_thin: 0.005, face_floor: 0.005, sub_move: 0.4, most_move: 8.0, hold: true, pull: 400000.0, pull_cfl: 0.3, hold_damp: 0.7, hold_settle: 200.0, hold_relax: 4.0, hold_full: 0.9, even: 12.0, even_most: 0.15, apart: 150.0, apart_reach: 0.45, apart_most: 0.25, apart_pace: 300.0, hold_join: 0.6, tear_calm: 2.0, tear_spray: 0.2 }
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+# file	Extreme	the all-drops engine (3 px cells)
+file	Extreme	old	2	14481	10171	155	0.219	0.012	1616	0 0 0 0 0 219
+file	Extreme	drops	2	14489	9021	360	0.209	0.030	1677	0 0 0 0 0 180
+file	Extreme	old	4	28963	23283	103	0.759	0.004	1583	0 0 0 0 0 814
+file	Extreme	drops	4	28966	22205	266	0.565	0.009	1640	0 0 0 0 0 584
+file	Extreme	old	6	43444	37333	89	0.855	0.002	1518	0 0 0 0 0 814
+file	Extreme	drops	6	43455	36782	265	0.828	0.005	1608	0 0 0 0 0 814
+# F:\bpe-card\c1b\results\file-extreme	181 frames	30 s in all	today's core 2.4 s	with their pictures: drops 4.8 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 30.52s
+
+# side_by_side took 31 s, exit 0: {"WATER_SCENE":"F:\\!Ai Stuff\\BallPhysicsEngine\\!Projects\\Water Weird.ron","WATER_SECONDS":6,"WATER_SHOTS":"file","WATER_SIZE":"540x960","WATER_FPS":30,"WATER_DETAILS":"extreme","WATER_MEASURE":"2,4,6","WATER_STICK":"0.5","WATER_CORES":"old,drops"}
