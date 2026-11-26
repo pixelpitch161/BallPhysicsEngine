@@ -97,7 +97,8 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     if let Some(note) = note {
         bar.label(RichText::new(note).color(style::TEXT));
     }
-    let strip_h = (bar.min_rect().bottom() - strip.top() + 6.0).max(STRIP_H);
+    // (Each row is a strip's height: the first fills the strip, and the rest wrap below it.)
+    let strip_h = (bar.min_rect().bottom() - strip.top()).max(STRIP_H);
     if (strip_h - studio.water_stage.strip_h.max(STRIP_H)).abs() > 0.5 {
         studio.water_stage.strip_h = strip_h;
         ui.ctx().request_repaint();
