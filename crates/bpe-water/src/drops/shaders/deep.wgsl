@@ -40,7 +40,9 @@ const VOL: f32 = 0.25;
 // The cells deep at the frame's last step.
 @group(0) @binding(25) var<storage, read_write> deep_count: array<atomic<u32>>;
 // The liquid, and the liquid times its drops' fullness, where the drops-only water meets the deep
-// water (`REST` fixed point; emptied by the cells pass, summed by the across pass).
+// water (`REST` fixed point; emptied by the cells pass, summed by the across pass). One pair for the
+// whole body, so pools in one course rest alike; the sums stay under 2^32 while that band has
+// under a million cells (it is a strip a few cells deep under each surface).
 @group(0) @binding(26) var<storage, read_write> rest: array<atomic<u32>>;
 const REST: f32 = 4096.0;
 

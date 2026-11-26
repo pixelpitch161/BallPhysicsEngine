@@ -539,7 +539,7 @@ fullness by depth is 1.001 to 1.003 all the way down, with no turn-over.
 
 So `push_out` is 0.02 and `for_cell` gives two V-cycles at cells under 2.5 px (one at 3 px and coarser, where the
 second bought 3.1 → 2.7 px/s at Extreme for a fifth more time a step); a third was a little calmer again but cost
-up to twice the time of one. What is left of the unrest is in the band where the push fades in (24 to 48 px deep)
+up to twice the time of one. What is left of the unrest is in the band where the push fades in (24 to 40 px deep)
 and within a few cells of the side walls, where it is two to three times the middle's. It is not growing over the
 20 s and the surface is calm (its top moves within ±0.5 px), but the spec's 1 px/s is met only without the deep
 part, which sags. It grows with the steps a frame (Fine at 32 steps a frame instead of 16: 14 px/s), and is not the

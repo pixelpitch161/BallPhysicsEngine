@@ -535,6 +535,25 @@ fn the_deep_part_leaves_thin_water_alone() {
         assert!(drops.len() > 100, "{}: {}", scene.name, drops.len());
         assert_eq!(probe::print_of(&drops), probe::print_of(&off.water.read()), "{}", scene.name);
     }
+    // (Drops added run the deep part on the two frames after, before any report: with nothing
+    // deep those frames still leave every drop alone.)
+    let scene = scenes::thin_pour(12.0, 2.0);
+    let mut on = scene.start(&gpu, deep_numbers(12.0, 1));
+    let mut off = scene.start(&gpu, deep_numbers(12.0, 0));
+    let layout = on.water.layout();
+    let blob: Vec<Drop> = (0..9)
+        .map(|k| {
+            let at = Vec2::new(150.0 + 6.0 * (k % 3) as f32, -100.0 + 6.0 * (k / 3) as f32);
+            Drop::new(layout.to_grid(at), Vec2::ZERO, STOPS, 10_000 + k, WATER)
+        })
+        .collect();
+    for run in [&mut on, &mut off] {
+        run.run_to(5.0 * FRAME);
+        run.water.add(&blob);
+        run.run_to(0.5);
+    }
+    assert!(on.water.deep_frames() >= 2, "{}", on.water.deep_frames());
+    assert_eq!(probe::print_of(&on.water.read()), probe::print_of(&off.water.read()), "with drops added");
 }
 
 /// A copy made while the deep part runs (a pour landing in a deep pool) plays on the same.
@@ -612,7 +631,7 @@ fn a_small_course_still_solves() {
         for _ in 0..60 {
             water.frame();
         }
-        assert_eq!(water.deep_frames() > 0, deep == 1);
+        assert_eq!(water.deep_frames(), if deep == 1 { 60 } else { 0 }, "the column is deep every frame");
         (floor - Stats::of(&water.read(), &layout).top) / (floor - top0)
     };
     let (with, without) = (kept(1), kept(0));
@@ -752,4 +771,56 @@ fn a_hard_landing_stays_whole() {
     }
     let mean = shares.iter().sum::<f32>() / shares.len() as f32;
     assert!(mean < 0.30, "{:.1} % of the water in small pieces ({shares:?})", 100.0 * mean);
+}
+
+/// The mean speed of `drops` across, in pixels a second (every drop has the same mass).
+fn mean_across(drops: &[Drop], cell: f32) -> f32 {
+    drops.iter().map(|d| d.v[0]).sum::<f32>() / drops.len().max(1) as f32 * cell
+}
+
+/// Drops that meet lose their closing speed alike, so water hit by a drop, or two bodies that
+/// meet, keep their momentum: with no gravity and no solids near, the mean speed stays (each of a
+/// pair once took a share by its own neighbours' weight, and a surface drop, with fewer, took
+/// more: a drop fired into a resting blob at 300 px/s drove it back the other way at 23 px/s).
+#[test]
+fn water_that_meets_keeps_its_momentum() {
+    let Some(gpu) = card() else { return };
+    let cell = 6.0;
+    let layout = Layout::cover(Vec2::new(-400.0, -400.0), Vec2::new(400.0, 400.0), cell);
+    let field = SolidField::build(layout, &[]);
+    let blob = |lo: Vec2, hi: Vec2, speed: f32, first: u32| {
+        let mut drops = bpe_water::fill(&layout, &field, lo, hi, STOPS, first);
+        for d in &mut drops {
+            d.v = [speed / cell, 0.0];
+        }
+        drops
+    };
+    // (A drop at 300 px/s into a resting blob.)
+    let mut drops = blob(Vec2::new(-15.0, -15.0), Vec2::new(15.0, 15.0), 0.0, 0);
+    let n = drops.len() as u32;
+    assert!(n > 40, "{n}");
+    let middle = drops.iter().map(|d| d.x[1]).sum::<f32>() / n as f32;
+    let from = Vec2::new(layout.to_grid(Vec2::new(-70.0, 0.0)).x, middle);
+    drops.push(Drop::new(from, Vec2::new(300.0 / cell, 0.0), STOPS, n, WATER));
+    let drop_in = 300.0 / (n + 1) as f32;
+    // (A big blob at 50 px/s meeting a small one coming the other way: no momentum in all.)
+    let mut two = blob(Vec2::new(-115.0, 185.0), Vec2::new(-85.0, 215.0), 50.0, 100);
+    let small = blob(Vec2::new(-8.0, 192.0), Vec2::new(8.0, 208.0), 0.0, 200);
+    let back = -50.0 * two.len() as f32 / small.len() as f32;
+    two.extend(small.into_iter().map(|mut d| {
+        d.v = [back / cell, 0.0];
+        d
+    }));
+    for (name, start, want) in [("a drop into a blob", drops, drop_in), ("two blobs", two, 0.0)] {
+        let mut water = Water::new(gpu.clone(), &field, Vec2::ZERO, Numbers::for_cell(cell), &[Feel::default()]);
+        water.add(&start);
+        assert!((mean_across(&water.read(), cell) - want).abs() < 1e-3);
+        for frame in 1..=60 {
+            water.frame();
+            if frame % 10 == 0 {
+                let mean = mean_across(&water.read(), cell);
+                assert!((mean - want).abs() < 0.25, "{name}: {mean:.2} px/s at frame {frame}, was {want:.2}");
+            }
+        }
+    }
 }

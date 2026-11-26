@@ -44,6 +44,9 @@ const MOST_BIRTHS: u32 = 1 << 22;
 pub const LEAST_WALL: f32 = 1.5;
 /// The most steps a frame may take, whatever the numbers ask.
 const MOST_STEPS: u32 = 1024;
+/// Cells from the grid's edge where drops stop (`EDGE` in common.wgsl, which stops them at this
+/// plus 0.05).
+const EDGE: f32 = 2.0;
 const WORKGROUP: u32 = 256;
 const BLOCK: u32 = 512;
 /// The most drops exported at once (each chunk's binding stays under 128 MiB).
@@ -369,7 +372,8 @@ impl Water {
         &self.numbers
     }
 
-    /// From the next frame. (The reach sizes the bins: it stays as the body was made with.)
+    /// From the next frame. (The reach sizes the bins: it stays as the body was made with. The
+    /// deep water's solids by cell are worked out once, from `wall_off` as the body was made.)
     pub fn set_numbers(&mut self, numbers: Numbers) {
         self.numbers = Numbers { reach: self.numbers.reach, ..numbers };
     }
@@ -522,7 +526,7 @@ impl Water {
             deep: [deep_d, deep_b, n.deep_full, n.deep_most.max(0.0)],
             deep2: [
                 if kept.is_finite() { kept.max(0.0) } else { 0.0 },
-                n.meet_even.clamp(0.0, 1.0),
+                n.meet_share(dt, cell),
                 n.rest_most.max(0.0),
                 0.0,
             ],
@@ -530,7 +534,7 @@ impl Water {
             // (Drops rest `wall_off` off a face and fill the half spacing round them: the liquid's
             // edge is a quarter cell nearer the face. Drops stop at `EDGE + 0.05` from the grid's
             // edge, so the course's own liquid starts a quarter cell before that.)
-            mg2: [n.fill_rate.max(0.0), n.face_floor.max(0.0), n.wall_off - 0.25, 2.0 + 0.05 - 0.25],
+            mg2: [n.fill_rate.max(0.0), n.face_floor.max(0.0), n.wall_off - 0.25, EDGE + 0.05 - 0.25],
             dgrid: [self.deep.levels.len() as u32, reach, 0, 0],
             lv: self.deep.ladder(),
         }
@@ -673,9 +677,8 @@ impl Water {
             let mut encoder =
                 gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water frame") });
             encoder.clear_buffer(clock.on_card(slot), 0, None);
-            if deep_on {
-                encoder.clear_buffer(&self.deep.count, 0, None);
-            }
+            // (Every frame, so a frame without the deep part reports no deep cells.)
+            encoder.clear_buffer(&self.deep.count, 0, None);
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("water frame"),
@@ -823,17 +826,6 @@ impl Water {
     }
 
     /// Waits for the card and reads `bytes` of `buffer` (tests and measuring only).
-    /// The deep water's cells as the last step left them, for looking into by hand: each node's
-    /// pressure (x dt), what must flow out, the open shares' sum and whether it was solved, and its
-    /// depth share.
-    #[doc(hidden)]
-    pub fn read_deep(&self) -> (Vec<[f32; 4]>, Vec<f32>) {
-        let cells = self.layout.nodes() as u64;
-        let p = bytemuck::pod_collect_to_vec::<u8, [f32; 4]>(&self.read_buffer(&self.deep.cellp, cells * 16));
-        let w = bytemuck::pod_collect_to_vec::<u8, f32>(&self.read_buffer(&self.deep.dfa, cells * 4));
-        (p, w)
-    }
-
     fn read_buffer(&self, buffer: &wgpu::Buffer, bytes: u64) -> Vec<u8> {
         let device = &self.gpu.device;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
