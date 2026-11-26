@@ -4,12 +4,18 @@
 // 1. `vs_splat`/`fs_splat`: every drop a soft round splat, summed (additive blending, in the drops'
 //    order, so the sums repeat) into two half-float pictures: its liquid's colour and Deep colour
 //    weighted by the splat, the splat's weight, and its Clarity.
-// 2. `fs_base`: at half size, how much of each texel is air (neither liquid, the amount cut at its
-//    level, nor rock): the first level of a ladder. (Light comes in only through the air: rock is not
-//    a way in.) The air's share, not the rest's: a half float keeps small shares exactly, and deep in
-//    a pool the depth reads how little air is round.
+// 2. The depth ladder, over the whole course (not the picture, so the same water has the same depth
+//    wherever the camera is and however near): `vs_world`/`fs_world` sum the same splats at each
+//    node of the layout; `fs_base` says how much of each node is open (not rock, nor past the
+//    course's edge, which holds the liquid like a wall) and how much is air (open and not liquid,
+//    the amount cut at its level): the ladder's first level. Depth is read from air's share of the
+//    open part round a pixel: light comes in only through the air, and a wall beside the water
+//    neither lights it nor darkens it. (The air's share, not the liquid's: a half float keeps small
+//    shares exactly, and deep in a pool the depth reads how little air is round.)
 // 3. `fs_down`: each level of the ladder from the one before, half the size, blurred with the
-//    [1 3 3 1] / 8 kernel (four bilinear taps).
+//    [1 3 3 1] / 8 kernel, texel by texel. The first level is padded past the layout to a whole
+//    number of top texels, so every halving is exact; the padding, and anything past the ladder,
+//    is closed.
 // 4. `fs_show`: the picture: the back, the liquid (its outline cut from the amount and smoothed by
 //    its slope; its depth from the ladder, read at the pixel's Clarity, taking it from Colour to Deep
 //    colour; a thin lighter rim along its surface), the rock on top (its edge smoothed, a darker rim
@@ -35,6 +41,9 @@ struct U {
     // linear back colour, linear rock colour
     back: vec4<f32>,
     rock: vec4<f32>,
+    // a splat's radius at the layout's nodes (cells), its peak weight there, the ladder's first
+    // level's width and height (nodes, padded)
+    depth: vec4<f32>,
     liquids: array<Liquid, 16>,
 };
 
@@ -44,11 +53,14 @@ const RIM_LIGHT: f32 = 0.22;
 const ROCK_DARK: f32 = 0.25;
 // Clarity goes into the sums divided by this (half floats).
 const CLARITY_SCALE: f32 = 1024.0;
-// The blur (sigma, picture px) of the ladder's level 0, read with a cubic B-spline: level k is
-// about this times 2^k.
-const LADDER_SIGMA: f32 = 1.53;
+// The blur (sigma, cells) of the ladder's level k read with a cubic B-spline is about this times
+// 2^k: the halvings' [1 3 3 1] / 8 add 0.75 of a texel squared each, the B-spline a third of one, so
+// sigma^2 = (1/4 + 1/3) 4^k - 1/4.
+const LADDER_SIGMA: f32 = 0.7638;
 // The most the face fill makes of the amount (a splat mostly past the face).
 const MOST_FILL: f32 = 5.0;
+// Drops stop this many cells in from the grid's edge (common.wgsl's EDGE, 2, and 0.05 more).
+const EDGE_STOP: f32 = 2.05;
 
 @group(0) @binding(0) var<uniform> u: U;
 // The drops: place and speed (grid units), kind, serial, colour, 0.
@@ -59,12 +71,23 @@ const MOST_FILL: f32 = 5.0;
 @group(0) @binding(4) var amount1: texture_2d<f32>;
 // The solid field: each node's distance from the nearest face, world px (below 0 inside).
 @group(0) @binding(5) var<storage, read> field: array<f32>;
-// The ladder (all levels in `fs_show`, the level before in `fs_down`) and its sampler.
+// The ladder: air's share and the open (not rock) share, blurred more at each level (all levels in
+// `fs_show`, the level before in `fs_down`).
 @group(0) @binding(6) var ladder: texture_2d<f32>;
-@group(0) @binding(7) var smp: sampler;
+// The splats summed at the layout's nodes (one texel a node).
+@group(0) @binding(8) var nodes: texture_2d<f32>;
 
+// Whether both are numbers and not infinite (by their bits: a compiler may take a NaN to compare
+// as anything).
 fn finite2(v: vec2<f32>) -> bool {
-    return abs(v.x) < 1e30 && abs(v.y) < 1e30;
+    let e = bitcast<vec2<u32>>(v) & vec2<u32>(0x7f800000u);
+    return all(e != vec2<u32>(0x7f800000u));
+}
+
+// Whether a drop at grid point `g` is drawn: a number, in the course (the engine's `alive`).
+fn alive(g: vec2<f32>) -> bool {
+    let last = vec2<f32>(f32(u.size.z) - 1.0, f32(u.size.w) - 1.0);
+    return finite2(g) && all(g >= vec2<f32>(0.0)) && all(g <= last);
 }
 
 // The liquid a drop of `kind` is: past the looks given, the last given.
@@ -93,10 +116,9 @@ fn vs_splat(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> S
     var out: SplatOut;
     out.off = c;
     let g = xv[i].xy;
-    let last = vec2<f32>(f32(u.size.z) - 1.0, f32(u.size.w) - 1.0);
     // A drop that is not a number or has left the course (the engine's `alive`) is not drawn: all six
     // corners on one point off the picture make nothing.
-    if !finite2(g) || any(g < vec2<f32>(0.0)) || any(g > last) {
+    if !alive(g) {
         out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
         out.colour = vec3<f32>(0.0);
         out.deep = vec4<f32>(0.0);
@@ -130,6 +152,41 @@ fn fs_splat(in: SplatOut) -> Sums {
     return out;
 }
 
+// The same splats summed at the layout's nodes, for the depth ladder: texel i's middle is node i.
+struct NodeOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) off: vec2<f32>,
+};
+
+@vertex
+fn vs_world(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> NodeOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let c = corners[v];
+    var out: NodeOut;
+    out.off = c;
+    let g = xv[i].xy;
+    if !alive(g) {
+        out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
+        return out;
+    }
+    let t = g + 0.5 + c * u.depth.x;
+    let size = vec2<f32>(f32(u.size.z), f32(u.size.w));
+    out.pos = vec4<f32>(t.x / size.x * 2.0 - 1.0, 1.0 - t.y / size.y * 2.0, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_world(in: NodeOut) -> @location(0) vec4<f32> {
+    let q2 = dot(in.off, in.off);
+    if q2 >= 1.0 {
+        discard;
+    }
+    return vec4<f32>(u.depth.y * (1.0 - q2) * (1.0 - q2), 0.0, 0.0, 0.0);
+}
+
 // ---- the field, the face fill, the amount ----
 
 // The solid field at world point `p` (between the nodes round it), world px.
@@ -144,6 +201,20 @@ fn field_at(p: vec2<f32>) -> f32 {
     let top = mix(field[at], field[at + 1u], f.x);
     let bottom = mix(field[at + cols], field[at + cols + 1u], f.x);
     return mix(top, bottom, f.y);
+}
+
+// How far grid point `g` (node units) is inside the course's edge, cells, measured like the field:
+// drops stop EDGE_STOP cells in from the grid's edge, and that is `rest` cells off a face.
+fn edge_far(g: vec2<f32>) -> f32 {
+    let hi = vec2<f32>(f32(u.size.z) - 1.0, f32(u.size.w) - 1.0) - g;
+    return min(min(g.x, g.y), min(hi.x, hi.y)) - (EDGE_STOP - u.grid.w);
+}
+
+// The distance to the nearest face at world point `p`, world px: the solid field's, or the
+// course's edge, which holds the liquid like a wall (light never comes in past it, a body resting
+// on it is drawn up to it, and it has no rim). Only the field's rock is drawn.
+fn face_at(p: vec2<f32>) -> f32 {
+    return min(field_at(p), edge_far((p - u.grid.xy) / u.grid.z) * u.grid.z);
 }
 
 // The world point at the middle of picture pixel `px` (or any picture point).
@@ -171,7 +242,7 @@ fn amount_filled(px: vec2<i32>, far: f32) -> f32 {
 }
 
 fn amount_at(px: vec2<i32>) -> f32 {
-    return amount_filled(px, field_at(world_of(vec2<f32>(px) + 0.5)));
+    return amount_filled(px, face_at(world_of(vec2<f32>(px) + 0.5)));
 }
 
 // How much of picture pixel `px` the rock covers (its edge smoothed over a pixel).
@@ -197,33 +268,51 @@ fn vs_full(@builtin(vertex_index) v: u32) -> FullOut {
 
 @fragment
 fn fs_base(in: FullOut) -> @location(0) vec4<f32> {
-    // Texel i covers picture pixels 2i and 2i + 1 each way.
-    let t = vec2<i32>(floor(in.pos.xy));
-    var closed = 0.0;
+    // Texel i is node i (past the layout, its edge node again).
+    let last = vec2<i32>(i32(u.size.z) - 1, i32(u.size.w) - 1);
+    let n = clamp(vec2<i32>(floor(in.pos.xy)), vec2<i32>(0), last);
+    // The nearest face, cells (the field's or the course's edge, as `face_at`; padding is past the
+    // edge, so closed).
+    let far = min(field[u32(n.y) * u.size.z + u32(n.x)] / u.grid.z, edge_far(vec2<f32>(n)));
+    // (The face fill as `amount_filled`, with the splat's radius in cells.)
+    let missing = side((far - u.grid.w) / u.depth.x);
+    let a = textureLoad(nodes, n, 0).r / max(1.0 - missing, 1.0 / MOST_FILL);
     let level = u.splat.z;
-    for (var k = 0; k < 4; k++) {
-        let px = 2 * t + vec2<i32>(k & 1, k >> 1);
-        let far = field_at(world_of(vec2<f32>(px) + 0.5));
-        let liquid = smoothstep(0.75 * level, 1.25 * level, amount_filled(px, far));
-        closed += max(liquid, rock_cover(far));
-    }
-    return vec4<f32>(1.0 - closed * 0.25, 0.0, 0.0, 0.0);
+    let liquid = smoothstep(0.75 * level, 1.25 * level, a);
+    // (Its share of air, and of what isn't rock: depth is read from air's share of the open part,
+    // so a wall beside the water neither lights it nor darkens it.)
+    let open = 1.0 - clamp(0.5 - far, 0.0, 1.0);
+    return vec4<f32>(open * (1.0 - liquid), open, 0.0, 0.0);
 }
 
 // ---- 3. the ladder's halvings ----
 
+// Texel `at` of the ladder's level `k`: none of the course's air is past its texels (the edge and
+// the padding are closed), so a texel past them is closed too, never the edge texel again (which
+// at a coarse level holds air from well inside).
+fn ladder_texel(at: vec2<i32>, k: i32) -> vec2<f32> {
+    let size = vec2<i32>(textureDimensions(ladder, k));
+    if any(at < vec2<i32>(0)) || any(at >= size) {
+        return vec2<f32>(0.0);
+    }
+    return textureLoad(ladder, at, k).rg;
+}
+
 @fragment
 fn fs_down(in: FullOut) -> @location(0) vec4<f32> {
-    // This texel's middle is at 2i + 1 in the level before's texels; [1 3 3 1] each way is four
-    // bilinear taps 0.75 texel either side of it.
-    let src = vec2<f32>(textureDimensions(ladder, 0));
-    let c = 2.0 * floor(in.pos.xy) + 1.0;
-    var sum = 0.0;
-    for (var k = 0; k < 4; k++) {
-        let o = vec2<f32>(select(-0.75, 0.75, (k & 1) == 1), select(-0.75, 0.75, (k >> 1) == 1));
-        sum += textureSampleLevel(ladder, smp, (c + o) / src, 0.0).r;
+    // This texel's middle is at 2i + 1 in the level before's texels: [1 3 3 1] / 8 each way over
+    // texels 2i - 1 to 2i + 2, read one by one (past the course is closed, `ladder_texel`).
+    let first = 2 * vec2<i32>(floor(in.pos.xy)) - 1;
+    let w = array<f32, 4>(0.125, 0.375, 0.375, 0.125);
+    var sum = vec2<f32>(0.0);
+    for (var j = 0; j < 4; j++) {
+        var row = vec2<f32>(0.0);
+        for (var i = 0; i < 4; i++) {
+            row += w[i] * ladder_texel(first + vec2<i32>(i, j), 0);
+        }
+        sum += w[j] * row;
     }
-    return vec4<f32>(sum * 0.25, 0.0, 0.0, 0.0);
+    return vec4<f32>(sum, 0.0, 0.0);
 }
 
 // ---- 4. the picture ----
@@ -236,21 +325,19 @@ fn bspline(f: f32) -> vec4<f32> {
         / 6.0;
 }
 
-// Level `k` of the ladder read with a cubic B-spline at picture point `px`, texel by texel (exact,
-// where a bilinear sampler's weights are rounded).
-fn ladder_at(px: vec2<f32>, k: i32) -> f32 {
-    let last = vec2<i32>(textureDimensions(ladder, k)) - 1;
-    // Level k's texel i covers picture pixels i 2^(k+1) up to (i + 1) 2^(k+1).
-    let t = px / exp2(f32(k + 1)) - 0.5;
+// Level `k` of the ladder read with a cubic B-spline at grid point `g` (cells from the layout's
+// origin), texel by texel (exact, where a bilinear sampler's weights are rounded).
+fn ladder_at(g: vec2<f32>, k: i32) -> vec2<f32> {
+    // Level k's texel i covers nodes i 2^k up to (i + 1) 2^k - 1: its middle is at (i + 1/2) 2^k - 1/2.
+    let t = (g + 0.5) / exp2(f32(k)) - 0.5;
     let base = vec2<i32>(floor(t));
     let wx = bspline(t.x - floor(t.x));
     let wy = bspline(t.y - floor(t.y));
-    var sum = 0.0;
+    var sum = vec2<f32>(0.0);
     for (var j = 0; j < 4; j++) {
-        var row = 0.0;
+        var row = vec2<f32>(0.0);
         for (var i = 0; i < 4; i++) {
-            let at = clamp(base + vec2<i32>(i - 1, j - 1), vec2<i32>(0), last);
-            row += wx[i] * textureLoad(ladder, at, k).r;
+            row += wx[i] * ladder_texel(base + vec2<i32>(i - 1, j - 1), k);
         }
         sum += wy[j] * row;
     }
@@ -298,26 +385,28 @@ fn absorbed(px: vec2<f32>, clarity: f32) -> f32 {
     if clarity <= 0.0 {
         return 0.0;
     }
+    let g = (world_of(px) - u.grid.xy) / u.grid.z;
     let top = u.widths.z - 1.0;
-    let level = clamp(log2(max(clarity * u.view.z, 1e-3) / LADDER_SIGMA), 0.0, top);
+    let level = clamp(log2(max(clarity / u.grid.z, 1e-3) / LADDER_SIGMA), 0.0, top);
     let k0 = i32(floor(level));
     let k1 = min(k0 + 1, i32(top));
     let f = level - f32(k0);
     // (Each level read with the same level number across the picture: where liquids of different
     // Clarity meet, neighbouring pixels want different levels, and some drivers take one level for
     // a whole block of pixels.)
-    var open = 0.0;
+    var seen = vec2<f32>(0.0);
     for (var k = 0; k <= i32(top); k++) {
         let w = select(0.0, 1.0 - f, k == k0) + select(0.0, f, k == k1);
         if w > 0.0 {
-            open += w * ladder_at(px, k);
+            seen += w * ladder_at(g, k);
         }
     }
-    open = clamp(open, 0.0, 1.0);
-    let x = -1.41421356 * erfinv(clamp(2.0 * open - 1.0, -0.99999, 0.99999));
+    // Air's share of the open part round the pixel.
+    let air = clamp(seen.x / max(seen.y, 1e-4), 0.0, 1.0);
+    let x = -1.41421356 * erfinv(clamp(2.0 * air - 1.0, -0.99999, 0.99999));
     // (A soft floor at 0 rather than a corner: no line where b passes a half.)
     let depth = 0.5 * (x + sqrt(x * x + 0.04));
-    let sigma = exp2(level) * LADDER_SIGMA / u.view.z;
+    let sigma = exp2(level) * LADDER_SIGMA * u.grid.z;
     return 1.0 - exp(-depth * sigma / clarity);
 }
 
@@ -331,12 +420,13 @@ fn fs_show(in: FullOut) -> @location(0) vec4<f32> {
     let px = vec2<i32>(floor(in.pos.xy));
     let at = vec2<f32>(px) + 0.5;
     let far = field_at(world_of(at));
+    let face = face_at(world_of(at));
     var colour = u.back.rgb;
 
     let s0 = textureLoad(amount0, px, 0);
     let level = u.splat.z;
     if s0.a > 0.0 {
-        let a = amount_filled(px, far);
+        let a = amount_filled(px, face);
         // The amount's slope by central differences: the outline smoothed over one picture pixel.
         let gx = 0.5 * (amount_at(px + vec2<i32>(1, 0)) - amount_at(px - vec2<i32>(1, 0)));
         let gy = 0.5 * (amount_at(px + vec2<i32>(0, 1)) - amount_at(px - vec2<i32>(0, 1)));
@@ -353,7 +443,7 @@ fn fs_show(in: FullOut) -> @location(0) vec4<f32> {
             // A thin lighter rim along the surface, not along the rock it rests on: the liquid's own
             // Colour a little lightened, so the edge of a hole deep in a pool is lit water, not grey.
             let rim_w = u.widths.x;
-            let off_rock = smoothstep(rim_w, 2.0 * rim_w, far * u.view.z);
+            let off_rock = smoothstep(rim_w, 2.0 * rim_w, face * u.view.z);
             let rim = (1.0 - smoothstep(0.0, rim_w, inside)) * off_rock;
             body = mix(body, own + (vec3<f32>(1.0) - own) * RIM_LIGHT, rim);
             colour = mix(colour, body, alpha);

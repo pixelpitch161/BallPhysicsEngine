@@ -5,8 +5,9 @@
 //! rim along its surface, and round droplets. Drawn straight from a body's drops, never read back,
 //! in the drops' order, so the same drops give the same picture to the bit.
 //!
-//! [`PlainGpu`] holds the pipelines (one a device); a [`Plain`] holds one picture's textures and the
-//! solid field. Part 2b draws the editor's water with it, and part 6's looks build on its amount
+//! [`PlainGpu`] holds the pipelines (one a device); a [`Plain`] holds the course's solid field and
+//! depth ladder (over the whole course, so depth doesn't change with the view) and one picture
+//! size's textures. Part 2b draws the editor's water with it, and part 6's looks build on its amount
 //! pictures.
 
 use std::sync::Arc;
@@ -38,7 +39,9 @@ pub const LEAST_ROCK_RIM: f32 = 1.5;
 const DITHER: f32 = 1.0 / 255.0;
 
 const AMOUNT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-const LADDER: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+const LADDER: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+/// The splats summed at the layout's nodes.
+const NODES: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The picture's format: 8 bits a channel holding sRGB (the sRGB view may be used to sample it).
 pub const OUTPUT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
@@ -118,7 +121,13 @@ struct PlainU {
     widths: [f32; 4],
     back: [f32; 4],
     rock: [f32; 4],
+    depth: [f32; 4],
     liquids: [[f32; 8]; MOST_LIQUIDS],
+}
+
+/// A splat's peak weight at its own size: a body at rest (four drops a cell) sums to 1.
+fn body_peak() -> f32 {
+    3.0 / (4.0 * std::f32::consts::PI * RADIUS * RADIUS)
 }
 
 /// The splat's radius (picture px) and peak weight at `scale` picture px a world px, for `cell`-px
@@ -127,7 +136,7 @@ struct PlainU {
 pub fn splat_for(cell: f32, scale: f32) -> (f32, f32) {
     let own = RADIUS * cell * scale;
     let r = own.max(LEAST_R);
-    let peak = 3.0 / (4.0 * std::f32::consts::PI * RADIUS * RADIUS);
+    let peak = body_peak();
     if r > own {
         let share = (own / r) * (own / r);
         (r, (peak * share).max(LONE_PEAK * LEVEL))
@@ -136,11 +145,23 @@ pub fn splat_for(cell: f32, scale: f32) -> (f32, f32) {
     }
 }
 
-/// How many levels the ladder of a picture this size has (its first level is half the size; each
-/// next one half again, down to a texel).
-fn ladder_levels(width: u32, height: u32) -> u32 {
-    let side = width.div_ceil(2).max(height.div_ceil(2)).max(1);
-    32 - side.leading_zeros()
+/// The depth ladder of a layout `cols` x `rows` nodes: its first level's size (a texel a node,
+/// padded past the layout to a whole number of top texels, so every halving is exact) and how many
+/// levels it has (until a top texel spans the course's narrower side), within `most` texels a side.
+fn ladder_for(cols: u32, rows: u32, most: u32) -> (u32, u32, u32) {
+    let narrow = cols.min(rows).max(1);
+    let mut levels = 32 - (narrow - 1).leading_zeros() + 1;
+    loop {
+        let top = 1u32 << (levels - 1);
+        let (w, h) = (cols.max(1).div_ceil(top) * top, rows.max(1).div_ceil(top) * top);
+        if (w <= most && h <= most) || levels == 1 {
+            if w > most || h > most {
+                eprintln!("water plain: a course {cols} x {rows} nodes is past the card's {most} texels a side");
+            }
+            return (w.min(most), h.min(most), levels);
+        }
+        levels -= 1;
+    }
 }
 
 /// The plain drawing's pipelines on one device.
@@ -148,10 +169,10 @@ pub struct PlainGpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     splat: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    world: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
     base: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
     down: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
     show: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
-    sampler: wgpu::Sampler,
 }
 
 impl std::fmt::Debug for PlainGpu {
@@ -164,9 +185,8 @@ impl std::fmt::Debug for PlainGpu {
 enum B {
     Uniform,
     Storage,
-    Amount,
-    Ladder,
-    Sampler,
+    /// A float texture, read texel by texel.
+    Texture,
 }
 
 impl PlainGpu {
@@ -193,12 +213,11 @@ impl PlainGpu {
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
-                        B::Amount | B::Ladder => wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: matches!(b, B::Ladder) },
+                        B::Texture => wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        B::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     },
                     count: None,
                 })
@@ -243,11 +262,14 @@ impl PlainGpu {
             dst_factor: wgpu::BlendFactor::One,
             operation: wgpu::BlendOperation::Add,
         };
-        let summed = Some(wgpu::ColorTargetState {
-            format: AMOUNT,
-            blend: Some(wgpu::BlendState { color: add, alpha: add }),
-            write_mask: wgpu::ColorWrites::ALL,
-        });
+        let summed_as = |format| {
+            Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState { color: add, alpha: add }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        };
+        let summed = summed_as(AMOUNT);
         let plain = |format| Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL });
         let splat = pipeline(
             "water plain splats",
@@ -256,16 +278,23 @@ impl PlainGpu {
             "fs_splat",
             &[summed.clone(), summed],
         );
+        let world = pipeline(
+            "water plain nodes",
+            layout("water plain nodes", &[(0, B::Uniform), (1, B::Storage)]),
+            "vs_world",
+            "fs_world",
+            &[summed_as(NODES)],
+        );
         let base = pipeline(
             "water plain ladder base",
-            layout("water plain ladder base", &[(0, B::Uniform), (3, B::Amount), (5, B::Storage)]),
+            layout("water plain ladder base", &[(0, B::Uniform), (8, B::Texture), (5, B::Storage)]),
             "vs_full",
             "fs_base",
             &[plain(LADDER)],
         );
         let down = pipeline(
             "water plain ladder down",
-            layout("water plain ladder down", &[(6, B::Ladder), (7, B::Sampler)]),
+            layout("water plain ladder down", &[(6, B::Texture)]),
             "vs_full",
             "fs_down",
             &[plain(LADDER)],
@@ -274,22 +303,13 @@ impl PlainGpu {
             "water plain show",
             layout(
                 "water plain show",
-                &[(0, B::Uniform), (3, B::Amount), (4, B::Amount), (5, B::Storage), (6, B::Ladder), (7, B::Sampler)],
+                &[(0, B::Uniform), (3, B::Texture), (4, B::Texture), (5, B::Storage), (6, B::Texture)],
             ),
             "vs_full",
             "fs_show",
             &[plain(OUTPUT)],
         );
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("water plain ladder"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        Arc::new(PlainGpu { device: device.clone(), queue: queue.clone(), splat, base, down, show, sampler })
+        Arc::new(PlainGpu { device: device.clone(), queue: queue.clone(), splat, world, base, down, show })
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -315,15 +335,73 @@ fn attach(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_
 struct Pictures {
     width: u32,
     height: u32,
-    levels: u32,
     amount: [wgpu::TextureView; 2],
+    output: wgpu::Texture,
+    output_view: wgpu::TextureView,
+}
+
+/// The course's depth ladder: the splats summed at its nodes, and the ladder of the air's share.
+struct Depth {
+    width: u32,
+    height: u32,
+    levels: u32,
+    nodes: wgpu::TextureView,
     /// Each level alone (to draw into, and to read the one before), and all of them.
     ladder_levels: Vec<wgpu::TextureView>,
     ladder_all: wgpu::TextureView,
     /// `down[k]` reads level k (and draws level k + 1).
     down: Vec<wgpu::BindGroup>,
-    output: wgpu::Texture,
-    output_view: wgpu::TextureView,
+}
+
+fn texture(
+    device: &wgpu::Device,
+    label: &str,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+    mips: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: mips,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
+impl Depth {
+    fn new(gpu: &PlainGpu, layout: &Layout) -> Depth {
+        let device = &gpu.device;
+        let most = device.limits().max_texture_dimension_2d;
+        let nodes_size = (layout.cols.clamp(1, most), layout.rows.clamp(1, most));
+        let nodes = texture(device, "water plain nodes", nodes_size, NODES, 1).create_view(&Default::default());
+        let (width, height, levels) = ladder_for(layout.cols, layout.rows, most);
+        let ladder = texture(device, "water plain ladder", (width, height), LADDER, levels);
+        let ladder_levels: Vec<wgpu::TextureView> = (0..levels)
+            .map(|k| {
+                ladder.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: k,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let ladder_all = ladder.create_view(&Default::default());
+        let down = ladder_levels[..levels.saturating_sub(1) as usize]
+            .iter()
+            .map(|view| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("water plain ladder down"),
+                    layout: &gpu.down.1,
+                    entries: &[wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(view) }],
+                })
+            })
+            .collect();
+        Depth { width, height, levels, nodes, ladder_levels, ladder_all, down }
+    }
 }
 
 /// A plain drawing of one body's drops on one course.
@@ -332,8 +410,11 @@ pub struct Plain {
     layout: Layout,
     rest: f32,
     field: wgpu::Buffer,
+    depth: Depth,
     uniform: wgpu::Buffer,
     pictures: Option<Pictures>,
+    /// The last picture size told to be past the card's most (told once).
+    told: Option<(u32, u32)>,
 }
 
 impl std::fmt::Debug for Plain {
@@ -368,12 +449,16 @@ impl Plain {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Plain { gpu, layout: field.layout, rest, field: field_buf, uniform, pictures: None }
+        let depth = Depth::new(&gpu, &field.layout);
+        Plain { gpu, layout: field.layout, rest, field: field_buf, depth, uniform, pictures: None, told: None }
     }
 
     /// The course changed (its layout must be the drops' own).
     pub fn set_field(&mut self, field: &SolidField) {
         self.field = field_buffer(&self.gpu.device, &self.gpu.queue, field);
+        if field.layout != self.layout {
+            self.depth = Depth::new(&self.gpu, &field.layout);
+        }
         self.layout = field.layout;
     }
 
@@ -387,51 +472,10 @@ impl Plain {
             return;
         }
         let device = &self.gpu.device;
-        let texture = |label, w: u32, h: u32, format, mips: u32, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: mips,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
-        let draw_read = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let amount = [
-            texture("water plain amount", width, height, AMOUNT, 1, draw_read).create_view(&Default::default()),
-            texture("water plain deep", width, height, AMOUNT, 1, draw_read).create_view(&Default::default()),
+            texture(device, "water plain amount", (width, height), AMOUNT, 1).create_view(&Default::default()),
+            texture(device, "water plain deep", (width, height), AMOUNT, 1).create_view(&Default::default()),
         ];
-        let levels = ladder_levels(width, height);
-        let ladder = texture("water plain ladder", width.div_ceil(2), height.div_ceil(2), LADDER, levels, draw_read);
-        let ladder_levels: Vec<wgpu::TextureView> = (0..levels)
-            .map(|k| {
-                ladder.create_view(&wgpu::TextureViewDescriptor {
-                    base_mip_level: k,
-                    mip_level_count: Some(1),
-                    ..Default::default()
-                })
-            })
-            .collect();
-        let ladder_all = ladder.create_view(&Default::default());
-        let down = ladder_levels[..levels.saturating_sub(1) as usize]
-            .iter()
-            .map(|view| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("water plain ladder down"),
-                    layout: &self.gpu.down.1,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(view) },
-                        wgpu::BindGroupEntry {
-                            binding: 7,
-                            resource: wgpu::BindingResource::Sampler(&self.gpu.sampler),
-                        },
-                    ],
-                })
-            })
-            .collect();
         let output = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("water plain picture"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -445,12 +489,11 @@ impl Plain {
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         });
         let output_view = output.create_view(&Default::default());
-        self.pictures =
-            Some(Pictures { width, height, levels, amount, ladder_levels, ladder_all, down, output, output_view });
+        self.pictures = Some(Pictures { width, height, amount, output, output_view });
     }
 
     /// The numbers for drawing `view` of this layout's drops with `look`.
-    fn numbers(&self, view: &View, width: u32, height: u32, levels: u32, look: &PlainLook) -> PlainU {
+    fn numbers(&self, view: &View, width: u32, height: u32, look: &PlainLook) -> PlainU {
         let l = &self.layout;
         let (r, peak) = splat_for(l.cell, view.scale);
         let mut liquids = [[0.0f32; 8]; MOST_LIQUIDS];
@@ -471,11 +514,12 @@ impl Plain {
             widths: [
                 (RIM * view.scale).max(LEAST_RIM),
                 (ROCK_RIM * view.scale).max(LEAST_ROCK_RIM),
-                levels as f32,
+                self.depth.levels as f32,
                 DITHER,
             ],
             back: [br, bg, bb, 1.0],
             rock: [rr, rg, rb, 1.0],
+            depth: [RADIUS, body_peak(), self.depth.width as f32, self.depth.height as f32],
             liquids,
         }
     }
@@ -494,12 +538,18 @@ impl Plain {
                 entry(2, drops.id.as_entire_binding()),
             ],
         });
+        let d = &self.depth;
+        let world_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water plain nodes"),
+            layout: &gpu.world.1,
+            entries: &[entry(0, self.uniform.as_entire_binding()), entry(1, drops.xv.as_entire_binding())],
+        });
         let base_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water plain ladder base"),
             layout: &gpu.base.1,
             entries: &[
                 entry(0, self.uniform.as_entire_binding()),
-                entry(3, wgpu::BindingResource::TextureView(&p.amount[0])),
+                entry(8, wgpu::BindingResource::TextureView(&d.nodes)),
                 entry(5, self.field.as_entire_binding()),
             ],
         });
@@ -511,8 +561,7 @@ impl Plain {
                 entry(3, wgpu::BindingResource::TextureView(&p.amount[0])),
                 entry(4, wgpu::BindingResource::TextureView(&p.amount[1])),
                 entry(5, self.field.as_entire_binding()),
-                entry(6, wgpu::BindingResource::TextureView(&p.ladder_all)),
-                entry(7, wgpu::BindingResource::Sampler(&gpu.sampler)),
+                entry(6, wgpu::BindingResource::TextureView(&d.ladder_all)),
             ],
         });
         let pass = |encoder: &mut wgpu::CommandEncoder,
@@ -546,23 +595,27 @@ impl Plain {
             6,
             drops.count,
         );
-        pass(encoder, "water plain ladder base", &[attach(&p.ladder_levels[0])], &gpu.base.0, &base_group, 3, 1);
-        for k in 1..p.levels as usize {
-            pass(encoder, "water plain ladder down", &[attach(&p.ladder_levels[k])], &gpu.down.0, &p.down[k - 1], 3, 1);
+        // The depth ladder, over the whole course.
+        pass(encoder, "water plain nodes", &[attach(&d.nodes)], &gpu.world.0, &world_group, 6, drops.count);
+        pass(encoder, "water plain ladder base", &[attach(&d.ladder_levels[0])], &gpu.base.0, &base_group, 3, 1);
+        for k in 1..d.levels as usize {
+            pass(encoder, "water plain ladder down", &[attach(&d.ladder_levels[k])], &gpu.down.0, &d.down[k - 1], 3, 1);
         }
         pass(encoder, "water plain show", &[attach(&p.output_view)], &gpu.show.0, &show_group, 3, 1);
     }
 
-    /// The picture size `view` asks for, within the card's largest texture.
-    fn size_of(&self, view: &View) -> (u32, u32) {
+    /// The picture size `view` asks for, within the card's largest texture (said once a size).
+    fn size_of(&mut self, view: &View) -> (u32, u32) {
         let most = self.gpu.device.limits().max_texture_dimension_2d;
-        let fit = |side: u32| {
-            if side > most {
-                eprintln!("water plain: a picture {side} pixels across is drawn {most} across (the card's most)");
-            }
-            side.clamp(1, most)
-        };
-        (fit(view.width), fit(view.height))
+        let asked = (view.width, view.height);
+        if (asked.0 > most || asked.1 > most) && self.told != Some(asked) {
+            eprintln!(
+                "water plain: a picture {} x {} is drawn within {most} a side (the card's most)",
+                asked.0, asked.1
+            );
+            self.told = Some(asked);
+        }
+        (asked.0.clamp(1, most), asked.1.clamp(1, most))
     }
 
     /// Draws `drops` (in this drawing's layout's grid units) as `view` shows them, with `look`, and
@@ -574,8 +627,7 @@ impl Plain {
     fn draw_times(&mut self, drops: &DropBuffers, view: &View, look: &PlainLook, times: u32) {
         let (width, height) = self.size_of(view);
         self.pictures_for(width, height);
-        let levels = self.pictures.as_ref().map_or(1, |p| p.levels);
-        let numbers = self.numbers(view, width, height, levels, look);
+        let numbers = self.numbers(view, width, height, look);
         self.gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&numbers));
         let mut encoder =
             self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water plain") });
@@ -588,7 +640,8 @@ impl Plain {
     /// Draws `times` pictures in one submission and waits for the card: the time a picture takes,
     /// the card's own time once it is busy (for the measuring runs).
     pub fn draw_many(&mut self, drops: &DropBuffers, view: &View, look: &PlainLook, times: u32) -> std::time::Duration {
-        self.draw_times(drops, view, look, 1);
+        // (Three to warm up.)
+        self.draw_times(drops, view, look, 3);
         self.gpu.device.poll(wgpu::PollType::wait_indefinitely()).expect("the card");
         let at = std::time::Instant::now();
         self.draw_times(drops, view, look, times.max(1));
@@ -652,10 +705,24 @@ mod tests {
     }
 
     #[test]
-    fn the_ladder_goes_down_to_one_texel() {
-        // (wgpu's levels: 960, 480, 240, 120, 60, 30, 15, 7, 3, 1.)
-        assert_eq!(ladder_levels(1080, 1920), 10);
-        assert_eq!(ladder_levels(1, 1), 1);
-        assert_eq!(ladder_levels(3, 7), 3);
+    fn the_ladder_halves_exactly_until_a_texel_spans_the_course() {
+        // A screen at 2 px cells: 541 x 961 nodes, padded to 1024 x 1024; its top level (1 << 10
+        // nodes a texel) is one texel.
+        assert_eq!(ladder_for(541, 961, 8192), (1024, 1024, 11));
+        // A course three screens tall: the top texels span its width, three of them down it.
+        assert_eq!(ladder_for(541, 2881, 8192), (1024, 3072, 11));
+        // At 8 px cells.
+        assert_eq!(ladder_for(136, 241, 8192), (256, 256, 9));
+        assert_eq!(ladder_for(1, 1, 8192), (1, 1, 1));
+        // Every level of it halves exactly.
+        for (cols, rows) in [(541u32, 961u32), (541, 2881), (136, 241), (3, 7), (1000, 1)] {
+            let (w, h, levels) = ladder_for(cols, rows, 8192);
+            assert!(w >= cols && h >= rows);
+            let top = 1 << (levels - 1);
+            assert_eq!((w % top, h % top), (0, 0), "{cols} x {rows}");
+        }
+        // Past the card's most it keeps within it.
+        let (w, h, _) = ladder_for(300, 9000, 8192);
+        assert!(w <= 8192 && h <= 8192);
     }
 }

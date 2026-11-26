@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bpe_water::draw::sets::{self, REST};
 use bpe_water::draw::{Plain, PlainGpu, PlainLiquid, PlainLook, StoredDrops, View};
-use bpe_water::{Drop, Layout, SolidField, WATER};
+use bpe_water::{Drop, Feel, Layout, Numbers, SolidField, WATER, Water, WaterGpu};
 use glam::Vec2;
 
 fn card() -> Option<Arc<PlainGpu>> {
@@ -161,6 +161,13 @@ fn odd_and_tiny_pictures_draw() {
         let pic = draw(&gpu, &bench.field, &bench.drops, view);
         assert_eq!(pic.pixels.len(), (w * h * 4) as usize);
     }
+    // Wider than the card's widest picture: drawn as wide as it can be, never a panic.
+    let most = gpu.device().limits().max_texture_dimension_2d;
+    let view = View { lo: Vec2::new(-540.0, 0.0), scale: (most + 100) as f32 / 1080.0, width: most + 100, height: 1 };
+    let stored = StoredDrops::new(gpu.device(), gpu.queue(), &bench.drops);
+    let mut plain = Plain::new(gpu.clone(), &bench.field, REST);
+    plain.draw(&stored.buffers(), &view, &sets::look());
+    assert_eq!(plain.read().len(), (most * 4) as usize);
 }
 
 /// Water deep in a pool is nearer its Deep colour than a thin stream, and it darkens going down from
@@ -387,23 +394,93 @@ fn liquids_of_different_clarity_meet_without_a_line() {
     }
 }
 
-/// A body that grows between drawings (more drops than the drawing saw before) draws all of them.
+/// A body that grows between drawings (the engine makes its buffers anew when drops are added past
+/// its room) draws all of them, from the same drawing.
 #[test]
 fn a_grown_body_draws_its_new_drops() {
     let Some(gpu) = card() else { return };
     let field = open(8.0);
-    let first = sets::lattice(&field, Vec2::new(-200.0, -100.0), Vec2::new(0.0, 100.0), 0);
-    let mut grown = first.clone();
-    grown.extend(sets::lattice(&field, Vec2::new(100.0, -100.0), Vec2::new(300.0, 100.0), 0));
+    let first = sets::lattice(&field, Vec2::new(-200.0, -100.0), Vec2::new(-100.0, 0.0), 0);
+    let more = sets::lattice(&field, Vec2::new(100.0, -300.0), Vec2::new(400.0, 300.0), 0);
+    let engine = WaterGpu::new(gpu.device(), gpu.queue());
+    let mut water = Water::new(engine, &field, Vec2::ZERO, Numbers::default(), &[Feel::default()]);
+    water.add(&first);
     let view = View::screen(0.5);
     let mut plain = Plain::new(gpu.clone(), &field, REST);
     let look = sets::look();
-    for (drops, shown) in [(&first, false), (&grown, true)] {
-        let stored = StoredDrops::new(gpu.device(), gpu.queue(), drops);
-        plain.draw(&stored.buffers(), &view, &look);
+    for (add, shown) in [(None, false), (Some(&more), true)] {
+        if let Some(more) = add {
+            water.add(more);
+        }
+        plain.draw(&water.drop_buffers(), &view, &look);
         let pic = Picture { pixels: plain.read(), width: view.width, height: view.height, view };
-        assert!(apart(pic.at(Vec2::new(-100.0, 0.0)), BACK()) > 40, "the first block is drawn");
-        assert_eq!(apart(pic.at(Vec2::new(200.0, 0.0)), BACK()) > 40, shown, "the new block is drawn only once grown");
+        assert!(apart(pic.at(Vec2::new(-150.0, -50.0)), BACK()) > 40, "the first block is drawn");
+        assert_eq!(apart(pic.at(Vec2::new(250.0, 0.0)), BACK()) > 40, shown, "the new block is drawn only once added");
+    }
+    assert!(water.count() as usize > 4 * first.len(), "the body grew past its first room");
+}
+
+/// A pool filling the bottom half of an open course and its mirror image filling the top half darken
+/// alike with depth, right out to the picture's edges, at any Clarity on the Water Look card; and the
+/// course's side edges (like any wall) neither light the water beside them nor darken it.
+#[test]
+fn depth_reaches_the_edges_at_any_clarity() {
+    let Some(gpu) = card() else { return };
+    let field = open(4.0);
+    // Filled right up to the course's edge, where drops stop (2.05 cells in from the grid's edge).
+    let l = field.layout;
+    let (lo, hi) = (l.to_world(Vec2::splat(2.05)), l.to_world(Vec2::new(l.cols as f32, l.rows as f32) - 3.05));
+    let below = sets::lattice(&field, Vec2::new(lo.x, 0.0), hi, 0);
+    let above = sets::lattice(&field, lo, Vec2::new(hi.x, 0.0), 0);
+    for clarity in [100.0f32, 200.0, 400.0, 600.0] {
+        let look =
+            PlainLook { liquids: vec![PlainLiquid { clarity, ..PlainLiquid::default() }], ..PlainLook::default() };
+        let a = draw_with(&gpu, &field, &below, View::screen(1.0), &look);
+        let b = draw_with(&gpu, &field, &above, View::screen(1.0), &look);
+        for x in [-520.0f32, 0.0, 520.0] {
+            let at = |pic: &Picture, y: f32| luma(pic.at(Vec2::new(x, y)));
+            for d in [20.0f32, 100.0, 300.0, 600.0, 900.0] {
+                let (la, lb) = (at(&a, d), at(&b, -d));
+                // (The ladder's coarse levels are not quite the same either way up: 3.4 at most.)
+                assert!((la - lb).abs() <= 4.0, "Clarity {clarity}, x {x}, {d} px deep: {la} below, {lb} above");
+                let mid = luma(a.at(Vec2::new(0.0, d)));
+                assert!((la - mid).abs() <= 3.0, "Clarity {clarity}, {d} px deep: {la} at x {x}, {mid} in the middle");
+            }
+            let (near, far) = (at(&a, 100.0), at(&a, 900.0));
+            assert!(far + 10.0 < near, "Clarity {clarity}, x {x}: {far} at 900 px deep against {near} at 100");
+        }
+    }
+}
+
+/// The same water has the same colour wherever the camera is and however near it is: depth is
+/// worked out over the whole course, not the picture.
+#[test]
+fn depth_stays_put_when_the_view_moves_or_zooms() {
+    let Some(gpu) = card() else { return };
+    // A course two screens tall, the pool its lower three quarters.
+    let layout = Layout::cover(Vec2::new(-540.0, -960.0), Vec2::new(540.0, 2880.0), 4.0);
+    let field = SolidField::build(layout, &[]);
+    let drops = sets::lattice(&field, Vec2::new(-540.0, 0.0), Vec2::new(540.0, 2880.0), 0);
+    let views = [
+        View { lo: Vec2::new(-540.0, -960.0), scale: 0.5, width: 540, height: 960 },
+        View { lo: Vec2::new(-540.0, -400.0), scale: 0.5, width: 540, height: 960 },
+        View { lo: Vec2::new(-100.0, 150.0), scale: 2.0, width: 400, height: 400 },
+        View { lo: Vec2::new(-200.0, 200.0), scale: 4.0, width: 200, height: 200 },
+    ];
+    let pics: Vec<Picture> = views.iter().map(|v| draw(&gpu, &field, &drops, *v)).collect();
+    for p in [Vec2::new(0.0, 230.0), Vec2::new(-160.0, 220.0), Vec2::new(-180.0, 240.0)] {
+        let seen: Vec<[u8; 3]> = pics
+            .iter()
+            .filter(|pic| {
+                let q = (p - pic.view.lo) * pic.view.scale;
+                q.x >= 0.0 && q.y >= 0.0 && q.x < pic.width as f32 && q.y < pic.height as f32
+            })
+            .map(|pic| pic.at(p))
+            .collect();
+        assert!(seen.len() >= 3, "{p} is in three pictures or more");
+        for c in &seen {
+            assert!(apart(*c, seen[0]) <= 3, "at {p}: {seen:?}");
+        }
     }
 }
 

@@ -135,7 +135,7 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
   knotted at Extreme.
 - **Not built yet: tiles.** The grid is dense (every cell of the course stored and stepped). The plan's tiles are
   their own part, before courses bigger than a screen.
-- **The bridge** (`bridge.rs`, `bridge.wgsl`): the drops rewritten in today's 112-byte layout with a wet grid made
+- **The bridge** (`bridge.rs`, `bridge.wgsl`; removed in C3, which draws the drops plainly): the drops rewritten in today's 112-byte layout with a wet grid made
   from the solid field, as a `bpe_gfx::liquid_sim::DropsSource`, so today's liquid drawing draws the new core.
   No wetness through it (Wet walls shows nothing), and a thin wall's water stops at the cell-thick face.
 - **Test scenes and measures**: `scenes.rs` (feature `test-scenes`: still boxes, the course, the Water Weird
@@ -148,7 +148,7 @@ editor uses it yet (part 2b): the crate is reached only by its own tests and by 
 `bpe-water/tests/core.rs` (still water rests, a pool keeps its height, two runs and a copy are the same to the
 bit, a thin wall holds a fast pour, a full box stays shut, a two-cell opening flows, the air does not brake a
 pour), `tests/streams.rs` (a thin pour is one narrow stream at 8 and 12 px cells, a sheet stays a sheet, water
-leaves a corner as one arc, a lone drop is left alone), `bpe-kit/tests/water_core.rs` (`the_bridge_draws_every_drop`). By hand, in release:
+leaves a corner as one arc, a lone drop is left alone), `bpe-kit/tests/water_core.rs` (`the_bridge_draws_every_drop`, now `the_plain_drawing_draws_every_drop`). By hand, in release:
 `bpe-water/tests/measure.rs` (`look`, `bands`, `strands`) and `water_core.rs::side_by_side` (both cores drawn
 from one scene, joined left and right; its header lists the `WATER_*` variables).
 
@@ -218,7 +218,7 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
 - **Two engines in the crate.** `bpe_water::Water` (and `WaterGpu`, `Numbers`, `Feel`) is the all-drops engine
   in `src/drops/`. The grid core of parts 2a and 2a-2 moved unchanged to `bpe_water::grid` (`src/grid/`, its
   shaders in `src/grid/shaders/`, its environment numbers now `BPE_GRID_*`); C2 retires it but for its pressure
-  solve. `Drop`, `Pour`, `fill`, the solid field, the bridge and the probes are shared.
+  solve. `Drop`, `Pour`, `fill`, the solid field, the bridge (removed in C3) and the probes are shared.
 - **The step** (`src/drops/shaders/`, joined in `drops/passes.rs`): every drop falls and moves to where it would
   be in short sub-moves kept off the solids (`cs_predict`, which also copies in the step's births); the drops
   are counted into bins one reach wide and sorted by bin and then by serial (`cs_sum_a/b/c`, `cs_scatter`,
@@ -287,7 +287,8 @@ fill is stacked on the floor; the joined pass changes nothing; a run whose steps
 leave the course repeats (twice and from a copy). Unit tests in `drop.rs` (rows pour their amount,
 a thin tap pours single drops, a pour starts at its time, rows are even, a fill is set down on a floor but not
 through an opening, a fill in mid-air stays in its box), `drops/numbers.rs` and
-`drops/passes.rs`. `bpe-kit/tests/water_core.rs::the_bridge_draws_every_drop` runs for both engines.
+`drops/passes.rs`. `bpe-kit/tests/water_core.rs::the_bridge_draws_every_drop` runs for both engines (C3: now
+`the_plain_drawing_draws_every_drop`, all-drops only).
 
 ## Part C3: the plain drawing on the card (as built)
 
@@ -302,14 +303,22 @@ measurements: `docs/superpowers/plans/water-mode/core-c3-plain-drawing.md`. Stil
   `Rgba8UnormSrgb` view allowed), `read()` reads it back for tests. One `PlainGpu` (pipelines) per device.
 - **Passes**: (1) each drop a splat `(1 − q²)²` of radius 0.9 cell (at least 1.25 picture px, its peak then kept
   visible), summed with `One + One` into two `Rgba16Float` pictures: amount, colour, Deep colour and Clarity, so
-  liquids mix where they meet; (2) a half-size `R16Float` ladder of the air's share (neither liquid nor rock),
-  halved down to one texel (the air's share, not the rest's: a half float keeps small shares exactly, which deep
-  water needs, else its colour is blotchy); (3) the picture: the amount filled up to faces the drops rest `rest`
-  cells off, the outline where it passes 0.2, smoothed over one picture pixel by its slope; depth from the ladder
-  blurred by Clarity (`x = −σ √2 erfinv(2o − 1)`, light left `exp(−x / Clarity)`), so a pool darkens with depth and light
-  enters only through the air: a film on rock or a stream by a wall stays its Colour; a thin lighter rim of the
-  liquid's own Colour along the surface but not along rock; the rock on top from the solid field (smoothed edge,
-  25 % darker within 3 px of its face); a fixed 4 × 4 dither under half a step, so ramps never band.
+  liquids mix where they meet; (2) the depth ladder over the **course**, not the picture (one texel a layout node,
+  so the same water has the same depth wherever the camera is and however near): the same splats summed at each
+  node, then an `Rg16Float` level of each node's air share and open (not rock) share, padded past the layout to a
+  whole number of top texels so every halving (`[1 3 3 1] / 8`, texel by texel) is exact, down to a texel about
+  the course's narrow side; past the course is closed (the air's share, not the liquid's: a half float keeps small
+  shares exactly, which deep water needs, else its colour is blotchy); (3) the picture: the amount filled up to
+  faces the drops rest `rest` cells off, the outline where it passes 0.2, smoothed over one picture pixel by its
+  slope; depth from **air's share of the open part** round the pixel, blurred by Clarity (`x = −σ √2 erfinv(2o −
+  1)`, light left `exp(−x / Clarity)`), so a pool darkens with depth and light enters only through the air (a film
+  on rock or a stream by a wall stays its Colour) while a wall beside the water neither lights it nor darkens it;
+  a thin lighter rim of the liquid's own Colour along the surface but not along rock; the rock on top from the
+  solid field (smoothed edge, 25 % darker within 3 px of its face); a fixed 4 × 4 dither under half a step, so
+  ramps never band.
+- **The course's edge is a wall** to the drawing as to the physics (drops stop 2.05 cells in from the grid's edge):
+  no light comes in past it, a body resting on it is filled up to it and has no rim there; only the field's rock
+  is drawn.
 - **Inputs**: `PlainLook { back, rock, liquids: [PlainLiquid { colour, deep, clarity }] }` (sRGB; a drop's liquid
   is `kind & 15`, a kind past the list takes the last; defaults are the Water Look card's: Colour `#2f9bff`, Deep
   `#0b2a4f`, Clarity 200, rock `#6b5e52`, back the rock at half).
