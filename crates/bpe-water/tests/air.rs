@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use bpe_water::probe::{self, Stats};
 use bpe_water::scenes;
-use bpe_water::{Drop, Layout, Numbers, WaterGpu};
+use bpe_water::{Drop, Layout, Numbers, Solid, WaterGpu};
 use glam::Vec2;
 
 fn card() -> Option<Arc<WaterGpu>> {
@@ -187,6 +187,25 @@ fn air_repeats() {
     assert!(!probe::air(&first).is_empty(), "there is air to repeat");
     assert_eq!(probe::print_of(&first), probe::print_of(&b.water.read()), "twice from the start");
     assert_eq!(probe::print_of(&first), probe::print_of(&c.water.read()), "from a copy at frame 3");
+}
+
+/// Air held deep under a solid stays: a bell over the hole (a lid with short sides) keeps its air,
+/// which is far below the band under the water's top where air bursts.
+#[test]
+fn air_held_deep_under_a_bell_stays() {
+    let Some(gpu) = card() else { return };
+    let (centre, radius) = scenes::HOLE;
+    let mut scene = scenes::pool_with_hole(12.0, true);
+    let (l, r, top) = (centre.x - radius - 48.0, centre.x + radius + 48.0, centre.y - radius - 30.0);
+    scene.solids.push(Solid::rect(Vec2::new(l, top), Vec2::new(r, top + 24.0), true, 0.0));
+    scene.solids.push(Solid::rect(Vec2::new(l, top), Vec2::new(l + 12.0, centre.y), true, 0.0));
+    scene.solids.push(Solid::rect(Vec2::new(r - 12.0, top), Vec2::new(r, centre.y), true, 0.0));
+    let mut run = scene.start(&gpu, Numbers::for_cell(12.0));
+    let first = probe::air(&run.water.read()).len();
+    run.run_to(2.0);
+    let left = probe::air(&run.water.read()).len();
+    eprintln!("air under the bell: {first} at the start, {left} at 2 s");
+    assert!(first > 30 && left * 2 > first, "the bell keeps its air: {left} of {first}");
 }
 
 /// Air born at a frame's end lives on past the boundaries after it: a boundary lets go only drops

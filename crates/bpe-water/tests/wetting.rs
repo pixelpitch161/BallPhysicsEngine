@@ -73,10 +73,11 @@ fn wetting_reaches_only_water_near_a_face() {
     assert_eq!(probe::print_of(&dry), probe::print_of(&wet));
 }
 
-/// Air takes no part in Wetting: a block of air drops set on a floor (out of the water: it bursts
-/// from its sides in, a spacing a step) moves the same however wet the floor is.
+/// Air takes no part in Wetting: a block of air drops set on a floor with no water round it (out of
+/// the deep water, so it bursts at once) is gone after its first frame however wet the floor is; a
+/// wet floor holds no air.
 #[test]
-fn air_takes_no_wetting() {
+fn air_on_a_wet_floor_bursts_as_on_a_dry_one() {
     let Some(gpu) = card() else { return };
     let cell = 6.0;
     let play = |wetting: f32| {
@@ -85,11 +86,13 @@ fn air_takes_no_wetting() {
             .with_wetting(wetting);
         let mut water = Water::new(gpu.clone(), &field, scene.gravity, Numbers::for_cell(cell), &scene.feels);
         let (lo, hi) = scene.fills[0];
-        water.add(&fill_stacked(&scene.layout, &field, lo, hi, AIR | STOPS, 0.25));
+        let added = water.add(&fill_stacked(&scene.layout, &field, lo, hi, AIR | STOPS, 0.25));
         water.frame();
-        water.read()
+        (added, water.read())
     };
-    let (dry, wet) = (play(0.0), play(1.0));
-    assert!(!dry.is_empty() && dry.iter().all(Drop::is_air), "{}", dry.len());
-    assert_eq!(probe::print_of(&dry), probe::print_of(&wet));
+    for wetting in [0.0, 1.0] {
+        let (added, left) = play(wetting);
+        assert!(added > 100, "{added}");
+        assert!(left.is_empty(), "at Wetting {wetting}, {} of {added} air drops are left", left.len());
+    }
 }
