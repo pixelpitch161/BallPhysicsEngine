@@ -262,4 +262,18 @@ before merging; modify this plan ("As built and measured").
 - Built as planned but for the Decisions rows marked "as built". The splat, outline, face fill, least splat and
   dither numbers are `const`s in `draw/plain.rs`; the rim, rock rim darkening, Clarity scale, `LADDER_SIGMA`,
   `MOST_FILL` and `EDGE_STOP` live only in `plain.wgsl` (nothing on the processor needs them).
-- Card run and speed: (filled in after the run on the RX 9070 XT).
+- **Card run** (2026-11-26, AMD Radeon RX 9070 XT, Vulkan 26.11.2 (LLPC), test programs built from 0b8ec36):
+  27 runs (every reference shot at 6, 3 and 2 px at full size, Surface pull 0.2 and 1 at 6 and 3 px, the owner's
+  Water Weird at Fine and Extreme beside today's liquid, the speed measure, the look check's water group), all
+  passed, no graphics driver reset. Results on branch `claude/c3-card-results` (371620e, never merged); films,
+  stills and tables in the project files, `water-core/c3/`.
+- **Speed** (`plain_pace`, twice, the card otherwise idle): 1,380,573 drops at 1080 × 1920 **4.27–4.29 ms** a
+  picture (target 8 ms); 85,951 drops at 1080 × 1920 **0.63–0.70 ms** (target 2 ms), at 540 × 960 0.46–0.47 ms.
+  Both targets met with room to spare.
+- **Verdict on the films** (against C1's, drawn through the bridge, and the trial's): the same water (the physics
+  is C1's), and its outline is where C1's drawing put it within about a pixel by eye at every detail; pools now
+  darken with depth from Colour to Deep colour, thin water (streams, films, beads, spray) stays its Colour; at 1:1
+  the edges are smooth with a one-pixel lighter rim, no seams, holes in a pool are ringed in lit water, the rock
+  reads as rock. No flicker: in a settling pool's film the deep water's mean brightness moves at most 1.8/255 from
+  one frame to the next. Not judged here (later parts): bubbles look like holes to the back, not like air in
+  water; the drawing has no light, foam or refraction (part 4's look).

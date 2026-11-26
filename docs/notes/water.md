@@ -334,6 +334,8 @@ measurements: `docs/superpowers/plans/water-mode/core-c3-plain-drawing.md`. Stil
   writes one per still). Hand-built sets (`draw::sets`, feature `test-scenes`): `bench(cell)` (a pool of two
   liquids, a stream, a film on a slope, a blob, lone drops, close pairs, drops that left), `screen_pool(cell,
   share)`, `lattice`, `carved`, `look()`.
+- **Speed on the owner's card** (RX 9070 XT, 2026-11-26): 1.4 million drops at 1080 × 1920 in 4.3 ms a picture,
+  86,000 in 0.7 ms (targets 8 and 2 ms). The card run's films and stills are in the project files, `water-core/c3/`.
 - **Gone**: the bridge to today's liquid drawing (`bridge.rs`, `bridge.wgsl`, both engines' `feed()`) and the
   processor plain drawing (`src/plain.rs`). `shots` films and stills, `water_core.rs` and the look check all use
   this drawing; `water_core.rs` plays `old` and `drops` only (`WATER_CORES`).
