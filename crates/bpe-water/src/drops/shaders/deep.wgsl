@@ -39,6 +39,10 @@ const VOL: f32 = 0.25;
 @group(0) @binding(24) var<storage, read_write> dfb: array<f32>;
 // The cells deep at the frame's last step.
 @group(0) @binding(25) var<storage, read_write> deep_count: array<atomic<u32>>;
+// The liquid, and the liquid times its drops' fullness, where the drops-only water meets the deep
+// water (`REST` fixed point; emptied by the cells pass, summed by the across pass).
+@group(0) @binding(26) var<storage, read_write> rest: array<atomic<u32>>;
+const REST: f32 = 4096.0;
 
 fn fixed(x: f32, scale: f32) -> i32 {
     return i32(round(clamp(x * scale, -LIMIT, LIMIT)));
@@ -298,26 +302,20 @@ fn cs_deep_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
         dense = f32(atomicLoad(&sums[SUMS * k + 5u])) / S_M / liquid;
     }
     let solved = liquid > 1e-4 && diag > 1e-3;
+    if k == 0u {
+        atomicStore(&rest[0], 0u);
+        atomicStore(&rest[1], 0u);
+    }
     var want = 0.0;
     var p = 0.0;
     if solved {
-        let dt = fr.time.x;
         // A face no drop reaches is air: it takes the speed of the face across the cell.
         let u_l = select(select(0.0, right.x, right.y > 0.5), left.x, left.y > 0.5);
         let u_r = select(select(0.0, left.x, left.y > 0.5), right.x, right.y > 0.5);
         let v_t = select(select(0.0, bottom.x, bottom.y > 0.5), top.x, top.y > 0.5);
         let v_b = select(select(0.0, top.x, top.y > 0.5), bottom.x, bottom.y > 0.5);
-        let out = a_r * u_r - a_l * u_l + a_b * v_b - a_t * v_t;
-        // What must flow out: an over-full cell empties (a share of its excess a step, capped); one
-        // with room may fill (a share of its room a step) before it pushes back.
-        let e = dense - 1.0;
-        var s = 0.0;
-        if e > 0.0 {
-            s = min(fr.mg.z * e, fr.mg.w) / dt;
-        } else {
-            s = fr.mg2.x * e / dt;
-        }
-        want = s - out;
+        // (What must flow out of it is worked out once its depth is known: `cs_deep_want`.)
+        want = -(a_r * u_r - a_l * u_l + a_b * v_b - a_t * v_t);
         // The pressure it kept (pressure x the step before's dt: on a frame's first step, scaled to
         // this step's; 0 when the deep part starts afresh).
         p = cellp[k].x * select(1.0, fr.deep2.x, (st.n.w & 2u) != 0u);
@@ -326,7 +324,8 @@ fn cs_deep_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     coef[k] = vec4<f32>(a_l, a_r, a_t, a_b);
-    cellp[k] = vec4<f32>(p, want, diag, select(0.0, 1.0, solved));
+    // (A solved cell's flag is one plus how full its drops are, for `cs_deep_want`.)
+    cellp[k] = vec4<f32>(p, want, diag, select(0.0, 1.0 + dense, solved));
     // Depth is measured from the liquid's own edge: a cell the drops reach that is not full (full:
     // the drops in it are full and they and the solids cover at least half of it, or it is at least
     // half solid), or an open cell they do not reach beside an open one they do. Not from a cell no
@@ -382,7 +381,9 @@ fn cs_deep_across(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     // (The cell's sums are done with: emptied for the next step's gather.)
-    let wet = f32(atomicLoad(&sums[SUMS * k + 4u])) / S_M > 1e-4;
+    let liquid = f32(atomicLoad(&sums[SUMS * k + 4u])) / S_M;
+    let wet = liquid > 1e-4;
+    let filled = f32(atomicLoad(&sums[SUMS * k + 5u])) / S_M;
     for (var s = 0u; s < SUMS; s = s + 1u) {
         atomicStore(&sums[SUMS * k + s], 0);
     }
@@ -410,8 +411,14 @@ fn cs_deep_across(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     // (Only a cell the drops reach has a depth.)
-    let w = select(0.0, smoothstep(fr.deep.x, fr.deep.x + fr.deep.y, sqrt(best)), wet);
+    let depth = sqrt(best);
+    let w = select(0.0, smoothstep(fr.deep.x, fr.deep.x + fr.deep.y, depth), wet);
     dfa[k] = w;
+    // Where the drops-only water meets the deep water (its last cell and the blend): how full it is.
+    if wet && depth >= fr.deep.x - 1.0 && depth <= fr.deep.x + fr.deep.y {
+        atomicAdd(&rest[0], u32(round(liquid * REST)));
+        atomicAdd(&rest[1], u32(round(clamp(filled, 0.0, 8.0) * REST)));
+    }
     // The pressure is only worked out where it pushes: above that the drops hold themselves up,
     // and their weight is the deep water's to carry (it presses on it, and the deep water pushes
     // back where it is over-full).
@@ -421,6 +428,36 @@ fn cs_deep_across(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (st.n.w & 1u) != 0u && w > 0.0 {
         atomicAdd(&deep_count[0], 1u);
     }
+}
+
+// What must flow out of each deep cell: an over-full cell empties (a share of its excess a step,
+// capped); one with room may fill (a share of its room a step) before it pushes back. Full is as full
+// as the drops-only water just above the deep water (at most `rest_most` over at rest): resting any
+// less full, the deep water would be lighter than the water on it, and the pool's top would turn
+// over and over.
+@compute @workgroup_size(256)
+fn cs_deep_want(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let k = gid.x;
+    if k >= fr.grid.x * fr.grid.y {
+        return;
+    }
+    let c = cellp[k];
+    if !(c.w > 0.5) {
+        return;
+    }
+    let liquid = f32(atomicLoad(&rest[0]));
+    var full = 1.0;
+    if liquid > 0.0 {
+        full = clamp(f32(atomicLoad(&rest[1])) / liquid, 1.0, 1.0 + fr.deep2.z);
+    }
+    let e = (c.w - 1.0) - full;
+    var s = 0.0;
+    if e > 0.0 {
+        s = min(fr.mg.z * e, fr.mg.w) / fr.time.x;
+    } else {
+        s = fr.mg2.x * e / fr.time.x;
+    }
+    cellp[k] = vec4<f32>(c.x, c.y + s, c.z, c.w);
 }
 
 // ---- the pressure: red-black sweeps on a ladder of coarser grids ---------------------------------

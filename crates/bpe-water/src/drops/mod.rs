@@ -348,6 +348,7 @@ impl Water {
                     22 => self.deep.coef.as_entire_binding(),
                     23 => self.deep.dfa.as_entire_binding(),
                     24 => self.deep.dfb.as_entire_binding(),
+                    26 => self.deep.rest.as_entire_binding(),
                     _ => self.deep.count.as_entire_binding(),
                 };
                 wgpu::BindGroupEntry { binding: b, resource }
@@ -519,7 +520,12 @@ impl Water {
             wall: self.wall,
             spouts,
             deep: [deep_d, deep_b, n.deep_full, n.deep_most.max(0.0)],
-            deep2: [if kept.is_finite() { kept.max(0.0) } else { 0.0 }, n.meet_even.clamp(0.0, 1.0), 0.0, 0.0],
+            deep2: [
+                if kept.is_finite() { kept.max(0.0) } else { 0.0 },
+                n.meet_even.clamp(0.0, 1.0),
+                n.rest_most.max(0.0),
+                0.0,
+            ],
             mg: [n.omega, n.scale, n.push_out.max(0.0), n.most_out.max(0.0)],
             // (Drops rest `wall_off` off a face and fill the half spacing round them: the liquid's
             // edge is a quarter cell nearer the face. Drops stop at `EDGE + 0.05` from the grid's
@@ -723,6 +729,7 @@ impl Water {
                         go!(P::DeepAcross, now, y, j, by_cell);
                     }
                     if deep_frame {
+                        go!(P::DeepWant, now, y, j, by_cell);
                         let cycles = if prime && j == 0 { self.numbers.prime } else { self.numbers.cycles };
                         if top > 0 {
                             for _ in 0..cycles.max(1) {

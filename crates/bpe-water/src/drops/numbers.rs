@@ -139,6 +139,11 @@ pub struct Numbers {
     /// meet do not bounce apart, at every detail alike (a step crosses the same share of a spacing
     /// at every detail). Parting and sliding past each other are left alone.
     pub meet_even: f32,
+    /// The deep water rests as full as the drops-only water just above it (the drops there are
+    /// squeezed a little by the water over them), at most this much fuller than at rest (0: always
+    /// as at rest). Resting any less full, the deep water is lighter than the water on it, and the
+    /// pool's top turns over and over.
+    pub rest_most: f32,
 }
 
 impl Default for Numbers {
@@ -186,6 +191,7 @@ impl Default for Numbers {
             fill_rate: 0.5,
             face_floor: 0.005,
             meet_even: 0.3,
+            rest_most: 0.02,
         }
     }
 }
@@ -254,6 +260,7 @@ impl Numbers {
             fill_rate: num("FILL_RATE", d.fill_rate),
             face_floor: num("FACE_FLOOR", d.face_floor),
             meet_even: num("MEET_EVEN", d.meet_even),
+            rest_most: num("REST_MOST", d.rest_most),
         }
     }
 

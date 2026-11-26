@@ -45,6 +45,9 @@ pub(super) struct Deep {
     pub(super) dfb: wgpu::Buffer,
     /// The cells deep at a frame's last step.
     pub(super) count: wgpu::Buffer,
+    /// The liquid, and the liquid times its drops' fullness, of the cells where the drops-only
+    /// water meets the deep water this step (fixed point; emptied by each step's cells pass).
+    pub(super) rest: wgpu::Buffer,
 }
 
 impl Deep {
@@ -61,6 +64,7 @@ impl Deep {
             dfa: storage(device, "water deep fill", cells * 4),
             dfb: storage(device, "water deep column", cells * 4),
             count: storage(device, "water deep count", 4),
+            rest: storage(device, "water deep rest", 16),
         }
     }
 
