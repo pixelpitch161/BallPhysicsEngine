@@ -129,12 +129,19 @@ impl SolidField {
     /// The furthest a field says (pixels): past it a node is simply "far".
     pub const FAR: f32 = 1.0e4;
 
+    /// The field of `solids` on `layout`, thin walls taken as a cell thick (the grid core's).
     pub fn build(layout: Layout, solids: &[Solid]) -> SolidField {
+        SolidField::build_least(layout, solids, layout.cell)
+    }
+
+    /// The same with thin walls taken as at least `least` pixels thick (the all-drops engine's
+    /// [`crate::drops::LEAST_WALL`] cells: see there).
+    pub fn build_least(layout: Layout, solids: &[Solid], least: f32) -> SolidField {
         let mut distance = Vec::with_capacity(layout.nodes());
         for y in 0..layout.rows {
             for x in 0..layout.cols {
                 let p = layout.to_world(Vec2::new(x as f32, y as f32));
-                let d = solids.iter().map(|s| s.distance(p, layout.cell)).fold(SolidField::FAR, f32::min);
+                let d = solids.iter().map(|s| s.distance(p, least)).fold(SolidField::FAR, f32::min);
                 distance.push(d);
             }
         }

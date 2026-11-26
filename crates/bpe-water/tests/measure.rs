@@ -7,19 +7,19 @@
 //! - `WATER_TIMES=1,2,4` when to measure, seconds.
 //! - `WATER_OUT=<folder>` where debug pictures go (none without it).
 //! - `WATER_DUMP=<folder>` where `look` writes the drops themselves (none without it).
-//! - `WATER_SPRAY`, `WATER_SETTLES` the liquid's Spray and Settles in every scene; `WATER_SHIFT`
+//! - `WATER_SETTLES` the liquid's Settles in every scene; `WATER_SHIFT`
 //!   moves the grid by that part of a cell.
-//! - `BPE_WATER_*` replace the solver's numbers (`Numbers::from_env_for`: the steps a second
-//!   follow the cell size unless `BPE_WATER_RATE` says otherwise).
+//! - `BPE_GRID_*` replace the grid core's numbers (`Numbers::from_env_for`: the steps a second
+//!   follow the cell size unless `BPE_GRID_RATE` says otherwise).
 //!
 //! `pace` times scenes with no read-back until the end (`WATER_SECONDS`): the core's speed.
 
 use std::time::Instant;
 
 use bpe_core::maths::Maths;
+use bpe_water::grid::{Numbers, WaterGpu};
 use bpe_water::probe::{self, Spacing, Stats, Stream};
 use bpe_water::scenes::{self, Scene};
-use bpe_water::{Numbers, WaterGpu};
 use glam::Vec2;
 
 fn list<T: std::str::FromStr>(name: &str, or: &str) -> Vec<T> {
@@ -33,10 +33,9 @@ fn num<T: std::str::FromStr>(name: &str, or: T) -> T {
 
 fn scene_named(name: &str, cell: f32) -> Scene {
     let mut scene = scene_plain(name, cell);
-    // The liquid's own feel, where asked for (today's Liquid thing is born with Spray 0.4 and
-    // Settles 0.1; the scenes here with `Feel::default()`).
+    // The liquid's own feel, where asked for (today's Liquid thing is born with Settles 0.1; the
+    // scenes here with none).
     for feel in &mut scene.feels {
-        feel.spray = num("WATER_SPRAY", feel.spray);
         feel.settles = num("WATER_SETTLES", feel.settles);
     }
     // The grid moved by a part of a cell (`WATER_SHIFT=0.5`): what depends on where the cells
@@ -100,7 +99,7 @@ fn look() {
     for name in list::<String>("WATER_SCENES", "weird") {
         for cell in list::<f32>("WATER_CELLS", "8") {
             let scene = scene_named(&name, cell);
-            let mut run = scene.start(&gpu, Numbers::from_env_for(cell));
+            let mut run = scene.start_grid(&gpu, Numbers::from_env_for(cell));
             let began = Instant::now();
             for t in list::<f32>("WATER_TIMES", "1,2,4") {
                 run.run_to(t);
@@ -156,7 +155,7 @@ fn look() {
                         .expect("the dump");
                 }
                 if let Some(dir) = &out {
-                    let tear = bpe_water::Feel::default().gpu(run.water.numbers(), cell).a[2];
+                    let tear = bpe_water::grid::Feel::default().gpu(run.water.numbers(), cell).a[2];
                     let (pixels, w, h) = probe::picture(&drops, &run.field, num("WATER_SCALE", 0.5), tear);
                     let file = format!("{name}-{cell}-{t}{tag}.png");
                     probe::save_png(&std::path::Path::new(dir).join(file), &pixels, w, h).expect("a picture");
@@ -174,7 +173,7 @@ fn bands() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 8.0);
     let scene = scenes::thin_pour(cell, num("WATER_POUR_CELLS", 2.0));
-    let mut run = scene.start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scene.start_grid(&gpu, Numbers::from_env_for(cell));
     run.run_to(num("WATER_TIME", 1.5));
     let drops = run.water.read();
     let layout = run.water.layout();
@@ -216,7 +215,7 @@ fn bands() {
 fn strands() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 8.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scenes::weird(cell).start_grid(&gpu, Numbers::from_env_for(cell));
     let (lo, hi) = (Vec2::new(-80.0, 60.0), Vec2::new(330.0, 620.0));
     let bands = 8usize;
     let mut spread = vec![0.0f64; bands];
@@ -269,7 +268,7 @@ fn strands() {
 fn kicks() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 6.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scenes::weird(cell).start_grid(&gpu, Numbers::from_env_for(cell));
     run.run_to(num("WATER_TIME", 3.0));
     let layout = run.water.layout();
     let (centre, radius) = (Vec2::new(-180.0, -120.0), 120.0);
@@ -321,7 +320,7 @@ fn kicks() {
 fn across() {
     let gpu = card();
     let cell: f32 = num("WATER_CELL", 6.0);
-    let mut run = scenes::weird(cell).start(&gpu, Numbers::from_env_for(cell));
+    let mut run = scenes::weird(cell).start_grid(&gpu, Numbers::from_env_for(cell));
     println!("# time\tdrops\tmean speed\trms along\trms across\tshare > 45 deg");
     for time in list::<f32>("WATER_TIMES", "2,3,4") {
         run.run_to(time);
@@ -378,7 +377,7 @@ fn pace() {
     println!("# scene\tcell\tsteps/s\tseconds\tdrops\twall s\twall s a second");
     for name in list::<String>("WATER_SCENES", "weird") {
         for cell in list::<f32>("WATER_CELLS", "8,6,3") {
-            let mut run = scene_named(&name, cell).start(&gpu, Numbers::from_env_for(cell));
+            let mut run = scene_named(&name, cell).start_grid(&gpu, Numbers::from_env_for(cell));
             let began = Instant::now();
             run.run_to(seconds);
             let drops = run.water.read().len();

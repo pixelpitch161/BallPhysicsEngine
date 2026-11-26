@@ -207,3 +207,84 @@ point spreads without a burst, drops at the grid's edge are safe, the core runs 
 `streams.rs`: drops on the move keep apart, two drops on one point part and still fall freely, a film leaves
 the block evenly. Unit tests: `finer_cells_step_more_often`, `a_pour_fans_out_smoothly`,
 `spots_fit_or_are_left_out`.
+
+## Part C1: the all-drops engine (as built)
+
+Spec: `docs/superpowers/specs/2026-11-25-all-drops-water-core-design.md` (parts C1 the engine, C2 deep water and
+landings, C3 plain drawing, then 2b the editor). Plan and measurements: `docs/superpowers/plans/water-mode/
+core-c1-engine.md` ("As built and measured"). The owner chose this engine on 2026-11-25 after the all-drops trial
+(draft PR #228, never merged). Still only `bpe-water` and `water_core.rs`: nothing in the editor uses it yet.
+
+- **Two engines in the crate.** `bpe_water::Water` (and `WaterGpu`, `Numbers`, `Feel`) is the all-drops engine
+  in `src/drops/`. The grid core of parts 2a and 2a-2 moved unchanged to `bpe_water::grid` (`src/grid/`, its
+  shaders in `src/grid/shaders/`, its environment numbers now `BPE_GRID_*`); C2 retires it but for its pressure
+  solve. `Drop`, `Pour`, `fill`, the solid field, the bridge and the probes are shared.
+- **The step** (`src/drops/shaders/`, joined in `drops/passes.rs`): every drop falls and moves to where it would
+  be in short sub-moves kept off the solids (`cs_predict`, which also copies in the step's births); the drops
+  are counted into bins one reach wide and sorted by bin and then by serial (`cs_sum_a/b/c`, `cs_scatter`,
+  `cs_order`, no cap on drops a bin, the bin of drops that left last and unranked: they take no part, so
+  their order needn't repeat, and `read()` returns only drops in the course); four sweeps of position-based pressure,
+  one-sided (a multiplier never above nothing), the solids counted by their share from a table
+  (`cs_lambda`, `cs_apply`); then the speeds, their evening by Thickness, the skin (a pull between drops and a
+  bend term), grip and drag (`cs_finish`). The spiky kernel for both density and push, softening `eps` 4.
+- **Drops stored by field**, 16 bytes a drop in each buffer (`drops/buffers.rs`): kept from step to step `xv`
+  (place, speed), `nf` (which way the liquid lies, how full) and `id` (kind, serial, colour, in two buffers the
+  sort moves between); the step's own working buffers besides. `MOST_DROPS` is 8,388,608 (128 MiB a buffer).
+  **No pass binds more than 8 storage buffers** (`every_pass_has_its_entry_and_fits_the_limits`).
+- **Frames, and the water picks its steps** (`drops/clock.rs`): `frame()` moves on 1/60 s in `n` equal steps,
+  all sent as one submission with each step's numbers at its own uniform offset. `n` is the most of the floor
+  (8 a frame at 12 px cells, 16 at 8 and 6, 32 finer), enough for the fastest drop to move at most
+  `move_most` spacings a step, and enough for the skin, but **never more than `most_steps` = 32** (the trial's
+  1920 a second): the skin's bend term is only calm up to about 40 steps a frame (above that it throws a pour's
+  drops back out of the spout and sideways), so a skin that wants more steps is capped instead, as in the trial.
+  At 3 px and finer every frame is 32 steps. The fastest speed comes from frame `k - 2`'s report
+  (read back without waiting), the drops added since and the pours running, plus two frames of fall. Drops
+  that left the course are let go from the end at a frame boundary, two frames late.
+- **Births** (`Pour::rows`, `Water::set_pours`): a pour is born as rows across its spout at exactly the resting
+  spacing, a row each time the last has run that far, each placed where a row born at that moment is at the
+  step's end; a width that is not a whole number of drops puts one more drop in some rows, so the amount is
+  width × speed within 2 % at every detail. Under one drop wide it is single drops with gaps. The body keeps its
+  pours (copies carry them) and builds every step's births on the host. A spout with no room (judged a reach
+  behind it, counting the new drop itself) owes at most `held_rows` rows. `Pour::width` is the stream's width:
+  Rate × Width is applied by whoever builds the pour.
+- **Fills** (`fill_stacked`): the box's resting lattice, each column set down on a face within `FILL_SNAP`
+  (16 px, or two cells) below the box's foot, a quarter cell off it, keeping the box's amount; a column over an
+  opening or in mid-air stays in the box, one whose foot is in a solid starts on its face.
+- **Thin walls are 1.5 cells thick for this engine** (`drops::LEAST_WALL`, `SolidField::build_least`): a one-cell
+  wall can have a hole in its gradient where its middle falls between node rows, and fast drops crossed there.
+- **A step's end joined with the next fall** (`cs_finish_predict`, births by `cs_born`): one pass fewer a step,
+  the same water to the bit; `Numbers::join` 0 keeps the plain order.
+- **Measuring runs** (`tests/shots.rs`, by hand, in release): `shots` (films and stills in the plain drawing,
+  `plain.rs`), `pace` (wall seconds a scene second, steps a frame, ms a step), `pools`, `openings`, `repeats`; the
+  trial's shots are `scenes::shot`. `water_core.rs` plays `old`, `grid` and `drops` side by side through the
+  bridge (`Bridge::new(device, field)`, `update(&body.feed())`, `source()`); its all-drops body pours its own rows
+  from today's spouts, gets walls `LEAST_WALL` cells thick, and leaves out today's starting drops inside that
+  thicker band (they would be thrown out of it). Through the bridge a drop's fullness counts the solids' share,
+  so films on walls draw a little fuller than the grid core's (C3 removes the bridge). The card run's script
+  is the plan's Task 8 (`card/all-drops-core-c1/run.ps1`, kept with the results on the card-run branches of
+  draft pull requests #232 and #233; C2's run starts from it).
+- **Handed to C2** (measured here): a pool still squeezes a few per cent under its weight and bounces for about
+  0.2 s after the start, its speed peaking near 100 px/s; during that bounce a drop by a side wall is thrown up
+  the wall, the faster the wider the gap between the wall and the fill's nearest column (0.67 cell: 600 px/s).
+  That gap is the fill's (its columns are the global lattice, not snapped to side faces): C2's fill should sit
+  snugly against side faces as well as on the floor. A restart point must keep `nf` too (the bend term reads
+  the step before's `n.xy`). Also C2's: the pace target (0.28 to 0.39 s a scene second at Fine against 0.25),
+  the 2 px pool not at rest, a pour in zero gravity bursting at the spout, and a skin that stays calm at any
+  step count (so `most_steps` can rise above 32 and Surface pull 1 isn't capped at 2 px). Measurements: the
+  plan's "As built and measured".
+- **Pitfall**: a new physics number goes in `drops::numbers::Numbers`, its default, `from_env_for` and, if a
+  shader reads it, `FrameGpu` (matching `Fr` in `common.wgsl`). A pass lists its bindings in
+  `passes.rs::ENTRIES`, at most 8 storage buffers.
+
+### Tests
+
+`tests/engine.rs`: a pool stays in its box and keeps its height; two runs and a copy are the same (and with a
+pour, copied at frame 7); a heap on one point spreads and repeats; a lone drop falls freely; a thin wall holds a
+2000 px/s pour; an empty body moves on; the clock takes more steps for faster water; drops that leave are
+counted out; a tap pours its amount, is born even, and is narrower turned down; a 2 px pour with the strongest
+skin stays calm at the most steps a frame (it burst at the old ceiling of 128); a submerged spout holds back; a
+fill is stacked on the floor; the joined pass changes nothing; a run whose steps a frame change while drops
+leave the course repeats (twice and from a copy). Unit tests in `drop.rs` (rows pour their amount,
+a thin tap pours single drops, a pour starts at its time, rows are even, a fill is set down on a floor but not
+through an opening, a fill in mid-air stays in its box), `drops/numbers.rs` and
+`drops/passes.rs`. `bpe-kit/tests/water_core.rs::the_bridge_draws_every_drop` runs for both engines.

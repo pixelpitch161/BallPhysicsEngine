@@ -1,0 +1,744 @@
+//! The all-drops engine (`docs/superpowers/specs/2026-11-25-all-drops-water-core-design.md`):
+//! [`WaterGpu`] (one per device: the pipelines) and [`Water`] (one body of liquid). Every drop
+//! feels its neighbours directly; there is no grid pressure.
+//!
+//! A body moves on a frame (1/60 s) at a time ([`Water::frame`]), cut into steps, and a frame's
+//! steps go to the card as one submission. A frame never waits for the card unless the card is
+//! more than a few frames behind.
+
+use std::sync::{Arc, Mutex};
+
+use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
+
+mod buffers;
+mod clock;
+pub mod numbers;
+mod passes;
+
+use crate::drop::{Drop, Pour, Poured};
+use crate::solid::{Layout, SolidField};
+pub use buffers::DropBuffers;
+use buffers::{ByDrop, room_for, storage};
+use clock::Clock;
+pub use clock::{MOST_POURS, Report};
+use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
+use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
+
+/// The most drops a body holds: each of its drops' buffers (16 bytes a drop) stays within the
+/// 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
+pub const MOST_DROPS: u32 = 8_388_608;
+/// The most drops born in one frame (the births buffer's binding stays within 128 MiB); any more
+/// are let go.
+const MOST_BIRTHS: u32 = 1 << 22;
+/// How thick a thin solid is taken to be, in cells, for this engine ([`SolidField::build_least`]).
+///
+/// A wall exactly a cell thick whose middle line falls half way between two rows of nodes has
+/// both rows on its faces: the field is nothing all through it and has no slope, so a drop there
+/// is never pushed out and goes straight through. At a cell and a half every wall has nodes
+/// inside it wherever it lies, the field's slope is whole up to half a cell past the face, and
+/// sub-moves and sweeps (under half a cell, each kept off the solids) never get further.
+pub const LEAST_WALL: f32 = 1.5;
+/// The most steps a frame may take, whatever the numbers ask.
+const MOST_STEPS: u32 = 1024;
+const WORKGROUP: u32 = 256;
+const BLOCK: u32 = 512;
+/// The most drops exported at once (each chunk's binding stays under 128 MiB).
+const EXPORT_CHUNK: u32 = 1 << 21;
+
+/// A frame's numbers on the card. Matches `Fr` in common.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct FrameGpu {
+    grid: [u32; 4],
+    cells: [u32; 4],
+    time: [f32; 4],
+    k: [f32; 4],
+    w: [f32; 4],
+    s: [f32; 4],
+    feels: [FeelGpu; MOST_LIQUIDS],
+    wall: [[f32; 4]; 17],
+    spouts: [[f32; 4]; MOST_POURS / 2],
+}
+
+/// A drop born in a step. Matches `Born` in common.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub(crate) struct Born {
+    xv: [f32; 4],
+    id: [u32; 4],
+}
+
+/// The all-drops engine's pipelines on one device.
+pub struct WaterGpu {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipes: Pipelines,
+}
+
+impl std::fmt::Debug for WaterGpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WaterGpu")
+    }
+}
+
+impl WaterGpu {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Arc<WaterGpu> {
+        Arc::new(WaterGpu { device: device.clone(), queue: queue.clone(), pipes: Pipelines::new(device) })
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+}
+
+/// One body of liquid on the card, all drops.
+pub struct Water {
+    gpu: Arc<WaterGpu>,
+    layout: Layout,
+    numbers: Numbers,
+    feels: Vec<Feel>,
+    gravity: glam::Vec2,
+    edges_shut: bool,
+    /// The pours, and how far each is through its rows.
+    pours: Vec<(Pour, Poured)>,
+    count: u32,
+    room: u32,
+    /// The serial the next drop added is given.
+    serial: u32,
+    steps: u64,
+    frames: u32,
+    /// The bins across and down (each a reach wide).
+    cells: (u32, u32),
+    /// The density at rest and a drop's stiffness there, and the solids' share by distance.
+    rest: (f32, f32),
+    wall: [[f32; 4]; 17],
+    frame_uniform: wgpu::Buffer,
+    step_uniform: wgpu::Buffer,
+    solid: wgpu::Buffer,
+    counts: wgpu::Buffer,
+    starts: wgpu::Buffer,
+    blocks: wgpu::Buffer,
+    births: wgpu::Buffer,
+    by: ByDrop,
+    /// Which of the two kinds' buffers holds the drops now.
+    now: usize,
+    /// Every step pass's bind group, for each of the two kinds' buffers and each way round of the
+    /// sweeps' places ([`Water::group`]), and the report pass's for each report slot.
+    groups: Vec<wgpu::BindGroup>,
+    report_groups: Vec<wgpu::BindGroup>,
+    /// What the card reports and the host keeps of it (behind a lock so a copy, made from a shared
+    /// body, can read the reports still on their way).
+    clock: Mutex<Clock>,
+    last: Option<wgpu::SubmissionIndex>,
+}
+
+impl std::fmt::Debug for Water {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Water({} drops, {} x {}, {} frames)", self.count, self.layout.cols, self.layout.rows, self.frames)
+    }
+}
+
+impl Water {
+    /// A body with no drops on `field`'s layout, in a course whose gravity is `gravity` (pixels a
+    /// second squared). `feels[k]` is liquid `k`.
+    pub fn new(gpu: Arc<WaterGpu>, field: &SolidField, gravity: glam::Vec2, numbers: Numbers, feels: &[Feel]) -> Water {
+        let device = &gpu.device;
+        let layout = field.layout;
+        // (The bins and the card's kernel take the same reach.)
+        let numbers = Numbers { reach: numbers.reach.max(0.5), ..numbers };
+        let reach = numbers.reach;
+        let cells =
+            (((layout.cols as f32 / reach).ceil() as u32).max(1), ((layout.rows as f32 / reach).ceil() as u32).max(1));
+        // (The bins, and one more for drops that left the course.)
+        let bins = u64::from(cells.0 * cells.1) + 1;
+        let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water frame"),
+            size: std::mem::size_of::<FrameGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let step_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water steps"),
+            size: u64::from(MOST_STEPS + 1) * STEP_ROOM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let solid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water solid field"),
+            contents: bytemuck::cast_slice(&field.in_cells()),
+            usage: buffers::STORE,
+        });
+        let room = room_for(0);
+        let mut water = Water {
+            layout,
+            numbers,
+            feels: Vec::new(),
+            gravity,
+            edges_shut: true,
+            pours: Vec::new(),
+            count: 0,
+            room,
+            serial: 0,
+            steps: 0,
+            frames: 0,
+            cells,
+            rest: numbers.at_rest(),
+            wall: Numbers::wall_table(),
+            frame_uniform,
+            step_uniform,
+            solid,
+            counts: storage(device, "water counts", bins * 4),
+            starts: storage(device, "water starts", (bins + 1) * 4),
+            blocks: storage(device, "water blocks", bins.div_ceil(u64::from(BLOCK)) * 4),
+            births: storage(device, "water births", 256),
+            by: ByDrop::new(device, room),
+            now: 0,
+            groups: Vec::new(),
+            report_groups: Vec::new(),
+            clock: Mutex::new(Clock::new(device)),
+            last: None,
+            gpu,
+        };
+        water.set_feels(feels);
+        water.bind();
+        water
+    }
+
+    /// Makes the bind groups (again, after a buffer was replaced): every step pass's and the
+    /// report's. (The export's [`Water::read`] makes for its own buffer.)
+    fn bind(&mut self) {
+        let mut groups = Vec::with_capacity(P::Report as usize * 4);
+        for pass in 0..P::Report as usize {
+            for now in 0..2 {
+                for y_in in 0..2 {
+                    groups.push(self.make_group(pass, now, y_in));
+                }
+            }
+        }
+        self.groups = groups;
+        let (name, bindings) = ENTRIES[P::Report as usize];
+        let clock = self.clock.lock().expect("the clock");
+        self.report_groups = (0..3)
+            .map(|slot| {
+                let entries: Vec<wgpu::BindGroupEntry> = bindings
+                    .iter()
+                    .map(|&b| {
+                        let resource = match b {
+                            0 => self.frame_uniform.as_entire_binding(),
+                            1 => self.step_binding(),
+                            2 => self.by.xv.as_entire_binding(),
+                            8 => self.starts.as_entire_binding(),
+                            15 => self.solid.as_entire_binding(),
+                            _ => clock.on_card(slot).as_entire_binding(),
+                        };
+                        wgpu::BindGroupEntry { binding: b, resource }
+                    })
+                    .collect();
+                self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(name),
+                    layout: &self.gpu.pipes.list[P::Report as usize].1,
+                    entries: &entries,
+                })
+            })
+            .collect();
+    }
+
+    /// The step's numbers, each step at its own offset.
+    fn step_binding(&self) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &self.step_uniform,
+            offset: 0,
+            size: wgpu::BufferSize::new(16),
+        })
+    }
+
+    fn make_group(&self, pass: usize, now: usize, y_in: usize) -> wgpu::BindGroup {
+        let (name, bindings) = ENTRIES[pass];
+        let entries: Vec<wgpu::BindGroupEntry> = bindings
+            .iter()
+            .map(|&b| {
+                let resource = match b {
+                    0 => self.frame_uniform.as_entire_binding(),
+                    1 => self.step_binding(),
+                    2 => self.by.xv.as_entire_binding(),
+                    3 => self.by.nf.as_entire_binding(),
+                    4 => self.by.id[now].as_entire_binding(),
+                    5 => self.by.id[1 - now].as_entire_binding(),
+                    6 => self.by.xp.as_entire_binding(),
+                    7 => self.counts.as_entire_binding(),
+                    8 => self.starts.as_entire_binding(),
+                    9 => self.blocks.as_entire_binding(),
+                    10 => self.by.idx.as_entire_binding(),
+                    11 => self.by.y[y_in].as_entire_binding(),
+                    12 => self.by.y[1 - y_in].as_entire_binding(),
+                    13 => self.by.lamb.as_entire_binding(),
+                    14 => self.by.velb.as_entire_binding(),
+                    15 => self.solid.as_entire_binding(),
+                    _ => self.births.as_entire_binding(),
+                };
+                wgpu::BindGroupEntry { binding: b, resource }
+            })
+            .collect();
+        self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(name),
+            layout: &self.gpu.pipes.list[pass].1,
+            entries: &entries,
+        })
+    }
+
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    pub fn numbers(&self) -> &Numbers {
+        &self.numbers
+    }
+
+    /// From the next frame. (The reach sizes the bins: it stays as the body was made with.)
+    pub fn set_numbers(&mut self, numbers: Numbers) {
+        self.numbers = Numbers { reach: self.numbers.reach, ..numbers };
+    }
+
+    /// The liquids, from the next frame (`feels[k]` is liquid `k`; at most [`MOST_LIQUIDS`]).
+    pub fn set_feels(&mut self, feels: &[Feel]) {
+        self.feels = feels.iter().copied().take(MOST_LIQUIDS).collect();
+        if self.feels.is_empty() {
+            self.feels.push(Feel::default());
+        }
+    }
+
+    pub fn feels(&self) -> &[Feel] {
+        &self.feels
+    }
+
+    pub fn gpu(&self) -> &Arc<WaterGpu> {
+        &self.gpu
+    }
+
+    /// How many drops the body holds (the last few may have left the course: they take no part).
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// The steps taken so far, all frames together.
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    /// The frames played so far: the body is at `frames() / 60` seconds.
+    pub fn frames(&self) -> u32 {
+        self.frames
+    }
+
+    /// From the next frame.
+    pub fn set_edges_shut(&mut self, shut: bool) {
+        self.edges_shut = shut;
+    }
+
+    /// From the next frame (pixels a second squared).
+    pub fn set_gravity(&mut self, gravity: glam::Vec2) {
+        self.gravity = gravity;
+    }
+
+    /// The pours (at most [`MOST_POURS`]), from the next frame. A pour that was there before (the
+    /// same place in the list) keeps how far it is through its rows; a new one starts afresh.
+    pub fn set_pours(&mut self, pours: &[Pour]) {
+        let was = std::mem::take(&mut self.pours);
+        self.pours = pours
+            .iter()
+            .take(MOST_POURS)
+            .enumerate()
+            .map(|(k, p)| (*p, was.get(k).map_or_else(Poured::default, |w| w.1)))
+            .collect();
+    }
+
+    pub fn pours(&self) -> impl Iterator<Item = &Pour> {
+        self.pours.iter().map(|(p, _)| p)
+    }
+
+    /// Where the drops are on the card, for the drawing.
+    pub fn drop_buffers(&self) -> DropBuffers<'_> {
+        DropBuffers { xv: &self.by.xv, nf: &self.by.nf, id: &self.by.id[self.now], count: self.count }
+    }
+
+    /// What the bridge to today's drawing reads of this body.
+    pub fn feed(&self) -> crate::bridge::Feed<'_> {
+        crate::bridge::Feed {
+            device: self.gpu.device(),
+            queue: self.gpu.queue(),
+            layout: self.layout,
+            count: self.count,
+            buffers: crate::bridge::FeedBuffers::Drops(self.drop_buffers()),
+        }
+    }
+
+    /// Makes room for `n` drops, keeping the drops there are.
+    fn grow_to(&mut self, n: u32) {
+        if n <= self.room {
+            return;
+        }
+        let room = room_for(n);
+        let device = &self.gpu.device;
+        let bigger = ByDrop::new(device, room);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water grow") });
+        self.by.copy_kept(&mut encoder, &bigger, self.count, self.now);
+        self.gpu.queue.submit([encoder.finish()]);
+        self.by = bigger;
+        self.room = room;
+        self.bind();
+    }
+
+    /// Adds `born` between frames, each given the body's next serial (theirs is not used; those
+    /// past [`MOST_DROPS`] are let go). Returns how many were added.
+    pub fn add(&mut self, born: &[Drop]) -> u32 {
+        self.settle();
+        let n = (born.len() as u32).min(MOST_DROPS - self.count);
+        if n == 0 {
+            return 0;
+        }
+        self.grow_to(self.count + n);
+        let mut xv = Vec::with_capacity(n as usize);
+        let mut nf = Vec::with_capacity(n as usize);
+        let mut id = Vec::with_capacity(n as usize);
+        let mut fastest = 0.0f32;
+        for d in &born[..n as usize] {
+            fastest = fastest.max(glam::Vec2::from(d.v).length() * self.layout.cell);
+            xv.push([d.x[0], d.x[1], d.v[0], d.v[1]]);
+            nf.push([0.0f32, 0.0, 1.0, 0.0]);
+            id.push([d.kind, self.serial, d.colour, 0]);
+            self.serial = self.serial.wrapping_add(1);
+        }
+        let at = u64::from(self.count) * 16;
+        let queue = &self.gpu.queue;
+        queue.write_buffer(&self.by.xv, at, bytemuck::cast_slice(&xv));
+        queue.write_buffer(&self.by.nf, at, bytemuck::cast_slice(&nf));
+        queue.write_buffer(&self.by.id[self.now], at, bytemuck::cast_slice(&id));
+        self.count += n;
+        self.clock.get_mut().expect("the clock").added(self.frames, fastest);
+        n
+    }
+
+    fn bins(&self) -> u32 {
+        self.cells.0 * self.cells.1 + 1
+    }
+
+    /// The frame's numbers for steps of `dt` seconds (`capped`: the skin is held to what a step of
+    /// `dt` keeps stable).
+    fn frame_gpu(&self, dt: f32, capped: bool) -> FrameGpu {
+        let n = &self.numbers;
+        let cell = self.layout.cell;
+        let g = self.gravity / cell;
+        let (rho0, stiff) = self.rest;
+        let mut feels = [FeelGpu::default(); MOST_LIQUIDS];
+        for (k, f) in self.feels.iter().enumerate() {
+            feels[k] = n.feel_gpu(f, cell, g.length(), dt, capped);
+        }
+        let mut spouts = [[0.0f32; 4]; MOST_POURS / 2];
+        for (k, (p, _)) in self.pours.iter().enumerate() {
+            // (Where the room for a new drop is judged: a reach behind the spout, where the stream's
+            // own drops do not count.)
+            let g = self.layout.to_grid(p.place) - p.way() * n.reach;
+            spouts[k / 2][2 * (k % 2)] = g.x;
+            spouts[k / 2][2 * (k % 2) + 1] = g.y;
+        }
+        FrameGpu {
+            grid: [self.layout.cols, self.layout.rows, self.pours.len() as u32, u32::from(self.edges_shut)],
+            cells: [self.cells.0, self.cells.1, self.cells.0 * self.cells.1, self.bins().div_ceil(BLOCK)],
+            time: [dt, g.x, g.y, n.most_move / dt],
+            k: [n.reach, rho0, n.eps.max(0.0) * stiff, n.relax],
+            w: [0.0, n.wall_off, n.sub_move, n.wall_share.max(0.0)],
+            s: [cell, n.drag_reach.max(n.wall_off + 0.01), n.most_fix, 0.0],
+            feels,
+            wall: self.wall,
+            spouts,
+        }
+    }
+
+    /// Settles the boundary the body is at (the start of frame `frames()`), once: drops that left
+    /// the course two frames ago are let go from the end, where the sort put them.
+    fn settle(&mut self) {
+        let go = self.clock.get_mut().expect("the clock").settle(&self.gpu.device, self.frames);
+        self.count -= go.min(self.count);
+    }
+
+    /// The steps frame `frames()` takes: enough for the fastest water two frames ago and what was
+    /// added since, with room for two frames' fall, and for the liquids' skins.
+    fn steps_now(&mut self) -> u32 {
+        let mut fastest = self.clock.get_mut().expect("the clock").fastest(self.frames);
+        let from = f64::from(self.frames) * f64::from(FRAME);
+        for (p, _) in &self.pours {
+            if p.runs(from, f64::from(FRAME)) && p.speed.is_finite() {
+                fastest = fastest.max(p.speed);
+            }
+        }
+        // (The strongest of the liquids' Gravity, and never less than the course's.)
+        let pull = self.feels.iter().map(|f| f.gravity.abs()).filter(|g| g.is_finite()).fold(1.0f32, f32::max);
+        let fastest = fastest + self.gravity.length() * pull * 2.0 * FRAME;
+        self.numbers.steps_for(fastest, &self.feels, self.layout.cell).min(MOST_STEPS)
+    }
+
+    /// One frame (1/60 s), cut into as many steps as the water needs, all sent to the card as one
+    /// submission. It never waits for the card but for the report of two frames before.
+    pub fn frame(&mut self) {
+        self.settle();
+        let n = self.steps_now();
+        self.play_frame(n);
+    }
+
+    /// The steps the last frame took.
+    pub fn steps_last_frame(&self) -> u32 {
+        self.clock.lock().expect("the clock").last_steps
+    }
+
+    /// The pours' births for a frame of `n` steps, each step's own at its end (a pour whose spout
+    /// was full two frames ago owes its rows instead), and each step's numbers: its drops, the
+    /// drops before its births, and where its births start.
+    fn births(&mut self, n: u32) -> (Vec<Born>, Vec<[u32; 4]>) {
+        let held = self.clock.get_mut().expect("the clock").spouts;
+        let dt = f64::from(FRAME) / f64::from(n);
+        let mut born = Vec::new();
+        let mut steps = Vec::with_capacity(n as usize);
+        let mut count = self.count;
+        for j in 0..n {
+            let from = (f64::from(self.frames) + f64::from(j) / f64::from(n)) * f64::from(FRAME);
+            let start = born.len() as u32;
+            for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
+                if held[k] >= self.numbers.full_spout {
+                    pour.hold(state, &self.layout, from, dt, self.numbers.held_rows);
+                    continue;
+                }
+                for d in pour.rows(state, &self.layout, from, dt) {
+                    if count + (born.len() as u32 - start) >= MOST_DROPS || born.len() as u32 >= MOST_BIRTHS {
+                        break;
+                    }
+                    born.push(Born { xv: [d.x[0], d.x[1], d.v[0], d.v[1]], id: [d.kind, self.serial, d.colour, 0] });
+                    self.serial = self.serial.wrapping_add(1);
+                }
+            }
+            let here = born.len() as u32 - start;
+            steps.push([count + here, count, start, 0]);
+            count += here;
+        }
+        // (The reports of the next two frames do not see these drops yet.)
+        let fastest = born.iter().map(|b| glam::Vec2::new(b.xv[2], b.xv[3]).length()).fold(0.0f32, f32::max);
+        if !born.is_empty() {
+            self.clock.get_mut().expect("the clock").added(self.frames, fastest * self.layout.cell);
+        }
+        (born, steps)
+    }
+
+    /// Makes room in the births buffer for `n`.
+    fn births_room(&mut self, n: u32) {
+        let bytes = u64::from(n) * std::mem::size_of::<Born>() as u64;
+        if bytes > self.births.size() {
+            self.births = storage(&self.gpu.device, "water births", bytes.next_power_of_two());
+            self.bind();
+        }
+    }
+
+    /// One frame of `n` steps.
+    fn play_frame(&mut self, n: u32) {
+        let dt = FRAME / n as f32;
+        let capped = n >= self.numbers.most_steps.min(MOST_STEPS);
+        let frame = self.frame_gpu(dt, capped);
+        let k = self.frames;
+        let (born, records) = self.births(n);
+        let end = records.last().map_or(self.count, |r| r[0]);
+        let mut done = None;
+        if end > 0 {
+            self.grow_to(end);
+            self.births_room(born.len() as u32);
+            let gpu = self.gpu.clone();
+            let queue = &gpu.queue;
+            queue.write_buffer(&self.frame_uniform, 0, bytemuck::bytes_of(&frame));
+            if !born.is_empty() {
+                queue.write_buffer(&self.births, 0, bytemuck::cast_slice(&born));
+            }
+            let mut steps = vec![0u8; n as usize * STEP_ROOM as usize];
+            for (j, r) in records.iter().enumerate() {
+                let at = j * STEP_ROOM as usize;
+                steps[at..at + 16].copy_from_slice(bytemuck::cast_slice(r));
+            }
+            queue.write_buffer(&self.step_uniform, 0, &steps);
+            let by_bin = self.bins().div_ceil(WORKGROUP);
+            let by_block = self.bins().div_ceil(BLOCK).div_ceil(WORKGROUP);
+            let iters = self.numbers.iters.clamp(1, 16) as usize;
+            let joined = self.numbers.join != 0;
+            let clock = self.clock.get_mut().expect("the clock");
+            let slot = clock.slot_of(k);
+            let mut encoder =
+                gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water frame") });
+            encoder.clear_buffer(clock.on_card(slot), 0, None);
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("water frame"),
+                    timestamp_writes: None,
+                });
+                let mut go = |p: P, now: usize, y_in: usize, step: u32, groups: u32| {
+                    pass.set_pipeline(&gpu.pipes.list[p as usize].0);
+                    let offset = [step * STEP_ROOM as u32];
+                    pass.set_bind_group(0, &self.groups[(p as usize * 2 + now) * 2 + y_in], &offset);
+                    pass.dispatch_workgroups(groups.max(1), 1, 1);
+                };
+                for j in 0..n {
+                    let now = self.now ^ (j as usize & 1);
+                    let [count, before, _, _] = records[j as usize];
+                    let by_drop = count.div_ceil(WORKGROUP);
+                    // (The first step falls from the kept places; the others' fall was joined with
+                    // the last step's end, and only their births come in here.)
+                    if j == 0 || !joined {
+                        go(P::Predict, now, 0, j, by_drop);
+                    } else if count > before {
+                        go(P::Born, now, 0, j, (count - before).div_ceil(WORKGROUP));
+                    }
+                    go(P::SumA, now, 0, j, by_block);
+                    go(P::SumB, now, 0, j, 1);
+                    go(P::SumC, now, 0, j, by_bin);
+                    go(P::Scatter, now, 0, j, by_drop);
+                    go(P::Order, now, 0, j, by_drop);
+                    for k in 0..iters {
+                        go(if k == 0 { P::LambdaFirst } else { P::Lambda }, now, k % 2, j, by_drop);
+                        go(if k + 1 == iters { P::ApplyLast } else { P::Apply }, now, k % 2, j, by_drop);
+                    }
+                    if joined && j + 1 < n {
+                        go(P::FinishPredict, now, iters % 2, j + 1, by_drop);
+                    } else {
+                        go(P::Finish, now, iters % 2, j, by_drop);
+                    }
+                }
+                pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
+                pass.set_bind_group(0, &self.report_groups[slot], &[(n - 1) * STEP_ROOM as u32]);
+                pass.dispatch_workgroups(end.div_ceil(WORKGROUP).max(1), 1, 1);
+            }
+            clock.copy_back(&mut encoder, k);
+            let index = queue.submit([encoder.finish()]);
+            let _ = gpu.device.poll(wgpu::PollType::Poll);
+            self.last = Some(index.clone());
+            done = Some(index);
+            self.now ^= n as usize & 1;
+        }
+        self.count = end;
+        self.clock.get_mut().expect("the clock").sent(k, end, done, n);
+        self.steps += u64::from(n);
+        self.frames += 1;
+    }
+
+    /// Waits until the card has done every frame sent so far.
+    pub fn wait(&mut self) {
+        if let Some(last) = self.last.take() {
+            let _ = self.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(last), timeout: None });
+        }
+    }
+
+    /// A copy that plays on exactly as this body does, from the frame it is at. (Waits for the
+    /// card.)
+    pub fn copy(&self) -> Water {
+        let field = SolidField { layout: self.layout, distance: vec![0.0; self.layout.nodes()] };
+        let mut new = Water::new(self.gpu.clone(), &field, self.gravity, self.numbers, &self.feels);
+        let device = &self.gpu.device;
+        if self.room > new.room {
+            new.by = ByDrop::new(device, self.room);
+            new.room = self.room;
+        }
+        new.now = self.now;
+        self.clock.lock().expect("the clock").copy_into(device, new.clock.get_mut().expect("the clock"));
+        new.bind();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water copy") });
+        self.by.copy_kept(&mut encoder, &new.by, self.count, self.now);
+        encoder.copy_buffer_to_buffer(&self.solid, 0, &new.solid, 0, self.solid.size());
+        let done = self.gpu.queue.submit([encoder.finish()]);
+        let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(done), timeout: None });
+        new.count = self.count;
+        new.serial = self.serial;
+        new.steps = self.steps;
+        new.frames = self.frames;
+        new.edges_shut = self.edges_shut;
+        new.pours = self.pours.clone();
+        new
+    }
+
+    /// Waits for the card and reads `bytes` of `buffer` (tests and measuring only).
+    fn read_buffer(&self, buffer: &wgpu::Buffer, bytes: u64) -> Vec<u8> {
+        let device = &self.gpu.device;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water read"),
+            size: bytes.max(4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water read") });
+        encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, bytes.max(4));
+        self.gpu.queue.submit([encoder.finish()]);
+        staging.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        staging.slice(..).get_mapped_range().expect("mapped").to_vec()
+    }
+
+    /// Every drop in the course, once the frames sent so far are done, in the grid core's layout:
+    /// its `c` is (how full its neighbourhood is, 0, which way the liquid lies from it), its `e` 0.
+    /// (Drops that left are not read: their order among themselves does not repeat.) Waits for the
+    /// card: for tests and measuring, never for a frame.
+    pub fn read(&self) -> Vec<Drop> {
+        let mut all = Vec::with_capacity(self.count as usize);
+        let size = std::mem::size_of::<Drop>() as u64;
+        let mut from = 0;
+        while from < self.count {
+            let n = (self.count - from).min(EXPORT_CHUNK);
+            let out = storage(&self.gpu.device, "water read out", u64::from(n) * size);
+            self.export_range(from, n, &out);
+            all.extend(bytemuck::pod_collect_to_vec::<u8, Drop>(&self.read_buffer(&out, u64::from(n) * size)));
+            from += n;
+        }
+        // (As the card's `alive`.)
+        let (cols, rows) = ((self.layout.cols - 1) as f32, (self.layout.rows - 1) as f32);
+        all.retain(|d| {
+            let [x, y] = d.x;
+            x.is_finite() && y.is_finite() && (0.0..=cols).contains(&x) && (0.0..=rows).contains(&y)
+        });
+        all
+    }
+
+    /// Writes drops `from` to `from + n` in the grid core's layout into `out`.
+    fn export_range(&self, from: u32, n: u32, out: &wgpu::Buffer) {
+        let gpu = &self.gpu;
+        let slot = u64::from(MOST_STEPS) * STEP_ROOM;
+        gpu.queue.write_buffer(&self.step_uniform, slot, bytemuck::cast_slice(&[from, n, 0u32, 0]));
+        let (name, bindings) = ENTRIES[P::Export as usize];
+        let entries: Vec<wgpu::BindGroupEntry> = bindings
+            .iter()
+            .map(|&b| {
+                let resource = match b {
+                    0 => self.frame_uniform.as_entire_binding(),
+                    1 => self.step_binding(),
+                    2 => self.by.xv.as_entire_binding(),
+                    3 => self.by.nf.as_entire_binding(),
+                    4 => self.by.id[self.now].as_entire_binding(),
+                    _ => out.as_entire_binding(),
+                };
+                wgpu::BindGroupEntry { binding: b, resource }
+            })
+            .collect();
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(name),
+            layout: &gpu.pipes.list[P::Export as usize].1,
+            entries: &entries,
+        });
+        let mut encoder =
+            gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water export") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("water export"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&gpu.pipes.list[P::Export as usize].0);
+            pass.set_bind_group(0, &group, &[slot as u32]);
+            pass.dispatch_workgroups(n.max(1).div_ceil(WORKGROUP), 1, 1);
+        }
+        gpu.queue.submit([encoder.finish()]);
+    }
+}

@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
+use bpe_water::grid::{Feel, Numbers, Water, WaterGpu};
 use bpe_water::probe::{self, Spacing, Stream};
 use bpe_water::scenes;
-use bpe_water::{Drop, Feel, Layout, Numbers, SolidField, WATER, Water, WaterGpu};
+use bpe_water::{Drop, Layout, SolidField, WATER};
 use glam::Vec2;
 
 fn card() -> Option<Arc<WaterGpu>> {
@@ -17,7 +18,7 @@ fn card() -> Option<Arc<WaterGpu>> {
 /// A two-cell pour falling 1,700 px, measured in six bands of its fall.
 fn pour_at(cell: f32) -> Option<Stream> {
     let gpu = card()?;
-    let mut run = scenes::thin_pour(cell, 2.0).start(&gpu, Numbers::default());
+    let mut run = scenes::thin_pour(cell, 2.0).start_grid(&gpu, Numbers::default());
     run.run_to(1.5);
     let layout = run.water.layout();
     let (top, floor) = scenes::THIN_POUR;
@@ -54,7 +55,7 @@ fn a_thin_pour_is_clean_at_draft_detail() {
 #[test]
 fn a_sheet_stays_a_sheet() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::sheet(8.0).start(&gpu, Numbers::default());
+    let mut run = scenes::sheet(8.0).start_grid(&gpu, Numbers::default());
     run.run_to(2.0);
     let layout = run.water.layout();
     // The air past the shelf's edge, down to a little above the floor and short of the wall.
@@ -73,7 +74,7 @@ fn a_sheet_stays_a_sheet() {
 #[test]
 fn water_leaves_a_corner_as_one_arc() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::weird(6.0).start(&gpu, Numbers::default());
+    let mut run = scenes::weird(6.0).start_grid(&gpu, Numbers::default());
     run.run_to(3.0);
     let layout = run.water.layout();
     // The air between the block's top right corner (210, -330) and the box's right wall (420).
@@ -138,7 +139,7 @@ fn a_lone_drop_pulls_on_nothing() {
 fn drops_on_the_move_keep_apart() {
     let Some(gpu) = card() else { return };
     let fast = |numbers: Numbers| {
-        let mut run = scenes::weird(8.0).start(&gpu, numbers);
+        let mut run = scenes::weird(8.0).start_grid(&gpu, numbers);
         run.run_to(1.2);
         let drops: Vec<Drop> =
             run.water.read().into_iter().filter(|d| Vec2::from(d.v).length() * 8.0 > 300.0).collect();
@@ -185,7 +186,7 @@ fn two_drops_on_one_spot_part_without_a_kick() {
 #[test]
 fn a_film_leaves_a_block_even() {
     let Some(gpu) = card() else { return };
-    let mut run = scenes::weird(6.0).start(&gpu, Numbers::for_cell(6.0));
+    let mut run = scenes::weird(6.0).start_grid(&gpu, Numbers::for_cell(6.0));
     // The block's top edge runs from its right corner (210, -330) down to its left one (0, -240);
     // the film runs down it and flies on along the same line.
     let (corner, way) = (Vec2::new(0.0, -240.0), Vec2::new(-210.0, 90.0).normalize());

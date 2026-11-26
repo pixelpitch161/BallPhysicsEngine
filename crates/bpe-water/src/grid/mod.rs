@@ -10,13 +10,13 @@ use std::sync::Arc;
 use bpe_core::maths::Maths;
 use wgpu::util::DeviceExt;
 
-pub mod drop;
 pub mod numbers;
 mod passes;
 
+use crate::drop::Drop;
 use crate::solid::{Layout, SolidField};
-use drop::Drop;
-use numbers::{Feel, FeelGpu, MOST_LEVELS, MOST_LIQUIDS, Numbers, StepGpu};
+pub use numbers::{Feel, Numbers};
+use numbers::{FeelGpu, MOST_LEVELS, MOST_LIQUIDS, StepGpu};
 use passes::{ENTRIES, P, Pipelines, TICK, TICK_BYTES};
 
 /// The most drops a body holds: its drops' buffer (48 bytes a drop) stays under the 128 MiB a
@@ -266,6 +266,18 @@ impl Water {
     /// Replaces the solver's numbers from the next step on.
     pub fn set_numbers(&mut self, numbers: Numbers) {
         self.numbers = numbers;
+    }
+
+    /// What the bridge to today's drawing reads of this body.
+    pub fn feed(&self) -> crate::bridge::Feed<'_> {
+        let (drops, wallc, vel_out) = self.buffers();
+        crate::bridge::Feed {
+            device: self.gpu().device(),
+            queue: self.gpu().queue(),
+            layout: self.layout(),
+            count: self.count(),
+            buffers: crate::bridge::FeedBuffers::Grid { drops, wallc, vel_out },
+        }
     }
 
     pub fn gpu(&self) -> &Arc<WaterGpu> {

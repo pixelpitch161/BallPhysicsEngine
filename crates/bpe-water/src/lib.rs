@@ -1,18 +1,24 @@
 //! Water mode's own engine (`docs/notes/water.md`).
 //!
-//! Part 2a holds the physics: drops on a grid, the pressure solved so the liquid cannot squash,
-//! and a hold-together for thin streams and films ([`sim`]); the solid field the physics reads
-//! ([`solid`]); and measurements for tests ([`probe`]). Nothing here knows about scenes, cards or
-//! the editor: a later part turns a Water scene into a [`SolidField`], pours and [`Feel`]s.
+//! The all-drops engine ([`Water`], [`drops`]: every drop feels its neighbours directly); the grid
+//! core of parts 2a and 2a-2 ([`grid`]: drops on a grid, the pressure solved so the liquid cannot
+//! squash), kept for comparisons and for part C2's pressure solve; where drops are born ([`drop`]);
+//! the solid field the physics reads ([`solid`]); and measurements for tests ([`probe`]). Nothing
+//! here knows about scenes, cards or the editor: a later part turns a Water scene into a
+//! [`SolidField`], pours and [`Feel`]s.
 
 pub mod bridge;
+pub mod drop;
+pub mod drops;
+pub mod grid;
+#[cfg(feature = "test-scenes")]
+pub mod plain;
 pub mod probe;
 #[cfg(feature = "test-scenes")]
 pub mod scenes;
-pub mod sim;
 pub mod solid;
 
-pub use sim::drop::{Drop, Pour, Poured, STOPS, WATER, fill};
-pub use sim::numbers::{Feel, Numbers};
-pub use sim::{MOST_DROPS, Water, WaterGpu};
+pub use drop::{Drop, Pour, Poured, STOPS, WATER, fill, fill_stacked};
+pub use drops::numbers::{Feel, Numbers};
+pub use drops::{DropBuffers, MOST_DROPS, Water, WaterGpu};
 pub use solid::{Layout, Solid, SolidField};

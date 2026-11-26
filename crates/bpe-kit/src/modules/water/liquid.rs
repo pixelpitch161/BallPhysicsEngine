@@ -22,7 +22,7 @@ pub struct FeelCard {
 
 impl Default for FeelCard {
     fn default() -> Self {
-        Self { thickness: 0.02, surface_pull: 0.2, weight: 1.0, stickiness: 0.0 }
+        Self { thickness: 0.02, surface_pull: 0.5, weight: 1.0, stickiness: 0.0 }
     }
 }
 

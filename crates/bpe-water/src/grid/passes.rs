@@ -2,12 +2,12 @@
 
 /// The shader: its parts joined in order (common.wgsl declares what the rest use).
 pub(super) const SOURCE: &str = concat!(
-    include_str!("../shaders/common.wgsl"),
-    include_str!("../shaders/walls.wgsl"),
-    include_str!("../shaders/hold.wgsl"),
-    include_str!("../shaders/drops.wgsl"),
-    include_str!("../shaders/grid.wgsl"),
-    include_str!("../shaders/pressure.wgsl"),
+    include_str!("shaders/common.wgsl"),
+    include_str!("shaders/walls.wgsl"),
+    include_str!("shaders/hold.wgsl"),
+    include_str!("shaders/drops.wgsl"),
+    include_str!("shaders/grid.wgsl"),
+    include_str!("shaders/pressure.wgsl"),
 );
 
 /// A pass.

@@ -1,0 +1,246 @@
+// The all-drops engine (docs/superpowers/specs/2026-11-25-all-drops-water-core-design.md): every
+// drop feels its neighbours directly, position based (Macklin and Mueller 2013), with a skin
+// (Akinci and others 2013).
+//
+// One step: each drop falls and is moved to where it would be, kept off the solids, and its bin
+// counted (`cs_predict`, which also takes the step's births); the bins' running sums give every
+// drop a sorted place, by bin and then by serial (`cs_sum_a/b/c`, `cs_scatter`, `cs_order`); each
+// drop finds how over-full its neighbourhood is and changes its pressure multiplier, never above
+// nothing (`cs_lambda`); it is moved by its own and its neighbours' changes (`cs_apply`); and its
+// speed, the evening of speeds, the skin's pull, grip and drag are worked out (`cs_finish`).
+//
+// The drops are stored by field, 16 bytes a drop in each buffer. Grid units: a layout cell is 1,
+// four drops fill one, drops at rest are half a cell apart.
+
+struct Feel {
+    // gravity x, the skin's pull between drops (cells a second squared), its pull along the
+    // surface's bend, the pull toward a near face (cells a second squared)
+    a: vec4<f32>,
+    // damping (a second), drag along a face (a second), the share of the neighbours' mean speed
+    // taken a step, weight
+    b: vec4<f32>,
+};
+
+// A frame's numbers: the same for each of its steps.
+struct Fr {
+    // the layout's columns and rows of nodes, how many pours, bit 0 the course's edges are shut
+    grid: vec4<u32>,
+    // the bins across and down, how many (the next is the bin of drops that left), how many
+    // blocks of running sums
+    cells: vec4<u32>,
+    // dt, gravity x and y (cells a second squared), the speed cap (cells a second)
+    time: vec4<f32>,
+    // the reach (cells), the density at rest, the softening of a correction, its share taken
+    k: vec4<f32>,
+    // 0, how far off a face a drop stays, a sub-move's length, the solids' share of the density
+    w: vec4<f32>,
+    // a cell's pixels, how far from a face drag reaches, the most a sweep moves a drop, 0
+    s: vec4<f32>,
+    feels: array<Feel, 16>,
+    // the solids' share of a drop's neighbourhood by its distance from the face (`wall_table`)
+    wall: array<vec4<f32>, 17>,
+    // where each pour judges the room for its drops (grid units: a reach behind its spout), two
+    // to an entry
+    spouts: array<vec4<f32>, 32>,
+};
+
+// A step's numbers (one for each step of the frame, at its own offset): the drops this step, the
+// drops before this step's births, where its births start in the births buffer, 0. The export
+// takes (the first drop, how many, 0, 0).
+struct St {
+    n: vec4<u32>,
+};
+
+// A drop born this step: its place and speed at the step's end (grid units), and its kind,
+// serial, colour and 0.
+struct Born {
+    xv: vec4<f32>,
+    id: vec4<u32>,
+};
+
+// A drop as the grid core lays it out (`Drop` in drop.rs): `c` is (how full its neighbourhood
+// is, 0, which way the liquid lies from it).
+struct DropOut {
+    x: vec2<f32>,
+    v: vec2<f32>,
+    c: vec4<f32>,
+    e: f32,
+    kind: u32,
+    serial: u32,
+    colour: u32,
+};
+
+const STOPS: u32 = 256u;
+const EDGE: f32 = 2.0;
+const BLOCK: u32 = 512u;
+const PI: f32 = 3.14159265;
+
+@group(0) @binding(0) var<uniform> fr: Fr;
+@group(0) @binding(1) var<uniform> st: St;
+// Per drop, in the order the last step sorted them: place and speed, and which way the liquid
+// lay from it, how full its neighbourhood was, 0.
+@group(0) @binding(2) var<storage, read_write> xv: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> nf: array<vec4<f32>>;
+// Per drop: kind, serial, colour, 0; as the last step sorted them (`id_cur`) and as this one does.
+@group(0) @binding(4) var<storage, read_write> id_cur: array<vec4<u32>>;
+@group(0) @binding(5) var<storage, read_write> id_nxt: array<vec4<u32>>;
+// Per drop, unsorted: where it would be this step, and where it was.
+@group(0) @binding(6) var<storage, read_write> xp: array<vec4<f32>>;
+// Per bin (and one more, for drops that left the course): how many drops.
+@group(0) @binding(7) var<storage, read_write> counts: array<atomic<u32>>;
+// Per bin: where its drops start in the sorted order (one more entry: the end).
+@group(0) @binding(8) var<storage, read_write> starts: array<u32>;
+@group(0) @binding(9) var<storage, read_write> blocks: array<u32>;
+@group(0) @binding(10) var<storage, read_write> idx: array<u32>;
+// Per drop, sorted: its place this step (x, y) and which way the liquid lay from it last step,
+// in and out of a sweep.
+@group(0) @binding(11) var<storage, read_write> y_in: array<vec4<f32>>;
+@group(0) @binding(12) var<storage, read_write> y_out: array<vec4<f32>>;
+// Per drop, sorted: this sweep's change of its multiplier, the multiplier, how full, 0.
+@group(0) @binding(13) var<storage, read_write> lamb: array<vec4<f32>>;
+// Per drop, sorted: where it was (until the last sweep, then its new speed), its kind, 0.
+@group(0) @binding(14) var<storage, read_write> velb: array<vec4<f32>>;
+// Per layout node: how far it is from the nearest solid's face, in cells (below 0 inside).
+@group(0) @binding(15) var<storage, read_write> solid: array<f32>;
+@group(0) @binding(16) var<storage, read_write> births: array<Born>;
+@group(0) @binding(17) var<storage, read_write> outd: array<DropOut>;
+
+fn finite2(v: vec2<f32>) -> bool {
+    return abs(v.x) < 1e30 && abs(v.y) < 1e30;
+}
+
+// Whether a drop at `x` is in the course (one that left takes no part).
+fn alive(x: vec2<f32>) -> bool {
+    return finite2(x) && x.x >= 0.0 && x.y >= 0.0 && x.x <= f32(fr.grid.x) - 1.0 && x.y <= f32(fr.grid.y) - 1.0;
+}
+
+fn cell_of(x: vec2<f32>) -> vec2<i32> {
+    let c = vec2<i32>(floor(x / fr.k.x));
+    return clamp(c, vec2<i32>(0), vec2<i32>(i32(fr.cells.x) - 1, i32(fr.cells.y) - 1));
+}
+
+// The bin a drop at `x` is sorted into: its bin, or the last bin when it left the course.
+fn bin_of(x: vec2<f32>) -> u32 {
+    if !alive(x) {
+        return fr.cells.z;
+    }
+    let c = cell_of(x);
+    return u32(c.y) * fr.cells.x + u32(c.x);
+}
+
+fn node(x: i32, y: i32) -> u32 {
+    return u32(y) * fr.grid.x + u32(x);
+}
+
+// How far `q` is from the nearest solid's face (cells, below 0 inside) and which way is out.
+fn solid_at(q: vec2<f32>) -> vec3<f32> {
+    let lo = clamp(vec2<i32>(floor(q)), vec2<i32>(0), vec2<i32>(i32(fr.grid.x) - 2, i32(fr.grid.y) - 2));
+    let f = clamp(q - vec2<f32>(lo), vec2<f32>(0.0), vec2<f32>(1.0));
+    let d00 = solid[node(lo.x, lo.y)];
+    let d10 = solid[node(lo.x + 1, lo.y)];
+    let d01 = solid[node(lo.x, lo.y + 1)];
+    let d11 = solid[node(lo.x + 1, lo.y + 1)];
+    let d = mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+    var g = vec2<f32>(mix(d10 - d00, d11 - d01, f.y), mix(d01 - d00, d11 - d10, f.x));
+    let len = length(g);
+    if len > 1e-4 {
+        g = g / len;
+    } else {
+        g = vec2<f32>(0.0);
+    }
+    return vec3<f32>(g, d);
+}
+
+struct Kept {
+    x: vec2<f32>,
+    v: vec2<f32>,
+};
+
+// Keeps a drop at `x` moving at `v` off the solids and (when it stops there) the course's edge.
+// It keeps none of its speed into a face.
+fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
+    var x = xin;
+    var v = vin;
+    let s = solid_at(x);
+    let off = fr.w.y;
+    if s.z < off {
+        x = x + s.xy * min(off - s.z, 4.0);
+        let vn = dot(v, s.xy);
+        if vn < 0.0 {
+            v = v - vn * s.xy;
+        }
+    }
+    if stops {
+        let lo = vec2<f32>(EDGE);
+        let hi = vec2<f32>(f32(fr.grid.x) - 1.0 - EDGE, f32(fr.grid.y) - 1.0 - EDGE);
+        if x.x < lo.x + 0.05 { x.x = lo.x + 0.05; v.x = max(v.x, 0.0); }
+        if x.x > hi.x - 0.05 { x.x = hi.x - 0.05; v.x = min(v.x, 0.0); }
+        if x.y < lo.y + 0.05 { x.y = lo.y + 0.05; v.y = max(v.y, 0.0); }
+        if x.y > hi.y - 0.05 { x.y = hi.y - 0.05; v.y = min(v.y, 0.0); }
+    }
+    return Kept(x, v);
+}
+
+fn stops_at_edge(kind: u32) -> bool {
+    return (kind & STOPS) != 0u && (fr.grid.w & 1u) != 0u;
+}
+
+// The density a drop `far` away (cells) adds (the spiky kernel in the plane: steep close in, so
+// two drops on top of each other count as too many and are parted; a flat-topped kernel lets
+// drops pair up into strings).
+fn weight(far: f32) -> f32 {
+    let h = fr.k.x;
+    let t = max(1.0 - far / h, 0.0);
+    return 10.0 / (PI * h * h) * t * t * t;
+}
+
+// The slope of the density a drop at `r` from this one adds, as this one moves. `far` is `r`'s
+// length, above 0.
+fn slope(r: vec2<f32>, far: f32) -> vec2<f32> {
+    let h = fr.k.x;
+    let t = max(1.0 - far / h, 0.0);
+    return r * (-30.0 / (PI * h * h * h) * t * t / far);
+}
+
+// The way from one drop to another that is on top of it: each its own, by their places in the
+// order.
+fn any_way(a: u32, b: u32) -> vec2<f32> {
+    let turn = f32(((a ^ (b * 40503u)) * 2654435761u) >> 22u) * 0.006135923;
+    let w = vec2<f32>(cos(turn), sin(turn));
+    return select(-w, w, a < b);
+}
+
+// The share of a drop's neighbourhood behind a flat face `q` reaches away (x), and how fast that
+// share falls as the drop moves off the face, a reach (y): from the host's table.
+fn wall_table(qin: f32) -> vec2<f32> {
+    let q = clamp(qin, 0.0, 1.0) * 32.0;
+    let k = min(u32(floor(q)), 31u);
+    let f = q - f32(k);
+    let a = select(fr.wall[k / 2u].xy, fr.wall[k / 2u].zw, (k & 1u) == 1u);
+    let k1 = k + 1u;
+    let b = select(fr.wall[k1 / 2u].xy, fr.wall[k1 / 2u].zw, (k1 & 1u) == 1u);
+    return mix(a, b, f);
+}
+
+// What the solids add to a drop at `x`: (the slope of the density x and y, the density).
+fn wall_density(x: vec2<f32>) -> vec3<f32> {
+    let s = solid_at(x);
+    let h = fr.k.x;
+    if s.z >= h || fr.w.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let t = wall_table(s.z / h);
+    let k = fr.k.y * fr.w.w;
+    return vec3<f32>(-k * t.y / h * s.xy, k * t.x);
+}
+
+// The skin's pull between two drops `q` reaches apart: a pull that is strongest half a reach
+// away, and a push when they touch (Akinci and others 2013; 1 at its strongest).
+fn skin(q: f32) -> f32 {
+    let t = (1.0 - q) * q;
+    let c = 64.0 * t * t * t;
+    if q > 0.5 {
+        return c;
+    }
+    return 2.0 * c - 1.0;
+}

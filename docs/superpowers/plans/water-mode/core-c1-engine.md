@@ -458,4 +458,67 @@ while owed ≥ pitch:
 
 ## As built and measured
 
-(Filled in by Task 8.)
+Built on `claude/project-thread-x7f3q2` (pull request #231). Two card runs on the RX 9070 XT (results on draft
+pull requests #232 and #233, never merged; the second run's films are in project files `water-core/c1/`).
+
+**Verdict against the C1 pass marks (second card run, commit 1b8cae9):**
+
+| Mark | Result |
+| --- | --- |
+| Thin water the same as the trial's or better, by eye, at Fine (6 px), Extreme (3 px) and 2 px | Passed: slope, ledge, weird and beads at every detail and at Surface pull 0.2, 0.5 and 1, and slope and weird on all four grid shifts at 6 and 3 px. The 2 px stream is a clean thread again (it burst at the spout in the first run, below) |
+| Course shares within 3 points of the trial's | Passed: after 30 s, 6 px 7.4 / 0.0 / 5.3 / 34.5 / 52.9 % against the trial's 7.5 / 0.0 / 2.9 / 36.3 / 53.3 (2.4 points at most); 3 px 7.2 / 0.0 / 3.3 / 37.8 / 51.6 against 7.3 / 0.0 / 3.2 / 37.9 / 51.6 |
+| Repeats | Passed: weird and pool at 6 and 3 px give the same print in two runs of the program and from a copy at half time; the engine tests repeat with a pour, and with steps that change while drops leave |
+| Births | Passed (`a_tap_pours_its_amount`, `a_tap_is_born_even`, `a_pour_stays_calm_at_the_most_steps_a_frame`) |
+| No drop crosses a solid; a lone drop falls freely | Passed (`a_thin_wall_holds_a_fast_pour`, `a_lone_drop_falls_freely`) |
+| *Target*: at most 0.25 s a scene second at Fine | **Missed**: 0.283 (slope) to 0.388 (pool), against the trial's 0.354 to 0.425 |
+
+Pace, physics alone, wall seconds a scene second (steps a frame): 6 px weird 0.307 (16.1), slope 0.283 (16.0),
+ledge 0.338 (17.9), pool 0.388 (16.2), course 0.333 (16.2); 3 px weird 0.642, slope 0.620, ledge 0.681, pool
+1.195, course 0.861 (all 32; the trial took 0.81 to 1.47); 2 px weird 0.802, slope 0.741, pool 2.106 (32). The
+pool at rest: 6 px 0.55 px/s after 20 s and 97.0 % of its height, 3 px 0.81 px/s and 97.2 %; at 2 px still
+39 px/s after 8 s (the trial's 2 px pool also moved 39 px/s), all C2's to fix. Slosh 60, 63 and 64 % left after
+four half swings. Aedan's Water Weird through the bridge: pieces and wholeness at Fine and Extreme the same as
+the trial's within noise (Fine still 320 to 400 pieces against today's 69 to 109: C2's landing mark).
+
+**Changes from the plan:**
+
+- **At most 32 steps a frame, not 128** (`Numbers::most_steps`). The first card run's 2 px stream burst at the
+  spout (drops thrown sideways and back above it), and a 3 px slope on one grid shift too; those frames took 52
+  to 77 and 34 to 48 steps. On the software card a thin pour at 3 px, Surface pull 0.5, is calm at 16 and 32
+  steps and bursts from about 40 (at 64: 2000 px/s sideways and 42 px above the spout). The skin's bend term
+  (the trial's: the difference of "which way the liquid lies", which points into the liquid, taken away) is
+  only calm at the trial's pace, and the trial never took more than 32 steps a frame (its rate stopped at 1920
+  a second). Turning the bend round is calm at any step count but loses the beads on the plates and the
+  stream's break into drops at 6 px, and sprays a 2 px pour into a cone; no bend at all loses the beads too. So
+  the bend stays the trial's, a frame takes at most 32 steps, and a skin that wants more is capped (2 px at
+  Surface pull 0.5 to 74 %, 3 px at Surface pull 1 to 62 %, 2 px at Surface pull 1 to 18 %), all as in the
+  trial. At 3 px and finer every frame is now the trial's 32 steps. `a_pour_stays_calm_at_the_most_steps_a_frame`
+  pins it (it fails at the old ceiling). The plan's skin rule stays, for a raised `most_steps`.
+- **Re-sorting every second step was not tried.** Two drops at the clock's `move_most` (1.3 spacings a step) close
+  1.3 cells between two sorts, far more than the plan's 0.25-cell margin, so "every drop still feels exactly the
+  neighbours within its reach" can't hold for fast water. The speed is C2's, by its lower floors.
+- **The join is kept** (Task 7): bit-identical, the same within noise on the software card (baseline: weird at
+  12 px, 8 steps a frame, 1.481 ms a step, 0.711 s a scene second), and 4 to 6 % faster on the card at Fine
+  (weird 0.307 against 0.324, ledge 0.338 against 0.361; the pool the same).
+- Births (Task 5): `Pour::rows` takes f64 times, so a pour's start lands within 1e-4 px. The engine's `Pour` has
+  no Rate: its width is the stream's (Rate × Width, applied by whoever builds it). A spout's room is judged a reach
+  behind it, counting the new drop itself (the plan's density at the spout point read only 0.6 in a full pool).
+  Births' fastest speed counts in the clock for the frame they are born in.
+- Fills (Task 5 and the review): each column is set down on a face within `FILL_SNAP` (16 px, at least two cells)
+  below the box's foot, a quarter cell off it; a column over an opening or in mid-air stays in the box.
+  `a_fill_starts_at_rest` is not reachable in C1: a pool squeezes about 3 % under its weight and bounces for
+  about 0.2 s (up to 100 px/s); `a_fill_is_stacked_on_the_floor` checks the stacking and the rest is C2's. During
+  that bounce a drop by a side wall is thrown up it (0.67 cell from the wall: 605 px/s; 0.5: 332; 0.33: 209).
+- The bridge (Task 6) has its own kernel for the all-drops engine's buffers (`cs_bridge_drops`, no export pass);
+  `water_core.rs` gives this engine walls `LEAST_WALL` (1.5) cells thick, as its own scenes have, and leaves out
+  today's starting drops inside that band. `tests/shots.rs` is the new engine only; `WATER_THICK` replaces
+  `WATER_SPRAY`, and `pace` prints steps a frame and ms a step.
+- The review's fixes: births capped at `MOST_BIRTHS` a frame; the clock's fall headroom uses the strongest
+  liquid's Gravity; `reach` never below 0.5; drops that left the course sort unranked into the last bin and
+  `read()` returns only drops in the course; the spout's fullness is read clamped inside the grid.
+
+**Handed to C2:** the pace target (lower floors); a pool's start bounce, the wall jet and the 2 px pool that is
+not at rest; Water Weird's pieces at Fine. A pour in zero gravity still bursts at the spout at 32 steps (as the
+trial's would). A skin that stays calm at any step count (a bend from smoothed normals, or the skin applied at
+no more than 1920 steps a second while the pressure takes more) would let fast water at fine detail take more
+steps and the slider's top reach real ropes at 2 px, where the cap now holds it to 18 %.

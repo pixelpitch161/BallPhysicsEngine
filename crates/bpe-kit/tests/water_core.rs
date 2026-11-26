@@ -1,6 +1,7 @@
-//! Water mode part 2a: the new water core (`bpe-water`) beside today's Liquid core, drawn by
-//! today's liquid drawing (`bpe_water::bridge`). Both play the same scene: the same walls, the same
-//! grid, and the same drops born (today's own births make the new core's too).
+//! Water mode's engines (`bpe-water`: the grid core of part 2a and the all-drops engine of part C1)
+//! beside today's Liquid core, drawn by today's liquid drawing (`bpe_water::bridge`). All play the
+//! same scene: the same walls and the same grid. The grid core's drops are today's own births; the
+//! all-drops engine pours its own even rows from the same spouts.
 //!
 //! `the_bridge_draws_every_drop` runs with the tests. `side_by_side` is a measuring run, by hand,
 //! in release:
@@ -9,11 +10,15 @@
 //!
 //! - `WATER_SHOTS=weird,thin,sheet,pour` the scenes (`WATER_SCENE=<file>` is the scene "file").
 //! - `WATER_DETAILS=normal,fine,extreme` the liquid's Detail.
-//! - `WATER_SECONDS`, `WATER_FPS`, `WATER_SIZE=540x960`, `WATER_CORES=old,new`.
+//! - `WATER_SECONDS`, `WATER_FPS`, `WATER_SIZE=540x960`, `WATER_CORES=old,drops` (any of `old`,
+//!   `grid` and `drops`, side by side in that order).
 //! - `WATER_MEASURE=1,2,4` when the streams are measured (seconds).
-//! - `WATER_FAN=1` the new core's pours keep the scene's Spread (see `NewCore::step`).
-//! - `BPE_WATER_*` replace the new core's numbers (its steps a second follow the detail's cell
-//!   size, `Numbers::for_cell`, unless `BPE_WATER_RATE` says otherwise).
+//! - `WATER_FAN=1` the new engines' pours keep the scene's Spread (see `NewCore::step`).
+//! - `WATER_PULL`, `WATER_STICK` the all-drops engine's Surface pull (else the scene's) and
+//!   Stickiness (else none).
+//! - `BPE_GRID_*` replace the grid core's numbers (its steps a second follow the detail's cell
+//!   size, `Numbers::for_cell`, unless `BPE_GRID_RATE` says otherwise), `BPE_WATER_*` the
+//!   all-drops engine's.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,8 +34,10 @@ use bpe_kit::things::shape::{ShapeFill, ShapeSettings, ShapeStart};
 use bpe_kit::{Kit, kit, scenes};
 use bpe_runtime::{Playback, Wall};
 use bpe_water::bridge::Bridge;
+use bpe_water::grid::{Feel, Numbers, Water, WaterGpu};
 use bpe_water::probe::{self, Stream};
-use bpe_water::{Feel, Layout, Numbers, Pour, SolidField, Water, WaterGpu};
+use bpe_water::{Layout, Pour, SolidField};
+use bpe_water::{Water as DropsWater, WaterGpu as DropsGpu};
 use glam::Vec2;
 
 /// How far `p` is from the nearest of `walls`' faces (pixels, below 0 inside), with hollow walls
@@ -57,16 +64,79 @@ fn wall_distance(walls: &BTreeMap<ThingId, Wall>, p: Vec2, least: f32) -> f32 {
     best
 }
 
-/// A scene's liquid on the new core: today's world at its start gives the walls, the grid and the
-/// births; the drops step in `bpe-water`.
+/// Which of Water mode's engines plays. (One of each at most, for a few seconds' run.)
+#[allow(clippy::large_enum_variant)]
+enum Body {
+    /// The grid core: today's births, a step at a time.
+    Grid(Water),
+    /// The all-drops engine: its own pours, a frame at a time.
+    Drops(DropsWater),
+}
+
+impl Body {
+    fn name(&self) -> &'static str {
+        match self {
+            Body::Grid(_) => "grid",
+            Body::Drops(_) => "drops",
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        match self {
+            Body::Grid(w) => w.layout(),
+            Body::Drops(w) => w.layout(),
+        }
+    }
+
+    fn count(&self) -> u32 {
+        match self {
+            Body::Grid(w) => w.count(),
+            Body::Drops(w) => w.count(),
+        }
+    }
+
+    fn feed(&self) -> bpe_water::bridge::Feed<'_> {
+        match self {
+            Body::Grid(w) => w.feed(),
+            Body::Drops(w) => w.feed(),
+        }
+    }
+
+    fn read(&self) -> Vec<bpe_water::Drop> {
+        match self {
+            Body::Grid(w) => w.read(),
+            Body::Drops(w) => w.read(),
+        }
+    }
+}
+
+/// Both new engines' pipelines on one device.
+struct Cards {
+    grid: Arc<WaterGpu>,
+    drops: Arc<DropsGpu>,
+}
+
+impl Cards {
+    fn new(device: &bpe_gfx::wgpu::Device, queue: &bpe_gfx::wgpu::Queue) -> Cards {
+        Cards { grid: WaterGpu::new(device, queue), drops: DropsGpu::new(device, queue) }
+    }
+}
+
+/// A scene's liquid on one of Water mode's engines: today's world at its start gives the walls,
+/// the grid and the births; the drops move in `bpe-water`.
 struct NewCore {
     /// Today's world, never stepped: where the births read the scene.
     start: Playback,
     liquids: Vec<LiquidState>,
     layout: bpe_kit::things::liquid::state::Layout,
     size: f32,
-    water: Water,
+    water: Body,
     bridge: Bridge,
+}
+
+/// A number from the environment (the measuring run's settings), or `or`.
+fn num(name: &str, or: f32) -> f32 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
 }
 
 fn rgba8(c: [f32; 4]) -> u32 {
@@ -81,7 +151,16 @@ fn as_water(born: &[bpe_gfx::liquid_sim::Drop]) -> Vec<bpe_water::Drop> {
 }
 
 impl NewCore {
-    fn new(scene: &Scene, resolved: &Resolved, kit: &Kit, gpu: &Arc<WaterGpu>, numbers: Option<Numbers>) -> NewCore {
+    /// The scene on `engine` (`grid` or `drops`); the grid core takes `numbers` when they are
+    /// given.
+    fn new(
+        scene: &Scene,
+        resolved: &Resolved,
+        kit: &Kit,
+        cards: &Cards,
+        engine: &str,
+        numbers: Option<Numbers>,
+    ) -> NewCore {
         let mut start = Playback::new(scene, resolved, kit.sims.clone());
         start.seek(0.0);
         let world = start.world();
@@ -90,11 +169,14 @@ impl NewCore {
         let l = host.layout;
         let layout = Layout { origin: l.origin, cell: l.cell, cols: l.cols, rows: l.rows };
         // (With no numbers given: the liquid's own for this cell size, the steps a second among
-        // them, each replaceable by its `BPE_WATER_*`.)
+        // them, each replaceable by its `BPE_GRID_*`.)
         let numbers = numbers.unwrap_or_else(|| Numbers::from_env_for(l.cell));
         let walls = walls_now(world);
-        let field = SolidField::from_distance(layout, |p, least| wall_distance(&walls, p, least));
-        let liquids: Vec<LiquidState> = scene
+        // Thin walls a cell thick for the grid core, `LEAST_WALL` cells for the all-drops engine
+        // (one-cell walls leak drops: see there).
+        let least = if engine == "drops" { bpe_water::drops::LEAST_WALL * l.cell } else { l.cell };
+        let field = SolidField::from_distance(layout, |p, _| wall_distance(&walls, p, least));
+        let mut liquids: Vec<LiquidState> = scene
             .order
             .iter()
             .filter_map(|id| bpe_kit::things::liquid::state_of(world, *id))
@@ -114,17 +196,49 @@ impl NewCore {
             };
         }
         let size = host.size;
-        let mut water = Water::new(gpu.clone(), &field, world.gravity * size, numbers, &feels);
         // The first fill: today's own drops at the start.
-        let first = host.body.as_ref().expect("a card").read();
-        water.add(&as_water(&first));
-        let bridge = Bridge::new(&water, &field);
+        let first = as_water(&host.body.as_ref().expect("a card").read());
+        let water = match engine {
+            "grid" => {
+                let mut water = Water::new(cards.grid.clone(), &field, world.gravity * size, numbers, &feels);
+                water.add(&first);
+                Body::Grid(water)
+            }
+            "drops" => {
+                let feels: Vec<bpe_water::Feel> = feels
+                    .iter()
+                    .map(|f| bpe_water::Feel {
+                        gravity: f.gravity,
+                        surface_pull: num("WATER_PULL", f.surface_pull),
+                        stickiness: num("WATER_STICK", 0.0),
+                        weight: f.weight,
+                        settles: f.settles,
+                        ..bpe_water::Feel::default()
+                    })
+                    .collect();
+                let numbers = bpe_water::Numbers::from_env_for(l.cell);
+                let mut water = DropsWater::new(cards.drops.clone(), &field, world.gravity * size, numbers, &feels);
+                // (Today's fill lies against walls a cell thick: the drops inside the thicker
+                // walls' band would be thrown out of it, so they are left out.)
+                let clear =
+                    |d: &bpe_water::Drop| field.at(layout.to_world(Vec2::from(d.x))) >= numbers.wall_off * layout.cell;
+                let first: Vec<bpe_water::Drop> = first.into_iter().filter(clear).collect();
+                water.add(&first);
+                let pours = pours_of(&mut liquids, world, &l, size);
+                water.set_pours(&pours);
+                Body::Drops(water)
+            }
+            other => panic!("no engine called {other}"),
+        };
+        let bridge = Bridge::new(cards.grid.device(), &field);
         NewCore { start, liquids, layout: l, size, water, bridge }
     }
 
+    /// One of the grid core's steps.
     fn step(&mut self) {
-        let dt = self.water.numbers().dt();
-        let step = self.water.steps();
+        let Body::Grid(water) = &mut self.water else { unreachable!("the grid core steps") };
+        let dt = water.numbers().dt();
+        let step = water.steps();
         let world = self.start.world();
         for st in &mut self.liquids {
             st.owed.resize(st.pours.len(), 0.0);
@@ -145,30 +259,41 @@ impl NewCore {
                 let fan = Pour { aim, spread, ..Pour::default() };
                 let spout = anchor.position + Vec2::from_angle(anchor.angle).rotate(p.place);
                 let across = fan.fanned(0.0).perp();
-                let layout = self.water.layout();
+                let layout = water.layout();
                 for d in &mut born {
                     let u = (layout.to_world(Vec2::from(d.x)) - spout).dot(across) / width;
                     d.v = (fan.fanned(u) * speed / layout.cell).to_array();
                 }
-                self.water.add(&born);
+                water.add(&born);
             }
         }
-        self.water.step();
+        water.step();
     }
 
     fn run_to(&mut self, seconds: f64) {
-        let to = (seconds * f64::from(self.water.numbers().rate)).round() as u32;
-        while self.water.steps() < to {
+        if let Body::Drops(water) = &mut self.water {
+            // (It moves on in frames of 1/60 s.)
+            let to = (seconds * 60.0).round() as u32;
+            while water.frames() < to {
+                water.frame();
+            }
+            return;
+        }
+        loop {
+            let Body::Grid(water) = &self.water else { unreachable!("the grid core") };
+            if water.steps() >= (seconds * f64::from(water.numbers().rate)).round() as u32 {
+                break;
+            }
             self.step();
         }
     }
 
     /// The scene's picture with the new core's drops where today's would be.
     fn frame(&mut self, scene: &Scene, resolved: &Resolved, kit: &Kit, time: f64) -> Frame {
-        self.bridge.update(&self.water);
+        self.bridge.update(&self.water.feed());
         let mut frame = Frame::default();
         build_frame(scene, resolved, self.start.world(), self.start.log(), time, &kit.draws, &mut frame);
-        let source = self.bridge.source(&self.water);
+        let source = self.bridge.source();
         for liquid in &mut frame.liquids {
             if liquid.drops.is_some() {
                 liquid.drops = Some(source.clone());
@@ -180,6 +305,41 @@ impl NewCore {
     fn drops(&self) -> Vec<bpe_water::Drop> {
         self.water.read()
     }
+}
+
+/// The scene's pours as the all-drops engine pours them: from today's spouts, Rate x Width wide,
+/// each drop's kind and colour those of today's first drop.
+fn pours_of(
+    liquids: &mut [LiquidState],
+    world: &bpe_runtime::World,
+    layout: &bpe_kit::things::liquid::state::Layout,
+    size: f32,
+) -> Vec<Pour> {
+    let mut out = Vec::new();
+    for st in liquids.iter_mut() {
+        st.owed.resize(st.pours.len(), 0.0);
+        for k in 0..st.pours.len() {
+            let p = st.pours[k].clone();
+            let mut probe = st.clone();
+            probe.owed[k] = 1.0;
+            let Some(first) = births::pour(&mut probe, k, world, layout, 1e-6, 0, size).first().copied() else {
+                continue;
+            };
+            let anchor = world.anchor(st.id);
+            let spread = if std::env::var("WATER_FAN").is_ok() { p.spread } else { 0.0 };
+            out.push(Pour {
+                place: anchor.position + Vec2::from_angle(anchor.angle).rotate(p.place),
+                aim: p.aim + anchor.angle.to_degrees(),
+                width: births::pour_width(&p),
+                speed: p.speed * size.max(0.0).sqrt(),
+                spread,
+                kind: first.kind,
+                colour: rgba8(first.colour),
+                ..Pour::default()
+            });
+        }
+    }
+    out
 }
 
 fn liquid_of(scene: &Scene) -> ThingId {
@@ -333,7 +493,7 @@ fn side_by_side() {
         Numbers::from_env()
     );
     let _card = use_for_now(Some(SwarmGpu::for_device(&device, &queue)));
-    let gpu = WaterGpu::new(&device, &queue);
+    let cards = Cards::new(&device, &queue);
     let kit = kit();
     let out = std::path::PathBuf::from(std::env::var("WATER_OUT").expect("WATER_OUT, a folder"));
     let num = |name: &str, or: f64| std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
@@ -341,8 +501,9 @@ fn side_by_side() {
     let size = std::env::var("WATER_SIZE").unwrap_or_else(|_| "540x960".into());
     let (w, h) = size.split_once('x').expect("a size like 540x960");
     let (w, h): (u32, u32) = (w.parse().expect("a width"), h.parse().expect("a height"));
-    let cores = list("WATER_CORES", "old,new");
-    let (old, new) = (cores.iter().any(|c| c == "old"), cores.iter().any(|c| c == "new"));
+    let cores = list("WATER_CORES", "old,drops");
+    let old = cores.iter().any(|c| c == "old");
+    let engines: Vec<String> = cores.iter().filter(|c| *c == "grid" || *c == "drops").cloned().collect();
     let measure: Vec<f64> = list("WATER_MEASURE", "1,2,4").iter().filter_map(|s| s.parse().ok()).collect();
     let mut renderer = Renderer::new(&device, w, h);
     println!("# shot\tdetail\tcore\tseconds\tdrops\tin air\tpieces\twhole\tstrays\tgap px\twidths");
@@ -352,15 +513,24 @@ fn side_by_side() {
             let resolved = resolve(&scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
             let mut today = old.then(|| Playback::new(&scene, &resolved, kit.sims.clone()));
-            let mut water = new.then(|| NewCore::new(&scene, &resolved, &kit, &gpu, None));
-            if let Some(core) = &water {
-                let (rate, cell) = (core.water.numbers().rate, core.water.layout().cell);
-                println!("# {name}\t{detail:?}\tthe new core steps {rate} times a second ({cell} px cells)");
+            let mut news: Vec<NewCore> =
+                engines.iter().map(|e| NewCore::new(&scene, &resolved, &kit, &cards, e, None)).collect();
+            for core in &news {
+                let cell = core.water.layout().cell;
+                match &core.water {
+                    Body::Grid(w) => {
+                        println!(
+                            "# {name}\t{detail:?}\tthe grid core steps {} times a second ({cell} px cells)",
+                            w.numbers().rate
+                        )
+                    }
+                    Body::Drops(_) => println!("# {name}\t{detail:?}\tthe all-drops engine ({cell} px cells)"),
+                }
             }
             let dir = out.join(format!("{name}-{detail:?}").to_lowercase());
             std::fs::create_dir_all(&dir).expect("the frames' folder");
             let began = Instant::now();
-            let (mut old_s, mut new_s) = (0.0, 0.0);
+            let (mut old_s, mut new_s) = (0.0, vec![0.0; news.len()]);
             let count = (seconds * fps).round() as u32;
             let mut due = measure.clone();
             for i in 0..=count {
@@ -384,17 +554,17 @@ fn side_by_side() {
                         report(&name, detail, "old", t, &drops, &layout, &field);
                     }
                 }
-                if let Some(n) = water.as_mut() {
+                for (k, n) in news.iter_mut().enumerate() {
                     let at = Instant::now();
                     n.run_to(t);
                     let frame = n.frame(&scene, &resolved, &kit, t);
                     halves.push(picture(&mut renderer, &device, &queue, &frame));
-                    new_s += at.elapsed().as_secs_f64();
+                    new_s[k] += at.elapsed().as_secs_f64();
                     if now {
                         let layout = n.water.layout();
                         let walls = walls_now(n.start.world());
                         let field = SolidField::from_distance(layout, |q, least| wall_distance(&walls, q, least));
-                        report(&name, detail, "new", t, &n.drops(), &layout, &field);
+                        report(&name, detail, n.water.name(), t, &n.drops(), &layout, &field);
                     }
                 }
                 if now {
@@ -412,10 +582,15 @@ fn side_by_side() {
                 save(&dir.join(format!("f{i:05}.png")), wide, h, &joined);
             }
             println!(
-                "# {}\t{} frames\t{:.0} s in all\ttoday's core {old_s:.1} s\tthe new core with its pictures {new_s:.1} s",
+                "# {}\t{} frames\t{:.0} s in all\ttoday's core {old_s:.1} s\twith their pictures: {}",
                 dir.display(),
                 count + 1,
-                began.elapsed().as_secs_f64()
+                began.elapsed().as_secs_f64(),
+                news.iter()
+                    .zip(&new_s)
+                    .map(|(n, s)| format!("{} {s:.1} s", n.water.name()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }
@@ -508,39 +683,48 @@ fn across(name: &str, detail: Detail, core: &str, t: f64, drops: &[bpe_water::Dr
     );
 }
 
-/// The bridge hands today's drawing every drop: a pool drawn through it covers the pool.
+/// The bridge hands today's drawing every drop, from either engine: a pool drawn through it covers
+/// the pool.
 #[test]
 fn the_bridge_draws_every_drop() {
     let Ok((device, queue)) = bpe_gfx::test_device() else { return };
     let _card = use_for_now(Some(SwarmGpu::for_device(&device, &queue)));
-    let gpu = WaterGpu::new(&device, &queue);
+    let cards = Cards::new(&device, &queue);
     let kit = kit();
     let (mut scene, shape) = scenes::liquid_box(&kit.registry);
     scenes::add_liquid(&mut scene, &kit.registry, shape, |f| f.level = 0.5, |_| {});
     let resolved = resolve(&scene, &kit.registry);
-    let mut core = NewCore::new(&scene, &resolved, &kit, &gpu, Some(Numbers::default()));
-    assert!(core.water.count() > 500, "the fill's drops are in the new core: {}", core.water.count());
-    core.run_to(0.25);
     let mut renderer = Renderer::new(&device, 270, 480);
-    let wet = picture(&mut renderer, &device, &queue, &core.frame(&scene, &resolved, &kit, 0.25));
-    // The same scene with no drops at all.
-    let mut dry = Frame::default();
-    build_frame(&scene, &resolved, core.start.world(), core.start.log(), 0.25, &kit.draws, &mut dry);
-    dry.liquids.clear();
-    let dry = picture(&mut renderer, &device, &queue, &dry);
-    let changed = wet
-        .chunks(4)
-        .zip(dry.chunks(4))
-        .filter(|(a, b)| a[..3].iter().zip(&b[..3]).any(|(x, y)| x.abs_diff(*y) > 24))
-        .count();
-    // Where the drops are: the share of the picture's pixels within a drop's reach of one.
-    let layout = core.water.layout();
-    let drops = core.drops();
-    let lo = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).fold(Vec2::splat(f32::MAX), Vec2::min);
-    let hi = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).fold(Vec2::splat(f32::MIN), Vec2::max);
-    // (The picture is 270 wide of a world 1080 wide: a quarter the size.)
-    let covered = ((hi.x - lo.x) * (hi.y - lo.y) / 16.0) as usize;
-    assert!(covered > 2000, "the pool is big enough to judge: {covered}");
-    assert!(changed as f32 > covered as f32 * 0.85, "the drawn liquid covers the pool: {changed} of {covered} pixels");
-    assert!((changed as f32) < covered as f32 * 1.25, "and nothing far outside it: {changed} of {covered} pixels");
+    for engine in ["grid", "drops"] {
+        let mut core = NewCore::new(&scene, &resolved, &kit, &cards, engine, Some(Numbers::default()));
+        assert!(core.water.count() > 500, "{engine}: the fill's drops are in: {}", core.water.count());
+        core.run_to(0.25);
+        let wet = picture(&mut renderer, &device, &queue, &core.frame(&scene, &resolved, &kit, 0.25));
+        // The same scene with no drops at all.
+        let mut dry = Frame::default();
+        build_frame(&scene, &resolved, core.start.world(), core.start.log(), 0.25, &kit.draws, &mut dry);
+        dry.liquids.clear();
+        let dry = picture(&mut renderer, &device, &queue, &dry);
+        let changed = wet
+            .chunks(4)
+            .zip(dry.chunks(4))
+            .filter(|(a, b)| a[..3].iter().zip(&b[..3]).any(|(x, y)| x.abs_diff(*y) > 24))
+            .count();
+        // Where the drops are: the share of the picture's pixels within a drop's reach of one.
+        let layout = core.water.layout();
+        let drops = core.drops();
+        let lo = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).fold(Vec2::splat(f32::MAX), Vec2::min);
+        let hi = drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).fold(Vec2::splat(f32::MIN), Vec2::max);
+        // (The picture is 270 wide of a world 1080 wide: a quarter the size.)
+        let covered = ((hi.x - lo.x) * (hi.y - lo.y) / 16.0) as usize;
+        assert!(covered > 2000, "{engine}: the pool is big enough to judge: {covered}");
+        assert!(
+            changed as f32 > covered as f32 * 0.85,
+            "{engine}: the drawn liquid covers the pool: {changed} of {covered} pixels"
+        );
+        assert!(
+            (changed as f32) < covered as f32 * 1.25,
+            "{engine}: and nothing far outside it: {changed} of {covered} pixels"
+        );
+    }
 }
