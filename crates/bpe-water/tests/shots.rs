@@ -281,6 +281,53 @@ fn openings() {
     }
 }
 
+/// The course's top shelf as it drains (part C2, Task 7): every 10 s up to `WATER_SECONDS` (30),
+/// the share of the drops left on it and the height of its water every 10 px along it (the
+/// topmost drop over the shelf's face, counting only a column with at least 3 drops), the
+/// tallest and the mean. `WATER_STICK` sets the Stickiness (run it at 0 and at 0.5).
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn shelves() {
+    let gpu = card();
+    let seconds: f32 = num("WATER_SECONDS", 30.0);
+    let (shelf, _, _) = scenes::COURSE_LINES;
+    println!("# cell\tstickiness\tseconds\tleft on the shelf %\ttallest px\tmean px\tcolumns\twall s");
+    for cell in list::<f32>("WATER_CELLS", "6") {
+        let scene = scene_for("course", cell);
+        let stick = scene.feels[0].stickiness;
+        let mut run = start(&scene, &gpu);
+        let layout = run.water.layout();
+        let began = Instant::now();
+        let mut t = 0.0;
+        while t < seconds {
+            t = (t + 10.0).min(seconds);
+            run.run_to(t);
+            let drops = run.water.read();
+            let mut columns = [(0u32, f32::MAX); 90];
+            let mut on = 0usize;
+            for d in &drops {
+                let p = layout.to_world(Vec2::from(d.x));
+                if !p.is_finite() || p.y >= shelf || p.x.abs() >= 450.0 {
+                    continue;
+                }
+                on += 1;
+                let column = &mut columns[((p.x + 450.0) / 10.0) as usize];
+                column.0 += 1;
+                column.1 = column.1.min(p.y);
+            }
+            let heights: Vec<f32> = columns.iter().filter(|c| c.0 >= 3).map(|c| shelf - c.1).collect();
+            let tallest = heights.iter().copied().fold(0.0f32, f32::max);
+            let mean = heights.iter().sum::<f32>() / heights.len().max(1) as f32;
+            println!(
+                "{cell}\t{stick}\t{t}\t{:.1}\t{tallest:.1}\t{mean:.1}\t{}\t{:.0}",
+                100.0 * on as f32 / drops.len().max(1) as f32,
+                heights.len(),
+                began.elapsed().as_secs_f64()
+            );
+        }
+    }
+}
+
 /// Whether a run repeats on this card: twice from the start, and from a copy made half way.
 #[test]
 #[ignore = "a measuring run: by hand"]
