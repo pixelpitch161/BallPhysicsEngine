@@ -68,53 +68,6 @@ pub fn inside(drops: &[Drop], layout: &Layout, lo: Vec2, hi: Vec2) -> Vec<Drop> 
         .collect()
 }
 
-/// How evenly drops are spaced: each drop's distance to its nearest other, in cells. (Liquid at
-/// rest has four drops a cell, half a cell apart; drops strewn at random at that density have a
-/// median of about a quarter of a cell, and a third of them within a fifth.)
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Spacing {
-    /// The median distance to the nearest other drop (0 with fewer than two drops).
-    pub median: f32,
-    /// The share of the drops with another within a quarter of a cell.
-    pub close: f32,
-}
-
-impl Spacing {
-    pub fn of(drops: &[Drop]) -> Spacing {
-        let drops: Vec<Vec2> = drops.iter().map(|d| Vec2::from(d.x)).filter(|x| x.is_finite()).collect();
-        if drops.len() < 2 {
-            return Spacing::default();
-        }
-        let key = |x: Vec2| (x.x.floor() as i32, x.y.floor() as i32);
-        let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
-        for (i, x) in drops.iter().enumerate() {
-            cells.entry(key(*x)).or_default().push(i as u32);
-        }
-        // (A drop with no other within a cell of it counts as a cell away.)
-        let mut nearest: Vec<f32> = drops
-            .iter()
-            .enumerate()
-            .map(|(i, x)| {
-                let (cx, cy) = key(*x);
-                let mut least = 1.0f32;
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        for &j in cells.get(&(cx + dx, cy + dy)).into_iter().flatten() {
-                            if j as usize != i {
-                                least = least.min((drops[j as usize] - *x).length());
-                            }
-                        }
-                    }
-                }
-                least
-            })
-            .collect();
-        let close = nearest.iter().filter(|d| **d < 0.25).count() as f32 / nearest.len() as f32;
-        nearest.sort_by(f32::total_cmp);
-        Spacing { median: nearest[nearest.len() / 2], close }
-    }
-}
-
 /// How many drops lie within `reach` pixels of the world segment `from` to `to`, by `bins` equal
 /// stretches along it: how even a film or a thread is along its length.
 pub fn along(drops: &[Drop], layout: &Layout, from: Vec2, to: Vec2, reach: f32, bins: usize) -> Vec<u32> {
@@ -327,9 +280,111 @@ pub fn save_png(path: &std::path::Path, pixels: &[u8], w: u32, h: u32) -> anyhow
     Ok(())
 }
 
+/// How a body of liquid is broken up ([`pieces`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pieces {
+    /// Pieces in the region (drops nearer each other than the reach are one piece).
+    pub pieces: usize,
+    /// Drops in the region.
+    pub drops: usize,
+    /// The share of the region's drops in small pieces (under `small_px` across both ways).
+    pub small_share: f32,
+    /// The biggest piece's drops.
+    pub biggest: usize,
+}
+
+/// How the drops inside the world rectangle `region` (lo, hi) are broken up: drops nearer than
+/// `near_spacings` rest spacings (half a cell each) are one piece, and a piece is small when its
+/// bounding box is under `small_px` pixels across both ways. Spray at every detail is small; a sheet
+/// or a stream is not.
+pub fn pieces(drops: &[Drop], layout: &Layout, near_spacings: f32, small_px: f32, region: (Vec2, Vec2)) -> Pieces {
+    let here = inside(drops, layout, region.0, region.1);
+    let n = here.len();
+    if n == 0 {
+        return Pieces::default();
+    }
+    let reach = near_spacings * 0.5 * layout.cell;
+    let at: Vec<Vec2> = here.iter().map(|d| layout.to_world(Vec2::from(d.x))).collect();
+    // (Bins as wide as the reach: a drop's neighbours are in its bin or the eight round it.)
+    let bin = |p: Vec2| ((p.x / reach).floor() as i64, (p.y / reach).floor() as i64);
+    let mut bins: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, p) in at.iter().enumerate() {
+        bins.entry(bin(*p)).or_default().push(i);
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for (i, p) in at.iter().enumerate() {
+        let (bx, by) = bin(*p);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let Some(list) = bins.get(&(bx + dx, by + dy)) else { continue };
+                for &j in list {
+                    if j > i && at[j].distance_squared(*p) < reach * reach {
+                        let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                        if a != b {
+                            parent[a.max(b)] = a.min(b);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Each piece's drops and bounding box.
+    let mut boxes: HashMap<usize, (usize, Vec2, Vec2)> = HashMap::new();
+    for (i, p) in at.iter().enumerate() {
+        let r = root(&mut parent, i);
+        let e = boxes.entry(r).or_insert((0, *p, *p));
+        e.0 += 1;
+        e.1 = e.1.min(*p);
+        e.2 = e.2.max(*p);
+    }
+    let small: usize = boxes
+        .values()
+        .filter(|(_, lo, hi)| {
+            let size = *hi - *lo;
+            size.x < small_px && size.y < small_px
+        })
+        .map(|(k, _, _)| *k)
+        .sum();
+    Pieces {
+        pieces: boxes.len(),
+        drops: n,
+        small_share: small as f32 / n as f32,
+        biggest: boxes.values().map(|(k, _, _)| *k).max().unwrap_or(0),
+    }
+}
+
 /// A print of every number of every drop: equal prints mean equal drops.
 pub fn print_of(drops: &[Drop]) -> u64 {
     bytemuck::cast_slice::<Drop, u32>(drops)
         .iter()
         .fold(0xcbf2_9ce4_8422_2325u64, |h, w| (h ^ u64::from(*w)).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drop::{STOPS, WATER};
+
+    #[test]
+    fn pieces_tell_a_sheet_from_spray() {
+        let layout = Layout { origin: Vec2::ZERO, cell: 8.0, cols: 200, rows: 200 };
+        let at = |x: f32, y: f32| Drop::new(layout.to_grid(Vec2::new(x, y)), Vec2::ZERO, STOPS, 0, WATER);
+        // A sheet 100 px long, two drops thick at rest spacing (4 px), and ten lone drops 30 px apart.
+        let mut drops: Vec<Drop> =
+            (0..25).flat_map(|k| [at(100.0 + 4.0 * k as f32, 100.0), at(100.0 + 4.0 * k as f32, 104.0)]).collect();
+        drops.extend((0..10).map(|k| at(100.0 + 30.0 * k as f32, 300.0)));
+        let all = (Vec2::ZERO, Vec2::splat(1600.0));
+        let p = pieces(&drops, &layout, 1.6, 16.0, all);
+        assert_eq!((p.pieces, p.drops, p.biggest), (11, 60, 50), "{p:?}");
+        assert!((p.small_share - 10.0 / 60.0).abs() < 1e-6, "{p:?}");
+        let only_spray = pieces(&drops, &layout, 1.6, 16.0, (Vec2::new(0.0, 200.0), Vec2::splat(1600.0)));
+        assert_eq!(only_spray.small_share, 1.0);
+    }
 }

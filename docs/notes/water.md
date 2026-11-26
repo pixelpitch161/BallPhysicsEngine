@@ -354,3 +354,82 @@ debug and release). By hand: `bench_pictures` (the bench, and any drops file on 
 `PLAIN_OUT`, `PLAIN_CELLS`, `PLAIN_DROPS`, `PLAIN_DROPS_CELL`, `PLAIN_SHOT`) and `plain_pace` (ms a picture) in
 `tests/plain.rs`; the `water` group of the full-size look check. `bpe-kit/tests/water_core.rs::
 the_plain_drawing_draws_every_drop`.
+
+## Part C2: deep water and landings (as built)
+
+Spec: `docs/superpowers/specs/2026-11-25-all-drops-water-core-design.md` (sections 6 and 7). Plan, decisions and
+measurements: `docs/superpowers/plans/water-mode/core-c2-deep-water.md` ("As built and measured"). Still only
+`bpe-water` and its tests: part 2b puts the engine in the editor.
+
+- **The deep part** (`src/drops/deep.rs`, `src/drops/shaders/deep.wgsl`): on a frame that runs it, each step,
+  after the sort and before the sweeps, the drops are gathered onto the layout's cells (mass and momentum on the
+  faces, volume and fullness at the middles, as whole numbers added atomically, so in any order the same);
+  each cell works out its faces' speeds and how full it is (the drops' own fullness, not their share of the
+  cell: a share beside a face never reads full); its depth under the liquid's own edge is found down its column
+  and across its row (an air cell no drop reaches past a solid is not an edge); the depth share `w` is a
+  smoothstep from `deep_d` (24 px) to `deep_d + deep_b` (40 px); what must flow out of each cell is set
+  (`cs_deep_want`, below); the one-sided pressure is solved by the grid core's multigrid from the pressure the
+  step before kept (`cycles` V-cycles a step, `prime` on the first step after a frame without it); and every drop
+  with `w > 0` takes `w` times the pressure's change of speed on the place it would reach, at most `deep_most`
+  cells a step. A drop with `w = 0` is not written: thin water is the drops' own, and on or off the deep part
+  gives the same drops to the bit where nothing is deep. The pressure (`cellp`) is part of the body's state,
+  so copies carry it.
+- **Deep water rests as full as the water on it.** The drops-only band above `deep_d` is squeezed a little by the
+  water over it; deep water held at exactly 1 was lighter than the water resting on it, and the pool's top
+  turned over and over (12 px/s at Fine on the owner's card). The across pass sums the liquid and its fullness in
+  that band (binding 26, `rest`, fixed point), and the want pass asks every deep cell to rest that full, at least
+  1 and at most `1 + rest_most` (0.02). An over-full cell pushes out `push_out` (0.02) of its excess a step, a
+  cell with room fills `fill_rate` (0.5) of it before it pushes back.
+- **Deep frames:** frame `k` runs the deep part when frame `k − 2`'s report counted deep cells, or on the two
+  frames after `add()`; a pour with nothing deep never runs it (`Numbers::deep` 0 turns it off).
+- **Numbers by detail** (`Numbers::for_cell`): steps a frame as C1 (8 at 12 px, 16 at 8 and 6, 32 finer, never
+  over `most_steps` 32), `iters` 4, and two V-cycles a step under 2.5 px cells (one at 3 px and coarser). None of
+  them could come down without the pool sagging or moving more.
+- **Snug fills:** `fill_stacked` finds each side's end along the box's middle row; a side ending in a solid has
+  its column exactly `rest_off` off the face, and the columns are spread evenly between two such sides (a gap
+  by a side wall threw a drop up the wall during the start's bounce in C1).
+- **Landings** (`meet_even` 0.3, `finish.wgsl`): a share of the speed at which a drop and its neighbours close
+  on each other (along the line between them, and only while they close) is taken away. Each of a pair loses the
+  same, by the pair's own weight over the neighbours' weight a drop deep in the liquid has, so momentum is kept
+  (`water_that_meets_keeps_its_momentum`: by each drop's own neighbours, a surface drop took more, and a drop
+  fired into a resting blob drove it backwards). The share is for the step that crosses the same share of a
+  spacing as Fine's 16 steps a frame (`Numbers::meet_share`), so a 2 px step (32 a frame where the reference
+  is 48) or a frame whose fast water took more steps loses as much a second. Drops that meet stop bouncing
+  apart, so a hard landing at Fine stays a sheet as it does at Extreme, while streams still stretch and
+  sloshes still swing.
+- **The bins' running sums** are a parallel scan (`cs_sum_a`: a workgroup of 256 sums a block of 512 bins); the
+  same water to the bit.
+- **The grid core is gone** (`src/grid/` and its tests): its solve lives on in `deep.wgsl`. `Pour::drops` and
+  `Dice` (its random births) went with it.
+- **Measured on the owner's card** (RX 9070 XT, 2026-11-26, the plan's Task 10 has the verdict mark by mark):
+  the deep pool at rest for 20 s keeps 99.7 % of its height at Fine and Extreme and 99.0 % at 2 px, moving at
+  1.3, 2.3 and 6.1 px/s rms, not growing, its top within half a pixel (the spec's 1 px/s is missed: what is left
+  is where the push fades in and beside the walls); the slosh keeps 77 % (Fine), 82 % (Extreme) and 76 % (2 px)
+  after four half swings. Water Weird's landing has 26, 26 and 22 % of the water above the floor's pool in small
+  pieces at 6, 3 and 2 px at Surface pull 0.2, and 30, 29 and 27 % at 0.5 (both within the 5 points). The
+  course's top shelf after 30 s keeps 2.4 to 4.0 % of the water (trial and C1: 7.3 and 7.4 %), but its puddles
+  stand 7 to 11 px tall where the spec asks at most 7 at Fine and 5.5 at Extreme: the skin's bend (`curv`)
+  holds them up (with `curv` 0 they are 2 to 5 px). The course's shares are within a point of C1's, runs
+  repeat, and the owner's Water Weird file breaks into fewer pieces than C1's (190 against 320 at Fine), nearer
+  today's liquid. Pace: Fine 0.31 to 0.54 s a scene second (the grid core's 0.15 to 0.18 was the target),
+  Extreme 0.69 to 1.47, 2 px 1.15 to 2.73; a one-screen course at 2 px (1.4 million drops) is not measured
+  (about 10 s a scene second by the big pool's ms a step). A pour plunging into a pool carries air pockets down
+  that are a little bigger and last a little longer than C1's. The card run's films and tables are in the
+  project files, `water-core/c2/`, and on draft pull request #236's branch.
+- **Handed on:** the shelves' puddles and the skin's bend (a look question for the owner), the pace at Fine, the
+  pool's last few px/s, the air a plunging pour carries down, the 1.4-million-drop pace, and `most_steps` (a pour
+  bursts at 128 steps a frame; a bend taken on fewer steps was worse; a bend from smoothed directions was not tried).
+- **Pitfall: judge pools on the owner's card at Fine and finer.** The software card's 12 px box looked calm while
+  the card's 6 px pool rolled; probes by depth (fullness, unrest) found the cause where the totals could not.
+
+### Tests
+
+`tests/engine.rs`: a deep pool keeps its height (98.5 % at 12 px); the deep part leaves thin water alone (on and off the
+same to the bit); a copy of a deep pool plays on the same; an open edge is not deep; a small course still solves; a fill
+starts at rest; no drop climbs a side wall (none above 200 px/s); a pool filled by a pour gets its push without a jolt;
+deep frames follow the water; a hard landing stays whole (under 30 % above the pool at 6 px and Surface pull 0.2). Unit
+tests in `drops/deep.rs` (the ladder's levels), `drops/numbers.rs` (floors and cycles follow the detail, the meeting
+share a second is the same at any step), `drops/passes.rs` (every pass fits the limits), `probe.rs` (pieces tell a sheet
+from spray). Also: water that meets keeps its momentum; thin water is left alone through the deep frames after an
+`add()`. By hand in `tests/shots.rs`: `landing` and `shelves` (new), and `pools`, `pace`, `openings`, `repeats` as in
+C1.

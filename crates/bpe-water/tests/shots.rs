@@ -281,6 +281,53 @@ fn openings() {
     }
 }
 
+/// The course's top shelf as it drains (part C2, Task 7): every 10 s up to `WATER_SECONDS` (30),
+/// the share of the drops left on it and the height of its water every 10 px along it (the
+/// topmost drop over the shelf's face, counting only a column with at least 3 drops), the
+/// tallest and the mean. `WATER_STICK` sets the Stickiness (run it at 0 and at 0.5).
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn shelves() {
+    let gpu = card();
+    let seconds: f32 = num("WATER_SECONDS", 30.0);
+    let (shelf, _, _) = scenes::COURSE_LINES;
+    println!("# cell\tstickiness\tseconds\tleft on the shelf %\ttallest px\tmean px\tcolumns\twall s");
+    for cell in list::<f32>("WATER_CELLS", "6") {
+        let scene = scene_for("course", cell);
+        let stick = scene.feels[0].stickiness;
+        let mut run = start(&scene, &gpu);
+        let layout = run.water.layout();
+        let began = Instant::now();
+        let mut t = 0.0;
+        while t < seconds {
+            t = (t + 10.0).min(seconds);
+            run.run_to(t);
+            let drops = run.water.read();
+            let mut columns = [(0u32, f32::MAX); 90];
+            let mut on = 0usize;
+            for d in &drops {
+                let p = layout.to_world(Vec2::from(d.x));
+                if !p.is_finite() || p.y >= shelf || p.x.abs() >= 450.0 {
+                    continue;
+                }
+                on += 1;
+                let column = &mut columns[((p.x + 450.0) / 10.0) as usize];
+                column.0 += 1;
+                column.1 = column.1.min(p.y);
+            }
+            let heights: Vec<f32> = columns.iter().filter(|c| c.0 >= 3).map(|c| shelf - c.1).collect();
+            let tallest = heights.iter().copied().fold(0.0f32, f32::max);
+            let mean = heights.iter().sum::<f32>() / heights.len().max(1) as f32;
+            println!(
+                "{cell}\t{stick}\t{t}\t{:.1}\t{tallest:.1}\t{mean:.1}\t{}\t{:.0}",
+                100.0 * on as f32 / drops.len().max(1) as f32,
+                heights.len(),
+                began.elapsed().as_secs_f64()
+            );
+        }
+    }
+}
+
 /// Whether a run repeats on this card: twice from the start, and from a copy made half way.
 #[test]
 #[ignore = "a measuring run: by hand"]
@@ -306,6 +353,76 @@ fn repeats() {
                 first.len(),
                 if pa == pb && pb == pc { "yes" } else { "NO" }
             );
+        }
+    }
+}
+
+/// How a hard landing breaks up (part C2, Task 5): the weird shot's stream landing on its block, in
+/// pieces (`probe::pieces`: drops within 1.6 spacings are one piece, under 16 px across is small),
+/// every 0.25 s, round the block and over everything above the floor's pool. `WATER_PULL=0.2,0.5`,
+/// `WATER_CELLS=8,6,3`; `WATER_DOTS=<folder>` also saves a dot picture of the block's surroundings
+/// every frame from 0.2 to 0.8 s, and one of the whole course at the end.
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn landing() {
+    let gpu = card();
+    let seconds: f32 = num("WATER_SECONDS", 3.0);
+    let block = (Vec2::new(-80.0, -420.0), Vec2::new(320.0, -120.0));
+    let above_pool = (Vec2::new(-420.0, -840.0), Vec2::new(420.0, 600.0));
+    let dots = std::env::var("WATER_DOTS").ok().map(std::path::PathBuf::from);
+    println!("# pull\tcell\tseconds\tdrops\tblock: pieces\tsmall %\tbiggest\tabove the pool: pieces\tsmall %\tbiggest");
+    for pull in list::<f32>("WATER_PULL", "0.2,0.5") {
+        for cell in list::<f32>("WATER_CELLS", "8,6,3") {
+            let mut scene = scenes::weird(cell);
+            for feel in &mut scene.feels {
+                feel.surface_pull = pull;
+            }
+            let mut run = start(&scene, &gpu);
+            let layout = run.water.layout();
+            let mut next = 0.25;
+            while run.water.frames() < (seconds * 60.0).round() as u32 {
+                run.frame();
+                let t = run.water.frames() as f32 / 60.0;
+                if let Some(dir) = &dots
+                    && (0.2..=0.8).contains(&t)
+                {
+                    let drops = run.water.read();
+                    let (pixels, w, _) = probe::picture(&drops, &run.field, 1.0, f32::MAX);
+                    let (x0, y0) = ((block.0 - layout.origin).x as u32, (block.0 - layout.origin).y as u32);
+                    let (cw, ch) = ((block.1 - block.0).x as u32, (block.1 - block.0).y as u32);
+                    let mut crop = Vec::with_capacity((cw * ch * 4) as usize);
+                    for y in y0..y0 + ch {
+                        crop.extend_from_slice(&pixels[((y * w + x0) * 4) as usize..((y * w + x0 + cw) * 4) as usize]);
+                    }
+                    let folder = dir.join(format!("landing-pull{pull}-{cell}px"));
+                    std::fs::create_dir_all(&folder).expect("a folder");
+                    let name = format!("f{:03}.png", run.water.frames());
+                    probe::save_png(&folder.join(name), &crop, cw, ch).expect("a picture");
+                }
+                if t + 1e-4 >= next {
+                    next += 0.25;
+                    let drops = run.water.read();
+                    let a = probe::pieces(&drops, &layout, 1.6, 16.0, block);
+                    let b = probe::pieces(&drops, &layout, 1.6, 16.0, above_pool);
+                    if let Some(dir) = &dots
+                        && t + 0.25 > seconds
+                    {
+                        let (pixels, w, h) = probe::picture(&drops, &run.field, 0.5, f32::MAX);
+                        let name = format!("whole-pull{pull}-{cell}px-{t:.2}s.png");
+                        probe::save_png(&dir.join(name), &pixels, w, h).expect("a picture");
+                    }
+                    println!(
+                        "{pull}\t{cell}\t{t:.2}\t{}\t{}\t{:.1}\t{}\t{}\t{:.1}\t{}",
+                        drops.len(),
+                        a.pieces,
+                        100.0 * a.small_share,
+                        a.biggest,
+                        b.pieces,
+                        100.0 * b.small_share,
+                        b.biggest
+                    );
+                }
+            }
         }
     }
 }

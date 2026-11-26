@@ -25,6 +25,7 @@ fn finish_at(i: u32) -> Finished {
     let vi = mv.xy;
     let li = lamb[i];
     var even = vec2<f32>(0.0);
+    var meet = vec2<f32>(0.0);
     var lies = vec2<f32>(0.0);
     var pull = vec2<f32>(0.0);
     var bend = vec2<f32>(0.0);
@@ -56,20 +57,32 @@ fn finish_at(i: u32) -> Finished {
                 way = -any_way(i, j);
                 far = 1e-5;
             }
-            even = even + (velb[j].xy - vi) * weight(far);
+            let wj = weight(far);
+            let rel = velb[j].xy - vi;
+            even = even + rel * wj;
+            // (Drops with little liquid round them pull harder: a surface's drops have fewer
+            // neighbours to be pulled by. The pair's own number, so the two give and take alike.)
+            let thin = 2.0 / max(li.z + lj.z, 0.5);
+            // (Drops that close on each other: `way` points from the other to this one. Each of
+            // the pair loses the same share of the closing speed, by the pair's own weight, so
+            // momentum is kept.)
+            let closing = dot(rel, way);
+            if closing > 0.0 {
+                meet = meet + closing * way * (wj * thin);
+            }
             // (Which way the liquid lies, by a smooth kernel: by the steep one it is mostly the
             // nearest drop's way, and the bend's pull turns the surface ragged.)
             let t = 1.0 - r2 / (h * h);
             lies = lies - way * (far * 24.0 / (PI * h * h * h * h) * t * t);
-            // (Drops with little liquid round them pull harder: a surface's drops have fewer
-            // neighbours to be pulled by.)
-            let thin = 2.0 / max(li.z + lj.z, 0.5);
             pull = pull + thin * skin(far / h) * way;
             bend = bend + thin * (me.zw - other.zw);
         }
     }
-    // (The evening of speeds is the liquid's own: its Thickness.)
+    // (The evening of speeds is the liquid's own: its Thickness. Drops that meet do not bounce
+    // apart: a share of the speed at which they close is taken away, over the neighbours' weight
+    // a drop deep in the liquid has, the same for every drop.)
     var v = vi + feel.b.z * even / rho0;
+    v = v + fr.deep2.y * meet / max(rho0 - weight(0.0), 1e-6);
     var a = -feel.a.y * pull - feel.a.z * bend;
     let s = solid_at(xi);
     if s.z < h {
@@ -122,7 +135,7 @@ fn cs_finish_predict(@builtin(global_invocation_id) gid: vec3<u32>) {
     fall(i, f.p, f.kind);
 }
 
-// The drops `st.n.x` on, `st.n.y` of them, in the grid core's layout (its `c` holds how full the
+// The drops `st.n.x` on, `st.n.y` of them, in `Drop`'s layout (its `c` holds how full the
 // drop's neighbourhood is, 0, and which way the liquid lies from it).
 @compute @workgroup_size(256)
 fn cs_export(@builtin(global_invocation_id) gid: vec3<u32>) {

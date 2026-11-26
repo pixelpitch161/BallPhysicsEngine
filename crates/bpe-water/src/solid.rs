@@ -129,7 +129,7 @@ impl SolidField {
     /// The furthest a field says (pixels): past it a node is simply "far".
     pub const FAR: f32 = 1.0e4;
 
-    /// The field of `solids` on `layout`, thin walls taken as a cell thick (the grid core's).
+    /// The field of `solids` on `layout`, thin walls taken as a cell thick (as part 2a's grid core had them).
     pub fn build(layout: Layout, solids: &[Solid]) -> SolidField {
         SolidField::build_least(layout, solids, layout.cell)
     }

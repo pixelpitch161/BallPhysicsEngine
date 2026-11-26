@@ -68,25 +68,49 @@ fn fall(i: u32, p: vec4<f32>, kind: u32) {
     atomicAdd(&counts[bin_of(x)], 1u);
 }
 
-// The running sums of the bins' counts, in blocks: within each block...
-@compute @workgroup_size(256)
-fn cs_sum_a(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let b = gid.x;
-    if b >= fr.cells.w {
-        return;
-    }
-    var run = 0u;
-    for (var k = 0u; k < BLOCK; k = k + 1u) {
-        let c = b * BLOCK + k;
-        if c <= fr.cells.z {
-            starts[c] = run;
-            run = run + atomicLoad(&counts[c]);
-        }
-    }
-    blocks[b] = run;
-}
-
 var<workgroup> part: array<u32, 256>;
+
+// The running sums of the bins' counts, in blocks: within each block (a workgroup a block, each
+// thread two bins, the pairs' sums summed across the workgroup; whole numbers, so the same starts
+// as a walk along the block)...
+@compute @workgroup_size(256)
+fn cs_sum_a(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+    let b = wid.x;
+    let t = lid.x;
+    let c = b * BLOCK + 2u * t;
+    var a = 0u;
+    var n = 0u;
+    if c <= fr.cells.z {
+        a = atomicLoad(&counts[c]);
+    }
+    if c + 1u <= fr.cells.z {
+        n = atomicLoad(&counts[c + 1u]);
+    }
+    part[t] = a + n;
+    workgroupBarrier();
+    for (var off = 1u; off < 256u; off = off * 2u) {
+        var add = 0u;
+        if t >= off {
+            add = part[t - off];
+        }
+        workgroupBarrier();
+        part[t] = part[t] + add;
+        workgroupBarrier();
+    }
+    var before = 0u;
+    if t > 0u {
+        before = part[t - 1u];
+    }
+    if c <= fr.cells.z {
+        starts[c] = before;
+    }
+    if c + 1u <= fr.cells.z {
+        starts[c + 1u] = before + a;
+    }
+    if t == 255u && b < fr.cells.w {
+        blocks[b] = part[255];
+    }
+}
 
 // ...over the blocks (one workgroup: each thread sums a run of blocks, the runs' sums are summed
 // across the workgroup, then each run's blocks get their starts)...
@@ -181,5 +205,6 @@ fn cs_order(@builtin(global_invocation_id) gid: vec3<u32>) {
     let n = nf[i];
     id_nxt[dest] = me;
     y_in[dest] = vec4<f32>(q.xy, n.xy);
-    velb[dest] = vec4<f32>(q.zw, f32(me.x & 511u), 0.0);
+    // (Its last: how full it was at the step before's last sweep, for the deep water's cells.)
+    velb[dest] = vec4<f32>(q.zw, f32(me.x & 511u), n.z);
 }

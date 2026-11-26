@@ -1,5 +1,6 @@
 //! The all-drops engine's numbers ([`Numbers`]) and what a liquid is like ([`Feel`]).
 
+use bpe_core::maths::Maths;
 use bytemuck::{Pod, Zeroable};
 
 /// The most liquids a body holds.
@@ -27,20 +28,6 @@ pub struct Feel {
 impl Default for Feel {
     fn default() -> Self {
         Feel { gravity: 1.0, surface_pull: 0.5, thickness: 0.02, stickiness: 0.0, weight: 1.0, settles: 0.0 }
-    }
-}
-
-impl From<&Feel> for crate::grid::Feel {
-    /// The same liquid for the grid core (which has no Thickness; its spray stays at its own default).
-    fn from(f: &Feel) -> Self {
-        crate::grid::Feel {
-            gravity: f.gravity,
-            surface_pull: f.surface_pull,
-            stickiness: f.stickiness,
-            weight: f.weight,
-            settles: f.settles,
-            ..crate::grid::Feel::default()
-        }
     }
 }
 
@@ -104,6 +91,49 @@ pub struct Numbers {
     /// 1: a step's end is joined with the next step's fall, one pass fewer a step (the same water
     /// to the bit either way; kept while the card run times both).
     pub join: u32,
+    /// 1: deep water is held up by the grid's pressure underneath (`deep.wgsl`); 0: never.
+    pub deep: u32,
+    /// Pixels: no push within `deep_d` of a cell that is not full, all of it deeper than
+    /// `deep_d + deep_b` (each at least two cells).
+    pub deep_d: f32,
+    pub deep_b: f32,
+    /// The fill (the drops' volume and the solids' share) from which a cell is full.
+    pub deep_full: f32,
+    /// The most cells the push moves a drop in a step.
+    pub deep_most: f32,
+    /// V-cycles of the pressure a step: each sweeps the cells, hands what they still lack to a grid
+    /// half as fine (and on down to a handful of cells), then adds the coarser answers back on the
+    /// way up. `prime` on the first step the deep part runs after it did not (a pool there at the
+    /// start, or water just grown deep), so the pool's weight is held before anything moves.
+    pub cycles: u32,
+    pub prime: u32,
+    /// Sweeps on a level on the way down, on the way up, and on the coarsest.
+    pub pre: u32,
+    pub post: u32,
+    pub coarse: u32,
+    /// The sweeps' over-relaxation, and how much of a coarser level's answer is added.
+    pub omega: f32,
+    pub scale: f32,
+    /// The share of a cell's excess fill pushed out a step, and the most a step (cells of volume).
+    /// (0.05 left the deep pool moving at 2 px/s at Fine and 4 at Extreme on the owner's card; 0.02
+    /// at 1.5 and 3.)
+    pub push_out: f32,
+    pub most_out: f32,
+    /// The share of a cell's room that may fill a step before it pushes back.
+    pub fill_rate: f32,
+    /// The least mass on a face for it to have a speed (a drop's is 0.25).
+    pub face_floor: f32,
+    /// The share of the speed at which drops close on each other (along the line between them,
+    /// and only while they close, each of a pair alike so momentum is kept) taken away in the
+    /// time a drop takes to cross the same share of a spacing as at Fine's 16 steps a frame: drops
+    /// that meet do not bounce apart, at every detail and step count alike ([`Self::meet_share`]).
+    /// Parting and sliding past each other are left alone.
+    pub meet_even: f32,
+    /// The deep water rests as full as the drops-only water just above it (the drops there are
+    /// squeezed a little by the water over them), at most this much fuller than at rest (0: always
+    /// as at rest). Resting any less full, the deep water is lighter than the water on it, and the
+    /// pool's top turns over and over.
+    pub rest_most: f32,
 }
 
 impl Default for Numbers {
@@ -134,6 +164,24 @@ impl Default for Numbers {
             full_spout: 0.9,
             held_rows: 4,
             join: 1,
+            deep: 1,
+            deep_d: 24.0,
+            deep_b: 16.0,
+            deep_full: 0.9,
+            deep_most: 0.25,
+            cycles: 1,
+            prime: 12,
+            pre: 2,
+            post: 2,
+            coarse: 8,
+            omega: 1.0,
+            scale: 1.0,
+            push_out: 0.02,
+            most_out: 0.1,
+            fill_rate: 0.5,
+            face_floor: 0.005,
+            meet_even: 0.3,
+            rest_most: 0.02,
         }
     }
 }
@@ -149,7 +197,11 @@ impl Numbers {
         } else {
             32
         };
-        Numbers { floor, ..Numbers::default() }
+        // (At 2 px, Final, the deep pool's pressure needs a second V-cycle a step: with one it
+        // moved at 15 to 20 px/s on the owner's card, with two at 5 to 6. At 3 px and coarser the
+        // second bought little for a fifth more time a step.)
+        let cycles = if cell < 2.5 { 2 } else { 1 };
+        Numbers { floor, cycles, ..Numbers::default() }
     }
 
     /// [`Numbers::for_cell`], each replaced by its `BPE_WATER_*` environment variable when that is
@@ -185,6 +237,24 @@ impl Numbers {
             full_spout: num("FULL_SPOUT", d.full_spout),
             held_rows: num("HELD_ROWS", d.held_rows),
             join: num("JOIN", d.join),
+            deep: num("DEEP", d.deep),
+            deep_d: num("DEEP_D", d.deep_d),
+            deep_b: num("DEEP_B", d.deep_b),
+            deep_full: num("DEEP_FULL", d.deep_full),
+            deep_most: num("DEEP_MOST", d.deep_most),
+            cycles: num("CYCLES", d.cycles),
+            prime: num("PRIME", d.prime),
+            pre: num("PRE", d.pre),
+            post: num("POST", d.post),
+            coarse: num("COARSE", d.coarse),
+            omega: num("OMEGA", d.omega),
+            scale: num("SCALE", d.scale),
+            push_out: num("PUSH_OUT", d.push_out),
+            most_out: num("MOST_OUT", d.most_out),
+            fill_rate: num("FILL_RATE", d.fill_rate),
+            face_floor: num("FACE_FLOOR", d.face_floor),
+            meet_even: num("MEET_EVEN", d.meet_even),
+            rest_most: num("REST_MOST", d.rest_most),
         }
     }
 
@@ -254,6 +324,32 @@ impl Numbers {
     pub fn skin(&self, feel: &Feel, cell: f32) -> f32 {
         let sp = feel.surface_pull.max(0.0);
         (self.coh * self.pull * sp * sp / (cell * cell * cell)).max(0.0)
+    }
+
+    /// The deep water's reach on `cell`-pixel cells, in cells: (no push within this of a cell that
+    /// is not full, all of it this much further in, how far the depth is looked for). Each of the
+    /// first two is at least two cells, and the third covers both and one more.
+    pub fn deep_window(&self, cell: f32) -> (f32, f32, u32) {
+        let cell = cell.max(1e-3);
+        let d = (self.deep_d / cell).max(2.0);
+        let b = (self.deep_b / cell).max(2.0);
+        let reach = ((d + b).ceil() as u32 + 1).min(256);
+        (d, b, reach)
+    }
+
+    /// The share of drops' closing speed taken away in one step of `dt` seconds on `cell`-pixel
+    /// cells: `meet_even` for the step that crosses the same share of a spacing as Fine's (6 px
+    /// cells, 16 steps a frame: `FRAME * cell / 96` seconds), and for any other step what keeps
+    /// the share a second the same (so a frame of 32 steps at 2 px, or a frame whose fast water
+    /// took more steps, loses as much as the reference's steps would).
+    pub fn meet_share(&self, dt: f32, cell: f32) -> f32 {
+        let s = self.meet_even.clamp(0.0, 1.0);
+        let reference = FRAME * cell.max(1e-3) / 96.0;
+        let steps = dt.max(0.0) / reference;
+        if s <= 0.0 || !steps.is_finite() {
+            return 0.0;
+        }
+        1.0 - (1.0 - s).det_powf(steps)
     }
 
     /// How fast `feel`'s neighbouring drops even out their speeds, pixels squared a second.
@@ -328,6 +424,30 @@ mod tests {
         for (cell, floor) in [(12.0, 8), (8.0, 16), (6.0, 16), (3.0, 32), (2.0, 32), (1.5, 32)] {
             assert_eq!(Numbers::for_cell(cell).floor, floor, "{cell} px");
         }
+        for (cell, cycles) in [(12.0, 1), (6.0, 1), (3.0, 1), (2.0, 2), (1.5, 2)] {
+            assert_eq!(Numbers::for_cell(cell).cycles, cycles, "{cell} px");
+        }
+    }
+
+    #[test]
+    fn drops_that_meet_lose_the_same_share_a_second_at_any_step() {
+        let n = Numbers::default();
+        let s = n.meet_even;
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        // (The reference steps: 16 a frame at 6 px, 32 at 3 px, 8 at 12 px.)
+        assert!(near(n.meet_share(FRAME / 16.0, 6.0), s));
+        assert!(near(n.meet_share(FRAME / 32.0, 3.0), s));
+        assert!(near(n.meet_share(FRAME / 8.0, 12.0), s));
+        // (A frame of 32 steps at 6 px, or at 2 px where the reference is 48, keeps what is left
+        // after a frame the same.)
+        let left = |dt: f32, cell: f32, steps: i32| (1.0 - n.meet_share(dt, cell)).powi(steps);
+        let fine = (1.0 - s).powi(16);
+        assert!(near(left(FRAME / 32.0, 6.0, 32), fine), "{}", left(FRAME / 32.0, 6.0, 32));
+        assert!((left(FRAME / 32.0, 2.0, 32) - (1.0 - s).powi(48)).abs() < 1e-6);
+        assert!(n.meet_share(FRAME / 32.0, 2.0) > s, "a 2 px step crosses more of a spacing");
+        assert_eq!(Numbers { meet_even: 0.0, ..n }.meet_share(FRAME / 16.0, 6.0), 0.0);
+        assert!(near(Numbers { meet_even: 1.0, ..n }.meet_share(FRAME / 64.0, 6.0), 1.0));
+        assert_eq!(n.meet_share(f32::NAN, 6.0), 0.0);
     }
 
     #[test]
@@ -357,6 +477,18 @@ mod tests {
         assert_eq!(n.steps_for(f32::INFINITY, &feels, 6.0), 32);
         assert_eq!(n.steps_for(f32::NAN, &feels, 6.0), 32);
         assert_eq!(n.steps_for(0.0, &[], 6.0), 16);
+    }
+
+    #[test]
+    fn the_window_covers_the_blend() {
+        let n = Numbers::default();
+        for cell in [1.5f32, 2.0, 3.0, 6.0, 8.0, 12.0] {
+            let (d, b, reach) = n.deep_window(cell);
+            assert!(d >= 2.0 && b >= 2.0, "{cell} px: {d} {b}");
+            assert!(reach as f32 >= d + b + 1.0, "{cell} px: the depth is looked for far enough ({reach})");
+            assert!((d - (24.0 / cell).max(2.0)).abs() < 1e-5, "{cell} px");
+        }
+        assert_eq!(n.deep_window(12.0), (2.0, 2.0, 5));
     }
 
     #[test]

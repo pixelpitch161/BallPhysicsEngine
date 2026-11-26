@@ -8,10 +8,9 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::drop::{Pour, Poured, STOPS, fill, fill_stacked};
+use crate::drop::{Pour, STOPS, fill_stacked};
 use crate::drops::numbers::{FRAME, Feel, Numbers};
 use crate::drops::{LEAST_WALL, Water, WaterGpu};
-use crate::grid;
 use crate::solid::{Layout, Solid, SolidField};
 
 /// The course's gravity in the test scenes: the Balls scenes' 500 at today's Bucket size (x 8).
@@ -38,13 +37,6 @@ pub struct Running {
     pub field: SolidField,
 }
 
-/// A scene being played by the grid core.
-pub struct GridRunning {
-    pub water: grid::Water,
-    pub field: SolidField,
-    pours: Vec<(Pour, Poured)>,
-}
-
 impl Scene {
     /// Starts the scene on `gpu` with the all-drops engine's `numbers`.
     pub fn start(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> Running {
@@ -55,20 +47,6 @@ impl Scene {
         }
         water.set_pours(&self.pours);
         Running { water, field }
-    }
-
-    /// Starts the scene on `gpu` with the grid core's `numbers`.
-    pub fn start_grid(&self, gpu: &Arc<grid::WaterGpu>, numbers: grid::Numbers) -> GridRunning {
-        let field = SolidField::build(self.layout, &self.solids);
-        let feels: Vec<grid::Feel> = self.feels.iter().map(grid::Feel::from).collect();
-        let mut water = grid::Water::new(gpu.clone(), &field, self.gravity, numbers, &feels);
-        let mut born = 0u32;
-        for (lo, hi) in &self.fills {
-            let drops = fill(&self.layout, &field, *lo, *hi, STOPS, born);
-            born = born.wrapping_add(water.add(&drops));
-        }
-        let pours = self.pours.iter().map(|p| (*p, Poured { born: 1 << 24, ..Poured::default() })).collect();
-        GridRunning { water, field, pours }
     }
 }
 
@@ -89,31 +67,6 @@ impl Running {
     /// A copy that plays on exactly as this one does.
     pub fn copy(&self) -> Running {
         Running { water: self.water.copy(), field: self.field.clone() }
-    }
-}
-
-impl GridRunning {
-    /// One liquid step: the pours' births, then the step.
-    pub fn step(&mut self) {
-        let (dt, step, layout) = (self.water.numbers().dt(), self.water.steps(), self.water.layout());
-        for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
-            let drops = pour.drops(state, &layout, dt, step, k as u32 + 1);
-            self.water.add(&drops);
-        }
-        self.water.step();
-    }
-
-    /// Plays on to `seconds` from the start.
-    pub fn run_to(&mut self, seconds: f32) {
-        let until = (seconds * self.water.numbers().rate as f32).round() as u32;
-        while self.water.steps() < until {
-            self.step();
-        }
-    }
-
-    /// A copy that plays on exactly as this one does.
-    pub fn copy(&self) -> GridRunning {
-        GridRunning { water: self.water.copy(), field: self.field.clone(), pours: self.pours.clone() }
     }
 }
 
@@ -313,7 +266,7 @@ pub fn slope(cell: f32) -> Scene {
     }
 }
 
-/// Shot 2, a sheet off a ledge: the grid core's own [`sheet`] scene.
+/// Shot 2, a sheet off a ledge: the [`sheet`] scene.
 pub fn ledge(cell: f32) -> Scene {
     sheet(cell)
 }
@@ -340,6 +293,27 @@ pub fn pool_pour(cell: f32) -> Scene {
             until: 3.0,
             ..Pour::default()
         }],
+    }
+}
+
+/// The deep pool (as [`still_box`] at 0.6) narrower, so that 2 px detail is quick to play: 240 px
+/// wide, 540 px deep.
+pub fn deep_narrow(cell: f32) -> Scene {
+    Scene { name: "deep narrow", ..boxed(cell, 240.0, 3.0, 0.6) }
+}
+
+/// A pool made by a pour: a 70 px tap at 300 px/s into an empty 300 x 400 px box for 2 s (about
+/// 145 px deep at the end), so its water turns deep part way.
+pub fn fill_pool(cell: f32) -> Scene {
+    let half = Vec2::new(150.0, 200.0);
+    Scene {
+        name: "fill pool",
+        layout: Layout::cover(-half - Vec2::splat(40.0), half + Vec2::splat(40.0), cell),
+        solids: vec![boxed_in(half)],
+        gravity: GRAVITY,
+        feels: water(),
+        fills: Vec::new(),
+        pours: vec![Pour { place: Vec2::new(-40.0, -170.0), width: 70.0, speed: 300.0, until: 2.0, ..Pour::default() }],
     }
 }
 
@@ -376,7 +350,7 @@ pub fn beads(cell: f32) -> Scene {
 
 /// The all-drops trial's shots by name (`docs/superpowers/plans/water-mode/all-drops-trial.md`):
 /// `slope`, `ledge`, `pool`, `course`, `beads`, `weird`, `deep` (the deep pool at rest), `thin` (a
-/// two-cell pour down a whole screen).
+/// two-cell pour down a whole screen), and part C2's `narrow` ([`deep_narrow`]), `fill` ([`fill_pool`]).
 pub fn shot(name: &str, cell: f32) -> Option<Scene> {
     Some(match name {
         "slope" => slope(cell),
@@ -386,6 +360,8 @@ pub fn shot(name: &str, cell: f32) -> Option<Scene> {
         "beads" => beads(cell),
         "weird" => weird(cell),
         "deep" => still_box(cell, 0.6),
+        "narrow" => deep_narrow(cell),
+        "fill" => fill_pool(cell),
         "box" => still_box(cell, 0.3),
         "thin" => thin_pour(cell, 2.0),
         _ => return None,

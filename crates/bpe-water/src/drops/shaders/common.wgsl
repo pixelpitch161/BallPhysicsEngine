@@ -42,11 +42,31 @@ struct Fr {
     // where each pour judges the room for its drops (grid units: a reach behind its spout), two
     // to an entry
     spouts: array<vec4<f32>, 32>,
+    // deep water (deep.wgsl): no push within this many cells of a cell that is not full, all of it
+    // this many cells further in, the fill from which a cell is full, the most cells the push moves a
+    // drop a step
+    deep: vec4<f32>,
+    // what the kept pressure is scaled by on a frame's first step (its dt over the last's; 0 when the
+    // deep part starts afresh); the share of the speed at which drops close on each other taken
+    // away a step (`meet_even`); the most fuller than at rest the deep water rests (`rest_most`); 0
+    deep2: vec4<f32>,
+    // the pressure's sweeps: over-relaxation, the share of a coarser level's answer added, the share
+    // of a cell's excess pushed out a step, the most a step (cells of volume)
+    mg: vec4<f32>,
+    // the share of a cell's room that may fill a step, the least mass on a face for it to have a
+    // speed, the liquid's edge off a solid's face (cells), the course's own liquid's edge from the
+    // grid's edge (cells)
+    mg2: vec4<f32>,
+    // the pressure's levels, how far the depth is looked for (cells), 0, 0
+    dgrid: vec4<u32>,
+    // each level of the pressure: where it starts in `cellp` and `coef`, its columns, its rows, 0
+    lv: array<vec4<u32>, 12>,
 };
 
 // A step's numbers (one for each step of the frame, at its own offset): the drops this step, the
-// drops before this step's births, where its births start in the births buffer, 0. The export
-// takes (the first drop, how many, 0, 0).
+// drops before this step's births, where its births start in the births buffer, and bit 0 the
+// frame's last step, bit 1 its first. The export takes (the first drop, how many, 0, 0); a pass of
+// the deep water's pressure (its number, 0, 0, 0).
 struct St {
     n: vec4<u32>,
 };
@@ -58,7 +78,7 @@ struct Born {
     id: vec4<u32>,
 };
 
-// A drop as the grid core lays it out (`Drop` in drop.rs): `c` is (how full its neighbourhood
+// A drop as `Drop` (drop.rs) lays it out: `c` is (how full its neighbourhood
 // is, 0, which way the liquid lies from it).
 struct DropOut {
     x: vec2<f32>,
