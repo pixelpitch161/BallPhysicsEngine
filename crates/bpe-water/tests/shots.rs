@@ -16,10 +16,10 @@
 
 use std::time::Instant;
 
-use bpe_water::plain::{self, Plain};
+use bpe_water::draw::{Plain, PlainGpu, PlainLook, View, sets, stored};
 use bpe_water::probe::{self, Stats};
 use bpe_water::scenes::{self, Running, Scene};
-use bpe_water::{Drop, Layout, Numbers, WaterGpu};
+use bpe_water::{Drop, Layout, Numbers, SolidField, WaterGpu};
 use glam::Vec2;
 
 fn list<T: std::str::FromStr>(name: &str, or: &str) -> Vec<T> {
@@ -54,12 +54,12 @@ fn start(scene: &Scene, gpu: &std::sync::Arc<WaterGpu>) -> Running {
     scene.start(gpu, Numbers::from_env_for(scene.layout.cell))
 }
 
-/// The plain picture of a whole screen (1080 x 1920 world pixels round the middle) at `scale`.
-fn screen(drops: &[Drop], run: &Running, scale: f32) -> (Vec<u8>, u32, u32) {
-    let (w, h) = ((1080.0 * scale) as u32, (1920.0 * scale) as u32);
-    let rest = run.water.numbers().wall_off;
-    let ask = Plain { lo: Vec2::new(-540.0, -960.0), scale, width: w, height: h, rest };
-    (plain::draw(drops, &run.field, &ask), w, h)
+/// The plain picture of a whole screen (1080 x 1920 world pixels round the middle) at `scale`, drawn
+/// on the card straight from the body's drops.
+fn screen(plain: &mut Plain, run: &Running, scale: f32) -> (Vec<u8>, u32, u32) {
+    let view = View::screen(scale);
+    plain.draw(&run.water.drop_buffers(), &view, &PlainLook::default());
+    (plain.read(), view.width, view.height)
 }
 
 /// The film frames a second: one that divides the 60 frames the water moves on in.
@@ -70,7 +70,8 @@ fn fps() -> u32 {
 }
 
 /// The shots in the plain drawing, as film frames (numbered as the trial's: frame `i` at `i / fps`
-/// seconds) and as full-size stills.
+/// seconds) and as full-size stills. `WATER_DUMP=1`: each still's drops also go to a drops file
+/// (`<label>-<t>s.drops`, for the plain drawing's `bench_pictures` and the look check).
 #[test]
 #[ignore = "a measuring run: by hand"]
 fn shots() {
@@ -82,11 +83,18 @@ fn shots() {
     let film = num("WATER_FILM", 1u32) != 0;
     let dots = num("WATER_DOTS", 1u32) != 0;
     let half: f32 = num("WATER_FILM_SCALE", 0.5);
+    let dump = num("WATER_DUMP", 0u32) != 0;
+    let drawing = PlainGpu::new(gpu.device(), gpu.queue());
     println!("# shot\tcell\tseconds\tdrops\trms px/s\tfastest\ttop\tbroken\tsteps last frame\twall s");
     for name in list::<String>("WATER_SHOTS", "slope") {
         for cell in list::<f32>("WATER_CELLS", "6") {
             let scene = scene_for(&name, cell);
             let mut run = start(&scene, &gpu);
+            // (Drawn as a Water course is made, carved in rock: no light comes in through a thin
+            // wall from outside the box.)
+            let least = bpe_water::drops::LEAST_WALL * cell;
+            let carved = SolidField::build_least(scene.layout, &sets::carved(&scene.solids, least), least);
+            let mut plain = Plain::new(drawing.clone(), &carved, run.water.numbers().wall_off);
             let label = format!("{name}-c{cell}{}{tag}", if tag.is_empty() { "" } else { "-" });
             let dir = out.join(&label);
             std::fs::create_dir_all(&dir).expect("the frames' folder");
@@ -104,7 +112,7 @@ fn shots() {
                 if !(film || still || whole) {
                     continue;
                 }
-                let drops = run.water.read();
+                let drops = if whole || still { run.water.read() } else { Vec::new() };
                 if whole || still {
                     let s = Stats::of(&drops, &run.water.layout());
                     println!(
@@ -118,12 +126,15 @@ fn shots() {
                     );
                 }
                 if film {
-                    let (pixels, w, h) = screen(&drops, &run, half);
+                    let (pixels, w, h) = screen(&mut plain, &run, half);
                     probe::save_png(&dir.join(format!("f{i:05}.png")), &pixels, w, h).expect("a frame");
                 }
                 if still {
-                    let (pixels, w, h) = screen(&drops, &run, 1.0);
+                    let (pixels, w, h) = screen(&mut plain, &run, 1.0);
                     probe::save_png(&out.join(format!("{label}-drops-{t:.1}s.png")), &pixels, w, h).expect("a still");
+                    if dump {
+                        stored::save_drops(&out.join(format!("{label}-{t:.1}s.drops")), &drops).expect("the drops");
+                    }
                     if dots {
                         let (pixels, w, h) = probe::picture(&drops, &run.field, 1.0, f32::MAX);
                         probe::save_png(&out.join(format!("{label}-drops-{t:.1}s-dots.png")), &pixels, w, h)

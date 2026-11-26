@@ -92,7 +92,9 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
 - **No fallback**: while the PC is off this job waits in the queue and the "Tests" gate stays pending (GitHub cancels
   a job queued 24 hours; re-run it once the PC is back). A fork's pull request never runs there, so its gate fails.
 - **Pictures pinned to the card**: `crates/bpe-kit/tests/golden-unlit*.txt`, `golden-lit-flat*.txt`,
-  `golden-liquid*.txt` and `crates/bpe-gfx/tests/golden-shapes.txt` (`paths_tests::shapes_draw_as_before`). Their first line names the card and driver they were made on (`bpe_gfx::card_golden`). On
+  `golden-liquid*.txt`, `crates/bpe-gfx/tests/golden-shapes.txt` (`paths_tests::shapes_draw_as_before`) and
+  `crates/bpe-water/tests/golden-plain.txt` (`plain_pinned`, the plain water drawing of drops laid out by hand; one
+  file for debug and release). Their first line names the card and driver they were made on (`bpe_gfx::card_golden`). On
   another card (a cloud container's lavapipe) the tests draw and check what they can, print "not compared" and pass;
   on the same card a difference fails, and says so when the driver changed.
 - **Refreshing them**: Actions, "Refresh GPU pictures" (`gpu-pictures.yml`), "Run workflow", naming the branch (not

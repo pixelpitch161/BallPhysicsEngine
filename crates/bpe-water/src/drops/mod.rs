@@ -366,17 +366,6 @@ impl Water {
         DropBuffers { xv: &self.by.xv, nf: &self.by.nf, id: &self.by.id[self.now], count: self.count }
     }
 
-    /// What the bridge to today's drawing reads of this body.
-    pub fn feed(&self) -> crate::bridge::Feed<'_> {
-        crate::bridge::Feed {
-            device: self.gpu.device(),
-            queue: self.gpu.queue(),
-            layout: self.layout,
-            count: self.count,
-            buffers: crate::bridge::FeedBuffers::Drops(self.drop_buffers()),
-        }
-    }
-
     /// Makes room for `n` drops, keeping the drops there are.
     fn grow_to(&mut self, n: u32) {
         if n <= self.room {

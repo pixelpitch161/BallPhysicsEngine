@@ -63,6 +63,9 @@ jobs:
           cargo test -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bpe-gfx --lib paths_tests::shapes_draw_as_before
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The plain water drawing: one file for debug and release (no physics in it).
+          cargo test -p bpe-water --test plain_pinned
       - name: Make the pictures (release)
         env:
           BLESS_GOLDEN: "1"
@@ -75,6 +78,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "The card drew different pictures on a second run." }
           cargo test -p bpe-gfx --lib paths_tests::shapes_draw_as_before
           if ($LASTEXITCODE -ne 0) { throw "The card drew different shapes on a second run." }
+          cargo test -p bpe-water --test plain_pinned
+          if ($LASTEXITCODE -ne 0) { throw "The card drew different water on a second run." }
           cargo test --release -p bpe-kit --test unlit_pictures --test lit_flat_pinned --test golden_liquid
           if ($LASTEXITCODE -ne 0) { throw "The card drew different pictures on a second run (release)." }
       - name: Commit and push
@@ -86,7 +91,7 @@ jobs:
           $files = 'crates/bpe-kit/tests/golden-unlit.txt', 'crates/bpe-kit/tests/golden-unlit-debug.txt',
             'crates/bpe-kit/tests/golden-lit-flat.txt', 'crates/bpe-kit/tests/golden-lit-flat-debug.txt',
             'crates/bpe-kit/tests/golden-liquid.txt', 'crates/bpe-kit/tests/golden-liquid-debug.txt',
-            'crates/bpe-gfx/tests/golden-shapes.txt'
+            'crates/bpe-gfx/tests/golden-shapes.txt', 'crates/bpe-water/tests/golden-plain.txt'
           $changed = git status --porcelain -- $files
           $card = (Get-Content 'crates/bpe-kit/tests/golden-unlit.txt' -TotalCount 1) -replace '^# made on: ', ''
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Made on: $card"
