@@ -261,13 +261,17 @@ core-c1-engine.md` ("As built and measured"). The owner chose this engine on 202
   from today's spouts, gets walls `LEAST_WALL` cells thick, and leaves out today's starting drops inside that
   thicker band (they would be thrown out of it). Through the bridge a drop's fullness counts the solids' share,
   so films on walls draw a little fuller than the grid core's (C3 removes the bridge). The card run's script
-  is the plan's Task 8 (`card/all-drops-core-c1/run.ps1` while the pull request is open).
+  is the plan's Task 8 (`card/all-drops-core-c1/run.ps1`, kept with the results on the card-run branches of
+  draft pull requests #232 and #233; C2's run starts from it).
 - **Handed to C2** (measured here): a pool still squeezes a few per cent under its weight and bounces for about
   0.2 s after the start, its speed peaking near 100 px/s; during that bounce a drop by a side wall is thrown up
   the wall, the faster the wider the gap between the wall and the fill's nearest column (0.67 cell: 600 px/s).
   That gap is the fill's (its columns are the global lattice, not snapped to side faces): C2's fill should sit
   snugly against side faces as well as on the floor. A restart point must keep `nf` too (the bend term reads
-  the step before's `n.xy`).
+  the step before's `n.xy`). Also C2's: the pace target (0.28 to 0.39 s a scene second at Fine against 0.25),
+  the 2 px pool not at rest, a pour in zero gravity bursting at the spout, and a skin that stays calm at any
+  step count (so `most_steps` can rise above 32 and Surface pull 1 isn't capped at 2 px). Measurements: the
+  plan's "As built and measured".
 - **Pitfall**: a new physics number goes in `drops::numbers::Numbers`, its default, `from_env_for` and, if a
   shader reads it, `FrameGpu` (matching `Fr` in `common.wgsl`). A pass lists its bindings in
   `passes.rs::ENTRIES`, at most 8 storage buffers.
