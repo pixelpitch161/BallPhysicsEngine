@@ -406,3 +406,28 @@ fn a_grown_body_draws_its_new_drops() {
         assert_eq!(apart(pic.at(Vec2::new(200.0, 0.0)), BACK()) > 40, shown, "the new block is drawn only once grown");
     }
 }
+
+/// How long a picture takes on this card (a measuring run, by hand, in release): a screen two
+/// thirds full at 2 px cells (about 1.4 million drops, the final course) at 1080 x 1920, and at
+/// 8 px (about 86,000, the draft course) at 1080 x 1920 and 540 x 960. 20 pictures in one
+/// submission after one to warm up; the spec's targets are 8 ms and 2 ms on the owner's card.
+///
+/// `cargo test --release -p bpe-water --test plain -- --ignored --nocapture plain_pace`
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn plain_pace() {
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let info = device.adapter_info();
+    println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
+    let gpu = PlainGpu::new(&device, &queue);
+    let look = sets::look();
+    println!("# cell px\tdrops\tpicture\tms a picture");
+    for (cell, scale) in [(2.0f32, 1.0f32), (8.0, 1.0), (8.0, 0.5)] {
+        let set = sets::screen_pool(cell, 2.0 / 3.0);
+        let stored = StoredDrops::new(&device, &queue, &set.drops);
+        let mut plain = Plain::new(gpu.clone(), &set.field, REST);
+        let view = View::screen(scale);
+        let took = plain.draw_many(&stored.buffers(), &view, &look, 20);
+        println!("{cell}\t{}\t{}x{}\t{:.2}", set.drops.len(), view.width, view.height, took.as_secs_f64() * 1000.0);
+    }
+}

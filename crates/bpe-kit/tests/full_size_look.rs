@@ -17,6 +17,7 @@
 //! - `LOOK_SET`: `key=value;key=value` written onto every Lighting card (a number, or a choice).
 //! - `LOOK_FILE`: a saved scene file drawn as well (pictures named `file-...`), at `LOOK_TIMES` (a comma list of
 //!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
+//! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`).
 
 use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
@@ -1179,6 +1180,32 @@ fn file_shots(reg: &Registry) -> Vec<Shot> {
     vec![shot("file", scene, times)]
 }
 
+/// Water mode's plain drawing (`bpe_water::draw`, its own drawing on the card, not the renderer's) of drops laid out
+/// by hand: the bench at 8, 3 and 2 px cells and a screen two thirds full at 2 px (1.4 million drops). Drops of real
+/// runs are looked at with `bpe-water`'s `bench_pictures` (tests/plain.rs).
+fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_water::draw::{Plain, PlainGpu, StoredDrops, View, sets};
+    type Make = fn() -> sets::Bench;
+    let all: [(&str, Make); 4] = [
+        ("water-bench-c8", || sets::bench(8.0)),
+        ("water-bench-c3", || sets::bench(3.0)),
+        ("water-bench-c2", || sets::bench(2.0)),
+        ("water-pool-c2", || sets::screen_pool(2.0, 2.0 / 3.0)),
+    ];
+    let card = PlainGpu::new(&gpu.device, &gpu.queue);
+    let mut out = Vec::new();
+    for (name, make) in all.into_iter().filter(|(name, _)| wanted(name, only)) {
+        let set = make();
+        let stored = StoredDrops::new(&gpu.device, &gpu.queue, &set.drops);
+        let mut plain = Plain::new(card.clone(), &set.field, sets::REST);
+        let view = View::screen(1.0);
+        assert_eq!((view.width, view.height), (W, H));
+        plain.draw(&stored.buffers(), &view, &sets::look());
+        out.push((name.to_string(), plain.read()));
+    }
+    out
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1231,6 +1258,12 @@ fn render_at_full_size() {
         }
         save_sheet(&dir, group, &thumbs);
     }
+    let mut thumbs = Vec::new();
+    for (name, pixels) in water_pictures(&gpu, &only) {
+        thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
+        count += 1;
+    }
+    save_sheet(&dir, "water", &thumbs);
     eprintln!("{count} pictures in {}", dir.display());
     assert!(count > 0, "LOOK_ONLY matched no picture");
 }

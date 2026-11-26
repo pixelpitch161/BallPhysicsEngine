@@ -4,8 +4,10 @@
 // 1. `vs_splat`/`fs_splat`: every drop a soft round splat, summed (additive blending, in the drops'
 //    order, so the sums repeat) into two half-float pictures: its liquid's colour and Deep colour
 //    weighted by the splat, the splat's weight, and its Clarity.
-// 2. `fs_base`: at half size, how much of each texel is liquid (the amount cut at its level) or rock:
-//    the first level of a ladder. (Light comes in only through the air: rock is not a way in.)
+// 2. `fs_base`: at half size, how much of each texel is air (neither liquid, the amount cut at its
+//    level, nor rock): the first level of a ladder. (Light comes in only through the air: rock is not
+//    a way in.) The air's share, not the rest's: a half float keeps small shares exactly, and deep in
+//    a pool the depth reads how little air is round.
 // 3. `fs_down`: each level of the ladder from the one before, half the size, blurred with the
 //    [1 3 3 1] / 8 kernel (four bilinear taps).
 // 4. `fs_show`: the picture: the back, the liquid (its outline cut from the amount and smoothed by
@@ -205,7 +207,7 @@ fn fs_base(in: FullOut) -> @location(0) vec4<f32> {
         let liquid = smoothstep(0.75 * level, 1.25 * level, amount_filled(px, far));
         closed += max(liquid, rock_cover(far));
     }
-    return vec4<f32>(closed * 0.25, 0.0, 0.0, 0.0);
+    return vec4<f32>(1.0 - closed * 0.25, 0.0, 0.0, 0.0);
 }
 
 // ---- 3. the ladder's halvings ----
@@ -287,11 +289,11 @@ fn erfinv(x: f32) -> f32 {
 
 // How much light the liquid has lost at picture point `px`, from 0 (at its surface, and in thin
 // water) towards 1, over `clarity` world px. The ladder, blurred by about `clarity`, says what share
-// of the room round the point is not air (liquid or rock): b. For liquid that goes on below a flat
-// surface, b at depth x is Phi(x / sigma); so x = sigma Phi^-1(b), and the light left is exp(-x /
-// clarity). Light comes in only through the air, so a pool is deep at its floor and walls, and
-// thin water (a film on rock, a stream by a wall, a drop) is at the edge of liquid and rock
-// together: b is about a half there, and it stays its Colour.
+// of the room round the point is air: o. For liquid that goes on below a flat surface, o at depth x
+// is Phi(-x / sigma); so x = -sigma Phi^-1(o), and the light left is exp(-x / clarity). Light comes
+// in only through the air, so a pool is deep at its floor and walls, and thin water (a film on rock,
+// a stream by a wall, a drop) is at the edge of liquid and rock together: o is about a half there,
+// and it stays its Colour.
 fn absorbed(px: vec2<f32>, clarity: f32) -> f32 {
     if clarity <= 0.0 {
         return 0.0;
@@ -304,15 +306,15 @@ fn absorbed(px: vec2<f32>, clarity: f32) -> f32 {
     // (Each level read with the same level number across the picture: where liquids of different
     // Clarity meet, neighbouring pixels want different levels, and some drivers take one level for
     // a whole block of pixels.)
-    var b = 0.0;
+    var open = 0.0;
     for (var k = 0; k <= i32(top); k++) {
         let w = select(0.0, 1.0 - f, k == k0) + select(0.0, f, k == k1);
         if w > 0.0 {
-            b += w * ladder_at(px, k);
+            open += w * ladder_at(px, k);
         }
     }
-    b = clamp(b, 0.0, 1.0);
-    let x = 1.41421356 * erfinv(clamp(2.0 * b - 1.0, -0.99999, 0.99999));
+    open = clamp(open, 0.0, 1.0);
+    let x = -1.41421356 * erfinv(clamp(2.0 * open - 1.0, -0.99999, 0.99999));
     // (A soft floor at 0 rather than a corner: no line where b passes a half.)
     let depth = 0.5 * (x + sqrt(x * x + 0.04));
     let sigma = exp2(level) * LADDER_SIGMA / u.view.z;

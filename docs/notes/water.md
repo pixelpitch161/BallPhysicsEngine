@@ -288,3 +288,58 @@ leave the course repeats (twice and from a copy). Unit tests in `drop.rs` (rows 
 a thin tap pours single drops, a pour starts at its time, rows are even, a fill is set down on a floor but not
 through an opening, a fill in mid-air stays in its box), `drops/numbers.rs` and
 `drops/passes.rs`. `bpe-kit/tests/water_core.rs::the_bridge_draws_every_drop` runs for both engines.
+
+## Part C3: the plain drawing on the card (as built)
+
+Spec: `docs/superpowers/specs/2026-11-25-all-drops-water-core-design.md` (section 9). Plan, decisions and
+measurements: `docs/superpowers/plans/water-mode/core-c3-plain-drawing.md`. Still only `bpe-water`, its tests and
+`water_core.rs`: part 2b puts it in the editor and the export.
+
+- **What it is** (`src/draw/plain.rs`, `src/shaders/plain.wgsl`): `Plain::new(gpu, field, rest)` and
+  `draw(&body.drop_buffers(), &View, &PlainLook)` draw straight from the engine's drop buffers, never read back,
+  at any picture size and zoom (`View { lo, scale, width, height }`, `View::screen(scale)`; a side over the card's
+  most is clamped with a message). `output()` is the picture on the card (`Rgba8Unorm` holding sRGB, an
+  `Rgba8UnormSrgb` view allowed), `read()` reads it back for tests. One `PlainGpu` (pipelines) per device.
+- **Passes**: (1) each drop a splat `(1 − q²)²` of radius 0.9 cell (at least 1.25 picture px, its peak then kept
+  visible), summed with `One + One` into two `Rgba16Float` pictures: amount, colour, Deep colour and Clarity, so
+  liquids mix where they meet; (2) a half-size `R16Float` ladder of the air's share (neither liquid nor rock),
+  halved down to one texel (the air's share, not the rest's: a half float keeps small shares exactly, which deep
+  water needs, else its colour is blotchy); (3) the picture: the amount filled up to faces the drops rest `rest`
+  cells off, the outline where it passes 0.2, smoothed over one picture pixel by its slope; depth from the ladder
+  blurred by Clarity (`x = −σ √2 erfinv(2o − 1)`, light left `exp(−x / Clarity)`), so a pool darkens with depth and light
+  enters only through the air: a film on rock or a stream by a wall stays its Colour; a thin lighter rim of the
+  liquid's own Colour along the surface but not along rock; the rock on top from the solid field (smoothed edge,
+  25 % darker within 3 px of its face); a fixed 4 × 4 dither under half a step, so ramps never band.
+- **Inputs**: `PlainLook { back, rock, liquids: [PlainLiquid { colour, deep, clarity }] }` (sRGB; a drop's liquid
+  is `kind & 15`, a kind past the list takes the last; defaults are the Water Look card's: Colour `#2f9bff`, Deep
+  `#0b2a4f`, Clarity 200, rock `#6b5e52`, back the rock at half).
+- **Courses are carved out of rock.** Light comes in only through the air, so a thin wall with air behind it would
+  let a pool's side glow. Water mode's courses are carved out of solid rock (2b), and the test courses are drawn
+  that way: `draw::sets::carved` turns a hollow box into slabs, `water_core.rs` treats everything outside the
+  closed hollow wall round the course's middle as rock (`drawn_distance`). The physics' own field is unchanged.
+- **Pitfall: one ladder level for all pixels at once.** Where liquids of different Clarity meet, neighbouring
+  pixels want different ladder levels; the cloud's software card takes one level for a block of pixels (sampled
+  or loaded), which drew a bright line at the seam. Each level is read in a loop over the level number.
+- **Drops not on the engine**: `StoredDrops::new(device, queue, &[Drop])` puts any list on the card in the
+  engine's layout; `stored::save_drops` / `load_drops` write and read drops files (`shots` with `WATER_DUMP=1`
+  writes one per still). Hand-built sets (`draw::sets`, feature `test-scenes`): `bench(cell)` (a pool of two
+  liquids, a stream, a film on a slope, a blob, lone drops, close pairs, drops that left), `screen_pool(cell,
+  share)`, `lattice`, `carved`, `look()`.
+- **Gone**: the bridge to today's liquid drawing (`bridge.rs`, `bridge.wgsl`, both engines' `feed()`) and the
+  processor plain drawing (`src/plain.rs`). `shots` films and stills, `water_core.rs` and the look check all use
+  this drawing; `water_core.rs` plays `old` and `drops` only (`WATER_CORES`).
+
+### Tests
+
+`tests/plain.rs`: a pool is drawn where its drops are; the same drops draw the same picture to the bit; an empty
+body draws the rock and the back; a lone drop shows at scale 1, 0.25 and 0.05; drops that left are not drawn; odd,
+tiny and too-big pictures draw; deep water is darker than thin water; the rim is lighter than the body under it;
+rock has a smooth edge and a darker rim; a pool is drawn up to its floor at 8, 3 and 2 px; a film one drop thick is
+one piece; draft and final outlines agree; a kind without a look takes the last; Clarity 0 is flat; zooming in far
+keeps the body whole; liquids of different Clarity meet without a line; a grown body draws its new drops. Unit
+tests in `draw/` (the splat's least size, the ladder's levels, sets, drops files). `tests/plain_pinned.rs`: the
+bench and a screen pool at 8 px drawn at 270 × 480, pinned to the owner's card (`golden-plain.txt`, one file for
+debug and release). By hand: `bench_pictures` (the bench, and any drops file on its shot's course:
+`PLAIN_OUT`, `PLAIN_CELLS`, `PLAIN_DROPS`, `PLAIN_DROPS_CELL`, `PLAIN_SHOT`) and `plain_pace` (ms a picture) in
+`tests/plain.rs`; the `water` group of the full-size look check. `bpe-kit/tests/water_core.rs::
+the_plain_drawing_draws_every_drop`.

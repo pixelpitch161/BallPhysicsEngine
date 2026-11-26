@@ -268,18 +268,6 @@ impl Water {
         self.numbers = numbers;
     }
 
-    /// What the bridge to today's drawing reads of this body.
-    pub fn feed(&self) -> crate::bridge::Feed<'_> {
-        let (drops, wallc, vel_out) = self.buffers();
-        crate::bridge::Feed {
-            device: self.gpu().device(),
-            queue: self.gpu().queue(),
-            layout: self.layout(),
-            count: self.count(),
-            buffers: crate::bridge::FeedBuffers::Grid { drops, wallc, vel_out },
-        }
-    }
-
     pub fn gpu(&self) -> &Arc<WaterGpu> {
         &self.gpu
     }
@@ -301,11 +289,6 @@ impl Water {
 
     pub fn set_gravity(&mut self, gravity: glam::Vec2) {
         self.gravity = gravity;
-    }
-
-    /// The buffers the drawing bridge reads.
-    pub(crate) fn buffers(&self) -> (&wgpu::Buffer, &wgpu::Buffer, &wgpu::Buffer) {
-        (&self.drops, &self.wallc, &self.vel_out)
     }
 
     /// Adds `born` to the drops (those past [`MOST_DROPS`] are let go). Returns how many were added.
