@@ -241,7 +241,7 @@ impl DraftJob {
         self.shared.plays.load(Ordering::Acquire)
     }
 
-    /// How many drops the body holds.
+    /// How many liquid drops the body holds (trapped air left out).
     pub fn count(&self) -> u32 {
         self.shared.count.load(Ordering::Acquire)
     }
@@ -340,7 +340,8 @@ impl Run {
             if !inputs.feels.is_empty() {
                 water.set_feels(&inputs.feels);
             }
-            let full = water.count() >= self.most;
+            // (By the liquid: trapped air comes and goes, and would stop and start the pours.)
+            let full = water.liquid() >= self.most;
             water.set_pours(if full { &[] } else { &inputs.pours });
             water.frame();
             let now = water.frames();
@@ -353,8 +354,8 @@ impl Run {
             return false;
         }
         shared.reached.store(live.water.frames(), Ordering::Release);
-        shared.count.store(live.water.count(), Ordering::Release);
-        shared.full.store(live.water.count() >= self.most, Ordering::Release);
+        shared.count.store(live.water.liquid(), Ordering::Release);
+        shared.full.store(live.water.liquid() >= self.most, Ordering::Release);
         true
     }
 
@@ -366,7 +367,7 @@ impl Run {
         self.copies = Copies::default();
         self.copies.keep(0, copy_size(&water), water.copy());
         self.generation += 1;
-        let (count, generation) = (water.count(), self.generation);
+        let (count, generation) = (water.liquid(), self.generation);
         let in_rock = setup.taps_in_rock(&field);
         if let Ok(mut live) = shared.live.lock() {
             *live = Some(Live { water, field, plain, generation });

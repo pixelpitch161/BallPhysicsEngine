@@ -8,8 +8,9 @@
 // beside it, and burst), and a pocket part filled is filled the rest of the way on the next frame. The spots' running sums over the cells, in blocks and then over the
 // blocks (`cs_air_sum_a`, `cs_air_sum_b`; whole numbers, so every spot takes the same slot on every
 // run), give each spot its slot among the `fr.dgrid.w` the host kept after the frame's drops. Once
-// the step's drops are finished, each spot is born an air drop in its slot (`cs_air_born`), and the
-// slots no spot took hold drops that left (`cs_air_dead`), let go two frames on.
+// the step's drops are finished, each spot is born an air drop in its slot, counted from the head of
+// the drops that left (`cs_air_born`), and the kept room past them holds drops that left
+// (`cs_air_dead`), let go from the end two frames on.
 
 // Per cell: its spots (bits 0 to 3), how many spots the cells before it in its block have, and the
 // speed of the liquid round it (x and y, as bits).
@@ -234,15 +235,24 @@ fn cs_air_sum_b(@builtin(local_invocation_id) lid: vec3<u32>) {
     }
 }
 
-// The kept slots no spot took (after the step's drops, `st.n.x` of them): drops that left.
+// Where the air born after the frame's drops goes: at the head of the drops that left (the last
+// sort put them after the drops in the course, `starts[fr.cells.z]` of them), so the body ends in
+// drops that left, as every boundary lets go from the end.
+fn air_first() -> u32 {
+    return starts[fr.cells.z];
+}
+
+// The kept room past the step's drops (`st.n.x` of them, then `fr.dgrid.w` slots) that the air born
+// does not cover: drops that left.
 @compute @workgroup_size(256)
 fn cs_air_dead(@builtin(global_invocation_id) gid: vec3<u32>) {
     let t = gid.x;
     let slots = fr.dgrid.w;
-    if t >= slots || t < min(airb[air_blocks()], slots) {
+    let born = min(airb[air_blocks()], slots);
+    let i = st.n.x + t;
+    if t >= slots || i < air_first() + born {
         return;
     }
-    let i = st.n.x + t;
     xv[i] = vec4<f32>(-1e6, -1e6, 0.0, 0.0);
     nf[i] = vec4<f32>(0.0);
     id_nxt[i] = vec4<u32>(AIR | STOPS, fr.dgrid.z + t, 0u, 0u);
@@ -270,7 +280,7 @@ fn cs_air_born(@builtin(global_invocation_id) gid: vec3<u32>) {
         if slot >= fr.dgrid.w {
             return;
         }
-        let i = st.n.x + slot;
+        let i = air_first() + slot;
         xv[i] = vec4<f32>(x + 0.25 + 0.5 * f32(b & 1u), y + 0.25 + 0.5 * f32(b >> 1u), v);
         nf[i] = vec4<f32>(0.0, 0.0, 1.0, 0.0);
         id_nxt[i] = vec4<u32>(AIR | STOPS, fr.dgrid.z + slot, 0u, 0u);

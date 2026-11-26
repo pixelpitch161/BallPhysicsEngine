@@ -24,6 +24,8 @@ pub struct Report {
     pub deep: u32,
     /// The spots of trapped air the frame's last step found (born or not).
     pub air: u32,
+    /// The liquid's drops in the course at the frame's end (air left out).
+    pub liquid: u32,
     /// Each pour's fullness at its spout (1 is full).
     pub spout: [f32; MOST_POURS],
 }
@@ -36,7 +38,7 @@ impl Report {
     }
 
     fn of(live: u32) -> Report {
-        Report { fastest: 0, live, deep: 0, air: 0, spout: [0.0; MOST_POURS] }
+        Report { fastest: 0, live, deep: 0, air: 0, liquid: 0, spout: [0.0; MOST_POURS] }
     }
 }
 
@@ -48,11 +50,13 @@ enum Back {
     OnCard { slot: usize, done: wgpu::SubmissionIndex },
 }
 
-/// A frame's report and how many drops the frame ended with.
+/// A frame's report, how many drops the frame ended with, and how many liquid drops had been added
+/// by its end (counting on from the body's start, wrapping).
 #[derive(Clone, Debug)]
 struct Entry {
     frame: u32,
     count: u32,
+    poured: u32,
     back: Back,
 }
 
@@ -74,6 +78,9 @@ pub(super) struct Clock {
     pub(super) spouts: [f32; MOST_POURS],
     pub(super) deep: u32,
     pub(super) air: u32,
+    /// The liquid's drops in the course in the last report read at a boundary, and how many liquid
+    /// drops had been added by that frame's end (as `Entry::poured`).
+    pub(super) liquid: (u32, u32),
     pub(super) last_steps: u32,
 }
 
@@ -107,6 +114,7 @@ impl Clock {
             spouts: [0.0; MOST_POURS],
             deep: 0,
             air: 0,
+            liquid: (0, 0),
             last_steps: 0,
         }
     }
@@ -126,8 +134,16 @@ impl Clock {
         encoder.copy_buffer_to_buffer(on_card, 0, back, 0, on_card.size());
     }
 
-    /// Frame `frame`, which ended with `count` drops, was sent as `done` (or had no drops).
-    pub(super) fn sent(&mut self, frame: u32, count: u32, done: Option<wgpu::SubmissionIndex>, steps: u32) {
+    /// Frame `frame`, which ended with `count` drops and `poured` liquid drops added since the start,
+    /// was sent as `done` (or had no drops).
+    pub(super) fn sent(
+        &mut self,
+        frame: u32,
+        count: u32,
+        poured: u32,
+        done: Option<wgpu::SubmissionIndex>,
+        steps: u32,
+    ) {
         let back = match done {
             Some(done) => {
                 let slot = self.slot_of(frame);
@@ -136,7 +152,7 @@ impl Clock {
             }
             None => Back::Known(Box::new(Report::of(0))),
         };
-        self.recent.push_back(Entry { frame, count, back });
+        self.recent.push_back(Entry { frame, count, poured, back });
         while self.recent.len() > SLOTS {
             self.recent.pop_front();
         }
@@ -177,11 +193,12 @@ impl Clock {
         }
     }
 
-    /// The report of frame `frame` and the count it ended with, if the clock has it.
-    fn report_of(&mut self, device: &wgpu::Device, frame: u32) -> Option<(Report, u32)> {
+    /// The report of frame `frame`, the count it ended with and the liquid drops added by then, if
+    /// the clock has it.
+    fn report_of(&mut self, device: &wgpu::Device, frame: u32) -> Option<(Report, u32, u32)> {
         let i = self.recent.iter().position(|e| e.frame == frame)?;
         let report = self.resolve(device, i);
-        Some((report, self.recent[i].count))
+        Some((report, self.recent[i].count, self.recent[i].poured))
     }
 
     /// Settles boundary `k` (the start of frame `k`), once: reads frame `k - 2`'s report and returns
@@ -199,8 +216,9 @@ impl Clock {
         self.air = 0;
         let mut go = 0;
         if k >= 2
-            && let Some((report, count)) = self.report_of(device, k - 2)
+            && let Some((report, count, poured)) = self.report_of(device, k - 2)
         {
+            self.liquid = (report.liquid, poured);
             self.reported = report.fastest_px();
             self.spouts = report.spout;
             self.deep = report.deep;
@@ -234,6 +252,7 @@ impl Clock {
         to.spouts = self.spouts;
         to.deep = self.deep;
         to.air = self.air;
+        to.liquid = self.liquid;
         to.last_steps = self.last_steps;
     }
 }

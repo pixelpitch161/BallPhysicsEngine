@@ -71,7 +71,12 @@ fn lambda_at(i: u32, first: bool) {
     if !(abs(now) < 1e30) {
         now = 0.0;
     }
-    lamb[i] = vec4<f32>(now - was, now, all / rho0, select(0.0, select(1.0, 2.0, bursts(xi, all / rho0, drops_only / rho0)), air));
+    // (Whether air bursts is looked at for air alone: `select` would look for every drop.)
+    var burst = 0.0;
+    if air {
+        burst = select(1.0, 2.0, bursts(xi, all / rho0, drops_only / rho0));
+    }
+    lamb[i] = vec4<f32>(now - was, now, all / rho0, burst);
 }
 
 // Whether an air drop at `x`, `full` full (`drops` full by the drops alone), bursts: it has open air

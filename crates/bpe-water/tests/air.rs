@@ -188,6 +188,46 @@ fn air_repeats() {
     assert_eq!(probe::print_of(&first), probe::print_of(&c.water.read()), "from a copy at frame 3");
 }
 
+/// Air born at a frame's end lives on past the boundaries after it: a boundary lets go only drops
+/// that left (settling one without a frame, as `add` does, changes no drop in the course).
+#[test]
+fn a_boundary_lets_go_of_no_air() {
+    let Some(gpu) = card() else { return };
+    let mut scene = scenes::pool_pour(12.0);
+    scene.pours[0].until = 1.0;
+    let mut run = scene.start(&gpu, Numbers::for_cell(12.0));
+    let (mut lost, mut most) = (0, 0);
+    for _ in 0..120 {
+        run.frame();
+        let before = probe::air(&run.water.read()).len();
+        run.water.add(&[]);
+        let after = probe::air(&run.water.read()).len();
+        most = most.max(before);
+        lost += before.saturating_sub(after);
+    }
+    assert!(most > 20, "the pour traps air: {most}");
+    assert_eq!(lost, 0, "air let go at the boundaries (most at once {most})");
+}
+
+/// The body's liquid count leaves trapped air and the room kept for it out (what a draft's cap and
+/// its readout go by): in a box nothing leaves, it is the liquid's drops, frame by frame.
+#[test]
+fn the_liquid_is_counted_without_the_air() {
+    let Some(gpu) = card() else { return };
+    let mut scene = scenes::pool_pour(12.0);
+    scene.pours[0].until = 1.0;
+    let mut run = scene.start(&gpu, Numbers::for_cell(12.0));
+    let mut with_air = 0;
+    for _ in 0..120 {
+        run.frame();
+        let drops = run.water.read();
+        let (liquid, air) = (probe::liquid(&drops).len() as u32, probe::air(&drops).len());
+        assert_eq!(run.water.liquid(), liquid, "at frame {}", run.water.frames());
+        with_air += usize::from(air > 0);
+    }
+    assert!(with_air > 10, "the pour traps air: {with_air} frames with some");
+}
+
 /// A thick pour into a pool for a second traps air, and the air leaves once the pour stops (the
 /// pool sloshes for a while after, and its breaking waves trap a little more).
 #[test]

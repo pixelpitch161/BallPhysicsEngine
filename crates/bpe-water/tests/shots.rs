@@ -285,16 +285,20 @@ fn openings() {
 
 /// The course's top shelf as it drains (part C2, Task 7): every 10 s up to `WATER_SECONDS` (30),
 /// the share of the drops left on it and the height of its water every 10 px along it (the
-/// topmost drop over the shelf's face, counting only a column with at least 3 drops), the
-/// tallest and the mean. `WATER_STICK` sets the Stickiness (run it at 0 and at 0.5), `WATER_WETTING`
-/// the rock's Wetting (part 2c).
+/// topmost drop joined to the shelf's face, each within a cell of the one under it, counting only
+/// a column with at least 3 drops), the tallest and the mean, and the share of the drops above the
+/// shelf but not joined to it (drops left hanging from the box's lid, part 2c: on wet rock they
+/// stay, as under a real lid). `WATER_STICK` sets the Stickiness (run it at 0 and at 0.5),
+/// `WATER_WETTING` the rock's Wetting (part 2c).
 #[test]
 #[ignore = "a measuring run: by hand"]
 fn shelves() {
     let gpu = card();
     let seconds: f32 = num("WATER_SECONDS", 30.0);
     let (shelf, _, _) = scenes::COURSE_LINES;
-    println!("# cell\tstickiness\twetting\tseconds\tleft on the shelf %\ttallest px\tmean px\tcolumns\twall s");
+    println!(
+        "# cell\tstickiness\twetting\tseconds\tleft on the shelf %\ttallest px\tmean px\tcolumns\thanging above %\twall s"
+    );
     for cell in list::<f32>("WATER_CELLS", "6") {
         let scene = scene_for("course", cell);
         let (stick, wetting) = (scene.feels[0].stickiness, scene.wetting);
@@ -306,25 +310,42 @@ fn shelves() {
             t = (t + 10.0).min(seconds);
             run.run_to(t);
             let drops = run.water.read();
-            let mut columns = [(0u32, f32::MAX); 90];
-            let mut on = 0usize;
-            for d in &drops {
+            let liquid = probe::liquid(&drops);
+            let mut columns: Vec<Vec<f32>> = vec![Vec::new(); 90];
+            let mut above = 0usize;
+            for d in liquid.iter() {
                 let p = layout.to_world(Vec2::from(d.x));
                 if !p.is_finite() || p.y >= shelf || p.x.abs() >= 450.0 {
                     continue;
                 }
-                on += 1;
-                let column = &mut columns[((p.x + 450.0) / 10.0) as usize];
-                column.0 += 1;
-                column.1 = column.1.min(p.y);
+                above += 1;
+                columns[((p.x + 450.0) / 10.0) as usize].push(p.y);
             }
-            let heights: Vec<f32> = columns.iter().filter(|c| c.0 >= 3).map(|c| shelf - c.1).collect();
+            // (Each column's water up from the shelf, drop by drop, while each is within a cell of
+            // the one under it.)
+            let (mut on, mut heights) = (0usize, Vec::new());
+            for ys in &mut columns {
+                ys.sort_by(|a, b| b.total_cmp(a));
+                let (mut top, mut joined) = (shelf, 0u32);
+                for &y in ys.iter() {
+                    if top - y > cell {
+                        break;
+                    }
+                    (top, joined) = (y, joined + 1);
+                }
+                on += joined as usize;
+                if joined >= 3 {
+                    heights.push(shelf - top);
+                }
+            }
             let tallest = heights.iter().copied().fold(0.0f32, f32::max);
             let mean = heights.iter().sum::<f32>() / heights.len().max(1) as f32;
+            let share = |n: usize| 100.0 * n as f32 / liquid.len().max(1) as f32;
             println!(
-                "{cell}\t{stick}\t{wetting}\t{t}\t{:.1}\t{tallest:.1}\t{mean:.1}\t{}\t{:.0}",
-                100.0 * on as f32 / drops.len().max(1) as f32,
+                "{cell}\t{stick}\t{wetting}\t{t}\t{:.1}\t{tallest:.1}\t{mean:.1}\t{}\t{:.1}\t{:.0}",
+                share(on),
                 heights.len(),
+                share(above - on),
                 began.elapsed().as_secs_f64()
             );
         }

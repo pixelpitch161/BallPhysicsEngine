@@ -130,6 +130,9 @@ pub struct Water {
     room: u32,
     /// The serial the next drop added is given.
     serial: u32,
+    /// How many liquid drops have been added since the start (wrapping): with the reports' count
+    /// of the liquid in the course, how much liquid the body holds ([`Water::liquid`]).
+    poured: u32,
     steps: u64,
     frames: u32,
     /// The bins across and down (each a reach wide).
@@ -219,6 +222,7 @@ impl Water {
             count: 0,
             room,
             serial: 0,
+            poured: 0,
             steps: 0,
             frames: 0,
             cells,
@@ -297,8 +301,11 @@ impl Water {
         self.groups = groups;
         let (name, bindings) = ENTRIES[P::Report as usize];
         let clock = self.clock.lock().expect("the clock");
-        self.report_groups = (0..3)
-            .map(|slot| {
+        // (One for each report slot and each of the kinds buffers the last step can sort into:
+        // `slot * 2 + kinds`.)
+        self.report_groups = (0..6)
+            .map(|at| {
+                let (slot, kinds) = (at / 2, at % 2);
                 let entries: Vec<wgpu::BindGroupEntry> = bindings
                     .iter()
                     .map(|&b| {
@@ -306,6 +313,7 @@ impl Water {
                             0 => self.frame_uniform.as_entire_binding(),
                             1 => self.step_binding(),
                             2 => self.by.xv.as_entire_binding(),
+                            5 => self.by.id[kinds].as_entire_binding(),
                             8 => self.starts.as_entire_binding(),
                             15 => self.solid.as_entire_binding(),
                             25 => self.deep.count.as_entire_binding(),
@@ -407,9 +415,17 @@ impl Water {
         &self.gpu
     }
 
-    /// How many drops the body holds (the last few may have left the course: they take no part).
+    /// How many drops the body holds (the last few may have left the course: they take no part;
+    /// trapped air's drops and the room kept for them count too).
     pub fn count(&self) -> u32 {
         self.count
+    }
+
+    /// How many of its drops are liquid, at most: the liquid in the course as the card counted it two
+    /// frames back, and every liquid drop added since (some may have left). Trapped air is left out.
+    pub fn liquid(&self) -> u32 {
+        let (counted, by) = self.clock.lock().expect("the clock").liquid;
+        counted.wrapping_add(self.poured.wrapping_sub(by)).min(self.count)
     }
 
     /// How many drops its buffers have room for (a copy takes as much).
@@ -509,6 +525,8 @@ impl Water {
         queue.write_buffer(&self.by.nf, at, bytemuck::cast_slice(&nf));
         queue.write_buffer(&self.by.id[self.now], at, bytemuck::cast_slice(&id));
         self.count += n;
+        let liquid = born[..n as usize].iter().filter(|d| !d.is_air()).count() as u32;
+        self.poured = self.poured.wrapping_add(liquid);
         self.clock.get_mut().expect("the clock").added(self.frames, fastest);
         n
     }
@@ -653,6 +671,7 @@ impl Water {
         if !born.is_empty() {
             self.clock.get_mut().expect("the clock").added(self.frames, fastest * self.layout.cell);
         }
+        self.poured = self.poured.wrapping_add(born.len() as u32);
         (born, steps)
     }
 
@@ -684,8 +703,9 @@ impl Water {
         let measure_only = deep_on && !deep_frame;
         let prime = deep_frame && (!self.deep_last || self.prime_next);
         let kept = if self.deep_last && self.deep_dt > 0.0 { dt / self.deep_dt } else { 0.0 };
-        // Trapped air is found on the last step whenever it measures the deep cells, and born in the
-        // slots kept after the frame's drops (as many as the report two frames back found, and some).
+        // Trapped air is found on the last step whenever it measures the deep cells, and born at the
+        // head of the drops that left, into room kept after the frame's drops (as many slots as the
+        // report two frames back found, and some): the body still ends in drops that left.
         let air_on = self.numbers.air != 0 && deep_on;
         let found = self.clock.get_mut().expect("the clock").air;
         let slots =
@@ -814,15 +834,17 @@ impl Water {
                     } else {
                         go!(P::Finish, now, iters % 2, j, by_drop);
                     }
-                    // (Into the kept buffers, after the step's drops: the kinds into the ones the
-                    // step sorted into.)
+                    // (After the drops in the course, over those that left and into the room kept:
+                    // the kinds into the ones the step sorted into.)
                     if slots > 0 && j + 1 == n {
                         go!(P::AirDead, now, 0, j, slots.div_ceil(WORKGROUP));
                         go!(P::AirBorn, now, 0, j, by_cell);
                     }
                 }
                 pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
-                pass.set_bind_group(0, &self.report_groups[slot], &[(n - 1) * STEP_ROOM as u32]);
+                // (The kinds the last step sorted into, as its passes' binding 5.)
+                let kinds = 1 - (self.now ^ ((n - 1) as usize & 1));
+                pass.set_bind_group(0, &self.report_groups[slot * 2 + kinds], &[(n - 1) * STEP_ROOM as u32]);
                 pass.dispatch_workgroups(end.div_ceil(WORKGROUP).max(1), 1, 1);
             }
             clock.copy_back(&mut encoder, k);
@@ -837,7 +859,7 @@ impl Water {
             self.serial = self.serial.wrapping_add(slots);
         }
         self.count = end;
-        self.clock.get_mut().expect("the clock").sent(k, end, done, n);
+        self.clock.get_mut().expect("the clock").sent(k, end, self.poured, done, n);
         self.steps += u64::from(n);
         self.frames += 1;
         self.deep_last = deep_frame;
@@ -878,6 +900,7 @@ impl Water {
         let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(done), timeout: None });
         new.count = self.count;
         new.serial = self.serial;
+        new.poured = self.poured;
         new.steps = self.steps;
         new.frames = self.frames;
         new.edges_shut = self.edges_shut;
