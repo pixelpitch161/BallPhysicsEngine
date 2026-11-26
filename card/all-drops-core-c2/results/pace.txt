@@ -1,0 +1,58 @@
+﻿
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	steps a frame	ms a step	wall s for a scene second
+weird	8	3057	16.0	0.423	0.406
+weird	6	5433	16.0	0.399	0.383
+weird	3	21734	32.0	0.372	0.715
+slope	8	2229	16.0	0.300	0.288
+slope	6	3962	16.0	0.327	0.314
+slope	3	15848	32.0	0.357	0.685
+ledge	8	5096	16.0	0.328	0.315
+ledge	6	9056	16.1	0.346	0.334
+ledge	3	36224	32.0	0.401	0.771
+pool	8	23295	16.0	0.396	0.380
+pool	6	41291	16.4	0.418	0.410
+pool	3	166438	32.0	0.766	1.470
+course	8	11935	16.0	0.697	0.669
+course	6	21097	16.0	0.544	0.522
+course	3	84534	32.0	0.571	1.096
+deep	8	19841	16.0	0.687	0.660
+deep	6	35261	16.0	0.561	0.539
+deep	3	142521	32.0	0.712	1.367
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 32.91s
+
+# pace took 33 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,ledge,pool,course,deep","WATER_CELLS":"8,6,3","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	steps a frame	ms a step	wall s for a scene second
+weird	2	48883	32.0	0.635	1.218
+slope	2	35644	32.0	0.599	1.150
+pool	2	374420	32.0	1.420	2.726
+deep	2	322380	32.0	1.332	2.558
+fill	2	42070	32.0	0.652	1.251
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 25.13s
+
+# pace took 26 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,slope,pool,deep,fill","WATER_CELLS":"2","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}
+
+running 1 test
+test pace ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	drops	steps a frame	ms a step	wall s for a scene second
+weird	6	5433	16.1	0.408	0.396
+weird	3	21734	32.0	0.244	0.468
+pool	6	41291	16.1	0.340	0.328
+pool	3	166438	32.0	0.543	1.042
+course	6	21097	16.0	0.273	0.262
+course	3	84534	32.0	0.368	0.706
+deep	6	35261	16.0	0.331	0.317
+deep	3	142521	32.0	0.528	1.014
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 13.89s
+
+# pace took 14 s, exit 0: {"WATER_SECONDS":1,"WATER_SHOTS":"weird,pool,course,deep","BPE_WATER_DEEP":0,"WATER_CELLS":"6,3","WATER_PULL":"0.5","WATER_FROM":2,"WATER_STICK":"0.5"}

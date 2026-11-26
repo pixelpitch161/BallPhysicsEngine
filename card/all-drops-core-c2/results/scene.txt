@@ -1,0 +1,34 @@
+﻿
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+# file	Fine	the all-drops engine (6 px cells)
+file	Fine	old	2	3620	2083	109	0.191	0.046	1624	0 0 0 0 0 154
+file	Fine	drops	2	3622	1645	204	0.225	0.123	1152	0 18 10 0 0 0
+file	Fine	old	4	7240	5392	86	0.749	0.011	1578	0 0 0 0 0 717
+file	Fine	drops	4	7244	4376	191	0.365	0.041	1676	0 0 0 0 0 417
+file	Fine	old	6	10861	8676	69	0.868	0.007	1603	0 0 0 0 0 795
+file	Fine	drops	6	10867	7856	190	0.822	0.023	1618	0 0 0 0 0 796
+# %TEMP%\c2-final2\results\file-fine	181 frames	29 s in all	today's core 2.0 s	with their pictures: drops 3.0 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 44.82s
+
+# side_by_side took 46 s, exit 0: {"WATER_SCENE":"F:\\!Ai Stuff\\BallPhysicsEngine\\!Projects\\Water Weird.ron","WATER_SECONDS":6,"WATER_SHOTS":"file","WATER_SIZE":"540x960","WATER_FPS":30,"WATER_DETAILS":"fine","WATER_MEASURE":"2,4,6","WATER_STICK":"0.5","WATER_CORES":"old,drops"}
+
+running 1 test
+test side_by_side ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	detail	core	seconds	drops	in air	pieces	whole	strays	gap px	widths
+# file	Extreme	the all-drops engine (3 px cells)
+file	Extreme	old	2	14481	10171	155	0.219	0.012	1616	0 0 0 0 0 219
+file	Extreme	drops	2	14489	9118	254	0.211	0.019	1691	0 0 0 0 0 181
+file	Extreme	old	4	28963	23283	103	0.759	0.004	1583	0 0 0 0 0 814
+file	Extreme	drops	4	28966	22145	219	0.720	0.006	1657	0 0 0 0 0 814
+file	Extreme	old	6	43444	37333	89	0.855	0.002	1518	0 0 0 0 0 814
+file	Extreme	drops	6	43455	36365	167	0.840	0.003	1598	0 0 0 0 0 814
+# %TEMP%\c2-final2\results\file-extreme	181 frames	27 s in all	today's core 3.0 s	with their pictures: drops 5.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 27.90s
+
+# side_by_side took 28 s, exit 0: {"WATER_SCENE":"F:\\!Ai Stuff\\BallPhysicsEngine\\!Projects\\Water Weird.ron","WATER_SECONDS":6,"WATER_SHOTS":"file","WATER_SIZE":"540x960","WATER_FPS":30,"WATER_DETAILS":"extreme","WATER_MEASURE":"2,4,6","WATER_STICK":"0.5","WATER_CORES":"old,drops"}

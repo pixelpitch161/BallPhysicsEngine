@@ -1,0 +1,30 @@
+﻿
+running 1 test
+test shelves ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# cell	stickiness	seconds	left on the shelf %	tallest px	mean px	columns	wall s
+6	0	10	5.6	13.4	11.2	81	4
+6	0	20	2.9	7.7	6.0	72	7
+6	0	30	2.4	7.0	4.6	71	11
+3	0	10	5.0	15.6	12.4	74	11
+3	0	20	2.6	8.1	7.3	63	23
+3	0	30	2.4	7.9	7.4	56	35
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 46.05s
+
+# shelves took 46 s, exit 0: {"WATER_CELLS":"6,3","WATER_SECONDS":30,"WATER_STICK":"0"}
+
+running 1 test
+test shelves ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# cell	stickiness	seconds	left on the shelf %	tallest px	mean px	columns	wall s
+6	0.5	10	7.6	21.5	15.0	86	5
+6	0.5	20	4.9	13.7	9.3	83	9
+6	0.5	30	4.0	10.8	7.6	80	12
+3	0.5	10	7.0	19.5	15.0	86	11
+3	0.5	20	4.5	11.9	9.6	85	21
+3	0.5	30	4.0	10.6	8.5	85	31
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 44.75s
+
+# shelves took 45 s, exit 0: {"WATER_CELLS":"6,3","WATER_SECONDS":30,"WATER_STICK":"0.5"}
