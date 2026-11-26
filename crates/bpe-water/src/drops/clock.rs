@@ -19,7 +19,9 @@ pub struct Report {
     pub fastest: u32,
     /// The drops in the course after the frame's last sort (the rest sit last).
     pub live: u32,
-    pub spare: [u32; 2],
+    /// The cells deep at the frame's last step (when it measured them: see `Water::frame`).
+    pub deep: u32,
+    pub spare: u32,
     /// Each pour's fullness at its spout (1 is full).
     pub spout: [f32; MOST_POURS],
 }
@@ -32,7 +34,7 @@ impl Report {
     }
 
     fn of(live: u32) -> Report {
-        Report { fastest: 0, live, spare: [0; 2], spout: [0.0; MOST_POURS] }
+        Report { fastest: 0, live, deep: 0, spare: 0, spout: [0.0; MOST_POURS] }
     }
 }
 
@@ -66,8 +68,9 @@ pub(super) struct Clock {
     /// a second) in the report it read then.
     settled: Option<u32>,
     reported: f32,
-    /// The pours' fullness at their spouts in that report.
+    /// The pours' fullness at their spouts in that report, and its deep cells.
     pub(super) spouts: [f32; MOST_POURS],
+    pub(super) deep: u32,
     pub(super) last_steps: u32,
 }
 
@@ -99,6 +102,7 @@ impl Clock {
             settled: None,
             reported: 0.0,
             spouts: [0.0; MOST_POURS],
+            deep: 0,
             last_steps: 0,
         }
     }
@@ -187,12 +191,14 @@ impl Clock {
         self.added[(k + 1) as usize % SLOTS] = 0.0;
         self.reported = 0.0;
         self.spouts = [0.0; MOST_POURS];
+        self.deep = 0;
         let mut go = 0;
         if k >= 2
             && let Some((report, count)) = self.report_of(device, k - 2)
         {
             self.reported = report.fastest_px();
             self.spouts = report.spout;
+            self.deep = report.deep;
             // (The dead at the end of frame k - 2, less those let go at the last boundary: they were
             // among them.)
             go = count.saturating_sub(report.live).saturating_sub(self.let_go);
@@ -220,6 +226,7 @@ impl Clock {
         to.settled = self.settled;
         to.reported = self.reported;
         to.spouts = self.spouts;
+        to.deep = self.deep;
         to.last_steps = self.last_steps;
     }
 }

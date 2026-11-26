@@ -399,4 +399,46 @@ and `crates/bpe-kit/tests/water_core.rs` (no `grid` engine).
 
 ## As built and measured
 
-(Filled in as the tasks land.)
+### Task 1: the bins' running sums in parallel
+
+`cs_sum_a` is a workgroup of 256 summing a block of 512 bins (two each, then a scan in shared memory) where one
+thread walked the block. The weird and pool shots' prints at 12 and 6 px are the same as before it
+(`88314bab027c171b`, `450f80101cf360f1`, `ff742efa2be059ff`, `4190424dabccde80`).
+
+### Tasks 2 to 4: the deep part
+
+Built as planned, with these changes, each found by measuring the still box (`still_box(12.0, 0.6)`, `pools`) on
+the software card:
+
+1. **The deep part runs before the sweeps,** as the plan says. (Run after them first, it read `velb` as where a
+   drop was when the last sweep had already put its new speed there: the pool boiled at 550 px/s.)
+2. **Depth is measured from the liquid's own edge,** not from any cell that is not full: a cell the drops reach
+   that is not full, or an open cell they do not reach beside an open one they do. A cell no drop reaches past a
+   solid is not an edge. (Measured from every cell that was not full, the air beyond the box's 18 px wall made the
+   water beside the wall shallow: that column took no push while the water beside it did, slid down the wall at
+   700 px/s and turned the pool over.)
+3. **How full a cell is, for the excess and for "full", is the drops' own fullness** (each drop's density by its
+   neighbours and the solids at the step before's last sweep, carried in `velb.w` through the sort and gathered as
+   a sixth sum), not the cell's share of liquid. Beside a face the share reads 0.67 to 0.9 where the drops rest
+   off the face, so the cell asked for liquid it could never get and drew the water beside it into it for ever. A
+   cell is full when its drops are at least `deep_full` full and they and the solids cover at least half of it,
+   or it is at least half solid.
+4. **The pressure is worked out only where it pushes** (`w > 0`); above that the drops hold themselves up and
+   press on the deep water, which pushes back where it is over-full. (Worked out over all the liquid, it left a
+   pressure in the top layer that nothing took, and the layer rippled more and more: 100 to 350 px/s at 3 s.)
+5. **`push_out` is 0.05** (0.25 in the grid core): the share of a cell's excess pushed out a step. At 0.25 the
+   pool shimmered at about 19 px/s; at 0 it sank slowly (98.2 % at 3 s); at 0.05 it holds 98.7 to 98.9 % with
+   about 10 px/s, all of it in the top layer by the walls. `fill_rate` stays 0.5: at 0 the pool blew up.
+6. **The deep frames:** frame `k` runs the deep part when frame `k − 2` counted deep cells, or on the two frames
+   after `add()` (their reports come from before it); the first of those primes. No frame runs it just for being
+   one of the first two, so a pour with nothing deep never runs it (`deep_frames_follow_the_water`).
+7. **`a_small_course_still_solves`:** a ladder of one level cannot happen (a layout always has at least 7 nodes a
+   side, so at least two levels); the test is a narrow column between walls, held as well as without the part.
+8. `probe::pieces` has one unit test, `pieces_tell_a_sheet_from_spray`, for the three the plan names.
+
+Still box at 12 px, software card, 8 s: height kept 98.7 % (C1 96.1 %), rms 10 px/s (C1 2.2 px/s after its start
+bounce), the slosh keeps 93 % after four half swings (C1 83 %).
+
+**Snug fills (Task 3):** `fill_stacked` finds each side's end along the rectangle's middle row; a side ending in a
+solid has its column exactly `rest_off` off the face, and with both snug the columns are spread evenly between
+them.

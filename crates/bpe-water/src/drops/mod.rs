@@ -1,6 +1,7 @@
 //! The all-drops engine (`docs/superpowers/specs/2026-11-25-all-drops-water-core-design.md`):
 //! [`WaterGpu`] (one per device: the pipelines) and [`Water`] (one body of liquid). Every drop
-//! feels its neighbours directly; there is no grid pressure.
+//! feels its neighbours directly; deep water is also held up by the grid's pressure underneath
+//! ([`deep`]), and only deep water.
 //!
 //! A body moves on a frame (1/60 s) at a time ([`Water::frame`]), cut into steps, and a frame's
 //! steps go to the card as one submission. A frame never waits for the card unless the card is
@@ -13,6 +14,7 @@ use wgpu::util::DeviceExt;
 
 mod buffers;
 mod clock;
+pub mod deep;
 pub mod numbers;
 mod passes;
 
@@ -22,6 +24,7 @@ pub use buffers::DropBuffers;
 use buffers::{ByDrop, room_for, storage};
 use clock::Clock;
 pub use clock::{MOST_POURS, Report};
+use deep::{Deep, MOST_LEVELS, TICKS};
 use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
 use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
 
@@ -59,7 +62,17 @@ struct FrameGpu {
     feels: [FeelGpu; MOST_LIQUIDS],
     wall: [[f32; 4]; 17],
     spouts: [[f32; 4]; MOST_POURS / 2],
+    deep: [f32; 4],
+    deep2: [f32; 4],
+    mg: [f32; 4],
+    mg2: [f32; 4],
+    dgrid: [u32; 4],
+    lv: [[u32; 4]; MOST_LEVELS],
 }
+
+/// Where the deep water's pressure passes' numbers start among the step numbers' slots (after
+/// every step's and the export's).
+const TICK_SLOT: u32 = MOST_STEPS + 1;
 
 /// A drop born in a step. Matches `Born` in common.wgsl.
 #[repr(C)]
@@ -135,6 +148,17 @@ pub struct Water {
     /// body, can read the reports still on their way).
     clock: Mutex<Clock>,
     last: Option<wgpu::SubmissionIndex>,
+    /// The deep water's cells and pressure.
+    deep: Deep,
+    /// Whether the last frame ran the deep part, its step then (the kept pressure is that step's
+    /// pressure times it), whether drops were added since (the next deep frame primes), the frames
+    /// still to run it whatever the reports say (an add's frame and the next: their reports come
+    /// from before it), and the frames that ran it.
+    deep_last: bool,
+    deep_dt: f32,
+    prime_next: bool,
+    deep_hold: u32,
+    deep_frames: u32,
 }
 
 impl std::fmt::Debug for Water {
@@ -164,7 +188,7 @@ impl Water {
         });
         let step_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water steps"),
-            size: u64::from(MOST_STEPS + 1) * STEP_ROOM,
+            size: u64::from(TICK_SLOT + TICKS) * STEP_ROOM,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -202,11 +226,48 @@ impl Water {
             report_groups: Vec::new(),
             clock: Mutex::new(Clock::new(device)),
             last: None,
+            deep: Deep::new(device, &layout),
+            deep_last: false,
+            deep_dt: 0.0,
+            prime_next: false,
+            deep_hold: 0,
+            deep_frames: 0,
             gpu,
         };
         water.set_feels(feels);
         water.bind();
+        water.put_walls();
         water
+    }
+
+    /// The pressure passes' numbers (twice the level, plus the colour), each at its own slot, and
+    /// the solids by cell for the deep water: once, as the body is made.
+    fn put_walls(&mut self) {
+        let gpu = self.gpu.clone();
+        let mut ticks = vec![0u8; (TICKS * STEP_ROOM as u32) as usize];
+        for k in 0..TICKS {
+            let at = (k * STEP_ROOM as u32) as usize;
+            ticks[at..at + 4].copy_from_slice(&k.to_le_bytes());
+        }
+        gpu.queue.write_buffer(&self.step_uniform, u64::from(TICK_SLOT) * STEP_ROOM, &ticks);
+        let n = self.numbers.floor.max(1);
+        gpu.queue.write_buffer(
+            &self.frame_uniform,
+            0,
+            bytemuck::bytes_of(&self.frame_gpu(FRAME / n as f32, false, 0.0)),
+        );
+        let mut encoder =
+            gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water walls") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("water walls"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&gpu.pipes.list[P::DeepWalls as usize].0);
+            pass.set_bind_group(0, &self.groups[(P::DeepWalls as usize * 2) * 2], &[0]);
+            pass.dispatch_workgroups((self.layout.nodes() as u32).div_ceil(WORKGROUP).max(1), 1, 1);
+        }
+        gpu.queue.submit([encoder.finish()]);
     }
 
     /// Makes the bind groups (again, after a buffer was replaced): every step pass's and the
@@ -234,6 +295,7 @@ impl Water {
                             2 => self.by.xv.as_entire_binding(),
                             8 => self.starts.as_entire_binding(),
                             15 => self.solid.as_entire_binding(),
+                            25 => self.deep.count.as_entire_binding(),
                             _ => clock.on_card(slot).as_entire_binding(),
                         };
                         wgpu::BindGroupEntry { binding: b, resource }
@@ -279,7 +341,14 @@ impl Water {
                     13 => self.by.lamb.as_entire_binding(),
                     14 => self.by.velb.as_entire_binding(),
                     15 => self.solid.as_entire_binding(),
-                    _ => self.births.as_entire_binding(),
+                    16 => self.births.as_entire_binding(),
+                    19 => self.deep.sums.as_entire_binding(),
+                    20 => self.deep.wallc.as_entire_binding(),
+                    21 => self.deep.cellp.as_entire_binding(),
+                    22 => self.deep.coef.as_entire_binding(),
+                    23 => self.deep.dfa.as_entire_binding(),
+                    24 => self.deep.dfb.as_entire_binding(),
+                    _ => self.deep.count.as_entire_binding(),
                 };
                 wgpu::BindGroupEntry { binding: b, resource }
             })
@@ -383,13 +452,16 @@ impl Water {
     }
 
     /// Adds `born` between frames, each given the body's next serial (theirs is not used; those
-    /// past [`MOST_DROPS`] are let go). Returns how many were added.
+    /// past [`MOST_DROPS`] are let go). Returns how many were added. The next frame runs the deep
+    /// part and primes its pressure (a pool added holds its weight before it moves).
     pub fn add(&mut self, born: &[Drop]) -> u32 {
         self.settle();
         let n = (born.len() as u32).min(MOST_DROPS - self.count);
         if n == 0 {
             return 0;
         }
+        self.prime_next = true;
+        self.deep_hold = 2;
         self.grow_to(self.count + n);
         let mut xv = Vec::with_capacity(n as usize);
         let mut nf = Vec::with_capacity(n as usize);
@@ -417,8 +489,8 @@ impl Water {
     }
 
     /// The frame's numbers for steps of `dt` seconds (`capped`: the skin is held to what a step of
-    /// `dt` keeps stable).
-    fn frame_gpu(&self, dt: f32, capped: bool) -> FrameGpu {
+    /// `dt` keeps stable; `kept`: what the deep water's kept pressure is scaled by on its first step).
+    fn frame_gpu(&self, dt: f32, capped: bool, kept: f32) -> FrameGpu {
         let n = &self.numbers;
         let cell = self.layout.cell;
         let g = self.gravity / cell;
@@ -435,6 +507,7 @@ impl Water {
             spouts[k / 2][2 * (k % 2)] = g.x;
             spouts[k / 2][2 * (k % 2) + 1] = g.y;
         }
+        let (deep_d, deep_b, reach) = n.deep_window(cell);
         FrameGpu {
             grid: [self.layout.cols, self.layout.rows, self.pours.len() as u32, u32::from(self.edges_shut)],
             cells: [self.cells.0, self.cells.1, self.cells.0 * self.cells.1, self.bins().div_ceil(BLOCK)],
@@ -445,6 +518,15 @@ impl Water {
             feels,
             wall: self.wall,
             spouts,
+            deep: [deep_d, deep_b, n.deep_full, n.deep_most.max(0.0)],
+            deep2: [if kept.is_finite() { kept.max(0.0) } else { 0.0 }, 0.0, 0.0, 0.0],
+            mg: [n.omega, n.scale, n.push_out.max(0.0), n.most_out.max(0.0)],
+            // (Drops rest `wall_off` off a face and fill the half spacing round them: the liquid's
+            // edge is a quarter cell nearer the face. Drops stop at `EDGE + 0.05` from the grid's
+            // edge, so the course's own liquid starts a quarter cell before that.)
+            mg2: [n.fill_rate.max(0.0), n.face_floor.max(0.0), n.wall_off - 0.25, 2.0 + 0.05 - 0.25],
+            dgrid: [self.deep.levels.len() as u32, reach, 0, 0],
+            lv: self.deep.ladder(),
         }
     }
 
@@ -479,6 +561,11 @@ impl Water {
         self.play_frame(n);
     }
 
+    /// The frames that ran the deep part (deep water held up from below).
+    pub fn deep_frames(&self) -> u32 {
+        self.deep_frames
+    }
+
     /// The steps the last frame took.
     pub fn steps_last_frame(&self) -> u32 {
         self.clock.lock().expect("the clock").last_steps
@@ -510,7 +597,8 @@ impl Water {
                 }
             }
             let here = born.len() as u32 - start;
-            steps.push([count + here, count, start, 0]);
+            let ends = u32::from(j + 1 == n) | (u32::from(j == 0) << 1);
+            steps.push([count + here, count, start, ends]);
             count += here;
         }
         // (The reports of the next two frames do not see these drops yet.)
@@ -534,10 +622,22 @@ impl Water {
     fn play_frame(&mut self, n: u32) {
         let dt = FRAME / n as f32;
         let capped = n >= self.numbers.most_steps.min(MOST_STEPS);
-        let frame = self.frame_gpu(dt, capped);
         let k = self.frames;
         let (born, records) = self.births(n);
         let end = records.last().map_or(self.count, |r| r[0]);
+        // The deep part runs while frame k - 2 found deep water (and on the two frames after drops
+        // are added: their reports have not seen them); the other frames only measure it, on their
+        // last step. The pressure kept from the last deep frame's last step is scaled to
+        // this frame's step (it is the push of one step); a frame after one that did not run starts
+        // the pressure afresh and primes it with more cycles on its first step, as one that follows
+        // an add does.
+        let deep_on = self.numbers.deep != 0 && end > 0;
+        let reported_deep = self.clock.get_mut().expect("the clock").deep;
+        let deep_frame = deep_on && (self.deep_hold > 0 || reported_deep > 0);
+        let measure_only = deep_on && !deep_frame;
+        let prime = deep_frame && (!self.deep_last || self.prime_next);
+        let kept = if self.deep_last && self.deep_dt > 0.0 { dt / self.deep_dt } else { 0.0 };
+        let frame = self.frame_gpu(dt, capped, kept);
         let mut done = None;
         if end > 0 {
             self.grow_to(end);
@@ -556,24 +656,46 @@ impl Water {
             queue.write_buffer(&self.step_uniform, 0, &steps);
             let by_bin = self.bins().div_ceil(WORKGROUP);
             let by_block = self.bins().div_ceil(BLOCK);
+            let by_cell = (self.layout.nodes() as u32).div_ceil(WORKGROUP);
             let iters = self.numbers.iters.clamp(1, 16) as usize;
             let joined = self.numbers.join != 0;
+            let top = self.deep.levels.len() - 1;
+            let tiles: Vec<(u32, u32)> = (0..=top).map(|l| self.deep.tiles(l)).collect();
+            let (pre, post, coarse) = (self.numbers.pre, self.numbers.post, self.numbers.coarse);
             let clock = self.clock.get_mut().expect("the clock");
             let slot = clock.slot_of(k);
             let mut encoder =
                 gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water frame") });
             encoder.clear_buffer(clock.on_card(slot), 0, None);
+            if deep_on {
+                encoder.clear_buffer(&self.deep.count, 0, None);
+            }
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("water frame"),
                     timestamp_writes: None,
                 });
-                let mut go = |p: P, now: usize, y_in: usize, step: u32, groups: u32| {
+                let mut go2 = |p: P, now: usize, y_in: usize, step: u32, (gx, gy): (u32, u32)| {
                     pass.set_pipeline(&gpu.pipes.list[p as usize].0);
                     let offset = [step * STEP_ROOM as u32];
                     pass.set_bind_group(0, &self.groups[(p as usize * 2 + now) * 2 + y_in], &offset);
-                    pass.dispatch_workgroups(groups.max(1), 1, 1);
+                    pass.dispatch_workgroups(gx.max(1), gy.max(1), 1);
                 };
+                macro_rules! go {
+                    ($p:expr, $now:expr, $y:expr, $step:expr, $groups:expr) => {
+                        go2($p, $now, $y, $step, ($groups, 1))
+                    };
+                }
+                // (A pressure sweep of `level`, `times` over: both colours, each its own number.)
+                macro_rules! sweep {
+                    ($now:expr, $y:expr, $level:expr, $times:expr) => {
+                        for _ in 0..$times {
+                            for colour in 0..2u32 {
+                                go2(P::DeepSor, $now, $y, TICK_SLOT + 2 * $level as u32 + colour, tiles[$level]);
+                            }
+                        }
+                    };
+                }
                 for j in 0..n {
                     let now = self.now ^ (j as usize & 1);
                     let [count, before, _, _] = records[j as usize];
@@ -581,23 +703,52 @@ impl Water {
                     // (The first step falls from the kept places; the others' fall was joined with
                     // the last step's end, and only their births come in here.)
                     if j == 0 || !joined {
-                        go(P::Predict, now, 0, j, by_drop);
+                        go!(P::Predict, now, 0, j, by_drop);
                     } else if count > before {
-                        go(P::Born, now, 0, j, (count - before).div_ceil(WORKGROUP));
+                        go!(P::Born, now, 0, j, (count - before).div_ceil(WORKGROUP));
                     }
-                    go(P::SumA, now, 0, j, by_block);
-                    go(P::SumB, now, 0, j, 1);
-                    go(P::SumC, now, 0, j, by_bin);
-                    go(P::Scatter, now, 0, j, by_drop);
-                    go(P::Order, now, 0, j, by_drop);
+                    go!(P::SumA, now, 0, j, by_block);
+                    go!(P::SumB, now, 0, j, 1);
+                    go!(P::SumC, now, 0, j, by_bin);
+                    go!(P::Scatter, now, 0, j, by_drop);
+                    go!(P::Order, now, 0, j, by_drop);
+                    // (Before the drops feel each other: the sorted drops' places are where they
+                    // would fall to, in `y[0]`, and `velb` holds where they were. The sweeps after
+                    // take the push into their speeds.)
+                    let y = 0;
+                    if deep_frame || (measure_only && j + 1 == n) {
+                        go!(P::DeepGather, now, y, j, by_drop);
+                        go!(P::DeepCells, now, y, j, by_cell);
+                        go!(P::DeepColumn, now, y, j, by_cell);
+                        go!(P::DeepAcross, now, y, j, by_cell);
+                    }
+                    if deep_frame {
+                        let cycles = if prime && j == 0 { self.numbers.prime } else { self.numbers.cycles };
+                        if top > 0 {
+                            for _ in 0..cycles.max(1) {
+                                sweep!(now, y, 0usize, pre);
+                                for (level, &tile) in tiles.iter().enumerate().skip(1) {
+                                    go2(P::DeepDown, now, y, TICK_SLOT + 2 * level as u32, tile);
+                                    sweep!(now, y, level, if level == top { coarse } else { pre });
+                                }
+                                for (level, &tile) in tiles.iter().enumerate().take(top).rev() {
+                                    go2(P::DeepUp, now, y, TICK_SLOT + 2 * level as u32, tile);
+                                    sweep!(now, y, level, post);
+                                }
+                            }
+                        } else {
+                            sweep!(now, y, 0usize, coarse * cycles.max(1));
+                        }
+                        go!(P::DeepPush, now, y, j, by_drop);
+                    }
                     for k in 0..iters {
-                        go(if k == 0 { P::LambdaFirst } else { P::Lambda }, now, k % 2, j, by_drop);
-                        go(if k + 1 == iters { P::ApplyLast } else { P::Apply }, now, k % 2, j, by_drop);
+                        go!(if k == 0 { P::LambdaFirst } else { P::Lambda }, now, k % 2, j, by_drop);
+                        go!(if k + 1 == iters { P::ApplyLast } else { P::Apply }, now, k % 2, j, by_drop);
                     }
                     if joined && j + 1 < n {
-                        go(P::FinishPredict, now, iters % 2, j + 1, by_drop);
+                        go!(P::FinishPredict, now, iters % 2, j + 1, by_drop);
                     } else {
-                        go(P::Finish, now, iters % 2, j, by_drop);
+                        go!(P::Finish, now, iters % 2, j, by_drop);
                     }
                 }
                 pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
@@ -615,6 +766,13 @@ impl Water {
         self.clock.get_mut().expect("the clock").sent(k, end, done, n);
         self.steps += u64::from(n);
         self.frames += 1;
+        self.deep_last = deep_frame;
+        self.deep_hold = self.deep_hold.saturating_sub(1);
+        if deep_frame {
+            self.deep_dt = dt;
+            self.deep_frames += 1;
+            self.prime_next = false;
+        }
     }
 
     /// Waits until the card has done every frame sent so far.
@@ -640,6 +798,7 @@ impl Water {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water copy") });
         self.by.copy_kept(&mut encoder, &new.by, self.count, self.now);
         encoder.copy_buffer_to_buffer(&self.solid, 0, &new.solid, 0, self.solid.size());
+        self.deep.copy_kept(&mut encoder, &new.deep);
         let done = self.gpu.queue.submit([encoder.finish()]);
         let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(done), timeout: None });
         new.count = self.count;
@@ -648,10 +807,26 @@ impl Water {
         new.frames = self.frames;
         new.edges_shut = self.edges_shut;
         new.pours = self.pours.clone();
+        new.deep_last = self.deep_last;
+        new.deep_dt = self.deep_dt;
+        new.prime_next = self.prime_next;
+        new.deep_hold = self.deep_hold;
+        new.deep_frames = self.deep_frames;
         new
     }
 
     /// Waits for the card and reads `bytes` of `buffer` (tests and measuring only).
+    /// The deep water's cells as the last step left them, for looking into by hand: each node's
+    /// pressure (x dt), what must flow out, the open shares' sum and whether it was solved, and its
+    /// depth share.
+    #[doc(hidden)]
+    pub fn read_deep(&self) -> (Vec<[f32; 4]>, Vec<f32>) {
+        let cells = self.layout.nodes() as u64;
+        let p = bytemuck::pod_collect_to_vec::<u8, [f32; 4]>(&self.read_buffer(&self.deep.cellp, cells * 16));
+        let w = bytemuck::pod_collect_to_vec::<u8, f32>(&self.read_buffer(&self.deep.dfa, cells * 4));
+        (p, w)
+    }
+
     fn read_buffer(&self, buffer: &wgpu::Buffer, bytes: u64) -> Vec<u8> {
         let device = &self.gpu.device;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {

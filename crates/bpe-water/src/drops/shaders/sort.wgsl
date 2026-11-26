@@ -205,5 +205,6 @@ fn cs_order(@builtin(global_invocation_id) gid: vec3<u32>) {
     let n = nf[i];
     id_nxt[dest] = me;
     y_in[dest] = vec4<f32>(q.xy, n.xy);
-    velb[dest] = vec4<f32>(q.zw, f32(me.x & 511u), 0.0);
+    // (Its last: how full it was at the step before's last sweep, for the deep water's cells.)
+    velb[dest] = vec4<f32>(q.zw, f32(me.x & 511u), n.z);
 }

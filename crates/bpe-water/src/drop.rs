@@ -97,19 +97,23 @@ pub const FILL_SNAP: f32 = 16.0;
 /// its lowest drop `rest_off` cells off the face; a column over nothing near (in mid-air, over an
 /// opening) stays in the rectangle; a column whose foot is inside a solid starts on that solid's
 /// face and goes up to the rectangle's top. A drop is never placed nearer a solid than `rest_off`.
+///
+/// Across, a side of the rectangle that ends inside a solid (along its middle row) is snug: its
+/// column sits `rest_off` off the solid's face, and when both sides are snug the columns are spread
+/// evenly between them, a little more than half a cell apart. (On the lattice, a gap of up to half a
+/// cell was left at a side wall, and the first drop beside it was thrown up the wall.) A free side
+/// keeps the lattice's spacing from the other.
 pub fn fill_stacked(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kind: u32, rest_off: f32) -> Vec<Drop> {
     let (g_lo, g_hi) = (layout.to_grid(lo), layout.to_grid(hi));
     // The rows the rectangle holds, half a cell each.
     let held = ((g_hi.y - g_lo.y).max(0.0) * 2.0).floor() as usize;
     // How far down a column's foot looks for a face, in cells.
     let snap = (FILL_SNAP / layout.cell).max(2.0);
-    let (c0, c1) = ((g_lo.x * 2.0).ceil() as i64, (g_hi.x * 2.0).floor() as i64);
     // How far a grid point is from the solids, in cells, less how far a drop rests off them.
     let clear = |g: Vec2| field.at(layout.to_world(g)) / layout.cell - rest_off;
     let step = 0.05;
     let mut columns: Vec<(f32, Vec<f32>)> = Vec::new();
-    for c in c0..c1 {
-        let x = c as f32 * 0.5 + 0.25;
+    for x in fill_columns(&clear, g_lo, g_hi, step) {
         // The column's lowest drop and how many it holds.
         let (bottom, rows) = if clear(Vec2::new(x, g_hi.y)) >= 0.0 {
             // The foot is clear: onto the face just below, else a quarter cell in from the foot.
@@ -147,19 +151,69 @@ pub fn fill_stacked(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kin
     out
 }
 
-/// Where between `clear_at` (clear of the solids) and `solid_at` (not) the clearance in column
-/// `x` is nothing, to a ten-thousandth of a cell (the field is straight between its nodes).
-fn settle_on(clear: &impl Fn(Vec2) -> f32, x: f32, clear_at: f32, solid_at: f32) -> f32 {
+/// The fill's columns across, grid x, left to right (see [`fill_stacked`]): `clear` is a grid point's
+/// clearance, the rectangle `g_lo` to `g_hi` in grid cells, `step` how finely an end is looked for.
+fn fill_columns(clear: &impl Fn(Vec2) -> f32, g_lo: Vec2, g_hi: Vec2, step: f32) -> Vec<f32> {
+    let mid = 0.5 * (g_lo.y + g_hi.y);
+    let row = |x: f32| clear(Vec2::new(x, mid));
+    // A side's snug column: from its end, in a solid, inwards to the first clear point, and back to
+    // where the clearance is nothing.
+    let snug = |from: f32, toward: f32| -> Option<f32> {
+        if row(from) >= 0.0 {
+            return None;
+        }
+        let way = if toward > from { step } else { -step };
+        let mut x = from;
+        while (toward - x) * way > 0.0 && row(x) < 0.0 {
+            x += way;
+        }
+        if row(x) < 0.0 {
+            return None;
+        }
+        Some(edge_between(&row, x, x - way))
+    };
+    // (The lattice's own: a column a half cell's band, the band within the rectangle.)
+    let lattice = || {
+        let (c0, c1) = ((g_lo.x * 2.0).ceil() as i64, (g_hi.x * 2.0).floor() as i64);
+        (c0..c1).map(|c| c as f32 * 0.5 + 0.25).collect::<Vec<f32>>()
+    };
+    match (snug(g_lo.x, g_hi.x), snug(g_hi.x, g_lo.x)) {
+        (Some(a), Some(b)) if b >= a => {
+            let gaps = ((b - a) / 0.5).floor() as usize;
+            if gaps == 0 {
+                return vec![0.5 * (a + b)];
+            }
+            (0..=gaps).map(|k| a + (b - a) * k as f32 / gaps as f32).collect()
+        }
+        (Some(a), None) => (0..).map(|k| a + 0.5 * k as f32).take_while(|x| x + 0.25 <= g_hi.x).collect(),
+        (None, Some(b)) => {
+            let mut xs: Vec<f32> = (0..).map(|k| b - 0.5 * k as f32).take_while(|x| x - 0.25 >= g_lo.x).collect();
+            xs.reverse();
+            xs
+        }
+        _ => lattice(),
+    }
+}
+
+/// Where between `clear_at` (clear of the solids) and `solid_at` (not) the clearance `clear` is
+/// nothing, to a ten-thousandth of a cell (the field is straight between its nodes).
+fn edge_between(clear: &impl Fn(f32) -> f32, clear_at: f32, solid_at: f32) -> f32 {
     let (mut a, mut b) = (clear_at, solid_at);
     for _ in 0..24 {
         let m = 0.5 * (a + b);
-        if clear(Vec2::new(x, m)) >= 0.0 {
+        if clear(m) >= 0.0 {
             a = m;
         } else {
             b = m;
         }
     }
     a
+}
+
+/// Where between `clear_at` (clear of the solids) and `solid_at` (not) the clearance in column
+/// `x` is nothing.
+fn settle_on(clear: &impl Fn(Vec2) -> f32, x: f32, clear_at: f32, solid_at: f32) -> f32 {
+    edge_between(&|y| clear(Vec2::new(x, y)), clear_at, solid_at)
 }
 
 /// A pour: a spout that makes as many drops a second as its width times its speed fills.
@@ -537,6 +591,58 @@ mod tests {
             let lowest = drops.iter().map(world).filter(|p| p.x < 30.0).map(|p| p.y).fold(f32::MIN, f32::max);
             assert!((lowest - (100.0 - 0.25 * cell)).abs() < 0.05 * cell, "{cell} px: {lowest}");
         }
+    }
+
+    /// A left wall whose face is 0.3 cells off the lattice (grid x 9.3), a right one (if
+    /// `right_wall`) whose face is 0.6 off it (grid x 19.6), and a floor at y = 60.
+    fn two_walls(cell: f32, right_wall: bool) -> (Layout, SolidField) {
+        let layout = Layout::cover(Vec2::new(-60.0, -100.0), Vec2::new(120.0, 100.0), cell);
+        let origin = layout.origin.x;
+        let face = |cells: f32| origin + cells * cell;
+        let (left, right) = (face(9.3), face(19.6));
+        let mut solids = vec![
+            crate::solid::Solid::rect(Vec2::new(-60.0, -100.0), Vec2::new(left, 100.0), true, 0.0),
+            crate::solid::Solid::rect(Vec2::new(-60.0, 60.0), Vec2::new(120.0, 100.0), true, 0.0),
+        ];
+        if right_wall {
+            solids.push(crate::solid::Solid::rect(Vec2::new(right, -100.0), Vec2::new(120.0, 100.0), true, 0.0));
+        }
+        (layout, SolidField::build_least(layout, &solids, 1.5 * cell))
+    }
+
+    #[test]
+    fn a_fill_sits_snug_against_its_walls() {
+        let cell = 6.0;
+        let (layout, field) = two_walls(cell, true);
+        let drops = fill_stacked(&layout, &field, Vec2::new(-40.0, 0.0), Vec2::new(100.0, 60.0), STOPS, 0.25);
+        let mut xs: Vec<f32> = drops.iter().map(|d| d.x[0]).collect();
+        xs.sort_by(f32::total_cmp);
+        xs.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+        let off = |x: f32| field.at(layout.to_world(Vec2::new(x, 15.0))) / cell;
+        assert!((off(xs[0]) - 0.25).abs() < 1e-3, "the left column {} cell off its wall", off(xs[0]));
+        let last = xs[xs.len() - 1];
+        assert!((off(last) - 0.25).abs() < 1e-3, "the right column {} cell off its wall", off(last));
+        let gaps: Vec<f32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.iter().all(|g| (g - gaps[0]).abs() < 1e-4), "evenly spread: {gaps:?}");
+        assert!((0.5..0.5 + 0.5 / gaps.len() as f32 + 1e-4).contains(&gaps[0]), "about half a cell apart: {}", gaps[0]);
+        // Every drop clear of the solids.
+        assert!(drops.iter().all(|d| field.at(layout.to_world(Vec2::from(d.x))) / cell >= 0.25 - 1e-3));
+    }
+
+    #[test]
+    fn a_fill_with_a_free_side_keeps_the_lattice() {
+        let cell = 6.0;
+        let (layout, field) = two_walls(cell, false);
+        let hi = Vec2::new(100.0, 60.0);
+        let drops = fill_stacked(&layout, &field, Vec2::new(-40.0, 0.0), hi, STOPS, 0.25);
+        let mut xs: Vec<f32> = drops.iter().map(|d| d.x[0]).collect();
+        xs.sort_by(f32::total_cmp);
+        xs.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+        let off = |x: f32| field.at(layout.to_world(Vec2::new(x, 15.0))) / cell;
+        assert!((off(xs[0]) - 0.25).abs() < 1e-3, "snug at the wall: {}", off(xs[0]));
+        assert!(xs.windows(2).all(|w| (w[1] - w[0] - 0.5).abs() < 1e-4), "half a cell apart from it");
+        let last = xs[xs.len() - 1];
+        assert!(last + 0.25 <= layout.to_grid(hi).x && last + 0.75 > layout.to_grid(hi).x, "to the free side");
     }
 
     #[test]
