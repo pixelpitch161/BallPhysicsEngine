@@ -107,6 +107,71 @@ fn a_fill_at_the_start_fills_its_box_where_it_is_open() {
 }
 
 #[test]
+fn a_tap_in_the_rock_pours_nothing_and_says_so() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let tap = add(&mut scene, &reg, POUR, Vec2::new(0.0, -500.0));
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    assert_eq!(s.taps_in_rock(&field), [tap], "a course of solid rock");
+    let inputs = s.inputs_on(0, &field);
+    assert_eq!(inputs.pours.len(), 1, "it keeps its place among the taps");
+    assert_eq!(inputs.pours[0].width, 0.0);
+    // Carved out round its spout, it pours as it should.
+    carve(&mut scene, vec![hole([0.0, -500.0], 200.0)]);
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    assert!(s.taps_in_rock(&field).is_empty());
+    assert_eq!(s.inputs_on(0, &field), s.inputs_at(0));
+}
+
+#[test]
+fn a_tap_wider_than_its_hole_pours_from_the_open_part() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 200.0)]);
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    // Pouring straight down 150 from the hole's left side: 50 of room on that side.
+    let tap = add(&mut scene, &reg, POUR, Vec2::new(-150.0, -100.0));
+    set(&mut scene, tap, SlotId::Main, "rate", Value::Number(1.0));
+    set(&mut scene, tap, SlotId::Main, "width", Value::Number(300.0));
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    let width = s.inputs_on(0, &field).pours[0].width;
+    assert!((80.0..=100.0).contains(&width), "{width}");
+    let pour = &s.inputs_on(0, &field).pours[0];
+    let layout = s.layout();
+    let born = pour.rows(&mut bpe_water::Poured::default(), &layout, 0.0, 1.0 / 60.0);
+    assert!(!born.is_empty());
+    for d in &born {
+        let at = layout.to_world(Vec2::from(d.x));
+        assert!(field.at(at) > 0.0, "a drop born in the rock at {at}");
+    }
+}
+
+#[test]
+fn huge_pours_are_kept_to_the_course() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 300.0)]);
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    fill_pour(&mut scene, &reg, Vec2::ZERO, Vec2::new(1e7, 1e7));
+    let tap = add(&mut scene, &reg, POUR, Vec2::new(0.0, -200.0));
+    set(&mut scene, tap, SlotId::Main, "rate", Value::Number(1e6));
+    set(&mut scene, tap, SlotId::Main, "width", Value::Number(1e9));
+    let s = setup(&scene, &reg);
+    let (layout, field) = (s.layout(), s.field());
+    let started = std::time::Instant::now();
+    let drops = s.fills(&layout, &field);
+    let width = s.inputs_on(0, &field).pours[0].width;
+    assert!(started.elapsed().as_secs_f32() < 2.0, "{:?}", started.elapsed());
+    // The hole's 600 by 600, four drops a cell.
+    assert!(drops.len() <= 600 * 600 / 16 + 600, "{}", drops.len());
+    assert!(width <= 600.0, "{width}");
+}
+
+#[test]
 fn overlapping_fills_do_not_double_up() {
     let reg = crate::registry();
     let mut scene = water_scene(&reg);

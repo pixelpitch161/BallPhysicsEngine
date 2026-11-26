@@ -35,6 +35,8 @@ pub const LATER_KINDS: &str = "Rain, drips and bursts arrive in a later part of 
 pub const TOO_MANY_LIQUIDS: &str = "The water tells at most 16 liquids apart: this one isn't poured.";
 /// What the stage says about a tap past the most the water pours at once.
 pub const TOO_MANY_TAPS: &str = "The water pours at most 64 taps at once: this one isn't poured.";
+/// What the stage says about a tap whose spout is in the rock.
+pub const IN_ROCK: &str = "This tap's spout is in the rock: carve the rock away round it to pour.";
 
 /// A card's settings at the start and the keyframes that move them.
 #[derive(Clone, Debug, Default)]
@@ -252,8 +254,27 @@ impl WaterSetup {
         FrameInputs { gravity: w.gravity, feels, pours }
     }
 
-    /// The drops of every Fill at the start, on `layout`, where `field` is open: each box filled
-    /// from its floor, and a later box's drops left out where an earlier box already put water.
+    /// The physics inputs of frame `frame` on `field` (this setup's): each tap's stream as wide as
+    /// its spout has room for in the carved course, none for a spout in the rock.
+    pub fn inputs_on(&self, frame: u32, field: &SolidField) -> FrameInputs {
+        let mut inputs = self.inputs_at(frame);
+        let clear = self.numbers().wall_off * self.cell;
+        for pour in &mut inputs.pours {
+            pour.width = open_width(pour, field, clear);
+        }
+        inputs
+    }
+
+    /// The taps (with a Liquid to pour) whose spouts are in the rock of `field`.
+    pub fn taps_in_rock(&self, field: &SolidField) -> Vec<ThingId> {
+        let clear = self.numbers().wall_off * self.cell;
+        let taps = self.pours.iter().filter(|p| p.kind == PourKind::Tap && p.liquid.is_some());
+        taps.filter(|p| !open_at(field, p.place, clear)).map(|p| p.id).collect()
+    }
+
+    /// The drops of every Fill at the start, on `layout`, where `field` is open: each box (kept to
+    /// the course) filled from its floor, and a later box's drops left out where an earlier box
+    /// already put water.
     pub fn fills(&self, layout: &Layout, field: &SolidField) -> Vec<Drop> {
         let rest = self.numbers().wall_off;
         let mut out: Vec<Drop> = Vec::new();
@@ -263,8 +284,12 @@ impl WaterSetup {
             let Some(liquid) = p.liquid else { continue };
             let c: PourCard = p.card.card(0.0);
             let half = c.fill_size.max(Vec2::ZERO) / 2.0;
+            let (lo, hi) = ((p.place - half).max(-self.size / 2.0), (p.place + half).min(self.size / 2.0));
+            if !(lo.x < hi.x && lo.y < hi.y) {
+                continue;
+            }
             let kind = liquid as u32 | STOPS;
-            let mine = bpe_water::fill_stacked(layout, field, p.place - half, p.place + half, kind, rest);
+            let mine = bpe_water::fill_stacked(layout, field, lo, hi, kind, rest);
             let kept: Vec<Drop> = mine
                 .into_iter()
                 .filter(|d| {
@@ -289,7 +314,7 @@ impl WaterSetup {
     /// A new body on `field` (which must be this setup's): the fills added (at most `most` drops)
     /// and frame 0's inputs set.
     pub fn start(&self, gpu: Arc<WaterGpu>, field: &SolidField, most: u32) -> Water {
-        let inputs = self.inputs_at(0);
+        let inputs = self.inputs_on(0, field);
         let feels = if inputs.feels.is_empty() { vec![Feel::default()] } else { inputs.feels.clone() };
         let mut water = Water::new(gpu, field, inputs.gravity, self.numbers(), &feels);
         let mut fills = self.fills(&field.layout, field);
@@ -300,6 +325,37 @@ impl WaterSetup {
         water.set_pours(&inputs.pours);
         water
     }
+}
+
+/// Whether world point `p` is more than `clear` pixels from the rock of `field` (a field that
+/// isn't a number there counts as rock).
+fn open_at(field: &SolidField, p: Vec2, clear: f32) -> bool {
+    field.at(p) > clear
+}
+
+/// How wide `pour`'s stream can be with every drop born at least `clear` pixels from the rock of
+/// `field`: the width asked for, or less where the rock is closer to the middle of its spout on
+/// either side, and 0 for a spout in the rock. (Never wider than the field, whatever is asked.)
+fn open_width(pour: &Pour, field: &SolidField, clear: f32) -> f32 {
+    if !open_at(field, pour.place, clear) {
+        return 0.0;
+    }
+    let l = &field.layout;
+    let room = Vec2::new(l.cols as f32, l.rows as f32).length() * l.cell;
+    let most = (pour.width.max(0.0) / 2.0).min(room);
+    let across = pour.way().perp();
+    let step = l.cell / 2.0;
+    let open =
+        |d: f32| open_at(field, pour.place + across * d, clear) && open_at(field, pour.place - across * d, clear);
+    let mut half = 0.0;
+    while half < most {
+        let next = (half + step).min(most);
+        if !open(next) {
+            break;
+        }
+        half = next;
+    }
+    2.0 * half
 }
 
 /// Which of `liquids` (the enabled Liquids, in the scene's order) `target` names: a Liquid named

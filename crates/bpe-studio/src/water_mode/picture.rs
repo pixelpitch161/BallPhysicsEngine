@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use bpe_gfx::wgpu;
+use bpe_kit::modules::water::CarveMask;
 use bpe_water::draw::{PlainLook, View};
 use eframe::egui::{self, Painter, Rect, pos2};
 use glam::Vec2;
@@ -14,9 +15,9 @@ use crate::style;
 
 /// The most a side of the picture has, in pixels.
 const MOST_SIDE: f32 = 2048.0;
-/// How long the stage waits for the draft's lock before taking it outright, so a draft catching up
-/// still shows how far it has got.
-const LONGEST_WAIT: Duration = Duration::from_millis(250);
+/// How long the stage goes without the draft's body before it waits for the frame the draft is
+/// on, so a draft catching up still shows how far it has got.
+const LONGEST_WAIT: Duration = Duration::from_millis(100);
 
 /// The picture for the whole course on screen at `pixels_per_point`: one picture pixel a screen
 /// pixel, at most [`MOST_SIDE`] a side and never finer than two a world pixel.
@@ -31,6 +32,14 @@ pub fn picture_view(view: &CourseView, pixels_per_point: f32) -> View {
     }
 }
 
+/// The rock the picture shows.
+pub struct Rock<'a> {
+    /// Goes up whenever `painting` changes.
+    pub version: u64,
+    /// The course with the carve stroke being painted (`None`: the body's own).
+    pub painting: Option<&'a CarveMask>,
+}
+
 /// What a drawn picture showed.
 #[derive(Clone, Debug, PartialEq)]
 struct Drawn {
@@ -38,8 +47,7 @@ struct Drawn {
     frame: u32,
     size: (u32, u32),
     look: PlainLook,
-    /// Goes up whenever the field the drawing shows changes (a carve stroke being painted).
-    field: u64,
+    rock: u64,
 }
 
 /// The stage's picture of the water.
@@ -49,12 +57,15 @@ pub struct StagePicture {
     texture: Option<(egui::TextureId, u64, (u32, u32))>,
     drawn: Option<Drawn>,
     last: Option<Instant>,
+    /// The body and rock version the drawing's field was last set for, and whether it shows a
+    /// stroke being painted.
+    rock: Option<(u64, u64)>,
+    previewing: bool,
 }
 
 impl StagePicture {
-    /// Draws the draft's water if anything it shows changed, and shows it over the course's rect.
-    /// `field` goes up when the drawing's field was changed under it. Returns whether a picture
-    /// is on the stage.
+    /// Draws the draft's water if anything it shows changed, and shows it over the course's rect,
+    /// with the `rock` asked for. Returns whether a picture is on the stage.
     pub fn show(
         &mut self,
         painter: &Painter,
@@ -62,20 +73,20 @@ impl StagePicture {
         job: &DraftJob,
         look: &PlainLook,
         view: &CourseView,
-        field: u64,
+        rock: Rock,
     ) -> bool {
         let v = picture_view(view, painter.ctx().pixels_per_point());
         let waited_long = self.last.is_none_or(|t| t.elapsed() > LONGEST_WAIT);
-        let guard = if waited_long { job.live().lock().ok() } else { job.live().try_lock().ok() };
-        if let Some(mut guard) = guard
+        if let Some(mut guard) = job.body(waited_long)
             && let Some(live) = guard.as_mut()
         {
+            self.set_rock(live, &rock);
             let want = Drawn {
                 generation: live.generation,
                 frame: live.water.frames(),
                 size: (v.width, v.height),
                 look: look.clone(),
-                field,
+                rock: rock.version,
             };
             if self.drawn.as_ref() != Some(&want) {
                 live.plain.draw(&live.water.drop_buffers(), &v, look);
@@ -109,13 +120,46 @@ impl StagePicture {
         true
     }
 
+    /// Gives the drawing the field of `rock` if it hasn't it yet: the stroke's course being
+    /// painted, or the body's own again once it is let go or dropped. (Set here, under the body's
+    /// lock, so a stroke dropped while the draft is busy is never left on the stage.)
+    fn set_rock(&mut self, live: &mut super::draft::Live, rock: &Rock) {
+        let now = (live.generation, rock.version);
+        if self.rock == Some(now) {
+            return;
+        }
+        if self.rock.is_none_or(|(generation, _)| generation != live.generation) {
+            // (A new body's drawing shows its own field.)
+            self.previewing = false;
+        }
+        match rock.painting {
+            Some(mask) => {
+                let field = mask.field(live.field.layout.cell);
+                if field.layout == live.field.layout {
+                    live.plain.set_field(&field);
+                    self.previewing = true;
+                }
+            }
+            None if self.previewing => {
+                live.plain.set_field(&live.field);
+                self.previewing = false;
+            }
+            None => {}
+        }
+        self.rock = Some(now);
+    }
+
+    /// The look the picture was last drawn in.
+    pub fn last_look(&self) -> Option<&PlainLook> {
+        self.drawn.as_ref().map(|d| &d.look)
+    }
+
     /// Lets the texture go (the scene is no Water scene any more).
     pub fn free(&mut self, render: Option<&egui_wgpu::RenderState>) {
         if let (Some((id, ..)), Some(render)) = (self.texture.take(), render) {
             render.renderer.write().free_texture(&id);
         }
-        self.drawn = None;
-        self.last = None;
+        *self = StagePicture::default();
     }
 }
 

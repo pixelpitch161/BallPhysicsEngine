@@ -1,10 +1,11 @@
 //! The Water stage's Carve tool (Water mode part 2b): a brush that digs the course out of its
 //! rock, or with Fill puts rock back. Each stroke goes on the Course's Carving card as one undo
-//! step when it is let go; while it is painted, the stage redraws the rock from the stroke so far
-//! over the water still playing, and the water starts over once it is let go.
+//! step when it is let go; while it is painted, the stage's picture shows the rock with the stroke
+//! so far over the water still playing (`picture::Rock`), and the water starts over once it is let
+//! go.
 
 use bpe_core::{SlotId, Stroke, Strokes, Value};
-use bpe_kit::modules::water::{CarvePaint, mask_for};
+use bpe_kit::modules::water::{CarveMask, CarvePaint, mask_for};
 use bpe_kit::things::water;
 use eframe::egui::{self, Pos2, RichText, Stroke as Line, Ui, vec2};
 use glam::Vec2;
@@ -65,8 +66,6 @@ impl CarveBrush {
 
 /// A stroke being painted.
 pub struct Painting {
-    /// The Course's strokes before it.
-    before: Strokes,
     paint: CarvePaint,
     /// Where it started, and where a smooth brush is.
     press: Vec2,
@@ -107,13 +106,20 @@ pub fn strip(ui: &mut Ui, brush: &mut CarveBrush) {
     ui.toggle_value(&mut brush.smooth, "Smooth").on_hover_text("The brush trails the pointer for smooth curves");
 }
 
+impl Painting {
+    /// The course with the stroke so far.
+    pub fn mask(&self) -> &CarveMask {
+        self.paint.mask()
+    }
+}
+
 /// Paints with the Carve tool from `response` on the course `view`. Escape drops the stroke.
 pub fn paint(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &CourseView) {
     let (alt, shift, escape) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
     let brush = studio.water_stage.brush;
     let size = view.size;
-    if escape && studio.water_stage.painting.take().is_some() {
-        show_field(studio, None);
+    if escape {
+        drop_stroke(studio);
         return;
     }
     if response.drag_started()
@@ -123,7 +129,8 @@ pub fn paint(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &Cou
         let at = view.to_world(press);
         let before = water::carving_of(&studio.scene);
         let paint = CarvePaint::start(mask_for(size, &before), brush.stroke(vec![at.to_array()], alt));
-        studio.water_stage.painting = Some(Painting { before, paint, press: at, lazy: at, alt });
+        studio.water_stage.painting = Some(Painting { paint, press: at, lazy: at, alt });
+        studio.water_stage.field_version += 1;
     }
     if response.dragged()
         && let Some(at) = response.interact_pointer_pos()
@@ -131,10 +138,12 @@ pub fn paint(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &Cou
     {
         let w = view.to_world(at);
         let last = painting.paint.stroke().points.last().map_or(painting.press, |p| Vec2::from(*p));
+        let mut grew = false;
         if brush.straight || shift {
             if w.distance(last) > 0.5 {
                 let stroke = brush.stroke(vec![painting.press.to_array(), w.to_array()], painting.alt);
                 painting.paint.reset(stroke);
+                grew = true;
             }
         } else {
             let to = if brush.smooth {
@@ -149,15 +158,19 @@ pub fn paint(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &Cou
             };
             if to.distance(last) >= brush.spacing() {
                 painting.paint.push(to.to_array());
+                grew = true;
             }
         }
-        let mask = painting.paint.mask().clone();
-        show_field(studio, Some(&mask));
+        if grew {
+            studio.water_stage.field_version += 1;
+        }
     }
     let let_go =
         response.drag_stopped() || (studio.water_stage.painting.is_some() && !ui.input(|i| i.pointer.any_down()));
     if let_go && let Some(painting) = studio.water_stage.painting.take() {
-        let mut strokes = painting.before;
+        studio.water_stage.field_version += 1;
+        // (On the course as it is now: an undo while painting is kept.)
+        let mut strokes = water::carving_of(&studio.scene);
         strokes.list.push(painting.paint.stroke().clone());
         carve(studio, strokes);
     } else if response.clicked()
@@ -186,23 +199,6 @@ fn carve(studio: &mut Studio, strokes: Strokes) {
     }
 }
 
-/// Shows `mask`'s rock under the water while a stroke is painted (`None`: the body's own again).
-fn show_field(studio: &mut Studio, mask: Option<&bpe_kit::modules::water::CarveMask>) {
-    let Some(job) = studio.water_draft.job.as_ref() else { return };
-    let Ok(mut live) = job.live().try_lock() else { return };
-    let Some(live) = live.as_mut() else { return };
-    match mask {
-        Some(mask) if mask.size == studio.water_draft.setup.as_ref().map_or(mask.size, |s| s.size) => {
-            let field = mask.field(live.field.layout.cell);
-            if field.layout == live.field.layout {
-                live.plain.set_field(&field);
-            }
-        }
-        _ => live.plain.set_field(&live.field),
-    }
-    studio.water_stage.field_version += 1;
-}
-
 /// The brush's outline under the pointer.
 pub fn outline(ui: &Ui, studio: &Studio, view: &CourseView, at: Pos2) {
     let brush = studio.water_stage.brush;
@@ -220,10 +216,10 @@ pub fn outline(ui: &Ui, studio: &Studio, view: &CourseView, at: Pos2) {
     }
 }
 
-/// Drops the stroke being painted, if any (another tool was picked).
+/// Drops the stroke being painted, if any (Escape, or another tool was picked).
 pub fn drop_stroke(studio: &mut Studio) {
     if studio.water_stage.painting.take().is_some() {
-        show_field(studio, None);
+        studio.water_stage.field_version += 1;
     }
 }
 

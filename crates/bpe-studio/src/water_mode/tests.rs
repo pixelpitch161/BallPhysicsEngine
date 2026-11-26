@@ -268,6 +268,28 @@ fn carving_paints_one_stroke_as_one_undo_step() {
 }
 
 #[test]
+fn an_undo_while_painting_is_kept_when_the_stroke_is_let_go() {
+    let mut h = carve_studio();
+    let v = view(&h);
+    drag(&mut h, v.to_screen(Vec2::new(-200.0, 0.0)), v.to_screen(Vec2::new(200.0, 0.0)));
+    assert_eq!(carving(h.state()).len(), 1);
+    let (from, to) = (v.to_screen(Vec2::new(-200.0, 300.0)), v.to_screen(Vec2::new(200.0, 300.0)));
+    h.hover_at(from);
+    h.step();
+    button(&mut h, from, true);
+    h.event(egui::Event::PointerMoved(from + (to - from) * 0.5));
+    h.step();
+    assert!(h.state_mut().undo(), "the first stroke is undone mid-stroke");
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    button(&mut h, to, false);
+    h.run();
+    let strokes = carving(h.state());
+    assert_eq!(strokes.len(), 1, "only the stroke just painted");
+    assert!((strokes[0].points[0][1] - 300.0).abs() < 1.0, "{:?}", strokes[0].points);
+}
+
+#[test]
 fn alt_fills_and_the_strip_sets_the_brush() {
     let mut h = carve_studio();
     h.get_by_role_and_label(Role::Button, "Fill").click();

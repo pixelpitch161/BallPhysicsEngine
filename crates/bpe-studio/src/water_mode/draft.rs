@@ -2,16 +2,18 @@
 //! card at draft detail and follows the playhead, as the particle playback does for a Balls scene.
 //!
 //! It runs on the window's own device (the stage draws the drops straight from the card's buffers
-//! with the plain drawing), a whole frame at a time under the body's lock; the stage draws under
-//! `try_lock` and so never waits for a frame. Going back plays from the newest restart copy at or
+//! with the plain drawing), a whole frame at a time under the body's lock. The stage draws
+//! whenever the thread is between frames; when it hasn't got in for a while it waits for the
+//! frame the thread is on, and the thread lets it in before taking the next ([`DraftJob::body`]). Going back plays from the newest restart copy at or
 //! before the playhead (one at the start and one every [`COPY_EVERY`] frames reached), and a copy
 //! repeats exactly, so going back never changes the water. A new setup (a physics edit) builds a
 //! new body; an edit to a look never reaches here.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::Thread;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::thread::JoinHandle;
 use std::time::Duration;
+use std::time::Instant;
 
 use bpe_gfx::wgpu;
 use bpe_kit::things::water::draft::WaterSetup;
@@ -59,6 +61,10 @@ impl WaterRun {
         match new {
             Some(setup) => {
                 let setup = Arc::new(setup);
+                // (A thread that stopped by a fault is started afresh by the stage.)
+                if self.job.as_ref().is_some_and(DraftJob::failed) {
+                    self.job = None;
+                }
                 if let Some(job) = &self.job {
                     job.restart(setup.clone());
                 }
@@ -108,6 +114,10 @@ struct Shared {
     /// The print of the setup the body plays.
     plays: AtomicU64,
     live: Mutex<Option<Live>>,
+    /// The stage is waiting for the body: the thread lets it in before its next frame.
+    wanted: AtomicBool,
+    /// The taps whose spouts are in the rock of the body's course (`WaterSetup::taps_in_rock`).
+    in_rock: Mutex<Vec<bpe_core::ThingId>>,
     /// The body's frame (`u32::MAX`: none yet).
     reached: AtomicU32,
     count: AtomicU32,
@@ -118,7 +128,8 @@ struct Shared {
 /// The water draft's thread.
 pub struct DraftJob {
     shared: Arc<Shared>,
-    thread: Thread,
+    /// (Taken when the job is let go, to wait for the thread to end.)
+    thread: Option<JoinHandle<()>>,
 }
 
 impl DraftJob {
@@ -132,6 +143,8 @@ impl DraftJob {
             built: AtomicU64::new(0),
             plays: AtomicU64::new(0),
             live: Mutex::new(None),
+            wanted: AtomicBool::new(false),
+            in_rock: Mutex::new(Vec::new()),
             reached: AtomicU32::new(u32::MAX),
             count: AtomicU32::new(0),
             full: AtomicBool::new(false),
@@ -152,13 +165,15 @@ impl DraftJob {
                     generation: 0,
                 };
                 while !theirs.stop.load(Ordering::Relaxed) {
-                    if !run.work(&theirs) {
+                    if run.work(&theirs) {
+                        theirs.let_the_stage_in();
+                    } else {
                         std::thread::park_timeout(Duration::from_millis(100));
                     }
                 }
             })
             .ok()?;
-        Some(DraftJob { shared, thread: handle.thread().clone() })
+        Some(DraftJob { shared, thread: Some(handle) })
     }
 
     /// Starts the draft over with `setup` (the newest one given wins).
@@ -167,19 +182,47 @@ impl DraftJob {
             pending.0 = Some(setup);
             pending.1 += 1;
         }
-        self.thread.unpark();
+        self.unpark();
+    }
+
+    fn unpark(&self) {
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
     }
 
     /// Asks for the water at frame `frame`.
     pub fn follow(&self, frame: u32) {
         if self.shared.target.swap(frame, Ordering::AcqRel) != frame {
-            self.thread.unpark();
+            self.unpark();
         }
     }
 
-    /// The body and its drawing.
+    /// The body and its drawing, for tests.
+    #[cfg(test)]
     pub fn live(&self) -> &Mutex<Option<Live>> {
         &self.shared.live
+    }
+
+    /// The body and its drawing: at once if the thread is between frames, else `None`, or with
+    /// `wait` once the thread is done with the frame it is on (it then lets the stage in before it
+    /// takes the next, whichever way the system hands out a lock).
+    pub fn body(&self, wait: bool) -> Option<MutexGuard<'_, Option<Live>>> {
+        match self.shared.live.try_lock() {
+            Ok(body) => Some(body),
+            Err(TryLockError::WouldBlock) if wait => {
+                self.shared.wanted.store(true, Ordering::Release);
+                let body = self.shared.live.lock().ok();
+                self.shared.wanted.store(false, Ordering::Release);
+                body
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Whether tap `id`'s spout is in the rock of the course the body runs on.
+    pub fn in_rock(&self, id: bpe_core::ThingId) -> bool {
+        self.shared.in_rock.lock().is_ok_and(|ids| ids.contains(&id))
     }
 
     /// The frame the body is at, `None` before there is one.
@@ -222,9 +265,28 @@ impl DraftJob {
 }
 
 impl Drop for DraftJob {
+    /// Stops the thread and waits for it to finish the frame it is on, so it never outlives the
+    /// window's graphics card.
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
-        self.thread.unpark();
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Shared {
+    /// The longest the thread waits for the stage between two frames.
+    const HANDOFF_MOST: Duration = Duration::from_millis(50);
+
+    /// Waits while the stage is waiting for the body (it gets the body the moment this thread
+    /// lets it go, but a system's lock need not hand it over before this thread takes it again).
+    fn let_the_stage_in(&self) {
+        let since = Instant::now();
+        while self.wanted.load(Ordering::Acquire) && since.elapsed() < Self::HANDOFF_MOST {
+            std::thread::yield_now();
+        }
     }
 }
 
@@ -271,7 +333,7 @@ impl Run {
                 None => live.water = setup.start(self.water_gpu.clone(), &live.field, self.most),
             }
         } else if at < target {
-            let inputs = setup.inputs_at(at);
+            let inputs = setup.inputs_on(at, &live.field);
             let water = &mut live.water;
             water.set_gravity(inputs.gravity);
             if !inputs.feels.is_empty() {
@@ -304,8 +366,12 @@ impl Run {
         self.copies.keep(0, copy_size(&water), water.copy());
         self.generation += 1;
         let (count, generation) = (water.count(), self.generation);
+        let in_rock = setup.taps_in_rock(&field);
         if let Ok(mut live) = shared.live.lock() {
             *live = Some(Live { water, field, plain, generation });
+        }
+        if let Ok(mut ids) = shared.in_rock.lock() {
+            *ids = in_rock;
         }
         shared.plays.store(setup.print, Ordering::Release);
         self.setup = Some(setup);
@@ -315,9 +381,10 @@ impl Run {
     }
 }
 
-/// About how much card memory a copy of `water` takes: its drops' buffers and its grid's.
+/// About how much card memory a copy of `water` takes: its drops' buffers (as roomy as the
+/// body's) and its grid's.
 fn copy_size(water: &Water) -> u64 {
-    u64::from(water.count()) * 128 + water.layout().nodes() as u64 * 64
+    u64::from(water.room().max(water.count())) * 128 + water.layout().nodes() as u64 * 64
 }
 
 /// The restart copies, oldest first, by the frame they are at.

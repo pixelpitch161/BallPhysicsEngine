@@ -468,8 +468,12 @@ Balls scenes are untouched.
   `TOO_MANY_LIQUIDS`, `TOO_MANY_TAPS`), and `print`. `inputs_at(frame)` reads gravity, Feels and Taps from their
   keyframes at the frame's start (`frame / 60` s); `fills(layout, field)` fills each Fill at the start's box
   (`fill_stacked`, rest off `Numbers::wall_off`) leaving out a later box's drops within 0.35 cell of an earlier box's;
-  `start(gpu, field, most)` is a new body with the fills and frame 0's inputs. A Tap is `Pour { width: Rate × Width,
-  .. }`; drops keep `STOPS` and are born with the engine's own colour (the plain drawing colours by liquid number).
+  `start(gpu, field, most)` is a new body with the fills and frame 0's inputs. A Fill's box is kept to the course.
+  `inputs_on(frame, field)` is what the draft plays: each tap's stream only as wide as its spout has room for (every
+  drop born more than `wall_off` from the rock, walked out from the spout's middle half a cell at a time, never wider
+  than the field), and none for a spout in the rock (`taps_in_rock(field)`; the stage then says `IN_ROCK` for it). Without
+  that, drops born in the rock fall through it (the mask is flat inside the rock) and leak into caves below. A Tap is
+  `Pour { width: Rate × Width, .. }`; drops keep `STOPS` and are born with the engine's own colour (the plain drawing colours by liquid number).
   A Pour's Liquid: a Liquid named by id, the first Liquid for its kind or Anything, the first with a tag.
 - **`print`** hashes exactly what the physics reads: the Water card's Gravity, Screens and Draft detail (and their
   keys), the strokes, each Liquid's id and Feel (and keys), each Pour's id, place, Liquid and card (and keys). Not:
@@ -484,30 +488,50 @@ Balls scenes are untouched.
   low priority. It steps a whole frame at a time under the body's lock (`Live { water, field, plain, generation }`) and
   follows the playhead's frame (`frame_of(time)`); going back plays from the newest restart copy at or before the
   playhead (one at the start and one every 120 frames reached, the copies kept under about 1 GiB by letting every other
-  one go). A new setup (`restart`) builds the body off the lock and swaps it in. Past 500,000 drops (`DRAFT_MOST`)
-  its pours stop. `busy()` counts setups asked for against built, so a test or the stage never sees an old body as
-  done. A panic marks it failed ("· Water draft stopped" in the status line).
+  one go; a copy is counted at its buffers' room, which is what `Water::copy` takes). A new setup (`restart`) builds
+  the body off the lock and swaps it in. Past 500,000 drops (`DRAFT_MOST`) its pours stop. `busy()` counts setups asked
+  for against built, so a test or the stage never sees an old body as done. A panic marks it failed ("· Water draft
+  stopped" in the status line); the next physics edit starts a fresh thread. Letting the job go waits for the thread to
+  finish its frame, so it never outlives the window's card.
+- **Taking turns** (`DraftJob::body(wait)`): the stage takes the body when the thread is between frames; when it
+  hasn't for 100 ms it waits for the frame the thread is on, and the thread, seeing `wanted`, yields until the stage
+  has it (at most 50 ms) before its next frame. A system's lock need not hand over to a waiter, so without this a
+  draft catching up (a Feel slider let go at 10 s: 600 frames) could hold the stage still until it got there.
 - **`WaterRun`** (`Studio.water_draft`): the newest setup, the job and the stage's picture. `restart_runs` builds a
   setup on every edit and restarts the draft only when `print` changed, held like the balls' while a slider or a drag
   is held (`hold_runs`); `replace_scene` starts it over (and stops it for a Balls scene). The stage starts the thread
   once the window's graphics card is there.
 - **The picture** (`StagePicture`): the whole course at its size on screen in real pixels (at most 2048 a side, never
-  above two a world pixel, `picture_view`), drawn under `try_lock` (outright when the last picture is 250 ms old) only
-  when the body's frame, generation, size, look or field changed, registered with egui as a native texture. A pill says
+  above two a world pixel, `picture_view`), drawn only when the body's frame, generation, size, look or rock changed,
+  registered with egui as a native texture. The rock it shows (`Rock { version, painting }`) is set under the body's
+  lock: the stroke being painted (rebuilt only when the stroke gets a point), or the body's own again once it is let
+  go or dropped. While the draft starts over it keeps the look it last drew in, so a reordered Liquid list never shows
+  the old body in the new colours. A pill says
   "Working out the water… X s" when the draft is more than 15 frames behind, "Starting the water over…" while a new
   setup builds. With nothing carved the course says `ALL_ROCK`. The status line adds "· Water: N drops (draft 8 px)".
 - **The Carve tool**: the strip has Dig | Fill, Brush size (8 to 600 px, 120), Hardness (100 %), Round | Square,
   Straight (or Shift) and Smooth (a lazy brush on a string of half the radius); Alt does the other of Dig and Fill.
-  Points come every quarter radius (at least 2 px). While a stroke is painted the stage redraws the rock from
-  `CarvePaint` through the live drawing's `set_field` over the water still playing; letting go puts it on the Carving
-  card as one undo step (adding the card to a part-1 Course), Escape drops it, a click digs one dab. The brush's outline
-  follows the pointer.
+  Points come every quarter radius (at least 2 px). While a stroke is painted the picture shows the rock from
+  `CarvePaint` over the water still playing; letting go puts it on the Carving card as it is then (an undo made while
+  painting is kept) as one undo step (adding the card to a part-1 Course), Escape drops it, a click digs one dab. The
+  brush's outline follows the pointer. The strip goes onto more rows when the stage is too narrow for it.
 - **Pours**: placing the first Pour also adds a Liquid named "Water" in the same undo step. A Pour's marker shows its
   aim and stream width (a Tap) or its box (a Fill at the start); a picked pour that can't pour says why in the strip.
 
 ### Measured on the RX 9070 XT
 
-(To come: `bpe-kit tests/water_draft.rs::draft_pace`, one screen carved as one chamber, two thirds filled, a tap.)
+`bpe-kit tests/water_draft.rs::draft_pace` (one screen carved as one chamber, two thirds filled, a tap; 5 s; Vulkan,
+driver 26.11.2, branch at 50b1595, 2026-11-26):
+
+| Draft detail | Cell | Drops | Steps a frame (mean, most) | Physics ms a frame | Draw ms 600 x 1067 | Draw ms 1080 x 1920 | Plays live (12 ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Coarse | 12 px | 37,780 | 8.0, 8 | 3.56 | 1.16 | 0.48 | yes |
+| Normal | 8 px | 85,004 | 16.0, 16 | 8.39 | 0.53 | 0.54 | yes |
+| Fine | 6 px | 151,111 | 16.0, 21 | 10.47 | 0.51 | 0.62 | yes |
+
+A full screen of draft water plays live at every detail, so no speed work was done (plan Task 3b not needed). The
+first draw (Coarse at 600 x 1067) includes the card warming up. On lavapipe in a container the same draft runs far
+slower than real time, and the editor's frames queue behind the water's on the one queue: judge pace on the card only.
 
 ### Tests
 
@@ -515,9 +539,10 @@ Balls scenes are untouched.
 round and square holes and their distances, fill after dig, order, hardness, past the course, painting equals building,
 a long stroke under a second, the field follows the mask, the cache), `things::water` (the Course's cards and labels,
 `carving_of`), `things::water::draft` (taps, fills where open and not doubled, a pour's Liquid, later kinds, keyframes,
-detail, what restarts, the plain look); `tests/water_draft.rs` `drops_stay_out_of_the_rock` (on the card) and
+detail, what restarts, the plain look, a tap in the rock, a tap wider than its hole, huge pours kept to the course); `tests/water_draft.rs` `drops_stay_out_of_the_rock` (on the card) and
 `draft_pace` (by hand); `bpe-studio` `water_mode/draft` (follows and goes back, the same water from a copy and from the
-start, a new setup, stops at its most, the copies' memory rule), `water_mode/picture` (the picture covers the course),
-`water_mode/tests.rs` (Carve: one stroke one undo step, Alt and the strip, Straight, Smooth, Escape, a Course without
-the card; the all-rock words; a first Pour brings Water; a pour's note), `app/water_tests.rs` (a physics edit restarts
+start, a new setup, stops at its most, the copies' memory rule, the stage gets the body between frames while the draft
+catches up, a tap in the rock is named and pours nothing), `water_mode/picture` (the picture covers the course),
+`water_mode/tests.rs` (Carve: one stroke one undo step, an undo while painting kept, Alt and the strip, Straight,
+Smooth, Escape, a Course without the card; the all-rock words; a first Pour brings Water; a pour's note), `app/water_tests.rs` (a physics edit restarts
 and a look edit doesn't, a Balls scene has no draft, the readout).

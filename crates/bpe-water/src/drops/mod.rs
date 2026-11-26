@@ -399,6 +399,11 @@ impl Water {
         self.count
     }
 
+    /// How many drops its buffers have room for (a copy takes as much).
+    pub fn room(&self) -> u32 {
+        self.room
+    }
+
     /// The steps taken so far, all frames together.
     pub fn steps(&self) -> u64 {
         self.steps

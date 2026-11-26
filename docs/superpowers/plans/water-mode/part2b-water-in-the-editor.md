@@ -585,4 +585,25 @@ fn a_picked_pour_says_what_it_cannot_do_yet() // a picked Pour of kind Rain show
 
 ## As built and measured
 
-(Filled in as the tasks land.)
+All eight tasks landed as planned; `docs/notes/water.md` ("Part 2b") has the full as-built summary. What differs from
+the tasks above, or was added:
+
+- **Pace on the card (Task 3):** a full screen of draft water plays live at every detail on the RX 9070 XT: Coarse
+  3.56 ms a frame (37,780 drops), Normal 8.39 ms (85,004), Fine 10.47 ms (151,111), against the 12 ms mark; drawing
+  1080 x 1920 about 0.5 ms. Task 3b (speeding the physics up) was not needed.
+- **Taking turns with the stage (review):** the stage gets the body through `DraftJob::body(wait)`. It waits for the
+  frame the thread is on once 100 ms have gone by without a picture (250 ms planned), and the thread lets it in before
+  its next frame (`wanted`, at most 50 ms), since a system's lock needn't hand over to a waiter. On Linux the lock
+  happened to hand over anyway (the new test passed before the change); the flag makes it so everywhere.
+- **Taps and fills kept to the open course (review):** `WaterSetup::inputs_on(frame, field)` narrows each tap to the
+  room its spout has and stops a tap in the rock (the stage says `IN_ROCK` for it, from the thread's
+  `taps_in_rock`); a Fill's box and a tap's width are kept to the course, so a huge size can't stall the thread or
+  run it out of memory.
+- **The carve preview (review):** the picture sets the drawing's field itself, under the body's lock, from the stroke
+  being painted (`picture::Rock`), so a stroke dropped while the draft is busy never stays on the stage, and the field
+  is rebuilt only when the stroke gets a point. Letting go puts the stroke on the carving as it is then, so an undo
+  made while painting is kept.
+- **Smaller fixes (review):** restart copies are counted at their buffers' room (`Water::room`, new); letting the job
+  go joins its thread; a failed thread is started afresh on the next physics edit; while the water starts over the
+  picture keeps the look it last drew in.
+- **The strip** goes onto more rows on a narrow stage (seen at 1440 x 960, where the Carve strip ran off the edge).

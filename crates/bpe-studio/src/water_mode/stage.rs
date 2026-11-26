@@ -5,6 +5,7 @@
 
 use super::course_view::CourseView;
 use super::draft::frame_of;
+use super::picture::Rock;
 use super::rail::{self, RAIL_W, Tool};
 use crate::app::Studio;
 use crate::style;
@@ -27,9 +28,11 @@ pub struct WaterStage {
     drag: Option<(ThingId, Vec2)>,
     /// Where the course was drawn last frame.
     pub view: Option<CourseView>,
-    /// Goes up whenever the drawing's field is changed under the draft (a carve stroke being
-    /// painted), so the picture is drawn again.
+    /// Goes up whenever the carve stroke being painted changes (or is let go or dropped), so the
+    /// picture shows its rock.
     pub field_version: u64,
+    /// The strip's height last frame (it grows to more rows when the stage is too narrow).
+    strip_h: f32,
     /// The Carve tool's brush, and the stroke it is painting.
     pub brush: super::carve_tool::CarveBrush,
     pub painting: Option<super::carve_tool::Painting>,
@@ -40,9 +43,9 @@ pub const ALL_ROCK: &str = "The course is solid rock. Pick Carve and paint to di
 /// How far (frames) the draft may lag the playhead before the stage says it is working.
 const BEHIND: u32 = 15;
 
-/// The strip, the rail and the course's room inside `full`.
-fn rooms(full: Rect) -> (Rect, Rect, Rect) {
-    let strip = Rect::from_min_size(full.min, vec2(full.width(), STRIP_H));
+/// The strip (`strip_h` high), the rail and the course's room inside `full`.
+fn rooms(full: Rect, strip_h: f32) -> (Rect, Rect, Rect) {
+    let strip = Rect::from_min_size(full.min, vec2(full.width(), strip_h.max(STRIP_H)));
     let rail = Rect::from_min_max(pos2(full.left(), strip.bottom()), pos2(full.left() + RAIL_W, full.bottom()));
     let room = Rect::from_min_max(pos2(rail.right(), strip.bottom()), full.max);
     (strip, rail, room)
@@ -68,24 +71,36 @@ fn marker_at(view: &CourseView, things: &[(ThingId, Vec2)], at: Pos2) -> Option<
 
 /// Draws the Water stage and applies what was clicked and dragged.
 pub fn stage(ui: &mut Ui, studio: &mut Studio) {
-    let (strip, rail, room) = rooms(ui.available_rect_before_wrap());
+    let (strip, rail, room) = rooms(ui.available_rect_before_wrap(), studio.water_stage.strip_h);
     let tool = studio.water_stage.tool;
-    // The strip: the tool and what it does.
+    // The strip: the tool and what it does, on more rows when they don't fit on one.
     ui.painter().rect_filled(strip, 0.0, style::PANEL);
     ui.painter().hline(strip.x_range(), strip.bottom(), Stroke::new(1.0, style::LINE_SOFT));
     let inside = strip.shrink2(vec2(10.0, 0.0));
-    let layout = egui::Layout::left_to_right(egui::Align::Center);
-    let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(inside).layout(layout));
+    let first = Rect::from_min_size(inside.min, vec2(inside.width(), STRIP_H));
+    let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+    let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(first).layout(layout));
     bar.label(RichText::new(tool.name()).font(style::semibold(13.0)));
     if tool == Tool::Carve {
         super::carve_tool::strip(&mut bar, &mut studio.water_stage.brush);
     } else {
         bar.label(RichText::new(tool.hint()).color(style::MUTED));
     }
-    // What a picked pour can't do yet.
-    let note = studio.selection.primary.and_then(|id| studio.water_draft.setup.as_ref()?.note_for(id));
+    // What a picked pour can't do (yet).
+    let note = studio.selection.primary.and_then(|id| {
+        let setup = studio.water_draft.setup.as_ref()?;
+        setup.note_for(id).or_else(|| {
+            let job = studio.water_draft.job.as_ref()?;
+            (job.plays() == setup.print && job.in_rock(id)).then_some(water::draft::IN_ROCK)
+        })
+    });
     if let Some(note) = note {
         bar.label(RichText::new(note).color(style::TEXT));
+    }
+    let strip_h = (bar.min_rect().bottom() - strip.top() + 6.0).max(STRIP_H);
+    if (strip_h - studio.water_stage.strip_h.max(STRIP_H)).abs() > 0.5 {
+        studio.water_stage.strip_h = strip_h;
+        ui.ctx().request_repaint();
     }
 
     rail::show(ui, rail, &mut studio.water_stage.tool);
@@ -163,14 +178,22 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     let Some(job) = studio.water_draft.job.as_ref() else { return false };
     let target = frame_of(studio.time);
     job.follow(target);
-    let look = bpe_kit::things::water::draft::plain_look(&studio.scene, &studio.resolved, studio.time);
+    let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
+    // (Until the new body comes, the old one keeps the look its liquids were numbered for.)
+    let fresh = || bpe_kit::things::water::draft::plain_look(&studio.scene, &studio.resolved, studio.time);
+    let look = match (restarting, studio.water_draft.picture.last_look()) {
+        (true, Some(last)) => last.clone(),
+        _ => fresh(),
+    };
     let painter = ui.painter_at(room);
-    let field = studio.water_stage.field_version;
-    let shown = studio.water_draft.picture.show(&painter, &render, job, &look, view, field);
+    let rock = Rock {
+        version: studio.water_stage.field_version,
+        painting: studio.water_stage.painting.as_ref().map(|p| p.mask()),
+    };
+    let shown = studio.water_draft.picture.show(&painter, &render, job, &look, view, rock);
     if job.busy() || studio.playing {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
-    let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
     if let Some(reached) = job.reached()
         && (reached + BEHIND < target || restarting)
     {
@@ -302,5 +325,5 @@ fn camera_shot(studio: &Studio, view: &CourseView) -> Option<Rect> {
 
 #[cfg(test)]
 pub(crate) fn rooms_for_tests(full: Rect) -> (Rect, Rect, Rect) {
-    rooms(full)
+    rooms(full, STRIP_H)
 }

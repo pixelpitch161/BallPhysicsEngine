@@ -101,6 +101,43 @@ fn a_new_setup_replaces_the_body_and_its_drawing() {
 }
 
 #[test]
+fn the_stage_gets_the_body_between_frames_while_the_draft_catches_up() {
+    let reg = bpe_kit::registry();
+    let job = job(&chamber(&reg, "coarse"), &reg, 500_000);
+    wait_for(&job, 0);
+    job.follow(600);
+    let mut seen = Vec::new();
+    let started = std::time::Instant::now();
+    while seen.len() < 5 && started.elapsed().as_secs() < 300 {
+        let body = job.body(true).expect("the body");
+        seen.push(body.as_ref().expect("a body").water.frames());
+    }
+    // Each wait is for the frame the thread is on at most, not for the whole way to frame 600.
+    assert!(seen.iter().all(|f| *f < 600), "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    assert!(job.body(false).is_none() || job.reached().is_some());
+}
+
+#[test]
+fn a_tap_in_the_rock_is_named_for_the_stage() {
+    let reg = bpe_kit::registry();
+    let mut scene = chamber(&reg, "coarse");
+    let buried = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&buried).unwrap().transform.position = Vec2::new(0.0, -700.0);
+    let job = job(&scene, &reg, 500_000);
+    wait_for(&job, 30);
+    assert!(job.in_rock(buried));
+    let mut others = scene.order.iter().filter(|id| **id != buried && scene.things[*id].kind == POUR);
+    assert!(others.all(|id| !job.in_rock(*id)));
+    let live = job.live().lock().unwrap();
+    let live = live.as_ref().unwrap();
+    for d in live.water.read() {
+        let at = live.field.layout.to_world(Vec2::from(d.x));
+        assert!(at.y > -300.0, "no drop from the buried tap: one at {at}");
+    }
+}
+
+#[test]
 fn the_draft_stops_pouring_at_its_most() {
     let reg = bpe_kit::registry();
     let job = job(&chamber(&reg, "coarse"), &reg, 1_000);
