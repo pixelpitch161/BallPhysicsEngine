@@ -488,9 +488,10 @@ other.
 
 **The fix: `meet_even`** (`finish.wgsl`): each step a share of the speed at which a drop and its neighbours close
 on each other, along the line between them and only while they close, is taken away (the mean of its
-neighbours' by the kernel). Pairs give and take alike, so momentum is kept. Drops that part or slide past each
-other are left alone, so the stream stretches and the slosh swings as before. A step crosses the same share of a
-spacing at every detail, so the same share a step is the same water at every detail.
+neighbours' by the kernel). Drops that part or slide past each other are left alone, so the stream stretches and
+the slosh swings as before. (As first built, each drop took its share by its own neighbours' weight, which does
+not keep momentum, and the share was a step's, which is not the same at 2 px or when fast water adds steps: both
+fixed after the review, below.)
 
 | `meet_even` | 6 px above the pool (1, 1.5, 2 s) | 3 px | Slosh at 6 px (left after four half swings) |
 | --- | --- | --- | --- |
@@ -598,3 +599,64 @@ in the time box.
 `GridRunning`, the `Feel` conversion, and the random births only the grid used (`Pour::drops`, `Dice`);
 `a_pour_fans_out_smoothly` checks the rows instead. `fill` stays (the engine tests and the fill tests use it).
 C3 had merged, so `bridge.rs` and `water_core.rs` needed nothing.
+
+### The review
+
+One review of the whole branch. What it found, and what was done:
+
+- **`meet_even` made momentum** (each drop took its share of the pair's closing speed by its own neighbours'
+  weight, so a surface drop took more than the drop it met: a drop fired at 300 px/s into a resting blob drove
+  the blob back at 23 px/s). Each of a pair now loses the same, by the pair's own weight (the skin's thin-liquid
+  number, `2 / (full_i + full_j)`), over the neighbours' weight a drop deep in the liquid has (`rho0 − W(0)`).
+  `water_that_meets_keeps_its_momentum` (a drop into a blob; two blobs with no momentum in all) fails without it.
+- **The share was a step's,** so 32 steps a frame at 2 px (where the reference is 48) or a frame whose fast water
+  took more steps took a different share a second. `Numbers::meet_share` gives `meet_even` for the step that
+  crosses the same share of a spacing as Fine's 16 steps a frame (`FRAME × cell / 96` seconds) and keeps the
+  share a second the same for any other step.
+- Smaller: the deep cells' count is cleared every frame (turning the deep part off and on again could run one
+  frame for nothing); `read_deep` and `probe::Spacing` went (nothing used them); `a_small_course_still_solves`
+  asks the column to be deep every frame; `the_deep_part_leaves_thin_water_alone` also adds drops, so the two
+  deep frames after an `add()` run with nothing deep; the course's edge is `EDGE` in `drops/mod.rs` as in
+  `common.wgsl`; `set_numbers` says the deep water's solids stay as the body was made. The `rest` sums are one
+  pair for the whole body and stay under 2^32 while that band has under a million cells (noted in the shader).
+
+The card run (Task 10) was made after these, so its numbers are the fixed engine's.
+
+### Task 10: the card run and the verdict
+
+The whole script (`card/all-drops-core-c2/run.ps1`, all 11 groups, 34 runs, every one exit 0) on the owner's
+RX 9070 XT at be04003 (after the review's fixes), 2026-11-26 08:44 to 08:58Z. Nothing else used the card but
+for one other project's CI job during the `pace` group. The results (tables, stills, 29 films) are on the
+card run's own branch (draft pull request #236, never merged); the films and tables are also in the project
+files, `water-core/c2/`.
+
+| Mark | Measured | Verdict |
+| --- | --- | --- |
+| Deep pool at rest, 20 s: height kept ≥ 99 % at Fine, Extreme, 2 px | 99.71, 99.69, 99.04 % | met |
+| ... at most 1 px/s rms, not growing over the last 5 s | 1.3, 2.3, 6.1 px/s (15 s: 1.7, 2.1, 6.8) | **missed** (not growing; the surface calm) |
+| Water Weird lands as one body, no rain over the block | by eye at 6, 3, 2 px, Surface pull 0.2 and 0.5 | met |
+| ... small share within 5 points across Fine, Extreme, 2 px (above the floor's pool, mean of 1 to 3 s) | 0.2: 26.2, 25.6, 22.4 %; 0.5: 30.4, 28.5, 26.9 % | met (3.8 and 3.5 points) |
+| ... round the block | 0.2: 2.6, 2.2, 0.5 %; 0.5: 7.5, 15.4, 15.4 % | met at 0.2; at 0.5 8 points (the upslope jet ends in beads at finer detail, Task 5) |
+| ... Draft Normal (8 px), a target | above the pool 34.5 % (0.2), 32.8 % (0.5) | target missed at 0.2 (8 points over Fine) |
+| Nothing deep: the deep part on or off the same to the bit | `the_deep_part_leaves_thin_water_alone`, also through the frames after an `add()` | met |
+| Shelves after 30 s: puddles ≤ 7 px (6 px), 5.5 px (3 px) at Surface pull 0.2; never a standing pool | Stickiness 0: tallest 7.0 and 7.9 px (mean 4.6, 7.4); 0.5: 10.8 and 10.6 (7.6, 8.5); left 2.4 and 4.0 % (trial 7.3, C1 7.4) | **missed** but at Fine and Stickiness 0 (Task 7: the skin's bend) |
+| C1's marks: the engine tests | all pass (CI on the card, and the software card) | met |
+| ... the course's shares within 3 points of C1's (30 s) | 6 px: 7.5 / 0.0 / 5.6 / 34.8 / 52.0 (C1 7.4 / 0.0 / 5.3 / 34.5 / 52.9); 3 px: 7.3 / 0.0 / 3.4 / 38.2 / 51.1 (C1 7.2 / 0.0 / 3.3 / 37.8 / 51.6) | met (within 1) |
+| ... repeats, in a run, between runs and from a copy | weird and pool at 6 and 3 px | met |
+| ... thin water on four shifts of the layout | slope and weird at 6 and 3 px, by eye | met (alike) |
+| ... the films side by side with C1's | by eye | no worse; at Fine less fine spray and the sheet wraps the disc more smoothly |
+| The owner's Water Weird file at 6 s (today's liquid / C1 / C2) | Fine: pieces 69 / 320 / 190, strays 0.7 / 4.6 / 2.3 %, whole 0.87 / 0.80 / 0.82; Extreme: 89 / 265 / 167, 0.2 / 0.5 / 0.3 %, 0.86 / 0.83 / 0.84 | nearer today's liquid than C1 |
+| *Goal*: slosh keeps ≥ 75 % (Fine), 85 % (Extreme) | 77 %, 82 % (2 px 76 %) | met at Fine, missed at Extreme |
+| *Target*: pace at Fine and Draft Normal no slower than the grid core (0.15 to 0.18 s a scene second) | Fine 0.31 to 0.54, 8 px 0.29 to 0.67 (clean runs earlier: Fine 0.33 to 0.43; without the deep part 0.26 to 0.40) | missed |
+| *Target*: Extreme within 0.6 (0.8 for the 166,000-drop pool) | 0.69 to 1.37; the pool 1.47 | missed |
+| *Target*: 2 px at most 1.5 (2.0 for the 373,000-drop pool) | weird 1.22, slope 1.15, fill 1.25; the pool 2.73, the deep pool 2.56 | met but for the big pools |
+| A one-screen course two thirds full at 2 px (about 1.4 million drops) | not measured (the script timed the `fill` shot instead); from the 374,000-drop pool's 1.42 ms a step, about 5 ms a step, so about 10 s a scene second | left for 2b's Make final |
+
+**By eye, one thing to watch:** a pour plunging into the pool carries pockets of air down that are a little
+larger and last a little longer than C1's (at Fine one small pocket is still there at 5.8 s, where C1's had all
+risen by 5 s). Real water's bubbles from a jet are smaller and rise out quickly. Around a pocket the water is
+drops only (the deep part treats the pocket as the liquid's edge), so only the drops' own weight moves it up.
+
+So the deep pool holds its height and its surface is calm, hard landings are alike at every detail and C1's
+marks all hold; the pool's last few px/s, the shelves' puddles and the pace are left, and the owner weighs them
+at the water checkpoint.
