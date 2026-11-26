@@ -1,0 +1,276 @@
+﻿
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+pool	6	0.00	21481	0.0	0	503.0	0	0	0.0
+pool	6	1.00	28084	1055.9	3514	-608.5	0	16	0.6
+pool	6	2.00	34687	1116.0	3224	-584.9	0	16	1.2
+pool	6	3.00	41291	1046.3	2813	-559.1	0	16	1.8
+pool	6	3.50	41291	943.5	3176	30.9	0	16	2.1
+pool	6	4.00	41291	750.8	1829	-113.8	0	16	2.4
+pool	6	4.50	41291	726.6	2188	82.9	0	16	2.7
+pool	6	5.00	41291	547.1	2079	14.5	0	16	3.0
+pool	6	5.50	41291	502.6	2366	-47.0	0	16	3.7
+pool	6	6.00	41291	448.8	2667	77.7	0	16	4.1
+# pool-c6	181 frames	physics alone: 4.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 29.19s
+
+# shots took 29 s, exit 0: {"WATER_SECONDS":6,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"pool","WATER_CELLS":"6","WATER_FILM_SCALE":1,"WATER_DOTS":1,"WATER_PULL":"0.5","WATER_STILLS":"3.5,4.5,5.5","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+pool	3	0.00	87198	0.0	0	502.5	0	0	0.0
+pool	3	1.00	113611	1087.7	3526	-608.8	0	32	1.7
+pool	3	2.00	140024	955.9	4439	-584.7	0	32	3.5
+pool	3	3.00	166438	912.5	4786	-558.8	0	32	5.3
+pool	3	3.50	166438	753.7	3123	-92.8	0	32	6.3
+pool	3	4.00	166438	511.8	2083	-142.1	0	32	7.3
+pool	3	4.50	166438	465.8	2142	-128.6	0	32	8.3
+pool	3	5.00	166438	423.5	2802	-62.8	0	32	9.2
+pool	3	5.50	166438	381.8	1531	-135.7	0	32	10.2
+pool	3	6.00	166438	378.8	2303	-101.9	0	32	11.2
+# pool-c3	181 frames	physics alone: 11.2 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 37.28s
+
+# shots took 37 s, exit 0: {"WATER_SECONDS":6,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"pool","WATER_CELLS":"3","WATER_FILM_SCALE":1,"WATER_DOTS":1,"WATER_PULL":"0.5","WATER_STILLS":"3.5,4.5,5.5","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+pool	2	0.00	196200	0.0	0	503.0	0	0	0.0
+pool	2	1.00	255630	1105.5	3529	-609.3	0	32	2.4
+pool	2	2.00	315060	818.2	3950	-585.3	0	32	5.5
+pool	2	3.00	374420	693.6	3249	-557.8	0	32	9.1
+pool	2	3.50	374420	528.1	3232	-86.2	0	32	11.0
+pool	2	4.00	374420	370.3	1801	3.7	0	32	12.9
+pool	2	4.50	374420	348.3	1946	68.4	0	32	14.8
+pool	2	5.00	374420	260.7	1428	-28.2	0	32	16.7
+pool	2	5.50	374420	248.9	1892	2.7	0	32	18.5
+pool	2	6.00	374420	202.7	1589	54.4	0	32	20.5
+# pool-c2	181 frames	physics alone: 20.5 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 39.77s
+
+# shots took 40 s, exit 0: {"WATER_SECONDS":6,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"pool","WATER_CELLS":"2","WATER_FILM_SCALE":1,"WATER_DOTS":1,"WATER_PULL":"0.5","WATER_STILLS":"3.5,4.5,5.5","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+pool	6	0.00	21481	0.0	0	503.0	0	0	0.0
+pool	6	1.00	28084	1058.5	3512	-608.5	0	16	0.5
+pool	6	2.00	34687	1131.3	3524	-584.8	0	18	1.1
+pool	6	3.00	41291	1161.7	4479	-559.0	0	16	1.7
+pool	6	3.50	41291	1130.3	3796	127.5	0	17	2.0
+pool	6	4.00	41291	942.9	2294	130.5	0	16	2.3
+pool	6	4.50	41291	939.9	2129	195.9	0	16	2.6
+pool	6	5.00	41291	839.9	1866	169.8	0	16	2.8
+pool	6	5.50	41291	791.4	1946	201.9	0	16	3.1
+pool	6	6.00	41291	729.0	1606	148.9	0	16	3.4
+# pool-c6-airoff	181 frames	physics alone: 3.4 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 18.18s
+
+# shots took 18 s, exit 0: {"WATER_WETTING":"1","WATER_SECONDS":6,"WATER_SHOTS":"pool","WATER_FILM_SCALE":1,"WATER_CELLS":"6","WATER_TAG":"airoff","WATER_FPS":30,"WATER_DOTS":1,"WATER_PULL":"0.5","WATER_STILLS":"3.5,4.5,5.5","WATER_STICK":"0","BPE_WATER_AIR":0}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+slope	6	0.00	0	0.0	0	0.0	0	0	0.0
+slope	6	1.00	1320	1494.9	3044	-700.2	0	16	0.6
+slope	6	2.00	2641	1360.7	3397	-678.9	0	16	1.2
+slope	6	3.00	3962	1077.9	3633	-658.9	0	16	2.0
+slope	6	4.00	5282	937.3	3294	-634.6	0	16	2.6
+slope	6	5.00	6603	838.8	2993	-610.4	0	16	3.3
+# slope-c6	151 frames	physics alone: 3.3 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 8.85s
+
+# shots took 9 s, exit 0: {"WATER_SECONDS":5,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"slope","WATER_CELLS":"6","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,4","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+ledge	6	0.00	0	0.0	0	0.0	0	0	0.0
+ledge	6	1.00	3018	1354.4	3732	-600.4	0	16	0.7
+ledge	6	2.00	6037	1325.4	3034	-580.7	0	16	1.4
+ledge	6	3.00	9056	1174.1	2912	-559.4	0	16	2.1
+ledge	6	4.00	12074	1032.5	2915	-536.1	0	16	2.8
+ledge	6	5.00	15093	936.9	3473	-513.2	0	16	3.5
+# ledge-c6	151 frames	physics alone: 3.5 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 8.33s
+
+# shots took 8 s, exit 0: {"WATER_SECONDS":5,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"ledge","WATER_CELLS":"6","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,4","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+course	6	0.00	21097	0.0	0	-854.5	0	0	0.0
+course	6	1.00	21097	563.8	2404	-812.1	0	16	0.6
+course	6	2.00	21097	665.2	3143	-773.8	0	16	1.1
+course	6	3.00	21097	650.6	3313	-743.2	0	16	1.7
+course	6	4.00	21097	681.6	4027	-709.8	0	16	2.2
+course	6	5.00	21097	637.5	2270	-682.8	0	16	2.8
+course	6	6.00	21097	597.1	2500	-667.9	0	16	3.3
+course	6	7.00	21097	532.6	2239	-659.7	0	16	3.9
+course	6	8.00	21097	510.8	2249	-654.6	0	16	4.6
+# course-c6	241 frames	physics alone: 4.6 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 17.25s
+
+# shots took 17 s, exit 0: {"WATER_SECONDS":8,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"course","WATER_CELLS":"6","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,7","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+beads	6	0.00	1322	0.0	0	-190.4	0	0	0.0
+beads	6	1.00	1322	627.9	2244	-136.2	0	16	0.5
+beads	6	2.00	1322	659.5	2640	-53.0	0	16	1.0
+beads	6	3.00	1322	149.4	626	287.1	0	16	1.6
+beads	6	4.00	1322	65.5	322	287.6	0	16	2.1
+# beads-c6	121 frames	physics alone: 2.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 5.60s
+
+# shots took 6 s, exit 0: {"WATER_SECONDS":4,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"beads","WATER_CELLS":"6","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,3","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+weird	6	0.00	0	0.0	0	0.0	0	0	0.0
+weird	6	1.00	1811	1418.2	3045	-550.3	0	16	0.5
+weird	6	2.00	3622	1238.3	2844	-529.9	0	16	0.9
+weird	6	3.00	5433	964.4	3097	-509.2	0	16	1.4
+weird	6	4.00	7244	864.3	3248	-485.4	0	16	2.1
+weird	6	5.00	9056	783.0	2946	-461.4	0	16	2.7
+weird	6	6.00	10867	721.5	2784	-434.3	0	16	3.2
+# weird-c6	181 frames	physics alone: 3.2 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 11.56s
+
+# shots took 12 s, exit 0: {"WATER_SECONDS":6,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"weird","WATER_CELLS":"6","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,5","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+slope	3	0.00	0	0.0	0	0.0	0	0	0.0
+slope	3	1.00	5282	1636.7	4189	-700.7	0	32	0.9
+slope	3	2.00	10565	1468.3	4592	-680.3	0	32	1.6
+slope	3	3.00	15848	1206.8	3878	-658.6	0	32	2.7
+slope	3	4.00	21121	979.5	4431	-632.5	0	32	3.9
+slope	3	5.00	26404	875.7	4083	-606.8	0	32	5.1
+# slope-c3	151 frames	physics alone: 5.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 12.20s
+
+# shots took 12 s, exit 0: {"WATER_SECONDS":5,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"slope","WATER_CELLS":"3","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,4","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+ledge	3	0.00	0	0.0	0	0.0	0	0	0.0
+ledge	3	1.00	12074	1413.9	3117	-601.2	0	32	0.8
+ledge	3	2.00	24149	1326.1	3500	-591.5	0	32	2.0
+ledge	3	3.00	36224	1027.6	3849	-560.6	0	32	3.4
+ledge	3	4.00	48277	931.8	3136	-537.7	0	32	4.9
+ledge	3	5.00	60352	904.6	4279	-517.4	0	32	6.6
+# ledge-c3	151 frames	physics alone: 6.6 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 12.37s
+
+# shots took 12 s, exit 0: {"WATER_SECONDS":5,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"ledge","WATER_CELLS":"3","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,4","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+course	3	0.00	84534	0.0	0	-855.2	0	0	0.0
+course	3	1.00	84534	587.7	4019	-811.2	0	32	1.7
+course	3	2.00	84534	638.1	2828	-771.8	0	32	3.3
+course	3	3.00	84534	598.1	3243	-741.6	0	32	4.7
+course	3	4.00	84534	632.5	3778	-707.2	0	32	6.1
+course	3	5.00	84534	581.2	2686	-680.7	0	32	7.5
+course	3	6.00	84534	568.2	4089	-665.6	0	32	9.0
+course	3	7.00	84534	543.8	2409	-657.5	0	32	10.3
+course	3	8.00	84534	489.1	2383	-652.7	0	32	12.0
+# course-c3	241 frames	physics alone: 12.0 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 25.14s
+
+# shots took 25 s, exit 0: {"WATER_SECONDS":8,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"course","WATER_CELLS":"3","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,7","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+beads	3	0.00	5387	0.0	0	-191.4	0	0	0.0
+beads	3	1.00	5387	726.0	1762	-106.8	0	32	1.2
+beads	3	2.00	5387	876.7	3564	288.2	0	32	2.2
+beads	3	3.00	5387	219.8	1786	286.4	0	32	3.7
+beads	3	4.00	5387	152.8	315	286.8	0	32	5.1
+# beads-c3	121 frames	physics alone: 5.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 10.68s
+
+# shots took 11 s, exit 0: {"WATER_SECONDS":4,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"beads","WATER_CELLS":"3","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,3","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+weird	3	0.00	0	0.0	0	0.0	0	0	0.0
+weird	3	1.00	7244	1533.8	4712	-551.1	0	32	0.9
+weird	3	2.00	14489	1331.1	4021	-530.7	0	32	2.1
+weird	3	3.00	21734	1099.4	3917	-509.2	0	32	3.7
+weird	3	4.00	28966	939.7	3474	-484.0	0	32	5.5
+weird	3	5.00	36211	830.2	2934	-459.3	0	32	7.3
+weird	3	6.00	43456	756.8	3181	-432.9	0	32	9.5
+# weird-c3	181 frames	physics alone: 9.5 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 16.64s
+
+# shots took 17 s, exit 0: {"WATER_SECONDS":6,"WATER_WETTING":"1","WATER_FPS":30,"WATER_SHOTS":"weird","WATER_CELLS":"3","WATER_FILM_SCALE":1,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,2,5","WATER_STICK":"0"}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+beads	3	0.00	5387	0.0	0	-191.4	0	0	0.0
+beads	3	1.00	5387	737.2	3061	-105.1	0	32	1.5
+beads	3	2.00	5387	755.4	2907	279.9	0	32	3.1
+beads	3	3.00	5387	165.9	1891	280.1	0	32	4.6
+beads	3	4.00	5387	87.5	315	280.0	0	32	6.1
+# beads-c3-wet0	121 frames	physics alone: 6.1 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 9.71s
+
+# shots took 10 s, exit 0: {"WATER_WETTING":"0","WATER_SECONDS":4,"WATER_SHOTS":"beads","WATER_CELLS":"3","WATER_TAG":"wet0","WATER_FPS":30,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,3","WATER_STICK":"0","WATER_FILM_SCALE":1}
+
+running 1 test
+test shots ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# shot	cell	seconds	drops	rms px/s	fastest	top	broken	steps last frame	wall s
+beads	3	0.00	5387	0.0	0	-191.4	0	0	0.0
+beads	3	1.00	5387	726.0	1762	-106.8	0	32	1.5
+beads	3	2.00	5387	876.7	3564	288.2	0	32	2.7
+beads	3	3.00	5387	219.8	1786	286.4	0	32	4.5
+beads	3	4.00	5387	152.8	315	286.8	0	32	5.9
+# beads-c3-wet1	121 frames	physics alone: 5.9 s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 9.02s
+
+# shots took 9 s, exit 0: {"WATER_WETTING":"1","WATER_SECONDS":4,"WATER_SHOTS":"beads","WATER_CELLS":"3","WATER_TAG":"wet1","WATER_FPS":30,"WATER_DOTS":0,"WATER_PULL":"0.5","WATER_STILLS":"1,3","WATER_STICK":"0","WATER_FILM_SCALE":1}

@@ -1,0 +1,19 @@
+﻿
+running 1 test
+test pools ... # card	AMD Radeon RX 9070 XT	Vulkan	26.11.2 (LLPC)
+# cell	seconds	drops	rms px/s	fastest	height kept %	wall s
+6	5	35261	2.07	7.5	99.71	2
+6	10	35261	1.49	5.3	99.73	4
+6	15	35261	2.88	10.3	99.72	6
+6	20	35261	1.89	6.8	99.75	8
+# slosh	6	swings px: 21.4 -28.7 17.6 -27.0 16.5 -25.4 15.2 -24.5	left after four half swings: 77 %
+3	5	142521	2.53	9.0	99.70	7
+3	10	142521	3.57	13.5	99.70	13
+3	15	142521	3.74	14.1	99.70	20
+3	20	142521	2.63	8.7	99.70	27
+# slosh	3	swings px: 26.6 -24.3 23.0 -22.5 21.8 -21.2 20.5 -20.3	left after four half swings: 82 %
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 49.70s
+
+# pools took 50 s, exit 0: {"WATER_WETTING":"1","WATER_CELLS":"6,3","WATER_REST":20}
