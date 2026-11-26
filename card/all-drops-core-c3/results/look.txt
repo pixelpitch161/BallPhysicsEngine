@@ -1,0 +1,19 @@
+﻿
+running 1 test
+full_size_look-7fb306e4bc707529.exe : water-demo: 12.17 s
+At F:\bpe-card\c3\run.ps1:37 char:5
++     & $program --ignored --nocapture --test-threads=1 $test 2>&1 | Ou ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (water-demo: 12.17 s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+liquid-water-f00: 0.66 s
+liquid-water-f01: 0.00 s
+particle-look-waterfall-and-mist: 0.00 s
+particle-look-ink-in-water: 0.00 s
+9 pictures in F:\bpe-card\c3\results\look
+test render_at_full_size ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.86s
+
+# render_at_full_size took 28 s, exit 0: {"LOOK_OUT":"F:\\bpe-card\\c3\\results\\look","LOOK_ONLY":"water"}
