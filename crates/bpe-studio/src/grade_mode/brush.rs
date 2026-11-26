@@ -98,6 +98,7 @@ impl Brushes {
             strength: (b.flow / 100.0).clamp(0.0, 1.0),
             erase: alt || self.tool == Tool::Erase,
             density: (b.density / 100.0).clamp(0.0, 1.0),
+            square: false,
         }
     }
 }

@@ -568,6 +568,15 @@ impl Studio {
                 let (a, b) = (beside.unwrap_or_default(), main.unwrap_or_default());
                 ui.label(RichText::new(particles_readout(a.0 + b.0, a.1 + b.1)).small().color(style::MUTED));
             }
+            // A Water scene's water, playing at draft detail.
+            if let Some(job) = &self.water_draft.job {
+                let (text, colour) = match (job.failed(), &self.water_draft.setup) {
+                    (true, _) => ("· Water draft stopped".to_owned(), style::PROBLEM),
+                    (false, Some(setup)) => (water_readout(job.count(), setup.cell, job.full()), style::MUTED),
+                    (false, None) => (String::new(), style::MUTED),
+                };
+                ui.label(RichText::new(text).small().color(colour));
+            }
             // A liquid beside the physics comes from the particles thread; one that pushes balls
             // from the main playback.
             let beside_liquid = self.particle_job.as_ref().and_then(|job| job.latest()).and_then(|p| p.liquid);

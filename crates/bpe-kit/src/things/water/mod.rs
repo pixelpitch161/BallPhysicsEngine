@@ -5,6 +5,8 @@
 
 use bpe_core::{Registry, Scene, SettingDef, SimKind, SlotId, ThingId, ThingKind, Value};
 
+pub mod draft;
+
 pub use crate::modules::water::StartingLook;
 use crate::modules::water::{BACK, LIGHT, WORLD};
 
@@ -48,8 +50,9 @@ pub struct WaterKind {
     single: bool,
     slots: &'static [SlotId],
     default_slots: &'static [SlotId],
-    /// What the editor calls one of its slots, where the slot's own name doesn't fit.
-    label: Option<(SlotId, &'static str)>,
+    /// What the editor calls its slots, where a slot's own name doesn't fit (a placed thing's one
+    /// card is called after the thing).
+    label: &'static [(SlotId, &'static str)],
 }
 
 impl ThingKind for WaterKind {
@@ -84,10 +87,10 @@ impl ThingKind for WaterKind {
         self.family
     }
     fn slot_label(&self, slot: SlotId) -> &'static str {
-        match self.label {
-            Some((s, label)) if s == slot => label,
-            _ => slot.name(),
+        if slot == SlotId::Main && self.slots == MAIN {
+            return self.name;
         }
+        self.label.iter().find(|(s, _)| *s == slot).map_or(slot.name(), |(_, label)| label)
     }
     fn in_sim(&self, sim: SimKind) -> bool {
         sim == SimKind::Water
@@ -108,7 +111,7 @@ fn kinds() -> [WaterKind; 8] {
         single: false,
         slots: MAIN,
         default_slots: MAIN,
-        label: Some((SlotId::Main, name)),
+        label: &[],
     };
     [
         WaterKind {
@@ -118,9 +121,9 @@ fn kinds() -> [WaterKind; 8] {
             help: "The solid the water runs through. Carve it away to make the caves, channels and pools.",
             family: "Other",
             single: true,
-            slots: &[SlotId::Material],
-            default_slots: &[SlotId::Material],
-            label: Some((SlotId::Material, "Rock")),
+            slots: &[SlotId::Form, SlotId::Material],
+            default_slots: &[SlotId::Form, SlotId::Material],
+            label: &[(SlotId::Form, "Carving"), (SlotId::Material, "Rock")],
         },
         WaterKind {
             id: PIECE,
@@ -131,7 +134,7 @@ fn kinds() -> [WaterKind; 8] {
             single: false,
             slots: SOLID,
             default_slots: SOLID,
-            label: Some((SlotId::Form, "Shape")),
+            label: &[(SlotId::Form, "Shape")],
         },
         WaterKind {
             id: WALL,
@@ -142,7 +145,7 @@ fn kinds() -> [WaterKind; 8] {
             single: false,
             slots: SOLID,
             default_slots: SOLID,
-            label: Some((SlotId::Form, "Line")),
+            label: &[(SlotId::Form, "Line")],
         },
         WaterKind {
             id: LIQUID,
@@ -153,7 +156,7 @@ fn kinds() -> [WaterKind; 8] {
             single: false,
             slots: &[SlotId::Feel, SlotId::Look, SlotId::Mixing, SlotId::Heat],
             default_slots: &[SlotId::Feel, SlotId::Look, SlotId::Mixing],
-            label: None,
+            label: &[],
         },
         placed(
             POUR,
@@ -184,6 +187,15 @@ pub fn register(reg: &mut Registry) {
 /// The scene's Course.
 pub fn course_of(scene: &Scene) -> Option<ThingId> {
     scene.order.iter().copied().find(|id| scene.things.get(id).is_some_and(|t| t.kind == COURSE))
+}
+
+/// The strokes carved out of the scene's Course (none when it has no Carving card).
+pub fn carving_of(scene: &Scene) -> bpe_core::Strokes {
+    let card = course_of(scene).and_then(|id| scene.things[&id].slots.get(&SlotId::Form));
+    match card.and_then(|c| c.params.get("carved")) {
+        Some(Value::Strokes(s)) => s.clone(),
+        _ => bpe_core::Strokes::default(),
+    }
 }
 
 /// A new Water scene: Scene settings with their Water, Light and Back cards, a Camera and the
@@ -231,13 +243,28 @@ mod tests {
         assert_eq!(bpe_core::load(&text, &reg).unwrap(), scene, "it saves and loads");
         assert_eq!(new_water_scene(&reg, StartingLook::Plain, " ").name, "Water course");
         assert_eq!(course_of(&scene).map(|id| scene.things[&id].name.as_str()), Some("Course"));
+        assert!(carving_of(&scene).list.is_empty(), "a new course is all rock");
+    }
+
+    #[test]
+    fn the_carving_is_read_from_the_course() {
+        let reg = crate::registry();
+        let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+        let dot = bpe_core::Stroke { points: vec![[1.0, 2.0]], size: 50.0, strength: 1.0, ..Default::default() };
+        let strokes = bpe_core::Strokes { list: vec![dot] };
+        let course = course_of(&scene).unwrap();
+        let card = scene.things.get_mut(&course).unwrap().slots.get_mut(&SlotId::Form).unwrap();
+        card.params.set("carved", Value::Strokes(strokes.clone()));
+        assert_eq!(carving_of(&scene), strokes);
+        scene.things.get_mut(&course).unwrap().slots.remove(&SlotId::Form);
+        assert!(carving_of(&scene).list.is_empty(), "a course from before the Carving card is all rock");
     }
 
     #[test]
     fn each_water_kind_starts_with_its_own_cards() {
         let reg = crate::registry();
         let want: [(&str, &[(SlotId, &str)]); 8] = [
-            (COURSE, &[(SlotId::Material, cards::MATERIAL)]),
+            (COURSE, &[(SlotId::Form, cards::CARVE), (SlotId::Material, cards::MATERIAL)]),
             (
                 PIECE,
                 &[(SlotId::Form, cards::SHAPE), (SlotId::Material, cards::MATERIAL), (SlotId::Moves, cards::MOVES)],
@@ -279,7 +306,7 @@ mod tests {
     fn the_cards_are_named_for_what_they_are_on() {
         let reg = crate::registry();
         let label = |kind: &str, slot| reg.thing(kind).unwrap().slot_label(slot);
-        assert_eq!(label(COURSE, SlotId::Material), "Rock");
+        assert_eq!((label(COURSE, SlotId::Form), label(COURSE, SlotId::Material)), ("Carving", "Rock"));
         assert_eq!(label(PIECE, SlotId::Material), "Material");
         assert_eq!((label(PIECE, SlotId::Form), label(WALL, SlotId::Form)), ("Shape", "Line"));
         assert_eq!((label(POUR, SlotId::Main), label(LAMP, SlotId::Main)), ("Pour", "Lamp"));

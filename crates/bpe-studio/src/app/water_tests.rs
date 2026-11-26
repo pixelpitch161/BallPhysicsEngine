@@ -345,3 +345,41 @@ fn a_picture_dropped_behind_the_start_chooser_is_let_go() {
     assert!(studio.scene == before, "the blank project behind the chooser is not touched");
     assert_eq!(studio.status, DROP_AFTER_CHOOSING);
 }
+
+#[test]
+fn a_physics_edit_restarts_the_draft_and_a_look_edit_does_not() {
+    let mut studio = Studio::headless_water();
+    let kit = studio.kit.clone();
+    let liquid =
+        bpe_kit::add_thing(&mut studio.scene, &kit.registry, bpe_kit::things::water::LIQUID, ThingId::ROOT).unwrap();
+    studio.scene_changed();
+    let print = |studio: &Studio| studio.water_draft.setup.as_ref().expect("a Water scene has its water").print;
+    let before = print(&studio);
+    let set = |studio: &mut Studio, slot, key: &str, v| {
+        studio.scene.things.get_mut(&liquid).unwrap().slots.get_mut(&slot).unwrap().params.set(key, v)
+    };
+    set(&mut studio, SlotId::Look, "colour", Value::Color(bpe_core::Color::rgb(200, 10, 10)));
+    studio.scene_changed();
+    assert_eq!(print(&studio), before, "a new colour plays the same water");
+    set(&mut studio, SlotId::Feel, "thickness", Value::Number(0.6));
+    studio.scene_changed();
+    assert_ne!(print(&studio), before, "a thicker liquid starts the water over");
+}
+
+#[test]
+fn a_balls_scene_has_no_draft() {
+    let mut studio = Studio::headless_water();
+    assert!(studio.water_draft.setup.is_some());
+    studio.new_scene(crate::water_mode::NewScene::balls());
+    assert!(studio.water_draft.setup.is_none() && studio.water_draft.job.is_none());
+    assert!(Studio::headless().water_draft.setup.is_none());
+}
+
+#[test]
+fn the_status_line_counts_the_draft_drops() {
+    assert_eq!(crate::app::water_readout(52_300, 8.0, false), "· Water: 52,300 drops (draft 8 px)");
+    assert_eq!(
+        crate::app::water_readout(500_000, 12.0, true),
+        "· Water: 500,000 drops (draft 12 px): the most a draft holds, so the pours have stopped"
+    );
+}

@@ -15,6 +15,8 @@ bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 ron.workspace = true
 bpe-kit.workspace = true
+# Water mode: the water's draft and its plain drawing on the window's graphics card (part 2b).
+bpe-water.workspace = true
 bpe-cli.workspace = true
 bpe-sound.workspace = true
 bpe-dsp.workspace = true

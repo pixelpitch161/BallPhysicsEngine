@@ -140,6 +140,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Health",
     // A Water scene's cards (Water mode part 1).
     "Course",
+    "Carving",
     "Back",
     "Material",
     "Joint",

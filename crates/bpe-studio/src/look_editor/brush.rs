@@ -54,6 +54,7 @@ impl Painting {
             strength: brush.strength,
             erase: brush.erase,
             density: 1.0,
+            square: false,
         });
         out
     }

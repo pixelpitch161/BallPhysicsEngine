@@ -58,7 +58,9 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => "Click a thing to pick it. Drag it to move it.",
-            Tool::Carve => "Paint the course away to make caves, channels and pools.",
+            Tool::Carve => {
+                "Paint to dig the course out of the rock. Alt fills it back in. Shift draws a straight line."
+            }
             Tool::Piece => "Place a ready-made piece: a ramp, a funnel, a pipe, a wheel, a bucket.",
             Tool::Pen => "Draw a wall, point by point.",
             Tool::Pour => "Click where liquid should pour in.",
@@ -71,7 +73,7 @@ impl Tool {
 
     /// Whether the tool works yet.
     pub fn ready(self) -> bool {
-        matches!(self, Tool::Select | Tool::Pour | Tool::Drain | Tool::Lamp | Tool::Force)
+        matches!(self, Tool::Select | Tool::Carve | Tool::Pour | Tool::Drain | Tool::Lamp | Tool::Force)
     }
 
     /// The thing kind a click with the tool adds.

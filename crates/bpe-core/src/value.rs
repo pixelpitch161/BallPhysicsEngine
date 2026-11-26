@@ -129,11 +129,14 @@ pub struct Stroke {
     /// that is already there. 1 paints as strokes always did.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub density: f32,
+    /// A square brush tip instead of a round one (Water mode's carving). Saved and hashed only when on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub square: bool,
 }
 
 impl Default for Stroke {
     fn default() -> Self {
-        Self { points: Vec::new(), size: 0.0, softness: 0.0, strength: 0.0, erase: false, density: 1.0 }
+        Self { points: Vec::new(), size: 0.0, softness: 0.0, strength: 0.0, erase: false, density: 1.0, square: false }
     }
 }
 
@@ -180,6 +183,10 @@ impl std::hash::Hash for Strokes {
             // Only a density other than 1 counts, so strokes from before it hash as they did.
             if s.density != 1.0 {
                 s.density.to_bits().hash(h);
+            }
+            // The same for the square tip: off, a stroke hashes as it always did.
+            if s.square {
+                true.hash(h);
             }
         }
     }
@@ -317,6 +324,27 @@ mod tests {
         assert!(text.contains("density"), "{text}");
         assert_eq!(ron::from_str::<Value>(&text).unwrap(), Value::Strokes(thin.clone()));
         assert_ne!(thin.hash64(), Strokes { list: vec![Stroke { density: 1.0, ..thin.list[0].clone() }] }.hash64());
+    }
+
+    #[test]
+    fn a_square_tip_is_saved_and_hashed_only_when_on() {
+        let one = Stroke {
+            points: vec![[0.0, 0.5], [0.25, -0.5]],
+            size: 0.2,
+            softness: 0.5,
+            strength: 1.0,
+            ..Default::default()
+        };
+        let round = Strokes { list: vec![one.clone()] };
+        let text = ron::to_string(&Value::Strokes(round.clone())).unwrap();
+        assert!(!text.contains("square"), "{text}");
+        // The number from before the square tip existed: cached pictures keyed by it stay good.
+        assert_eq!(round.hash64(), 3690221068595945957);
+        let square = Strokes { list: vec![Stroke { square: true, ..one }] };
+        let text = ron::to_string(&Value::Strokes(square.clone())).unwrap();
+        assert!(text.contains("square"), "{text}");
+        assert_eq!(ron::from_str::<Value>(&text).unwrap(), Value::Strokes(square.clone()));
+        assert_ne!(square.hash64(), round.hash64());
     }
 
     #[test]

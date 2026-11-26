@@ -1,13 +1,16 @@
-//! A Water scene's cards (Water mode part 1): their settings as data. Nothing here steps or
-//! draws yet: the water physics and the water drawing arrive in later parts and read these.
+//! A Water scene's cards (Water mode part 1): their settings as data. The draft in the editor
+//! (part 2b, `things::water::draft`) reads the Water card, the Course's Carving and Rock, a
+//! Liquid's Feel and Look, and a Pour; the rest wait for later parts.
 //!
 //! No setting here pulses (a Water scene has no sound to follow) and none varies across balls.
 
+pub mod carve;
 pub mod liquid;
 pub mod places;
 pub mod scene;
 pub mod solids;
 
+pub use carve::{CarveCard, CarveMask, CarvePaint, layout_for, mask_for};
 pub use liquid::{ColourFrom, FeelCard, GlowFrom, HeatCard, MixShows, MixesWhen, MixingCard, WaterLook};
 pub use places::{CourseEdge, DrainCard, DrainKind, ForceCard, ForceKind, LampCard, LampKind, PourCard, PourKind};
 pub use scene::{
@@ -25,6 +28,8 @@ pub const WORLD: &str = "water.world";
 pub const LIGHT: &str = "water.light";
 /// The scene's Back card.
 pub const BACK: &str = "water.back";
+/// The Course's Carving card.
+pub const CARVE: &str = "water.carve";
 /// The Course's Rock card, and a Piece's or a Wall's Material card.
 pub const MATERIAL: &str = "water.material";
 /// A Piece's Shape card.
@@ -51,8 +56,8 @@ pub const FORCE: &str = "water.force";
 pub const LAMP: &str = "water.lamp";
 
 /// Every Water card kind's id.
-pub const CARDS: [&str; 15] =
-    [WORLD, LIGHT, BACK, MATERIAL, SHAPE, LINE, MOVES, FEEL, LOOK, MIXING, HEAT, POUR, DRAIN, FORCE, LAMP];
+pub const CARDS: [&str; 16] =
+    [WORLD, LIGHT, BACK, CARVE, MATERIAL, SHAPE, LINE, MOVES, FEEL, LOOK, MIXING, HEAT, POUR, DRAIN, FORCE, LAMP];
 
 /// One Water card kind: an id, a name, the slot it fills, its settings and the kinds of thing
 /// it goes on.
@@ -102,7 +107,7 @@ const MOVERS: &[&str] = &[things::PIECE, things::WALL];
 const LIQUID: &[&str] = &[things::LIQUID];
 
 /// Every Water card kind.
-fn cards() -> [WaterCard; 15] {
+fn cards() -> [WaterCard; 16] {
     [
         card(
             WORLD,
@@ -127,6 +132,14 @@ fn cards() -> [WaterCard; 15] {
             SlotId::Back,
             BackCard::defs,
             &["scene"],
+        ),
+        card(
+            CARVE,
+            "Carving",
+            "Where the course is dug out of the rock: every stroke of the Carve tool.",
+            SlotId::Form,
+            CarveCard::defs,
+            &[things::COURSE],
         ),
         card(
             MATERIAL,
