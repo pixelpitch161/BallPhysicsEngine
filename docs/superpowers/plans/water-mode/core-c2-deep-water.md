@@ -426,7 +426,8 @@ the software card:
 4. **The pressure is worked out only where it pushes** (`w > 0`); above that the drops hold themselves up and
    press on the deep water, which pushes back where it is over-full. (Worked out over all the liquid, it left a
    pressure in the top layer that nothing took, and the layer rippled more and more: 100 to 350 px/s at 3 s.)
-5. **`push_out` is 0.05** (0.25 in the grid core): the share of a cell's excess pushed out a step. At 0.25 the
+5. **`push_out` was 0.05 here** (0.25 in the grid core; 0.02 after the card, below): the share of a cell's excess
+   pushed out a step. At 0.25 the
    pool shimmered at about 19 px/s; at 0 it sank slowly (98.2 % at 3 s); at 0.05 it holds 98.7 to 98.9 % with
    about 10 px/s, all of it in the top layer by the walls. `fill_rate` stays 0.5: at 0 the pool blew up.
 6. **The deep frames:** frame `k` runs the deep part when frame `k − 2` counted deep cells, or on the two frames
@@ -505,6 +506,80 @@ mean of 1, 1.25 and 1.5 s: C1 38 %, now 23 %).
 The C1 shots at 2 s (slope, ledge, beads, weird; 6 and 3 px; `meet_even` 0.3 against 0) by eye: no worse
 anywhere, and at 6 px clearly less spray (the slope's and the weird's floors, the weird's disc), with the ledge's
 run-off a smooth sheet down to the wall where it was ragged. At 3 px little changes.
+
+### The deep pool at rest on the owner's card
+
+The software card's 12 px box hid what the owner's RX 9070 XT showed at Fine and finer (`pools`, the deep pool of
+the `deep` shot, 20 s at rest, then its slosh): the surface rolled over and over, at 12.1 px/s rms at Fine and
+9.0 at Extreme, and did not settle.
+
+**The cause: heavier water on lighter water.** The drops-only band between the surface and `deep_d` is held up
+by its own sweeps, which leave it squeezed a little by the water over it (fullness 1.01 to 1.03 near its foot).
+The deep water under it was held at exactly 1 (at rest), so it was lighter than the water resting on it, and the
+two kept trading places. Measured by depth (`fullness_by_depth`, a probe since removed), the fullness rose to
+the band's foot and then fell back to 1 where the push began.
+
+**The fix (`cs_deep_want`, `rest_most`):** each step the across pass sums the liquid and its drops' fullness over
+the cells of that band (depth between `deep_d − 1` and `deep_d + deep_b`, binding 26, fixed point); the new
+want pass then asks every solved cell to rest as full as that band, at least 1 and at most `1 + rest_most`
+(0.02), instead of at 1. Over-full cells push out as before, by `push_out` of their excess a step. Now the
+fullness by depth is 1.001 to 1.003 all the way down, with no turn-over.
+
+**Then the settings, on the card** (rms px/s at 20 s; height kept; the slosh's share left after four half swings):
+
+| Settings | Fine (6 px) | Extreme (3 px) | 2 px |
+| --- | --- | --- | --- |
+| Before the fix (`push_out` 0.05, one V-cycle) | 12.1 | 9.0 | |
+| The fix, `push_out` 0.05, one V-cycle | 2.1, 99.73 %, 80 % | 4.1, 99.71 %, 85 % | 14.0, 99.18 %, 76 % |
+| `push_out` 0.02, one V-cycle (the default at 3 px and coarser) | 1.5 to 1.6, 99.7 %, 82 % | 2.7 to 3.1, 99.7 %, 81 to 87 % | 14 to 20, 99.1 to 99.2 % |
+| `push_out` 0.02, two V-cycles (the default at 2 px and finer) | 1.4 to 1.9 | 2.6 to 3.0 | 5.4 to 6.5, 99.04 %, 83 % |
+| `push_out` 0.01, three V-cycles (10 s) | 1.9 to 4.0 | 1.8 to 2.7 | |
+| `push_out` 0.02, three V-cycles | 1.6 to 2.4 | 1.9 to 2.5 | 4.9 to 5.7 |
+| No deep part | about 1, but 97.4 % | about 1, but 97.4 % | 94.5 % (falls) |
+
+So `push_out` is 0.02 and `for_cell` gives two V-cycles at cells under 2.5 px (one at 3 px and coarser, where the
+second bought 3.1 → 2.7 px/s at Extreme for a fifth more time a step); a third was a little calmer again but cost
+up to twice the time of one. What is left of the unrest is in the band where the push fades in (24 to 48 px deep)
+and within a few cells of the side walls, where it is two to three times the middle's. It is not growing over the
+20 s and the surface is calm (its top moves within ±0.5 px), but the spec's 1 px/s is met only without the deep
+part, which sags. It grows with the steps a frame (Fine at 32 steps a frame instead of 16: 14 px/s), and is not the
+push being a share a step rather than a second (a share a second at 32 steps: still 14.7).
+
+### Task 6: fewer steps and sweeps
+
+Nothing could come down, on the card (`pools` 20 s; the pool's numbers set the limit before the landing's or the
+course's did):
+
+| Tried | Result |
+| --- | --- |
+| `iters` 2 at 6 and 3 px | the pool sags to 99.4 to 99.5 % |
+| `iters` 3 | noisier pools than 4 |
+| floor 8 at 6 px | the pool moves at 17 px/s |
+| floor 8 at 3 px (and finer) | the pool sags to 97.7 % |
+
+So `for_cell` keeps 8 steps a frame at 12 px, 16 at 8 and 6 px, 32 finer, and `iters` stays 4. The deep part
+costs about a third of a Fine step: without it the Fine shots take 0.21 to 0.32 s a scene second, with it 0.33 to
+0.43 (clean runs: nothing else on the PC), so the 0.25 goal at Fine is missed; see Task 10.
+
+### Task 7: shelves
+
+`shelves` on the card, the course's top shelf after 30 s (share of the course's drops left on it; the water's
+tallest and mean height over the shelf's columns):
+
+| Stickiness | Detail | Left | Tallest | Mean |
+| --- | --- | --- | --- | --- |
+| 0 | 6 px | 2.4 % | 7.4 px | 4.5 px |
+| 0 | 3 px | 2.3 % | 7.9 px | 7.2 px |
+| 0.5 | 6 px | 3.9 % | 10.5 px | 7.4 px |
+| 0.5 | 3 px | 3.9 % | 10.2 px | 8.3 px |
+
+Far less is left than in the trial (7.3 %) or C1 (7.4 %), and no standing pool, but the mark (the course is at
+Surface pull 0.2, so 2 × 10 × 0.2 px plus a spacing: 7 px at 6 px, 5.5 px at 3 px) is missed by 0.4 to 5 px,
+and at Stickiness 0.5 the shelf is still draining at 30 s. One knob at a time, the skin's bend holds the puddles
+up: with `curv` 0 the tallest and mean are 4.8 / 2.2 px at 6 px and 2.8 / 2.4 at 3 px (inside the mark); with the
+pull between drops at full strength (`coh` 1) and the bend as now, 5.2 / 2.5 and 5.2 / 4.9. The bend also gives
+thin water its look (streams that stay round, beads), so it is left as it is, for the owner to weigh at the
+water checkpoint.
 
 ### Task 8: a skin calm at any step count (time-boxed)
 
