@@ -149,3 +149,45 @@ fn fullness_by_depth() {
         println!("t {t} cell {cell}: fullness by depth {}", row.join("  "));
     }
 }
+
+/// Task 8: a thin pour at 2 px with the strongest skin at `MOST` steps a frame (with gravity, then
+/// none): the highest a drop gets above the spout and the fastest sideways, frame by frame (the
+/// worst over each 5 frames). `BPE_WATER_BEND_STEPS` sets how many steps a frame the bend is on.
+#[test]
+#[ignore]
+fn pour_calm() {
+    let (device, queue) = bpe_gfx::test_device().unwrap();
+    let gpu = WaterGpu::new(&device, &queue);
+    let most: u32 = std::env::var("MOST").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
+    let frames: u32 = std::env::var("FRAMES").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+    for zero_g in [false, true] {
+        let mut scene = scenes::thin_pour(2.0, 7.0);
+        for feel in &mut scene.feels {
+            feel.surface_pull = 1.0;
+        }
+        if zero_g {
+            scene.gravity = Vec2::ZERO;
+        }
+        let pour = scene.pours[0];
+        let numbers = Numbers { floor: 1024, most_steps: most, ..Numbers::from_env_for(2.0) };
+        let mut run = scene.start(&gpu, numbers);
+        let (mut up, mut side) = (f32::MIN, 0.0f32);
+        for frame in 1..=frames {
+            run.frame();
+            let layout = run.water.layout();
+            for d in run.water.read() {
+                let at = layout.to_world(Vec2::from(d.x));
+                up = up.max(pour.place.y - at.y);
+                side = side.max(d.v[0].abs() * layout.cell / pour.speed);
+            }
+            if frame % 5 == 0 {
+                println!(
+                    "most {most} zero_g {zero_g} frame {frame}: steps {} drops {} highest above the spout {up:.1} px, fastest sideways {side:.2} of the pour's speed",
+                    run.water.steps_last_frame(),
+                    run.water.count()
+                );
+                (up, side) = (f32::MIN, 0.0);
+            }
+        }
+    }
+}
