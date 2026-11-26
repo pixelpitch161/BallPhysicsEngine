@@ -850,7 +850,7 @@ impl Water {
         staging.slice(..).get_mapped_range().expect("mapped").to_vec()
     }
 
-    /// Every drop in the course, once the frames sent so far are done, in the grid core's layout:
+    /// Every drop in the course, once the frames sent so far are done, in `Drop`'s layout:
     /// its `c` is (how full its neighbourhood is, 0, which way the liquid lies from it), its `e` 0.
     /// (Drops that left are not read: their order among themselves does not repeat.) Waits for the
     /// card: for tests and measuring, never for a frame.
@@ -874,7 +874,7 @@ impl Water {
         all
     }
 
-    /// Writes drops `from` to `from + n` in the grid core's layout into `out`.
+    /// Writes drops `from` to `from + n` in `Drop`'s layout into `out`.
     fn export_range(&self, from: u32, n: u32, out: &wgpu::Buffer) {
         let gpu = &self.gpu;
         let slot = u64::from(MOST_STEPS) * STEP_ROOM;

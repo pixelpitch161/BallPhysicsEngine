@@ -1,6 +1,6 @@
 [package]
 name = "bpe-water"
-description = "Water mode's own engine: the liquid's physics on the graphics card (every drop feeling its neighbours, in frames of steps it picks itself; and the grid core it replaces) and its plain drawing there"
+description = "Water mode's own engine: the liquid's physics on the graphics card (every drop feeling its neighbours, in frames of steps it picks itself, deep water held up by a pressure solved on a grid) and its plain drawing there"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

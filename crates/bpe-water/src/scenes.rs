@@ -8,10 +8,9 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::drop::{Pour, Poured, STOPS, fill, fill_stacked};
+use crate::drop::{Pour, STOPS, fill_stacked};
 use crate::drops::numbers::{FRAME, Feel, Numbers};
 use crate::drops::{LEAST_WALL, Water, WaterGpu};
-use crate::grid;
 use crate::solid::{Layout, Solid, SolidField};
 
 /// The course's gravity in the test scenes: the Balls scenes' 500 at today's Bucket size (x 8).
@@ -38,13 +37,6 @@ pub struct Running {
     pub field: SolidField,
 }
 
-/// A scene being played by the grid core.
-pub struct GridRunning {
-    pub water: grid::Water,
-    pub field: SolidField,
-    pours: Vec<(Pour, Poured)>,
-}
-
 impl Scene {
     /// Starts the scene on `gpu` with the all-drops engine's `numbers`.
     pub fn start(&self, gpu: &Arc<WaterGpu>, numbers: Numbers) -> Running {
@@ -55,20 +47,6 @@ impl Scene {
         }
         water.set_pours(&self.pours);
         Running { water, field }
-    }
-
-    /// Starts the scene on `gpu` with the grid core's `numbers`.
-    pub fn start_grid(&self, gpu: &Arc<grid::WaterGpu>, numbers: grid::Numbers) -> GridRunning {
-        let field = SolidField::build(self.layout, &self.solids);
-        let feels: Vec<grid::Feel> = self.feels.iter().map(grid::Feel::from).collect();
-        let mut water = grid::Water::new(gpu.clone(), &field, self.gravity, numbers, &feels);
-        let mut born = 0u32;
-        for (lo, hi) in &self.fills {
-            let drops = fill(&self.layout, &field, *lo, *hi, STOPS, born);
-            born = born.wrapping_add(water.add(&drops));
-        }
-        let pours = self.pours.iter().map(|p| (*p, Poured { born: 1 << 24, ..Poured::default() })).collect();
-        GridRunning { water, field, pours }
     }
 }
 
@@ -89,31 +67,6 @@ impl Running {
     /// A copy that plays on exactly as this one does.
     pub fn copy(&self) -> Running {
         Running { water: self.water.copy(), field: self.field.clone() }
-    }
-}
-
-impl GridRunning {
-    /// One liquid step: the pours' births, then the step.
-    pub fn step(&mut self) {
-        let (dt, step, layout) = (self.water.numbers().dt(), self.water.steps(), self.water.layout());
-        for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
-            let drops = pour.drops(state, &layout, dt, step, k as u32 + 1);
-            self.water.add(&drops);
-        }
-        self.water.step();
-    }
-
-    /// Plays on to `seconds` from the start.
-    pub fn run_to(&mut self, seconds: f32) {
-        let until = (seconds * self.water.numbers().rate as f32).round() as u32;
-        while self.water.steps() < until {
-            self.step();
-        }
-    }
-
-    /// A copy that plays on exactly as this one does.
-    pub fn copy(&self) -> GridRunning {
-        GridRunning { water: self.water.copy(), field: self.field.clone(), pours: self.pours.clone() }
     }
 }
 
@@ -313,7 +266,7 @@ pub fn slope(cell: f32) -> Scene {
     }
 }
 
-/// Shot 2, a sheet off a ledge: the grid core's own [`sheet`] scene.
+/// Shot 2, a sheet off a ledge: the [`sheet`] scene.
 pub fn ledge(cell: f32) -> Scene {
     sheet(cell)
 }

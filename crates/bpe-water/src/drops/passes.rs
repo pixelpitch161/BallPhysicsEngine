@@ -45,7 +45,7 @@ pub(super) enum P {
 /// the liquid's ways and fullness, 4 and 5 the kinds and serials (as they were, sorted), 6 where
 /// each drop would be, 7 the bins' counts, 8 their starts, 9 the blocks' sums, 10 the sorted order,
 /// 11 and 12 the sorted places (in, out), 13 the multipliers, 14 where each was and then its new
-/// speed, 15 the solid field, 16 the step's births, 17 the drops in the grid core's layout, 18 the
+/// speed, 15 the solid field, 16 the step's births, 17 the drops in `Drop`'s layout, 18 the
 /// frame's report; for the deep water (deep.wgsl) 19 the cells' sums, 20 the solids by cell, 21 the
 /// pressure, 22 the faces' open shares, 23 how full each cell is and then its depth share, 24 how far
 /// down its column a cell that is not full is, 25 the cells deep at the frame's end, 26 how full the

@@ -136,7 +136,7 @@ fn cs_finish_predict(@builtin(global_invocation_id) gid: vec3<u32>) {
     fall(i, f.p, f.kind);
 }
 
-// The drops `st.n.x` on, `st.n.y` of them, in the grid core's layout (its `c` holds how full the
+// The drops `st.n.x` on, `st.n.y` of them, in `Drop`'s layout (its `c` holds how full the
 // drop's neighbourhood is, 0, and which way the liquid lies from it).
 @compute @workgroup_size(256)
 fn cs_export(@builtin(global_invocation_id) gid: vec3<u32>) {

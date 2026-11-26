@@ -78,7 +78,7 @@ struct Born {
     id: vec4<u32>,
 };
 
-// A drop as the grid core lays it out (`Drop` in drop.rs): `c` is (how full its neighbourhood
+// A drop as `Drop` (drop.rs) lays it out: `c` is (how full its neighbourhood
 // is, 0, which way the liquid lies from it).
 struct DropOut {
     x: vec2<f32>,

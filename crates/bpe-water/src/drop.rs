@@ -39,35 +39,6 @@ impl Drop {
 /// The colour drops are born with when nothing says otherwise (a water blue, linear rgba8).
 pub const WATER: u32 = u32::from_le_bytes([8, 51, 184, 255]);
 
-/// A small repeatable dice: the same `seed` and `step` give the same numbers on every machine.
-pub struct Dice(u32);
-
-impl Dice {
-    pub fn new(seed: u32, step: u32) -> Dice {
-        Dice(seed ^ step.wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b)
-    }
-
-    fn next(&mut self) -> u32 {
-        // (xorshift32, never 0)
-        let mut x = self.0 | 1;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x
-    }
-
-    /// From 0 up to 1.
-    pub fn unit(&mut self) -> f32 {
-        (self.next() >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    /// From -1 to 1.
-    pub fn signed(&mut self) -> f32 {
-        self.unit() * 2.0 - 1.0
-    }
-}
-
 /// A fill: four drops a cell on a lattice over the world rectangle `lo` to `hi`, wherever a drop
 /// may be (half a cell clear of every solid), bottom row first.
 pub fn fill(layout: &Layout, field: &SolidField, lo: Vec2, hi: Vec2, kind: u32, first_serial: u32) -> Vec<Drop> {
@@ -266,36 +237,6 @@ impl Pour {
     /// The most drops a pour makes in a liquid step.
     pub const MOST_A_STEP: u32 = 20_000;
 
-    /// This pour's drops for liquid step `step` of `dt` seconds on `layout`.
-    pub fn drops(&self, state: &mut Poured, layout: &Layout, dt: f32, step: u32, seed: u32) -> Vec<Drop> {
-        let time = step as f32 * dt;
-        if time < self.from || time >= self.until {
-            state.owed = 0.0;
-            return Vec::new();
-        }
-        let per_drop = layout.cell * layout.cell * 0.25;
-        let owed = state.owed + self.width * self.speed * dt / per_drop;
-        let owed = if owed.is_finite() { owed.min(Pour::MOST_A_STEP as f32 + 1.0) } else { 0.0 };
-        let n = owed.floor() as u32;
-        state.owed = owed - n as f32;
-        let way = way_at(self.aim);
-        let across = way.perp();
-        let mut dice = Dice::new(seed, step);
-        let mut out = Vec::with_capacity(n as usize);
-        for i in 0..n {
-            let u = (i as f32 + dice.unit()) / n as f32 - 0.5;
-            // Spread along the way it travels this step too, so drops don't come out in rows.
-            let along = dice.unit() * self.speed * dt;
-            let at = self.place + across * (u * self.width) + way * along;
-            let v = self.fanned(u) * self.speed;
-            out.push(Drop::new(layout.to_grid(at), v / layout.cell, self.kind, state.born, self.colour));
-            state.born = state.born.wrapping_add(1);
-        }
-        out
-    }
-}
-
-impl Pour {
     /// The spacing of drops at rest on `layout` (pixels): half a cell.
     fn spacing(layout: &Layout) -> f64 {
         f64::from(layout.cell) * 0.5
@@ -427,7 +368,7 @@ mod tests {
         assert_eq!(pour.fanned(f32::NAN), pour.fanned(0.0));
 
         let layout = Layout { cell: 8.0, cols: 64, rows: 64, origin: Vec2::ZERO };
-        let born = |pour: &Pour| pour.drops(&mut Poured::default(), &layout, 1.0 / 240.0, 0, 7);
+        let born = |pour: &Pour| pour.rows(&mut Poured::default(), &layout, 0.0, 1.0 / 240.0);
         // No Spread: every drop sets off the same way.
         let spout = Pour { place: Vec2::new(256.0, 64.0), width: 80.0, speed: 1200.0, ..Pour::default() };
         let straight = born(&spout);

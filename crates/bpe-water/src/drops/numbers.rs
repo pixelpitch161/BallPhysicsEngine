@@ -30,20 +30,6 @@ impl Default for Feel {
     }
 }
 
-impl From<&Feel> for crate::grid::Feel {
-    /// The same liquid for the grid core (which has no Thickness; its spray stays at its own default).
-    fn from(f: &Feel) -> Self {
-        crate::grid::Feel {
-            gravity: f.gravity,
-            surface_pull: f.surface_pull,
-            stickiness: f.stickiness,
-            weight: f.weight,
-            settles: f.settles,
-            ..crate::grid::Feel::default()
-        }
-    }
-}
-
 /// The all-drops engine's numbers. The defaults are the ones the liquid ships with
 /// ([`Numbers::for_cell`] picks the fewest steps a frame for a cell size); the measuring tests may
 /// replace any by a `BPE_WATER_*` environment variable ([`Numbers::from_env_for`]).
