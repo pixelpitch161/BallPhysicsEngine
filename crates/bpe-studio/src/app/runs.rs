@@ -153,13 +153,19 @@ impl Studio {
         let rebuilt = fingerprint != self.fingerprint;
         let particles = particle_print != self.particle_print;
         let sound_rebuilt = heard != self.sound_fingerprint;
+        // A Water scene's water starts over only when what its physics reads changed.
+        let water = crate::water_mode::draft::WaterRun::setup_of(&self.scene, &self.resolved);
+        let water_changed = self.water_draft.changes(water.as_ref());
         let same_things = self.scene.things.keys().eq(self.runs_things.iter());
-        if self.hold_runs && same_things && (rebuilt || particles || sound_rebuilt) {
+        if self.hold_runs && same_things && (rebuilt || particles || sound_rebuilt || water_changed) {
             self.runs_due = Some(Instant::now());
             return;
         }
         self.runs_due = None;
-        if rebuilt || particles || sound_rebuilt {
+        if water_changed {
+            self.water_draft.set(water, self.panels.inspector.render.as_ref());
+        }
+        if rebuilt || particles || sound_rebuilt || water_changed {
             self.runs_things = self.scene.things.keys().copied().collect();
         }
         if rebuilt {

@@ -41,6 +41,9 @@ impl Studio {
         self.playback = main_playback(ball, ball_resolved, &self.kit);
         self.particle_print = bpe_runtime::beside_fingerprint(ball, ball_resolved, &self.kit.sims);
         self.particle_job = ParticleJob::start_if_wanted(ball, ball_resolved, self.kit.sims.clone(), 0.0);
+        // The water starts over for the new scene (and stops for a Balls scene).
+        let water = crate::water_mode::draft::WaterRun::setup_of(&self.scene, &self.resolved);
+        self.water_draft.set(water, self.panels.inspector.render.as_ref());
         self.follow = follow_of(ball, ball_resolved);
         self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);
         self.revision += 1;

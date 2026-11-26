@@ -247,6 +247,8 @@ pub struct Studio {
     pub chooser: Option<crate::water_mode::Chooser>,
     /// A Water scene's stage: its tool and what is being dragged.
     pub water_stage: crate::water_mode::WaterStage,
+    /// A Water scene's water, playing at draft detail (Water mode part 2b).
+    pub water_draft: crate::water_mode::draft::WaterRun,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
@@ -480,6 +482,7 @@ impl Studio {
         let follow = follow_of(ball, ball_resolved);
         let light_probe = light_probe_of(ball, ball_resolved, &follow);
         let runs_things = scene.things.keys().copied().collect();
+        let water_setup = crate::water_mode::draft::WaterRun::setup_of(&scene, &resolved).map(Arc::new);
         Self {
             saved: scene.clone(),
             scene,
@@ -508,6 +511,7 @@ impl Studio {
             confirm: None,
             chooser: None,
             water_stage: Default::default(),
+            water_draft: crate::water_mode::draft::WaterRun { setup: water_setup, ..Default::default() },
             panels: Panels::default(),
             grid: Grid::default(),
             preview_mode: Default::default(),
@@ -1078,6 +1082,16 @@ fn grouped(count: usize) -> String {
 /// particle step took).
 pub fn particles_readout(count: usize, ms: f32) -> String {
     format!("· Particles: {}, {ms:.1} ms", grouped(count))
+}
+
+/// The status line's water readout in a Water scene: "· Water: 52,300 drops (draft 8 px)", and
+/// once the draft holds its most drops, that its pours have stopped.
+pub fn water_readout(count: u32, cell: f32, full: bool) -> String {
+    let drops = grouped(count as usize);
+    match full {
+        false => format!("· Water: {drops} drops (draft {cell} px)"),
+        true => format!("· Water: {drops} drops (draft {cell} px): the most a draft holds, so the pours have stopped"),
+    }
 }
 
 /// The status line's liquid readout: "· Liquid: 120,000 drops, 3.2 ms a step (38 small steps)":

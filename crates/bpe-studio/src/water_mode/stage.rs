@@ -1,8 +1,10 @@
 //! A Water scene's stage, in place of the ball preview (Water mode part 1): a strip with the
 //! active tool's hint, the tool rail, and the course fitted to the room with the camera's shot
-//! and a marker for each thing that is at a place. No water is drawn or simulated yet.
+//! and a marker for each thing that is at a place. Since part 2b the water plays on it at draft
+//! detail, drawn in the plain look (`draft`, `picture`).
 
 use super::course_view::CourseView;
+use super::draft::frame_of;
 use super::rail::{self, RAIL_W, Tool};
 use crate::app::Studio;
 use crate::style;
@@ -25,7 +27,15 @@ pub struct WaterStage {
     drag: Option<(ThingId, Vec2)>,
     /// Where the course was drawn last frame.
     pub view: Option<CourseView>,
+    /// Goes up whenever the drawing's field is changed under the draft (a carve stroke being
+    /// painted), so the picture is drawn again.
+    pub field_version: u64,
 }
+
+/// What the stage says over a course with nothing carved.
+pub const ALL_ROCK: &str = "The course is solid rock. Pick Carve and paint to dig it out.";
+/// How far (frames) the draft may lag the playhead before the stage says it is working.
+const BEHIND: u32 = 15;
 
 /// The strip, the rail and the course's room inside `full`.
 fn rooms(full: Rect) -> (Rect, Rect, Rect) {
@@ -112,7 +122,43 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     if !response.dragged() {
         studio.water_stage.drag = None;
     }
-    paint(ui, studio, &view, room);
+    let shown = water(ui, studio, &view, room);
+    paint(ui, studio, &view, room, shown);
+    if water::carving_of(&studio.scene).list.is_empty() {
+        // (A label that senses nothing, so the stage under it still takes the clicks.)
+        let words = egui::Label::new(RichText::new(ALL_ROCK).color(style::MUTED)).selectable(false);
+        let at = Rect::from_center_size(view.rect.center(), vec2(view.rect.width().max(40.0), 40.0));
+        ui.put(at, words.wrap());
+    }
+}
+
+/// Plays the draft to the playhead and draws its water over the course. Returns whether a
+/// picture of it is on the stage.
+fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
+    let Some(render) = studio.panels.inspector.render.clone() else { return false };
+    studio.water_draft.start_on(&render);
+    let Some(job) = studio.water_draft.job.as_ref() else { return false };
+    let target = frame_of(studio.time);
+    job.follow(target);
+    let look = bpe_kit::things::water::draft::plain_look(&studio.scene, &studio.resolved, studio.time);
+    let painter = ui.painter_at(room);
+    let field = studio.water_stage.field_version;
+    let shown = studio.water_draft.picture.show(&painter, &render, job, &look, view, field);
+    if job.busy() || studio.playing {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    }
+    if let Some(reached) = job.reached()
+        && reached + BEHIND < target
+    {
+        let behind = format!("Working out the water… {:.1} s", f64::from(reached) / 60.0);
+        let at = view.rect.center_top() + vec2(0.0, 14.0);
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let text = painter.layout_no_wrap(behind, small, style::TEXT);
+        let pill = Rect::from_center_size(at, text.size() + vec2(16.0, 6.0));
+        painter.rect_filled(pill, pill.height() / 2.0, style::PANEL);
+        painter.galley(pill.center() - text.size() / 2.0, text, style::TEXT);
+    }
+    shown
 }
 
 /// Adds a thing of `kind` at the world point, selects it, and goes back to Select.
@@ -130,10 +176,13 @@ fn place(studio: &mut Studio, kind: &'static str, at: Vec2) {
     studio.water_stage.tool = Tool::Select;
 }
 
-/// The course's outline with a line between its screens, the camera's shot, and the markers.
-fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect) {
+/// The course's outline with a line between its screens, the camera's shot, and the markers; the
+/// flat ground under them where no water picture is (`shown` false).
+fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
     let painter = ui.painter_at(room);
-    painter.rect_filled(view.rect, 0.0, style::GROUND);
+    if !shown {
+        painter.rect_filled(view.rect, 0.0, style::GROUND);
+    }
     let soft = Stroke::new(1.0, style::LINE_SOFT);
     let (wide, tall) = ((view.size.x / SCREEN.x).round() as u32, (view.size.y / SCREEN.y).round() as u32);
     for i in 1..wide {

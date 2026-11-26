@@ -209,3 +209,21 @@ fn the_stage_shows_in_a_water_scene_and_the_ball_preview_does_not() {
     studio.replace_scene(scene, None);
     assert_eq!(studio.water_stage.tool, Tool::Select);
 }
+
+#[test]
+fn a_course_with_nothing_carved_says_how_to_start() {
+    let mut h = harness(water_studio());
+    assert!(h.query_by_label(stage::ALL_ROCK).is_some(), "the course is all rock");
+    // Words over the course don't stop a click placing a pour.
+    h.state_mut().water_stage.tool = Tool::Pour;
+    h.run();
+    let middle = view(&h).rect.center();
+    click_at(&mut h, middle);
+    assert_eq!(of_kind(h.state(), water::POUR).len(), 1);
+    let course = water::course_of(&h.state().scene).unwrap();
+    let dot = bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 50.0, strength: 1.0, ..Default::default() };
+    let card = h.state_mut().scene.things.get_mut(&course).unwrap().slots.get_mut(&bpe_core::SlotId::Form).unwrap();
+    card.params.set("carved", bpe_core::Value::Strokes(bpe_core::Strokes { list: vec![dot] }));
+    h.run();
+    assert!(h.query_by_label(stage::ALL_ROCK).is_none(), "something is carved");
+}
