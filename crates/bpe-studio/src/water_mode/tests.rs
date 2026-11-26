@@ -116,7 +116,7 @@ fn the_rail_has_the_nine_tools_and_only_the_built_ones_work() {
         assert_eq!(node.accesskit_node().is_disabled(), !tool.ready(), "{}", tool.name());
     }
     let disabled: Vec<&str> = Tool::ALL.into_iter().filter(|t| !t.ready()).map(Tool::name).collect();
-    assert_eq!(disabled, ["Carve", "Piece", "Pen", "Camera path"]);
+    assert_eq!(disabled, ["Piece", "Pen", "Camera path"]);
     // The strip says what the tool in hand does.
     assert!(h.query_by_label(Tool::Select.hint()).is_some());
     h.get_by_role_and_label(Role::Button, "Pour").click();
@@ -124,7 +124,7 @@ fn the_rail_has_the_nine_tools_and_only_the_built_ones_work() {
     assert_eq!(h.state().water_stage.tool, Tool::Pour);
     assert!(h.query_by_label(Tool::Pour.hint()).is_some());
     // A tool that is not built yet stays out of hand.
-    h.get_by_role_and_label(Role::Button, "Carve").click();
+    h.get_by_role_and_label(Role::Button, "Piece").click();
     h.run();
     assert_eq!(h.state().water_stage.tool, Tool::Pour);
 }
@@ -226,4 +226,184 @@ fn a_course_with_nothing_carved_says_how_to_start() {
     card.params.set("carved", bpe_core::Value::Strokes(bpe_core::Strokes { list: vec![dot] }));
     h.run();
     assert!(h.query_by_label(stage::ALL_ROCK).is_none(), "something is carved");
+}
+
+fn carving(studio: &Studio) -> Vec<bpe_core::Stroke> {
+    water::carving_of(&studio.scene).list
+}
+
+fn carve_studio<'a>() -> Harness<'a, Studio> {
+    let mut h = harness(water_studio());
+    h.get_by_role_and_label(Role::Button, "Carve").click();
+    h.run();
+    assert_eq!(h.state().water_stage.tool, Tool::Carve);
+    h
+}
+
+#[test]
+fn carve_is_ready_on_the_rail() {
+    assert!(Tool::Carve.ready());
+    let h = carve_studio();
+    assert!(h.query_by_label("Brush size").is_some() && h.query_by_label("Hardness").is_some());
+}
+
+#[test]
+fn carving_paints_one_stroke_as_one_undo_step() {
+    let mut h = carve_studio();
+    let v = view(&h);
+    let (from, to) = (v.to_screen(Vec2::new(-200.0, 0.0)), v.to_screen(Vec2::new(200.0, 100.0)));
+    drag(&mut h, from, to);
+    let strokes = carving(h.state());
+    assert_eq!(strokes.len(), 1);
+    let s = &strokes[0];
+    assert!(Vec2::from(s.points[0]).distance(v.to_world(from)) < 1.0, "{:?}", s.points[0]);
+    assert!(s.points.len() > 2, "{:?}", s.points);
+    assert_eq!((s.size, s.erase, s.square, s.softness), (60.0, false, false, 0.0));
+    assert!(h.query_by_label(stage::ALL_ROCK).is_none());
+    assert!(h.state_mut().undo());
+    h.run();
+    assert!(carving(h.state()).is_empty());
+    assert!(h.state_mut().redo());
+    assert_eq!(carving(h.state()).len(), 1);
+}
+
+#[test]
+fn alt_fills_and_the_strip_sets_the_brush() {
+    let mut h = carve_studio();
+    h.get_by_role_and_label(Role::Button, "Fill").click();
+    h.get_by_role_and_label(Role::Button, "Square").click();
+    h.run();
+    h.state_mut().water_stage.brush.size = 40.0;
+    h.run();
+    let v = view(&h);
+    drag(&mut h, v.to_screen(Vec2::new(0.0, 0.0)), v.to_screen(Vec2::new(100.0, 0.0)));
+    let s = carving(h.state()).pop().unwrap();
+    assert_eq!((s.erase, s.square, s.size), (true, true, 20.0));
+    // Alt does the other one.
+    let (from, to) = (v.to_screen(Vec2::new(0.0, 200.0)), v.to_screen(Vec2::new(100.0, 200.0)));
+    h.hover_at(from);
+    h.step();
+    let alt = egui::Modifiers::ALT;
+    let button = egui::PointerButton::Primary;
+    h.event(egui::Event::ModifiersChanged(alt));
+    h.event(egui::Event::PointerButton { pos: from, button, pressed: true, modifiers: alt });
+    h.step();
+    for k in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 6.0)));
+        h.step();
+    }
+    h.event(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: alt });
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run();
+    let s = carving(h.state()).pop().unwrap();
+    assert!(!s.erase, "Alt with Fill on digs");
+}
+
+#[test]
+fn a_straight_line_keeps_two_points() {
+    let mut h = carve_studio();
+    h.get_by_role_and_label(Role::Button, "Straight").click();
+    h.run();
+    let v = view(&h);
+    let (from, to) = (v.to_screen(Vec2::new(-300.0, -300.0)), v.to_screen(Vec2::new(250.0, 400.0)));
+    drag(&mut h, from, to);
+    let s = carving(h.state()).pop().unwrap();
+    assert_eq!(s.points.len(), 2, "{:?}", s.points);
+    assert!(Vec2::from(s.points[1]).distance(v.to_world(to)) < 1.0);
+}
+
+#[test]
+fn smooth_lags_behind_the_pointer() {
+    let mut h = carve_studio();
+    h.get_by_role_and_label(Role::Button, "Smooth").click();
+    h.run();
+    let v = view(&h);
+    let (from, to) = (v.to_screen(Vec2::new(-300.0, 0.0)), v.to_screen(Vec2::new(300.0, 0.0)));
+    drag(&mut h, from, to);
+    let s = carving(h.state()).pop().unwrap();
+    let end = Vec2::from(*s.points.last().unwrap());
+    let string = 30.0;
+    let gap = end.distance(v.to_world(to));
+    assert!(gap > 1.0 && gap <= string + 0.5, "{gap}");
+}
+
+#[test]
+fn escape_drops_the_stroke() {
+    let mut h = carve_studio();
+    let v = view(&h);
+    let (from, to) = (v.to_screen(Vec2::new(0.0, 0.0)), v.to_screen(Vec2::new(200.0, 0.0)));
+    h.hover_at(from);
+    h.step();
+    button(&mut h, from, true);
+    for k in 1..=4 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 4.0)));
+        h.step();
+    }
+    assert!(super::carve_tool::stroke_so_far(h.state()).is_some());
+    h.key_press(egui::Key::Escape);
+    h.step();
+    button(&mut h, to, false);
+    h.run();
+    assert!(carving(h.state()).is_empty());
+    assert!(!h.state_mut().undo(), "nothing to undo");
+}
+
+#[test]
+fn a_course_without_a_carving_card_gets_one() {
+    let mut studio = water_studio();
+    let course = water::course_of(&studio.scene).unwrap();
+    studio.scene.things.get_mut(&course).unwrap().slots.remove(&bpe_core::SlotId::Form);
+    studio.scene_changed();
+    let mut h = harness(studio);
+    h.state_mut().water_stage.tool = Tool::Carve;
+    h.run();
+    let v = view(&h);
+    drag(&mut h, v.to_screen(Vec2::new(0.0, 0.0)), v.to_screen(Vec2::new(100.0, 0.0)));
+    assert_eq!(carving(h.state()).len(), 1);
+    assert!(h.state_mut().undo());
+    h.run();
+    let back = &h.state().scene.things[&course];
+    assert!(!back.slots.contains_key(&bpe_core::SlotId::Form), "one undo takes the card and the stroke away");
+}
+
+#[test]
+fn placing_a_pour_without_a_liquid_adds_water() {
+    let mut h = harness(water_studio());
+    h.state_mut().water_stage.tool = Tool::Pour;
+    h.run();
+    let v = view(&h);
+    click_at(&mut h, v.to_screen(Vec2::new(0.0, -300.0)));
+    let liquids = of_kind(h.state(), water::LIQUID);
+    assert_eq!((of_kind(h.state(), water::POUR).len(), liquids.len()), (1, 1));
+    assert_eq!(h.state().scene.things[&liquids[0]].name, "Water");
+    assert!(h.state().water_draft.setup.as_ref().unwrap().pours[0].liquid == Some(0), "it pours the Water");
+    // A second pour brings no second Liquid.
+    h.state_mut().water_stage.tool = Tool::Pour;
+    h.run();
+    click_at(&mut h, v.to_screen(Vec2::new(100.0, -300.0)));
+    assert_eq!((of_kind(h.state(), water::POUR).len(), of_kind(h.state(), water::LIQUID).len()), (2, 1));
+    // One undo takes the first pour and its Liquid away together.
+    assert!(h.state_mut().undo());
+    assert!(h.state_mut().undo());
+    h.run();
+    assert!(of_kind(h.state(), water::POUR).is_empty() && of_kind(h.state(), water::LIQUID).is_empty());
+}
+
+#[test]
+fn a_picked_pour_says_what_it_cannot_do_yet() {
+    use bpe_kit::things::water::draft::LATER_KINDS;
+    let mut h = harness(water_studio());
+    h.state_mut().water_stage.tool = Tool::Pour;
+    h.run();
+    let v = view(&h);
+    click_at(&mut h, v.to_screen(Vec2::new(0.0, -300.0)));
+    let pour = of_kind(h.state(), water::POUR)[0];
+    assert!(h.query_by_label(LATER_KINDS).is_none(), "a tap pours");
+    let studio = h.state_mut();
+    let card = studio.scene.things.get_mut(&pour).unwrap().slots.get_mut(&bpe_core::SlotId::Main).unwrap();
+    card.params.set("kind", bpe_core::Value::Choice("rain".into()));
+    studio.scene_changed();
+    studio.selection.set(pour);
+    h.run();
+    assert!(h.query_by_label(LATER_KINDS).is_some());
 }

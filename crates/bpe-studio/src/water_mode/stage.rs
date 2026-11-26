@@ -30,6 +30,9 @@ pub struct WaterStage {
     /// Goes up whenever the drawing's field is changed under the draft (a carve stroke being
     /// painted), so the picture is drawn again.
     pub field_version: u64,
+    /// The Carve tool's brush, and the stroke it is painting.
+    pub brush: super::carve_tool::CarveBrush,
+    pub painting: Option<super::carve_tool::Painting>,
 }
 
 /// What the stage says over a course with nothing carved.
@@ -74,7 +77,16 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(inside).layout(layout));
     bar.label(RichText::new(tool.name()).font(style::semibold(13.0)));
-    bar.label(RichText::new(tool.hint()).color(style::MUTED));
+    if tool == Tool::Carve {
+        super::carve_tool::strip(&mut bar, &mut studio.water_stage.brush);
+    } else {
+        bar.label(RichText::new(tool.hint()).color(style::MUTED));
+    }
+    // What a picked pour can't do yet.
+    let note = studio.selection.primary.and_then(|id| studio.water_draft.setup.as_ref()?.note_for(id));
+    if let Some(note) = note {
+        bar.label(RichText::new(note).color(style::TEXT));
+    }
 
     rail::show(ui, rail, &mut studio.water_stage.tool);
     let tool = studio.water_stage.tool;
@@ -92,6 +104,8 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
         {
             place(studio, kind, crate::grid::snap_point(view.to_world(at), step));
         }
+    } else if tool == Tool::Carve {
+        super::carve_tool::paint(ui, &response, studio, &view);
     } else if tool == Tool::Select {
         if response.drag_started()
             && let Some(press) = ui.input(|i| i.pointer.press_origin())
@@ -122,8 +136,17 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     if !response.dragged() {
         studio.water_stage.drag = None;
     }
+    if tool != Tool::Carve {
+        super::carve_tool::drop_stroke(studio);
+    }
     let shown = water(ui, studio, &view, room);
     paint(ui, studio, &view, room, shown);
+    if tool == Tool::Carve
+        && let Some(at) = response.hover_pos()
+        && view.holds(at)
+    {
+        super::carve_tool::outline(ui, studio, &view, at);
+    }
     if water::carving_of(&studio.scene).list.is_empty() {
         // (A label that senses nothing, so the stage under it still takes the clicks.)
         let words = egui::Label::new(RichText::new(ALL_ROCK).color(style::MUTED)).selectable(false);
@@ -155,7 +178,7 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
         let small = egui::TextStyle::Small.resolve(ui.style());
         let text = painter.layout_no_wrap(behind, small, style::TEXT);
         let pill = Rect::from_center_size(at, text.size() + vec2(16.0, 6.0));
-        painter.rect_filled(pill, pill.height() / 2.0, style::PANEL);
+        painter.rect_filled(pill, pill.height() / 2.0, style::PILL);
         painter.galley(pill.center() - text.size() / 2.0, text, style::TEXT);
     }
     shown
@@ -167,6 +190,16 @@ fn place(studio: &mut Studio, kind: &'static str, at: Vec2) {
         Ok(id) => {
             if let Some(thing) = studio.scene.things.get_mut(&id) {
                 thing.transform.position = at;
+            }
+            // The first pour brings a Liquid to pour (in the same undo step).
+            let has_liquid = studio.scene.things.values().any(|t| t.kind == water::LIQUID);
+            if kind == water::POUR
+                && !has_liquid
+                && let Ok(liquid) =
+                    bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, water::LIQUID, ThingId::ROOT)
+                && let Some(thing) = studio.scene.things.get_mut(&liquid)
+            {
+                thing.name = "Water".into();
             }
             studio.selection.set(id);
             studio.separate_edit = true;
@@ -211,7 +244,39 @@ fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
         }
         let name = at + vec2(MARKER_R + 6.0, 0.0);
         painter.text(name, Align2::LEFT_CENTER, &thing.name, small.clone(), style::TEXT);
+        if thing.kind == water::POUR {
+            pour_marks(&painter, studio, view, id, place, ink);
+        }
     }
+}
+
+/// A pour's aim and its stream's width (a tap), or the box it fills at the start.
+fn pour_marks(
+    painter: &egui::Painter,
+    studio: &Studio,
+    view: &CourseView,
+    id: ThingId,
+    place: Vec2,
+    ink: egui::Color32,
+) {
+    let Some(card) = studio.resolved.things.get(&id).and_then(|t| t.slots.get(&SlotId::Main)) else { return };
+    let pour = bpe_kit::modules::water::PourCard::from_params(&card.params);
+    let line = Stroke::new(1.0, ink);
+    let at = view.to_screen(place);
+    if pour.kind == bpe_kit::modules::water::PourKind::FillAtTheStart {
+        let size = pour.fill_size.max(Vec2::ZERO) * view.scale();
+        painter.rect_stroke(Rect::from_center_size(at, vec2(size.x, size.y)), 0.0, line, egui::StrokeKind::Middle);
+        return;
+    }
+    let (sin, cos) = pour.aim.to_radians().sin_cos();
+    let way = vec2(cos, sin);
+    let tip = at + way * (MARKER_R + 40.0);
+    painter.line_segment([at + way * MARKER_R, tip], line);
+    painter.line_segment([tip, tip - way * 7.0 + way.rot90() * 4.0], line);
+    painter.line_segment([tip, tip - way * 7.0 - way.rot90() * 4.0], line);
+    let half = ((pour.rate * pour.width).max(0.0) * view.scale() / 2.0).max(3.0);
+    let across = way.rot90() * half;
+    painter.line_segment([at + way * (MARKER_R + 3.0) - across, at + way * (MARKER_R + 3.0) + across], line);
 }
 
 /// The camera's 9:16 shot on screen, at its Position and Zoom at the playhead.
