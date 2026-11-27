@@ -29,12 +29,18 @@ pub(super) struct Moving {
     /// Where each is now (at the boundary the body is at), and at the coming frame's end.
     pub(super) poses: Vec<Pose>,
     pub(super) ends: Vec<Pose>,
+    /// How fast each moved over the last frame played (none before the first): what a moment kept
+    /// at the boundary says, whether a frame's end or the body's first ([`Water::capture_now`]).
+    pub(super) speeds: Vec<Pose>,
     /// Each part's shape as the card takes it (`g` and `h`).
     shapes: Vec<([f32; 4], [u32; 4])>,
 }
 
 /// The furthest a field says on the card (cells).
 const FAR_CELLS: f32 = 64.0;
+
+/// No speed at all.
+pub(super) const STILL: Pose = Pose { at: Vec2::ZERO, turn: 0.0, scale: 0.0 };
 
 impl Moving {
     /// The frame's numbers: 1 when the parts move between `poses` and `ends`, how many there are,
@@ -115,7 +121,8 @@ impl Water {
             usage: STORE,
         });
         let poses: Vec<Pose> = (0..movers.len()).map(|k| poses.get(k).copied().unwrap_or_default().sane()).collect();
-        self.moving = Some(Moving { movers, ends: poses.clone(), poses, shapes });
+        let speeds = vec![STILL; poses.len()];
+        self.moving = Some(Moving { movers, ends: poses.clone(), poses, speeds, shapes });
         self.bind();
         self.lay_movers_everywhere();
     }
@@ -151,6 +158,22 @@ impl Water {
             pass.dispatch_workgroups((self.layout.nodes() as u32).div_ceil(WORKGROUP).max(1), 1, 1);
         }
         gpu.queue.submit([encoder.finish()]);
+    }
+
+    /// Gives a body made from a restart point ([`Water::from_state`]) the course's moving parts where
+    /// the state says they are, and how fast they moved over the frame before it.
+    pub fn resume_movers(&mut self, movers: Movers, state: &super::WaterState) {
+        self.set_movers(movers, &state.poses);
+        if let Some(m) = &mut self.moving {
+            for (k, speed) in m.speeds.iter_mut().enumerate() {
+                *speed = state.speeds.get(k).copied().unwrap_or(STILL);
+            }
+        }
+    }
+
+    /// How fast each moving part moved over the last frame played.
+    pub fn move_speeds(&self) -> &[Pose] {
+        self.moving.as_ref().map_or(&[], |m| &m.speeds)
     }
 
     /// Where each moving part is at the coming frame's end (from the next frame; it starts the frame

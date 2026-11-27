@@ -236,9 +236,9 @@ impl Water {
     /// point's).
     pub fn capture_now(&mut self, capture: &mut Capture) {
         let moment = Moment { frame: self.frames, steps: 0, of: 1 };
-        // (Where the parts are now, still: the coming frame's move isn't theirs yet.)
-        let poses: Vec<(Pose, Pose)> =
-            self.poses().iter().map(|p| (*p, Pose::new(glam::Vec2::ZERO, 0.0, 0.0))).collect();
+        // (Where the parts are now and how fast they moved over the frame before, as that frame's end
+        // kept it.)
+        let poses: Vec<(Pose, Pose)> = self.poses().iter().copied().zip(self.move_speeds().iter().copied()).collect();
         if self.count == 0 {
             capture.none(vec![(moment, poses)]);
             return;

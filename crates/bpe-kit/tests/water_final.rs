@@ -13,7 +13,7 @@ use bpe_core::{Address, Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value
 use bpe_kit::things::water::draft::{FINAL_MOST, Speeds, WaterSetup};
 use bpe_kit::things::water::finals::Finals;
 use bpe_kit::things::water::make::{MakeFinal, MakeProgress, this_card};
-use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, PIECE, POUR, course_of, new_water_scene};
 use bpe_water::WaterGpu;
 use bpe_water::take::{Chunk, FrameCodec, chunk};
 use glam::Vec2;
@@ -139,6 +139,45 @@ fn a_final_remade_from_a_restart_point_equals_one_made_in_one_go() {
     }
     assert!(chunk_bytes(&a, 0) == chunk_bytes(&finals.take_dir(first.print), 0), "the first chunks are shared");
     assert!(chunk_bytes(&a, 3) != chunk_bytes(&finals.take_dir(first.print), 3), "the tail is remade");
+    std::fs::remove_dir_all(finals.dir()).ok();
+    std::fs::remove_dir_all(fresh.dir()).ok();
+}
+
+/// A final with a Keyframed paddle: a key moved after the restart point remakes only from it, the
+/// remade chunks (their moments keep where the paddle is) byte for byte those made in one go.
+#[test]
+fn a_final_with_a_moving_paddle_remakes_from_the_key_before() {
+    let Some(gpu) = card() else { return };
+    let reg = bpe_kit::registry();
+    let (mut scene, _) = small(&reg, 9.0);
+    let paddle = add(&mut scene, &reg, PIECE, Vec2::new(-120.0, 120.0));
+    set(&mut scene, paddle, SlotId::Form, "piece", Value::Choice("pillar".into()));
+    set(&mut scene, paddle, SlotId::Form, "size", Value::Vec2([20.0, 140.0]));
+    set(&mut scene, paddle, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    let offset = Address { thing: paddle, slot: Some(SlotId::Moves), key: "offset".into() };
+    for (t, x) in [(0.0, 0.0), (1.0, 200.0), (2.5, 60.0), (3.5, 160.0)] {
+        scene.set_key(&reg, &offset, t, Value::Vec2([x, 0.0])).unwrap();
+    }
+    let finals = folder("paddle");
+    let stop = AtomicBool::new(false);
+    let first = final_of(&scene, &reg, 4.0).make(&gpu, &finals, &MakeProgress::default(), &stop).unwrap();
+    assert_eq!(first.points, vec![120]);
+    scene.set_key(&reg, &offset, 3.5, Value::Vec2([100.0, 0.0])).unwrap();
+    let changed = final_of(&scene, &reg, 4.0);
+    let status = changed.status(&finals, this_card());
+    assert!(!status.own && status.restart == 120, "{status:?}");
+    let second = changed.make(&gpu, &finals, &MakeProgress::default(), &stop).unwrap();
+    let fresh = folder("paddle-fresh");
+    let whole = changed.make(&gpu, &fresh, &MakeProgress::default(), &stop).unwrap();
+    let (a, b) = (finals.take_dir(second.print), fresh.take_dir(whole.print));
+    for s in 0..=4 {
+        assert!(chunk_bytes(&a, s) == chunk_bytes(&b, s), "chunk {s} is the same");
+    }
+    let mut c = Chunk::open(&b, 3).unwrap();
+    let frame = FrameCodec::new().decode(&c.bytes(30).unwrap(), &whole.layout()).unwrap();
+    let want = changed.setup.poses_at(c.moments().nth(30).unwrap().time());
+    assert_eq!(frame.poses.len(), 1);
+    assert!((frame.poses[0].0.at - want[0].at).length() < 1e-3, "{:?} is not {want:?}", frame.poses);
     std::fs::remove_dir_all(finals.dir()).ok();
     std::fs::remove_dir_all(fresh.dir()).ok();
 }

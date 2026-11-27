@@ -960,6 +960,7 @@ impl Water {
         // (The parts are at the frame's end; with no drops, nothing laid them there on the card.)
         if let Some(m) = &mut self.moving {
             let moved = m.moved_box().is_some();
+            m.speeds = m.poses.iter().zip(&m.ends).map(|(a, b)| a.speed_to(*b, FRAME)).collect();
             m.poses.clone_from(&m.ends);
             if moved && !ran {
                 self.lay_movers_everywhere();

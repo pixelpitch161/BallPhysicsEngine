@@ -305,7 +305,8 @@ fn moving_water_repeats() {
     assert_eq!(state.poses, water.poses(), "the state keeps where the parts are");
     let (numbers, feels) = (*water.numbers(), water.feels().to_vec());
     let mut again = Water::from_state(gpu.clone(), &still, scenes::GRAVITY, numbers, &feels, &state).unwrap();
-    again.set_movers(movers.clone(), &state.poses);
+    again.resume_movers(movers.clone(), &state);
+    assert_eq!(again.move_speeds(), water.move_speeds(), "and how fast they moved");
     play(&mut again, &keys, 60);
     assert_eq!(first, probe::print_of(&again.read()), "from a restart point at frame 40");
 }

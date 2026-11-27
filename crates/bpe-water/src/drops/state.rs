@@ -32,9 +32,10 @@ pub struct WaterState {
     pub deep_hold: u32,
     pub deep_frames: u32,
     pub pours: Vec<(Pour, Poured)>,
-    /// Where each moving part is (part 5): a body made from the state is given its parts there
-    /// ([`Water::set_movers`]).
+    /// Where each moving part is (part 5) and how fast it moved over the frame before: a body made
+    /// from the state is given its parts there ([`Water::resume_movers`]).
     pub poses: Vec<Pose>,
+    pub speeds: Vec<Pose>,
     pub(super) clock: ClockState,
     /// The kept drops' buffers (`count` x 16 bytes each) and the deep water's kept cells (whole).
     pub xv: Vec<u8>,
@@ -120,8 +121,9 @@ impl WaterState {
             o.f32(s.extra);
         }
         o.u32(self.poses.len() as u32);
-        for p in &self.poses {
-            for v in [p.at.x, p.at.y, p.turn, p.scale] {
+        let speeds = self.speeds.iter().chain(std::iter::repeat(&super::movers::STILL));
+        for (p, s) in self.poses.iter().zip(speeds) {
+            for v in [p.at.x, p.at.y, p.turn, p.scale, s.at.x, s.at.y, s.turn, s.scale] {
                 o.f32(v);
             }
         }
@@ -171,9 +173,12 @@ impl WaterState {
             bail!("the state has too many moving parts");
         }
         let mut poses = Vec::with_capacity(n);
+        let mut speeds = Vec::with_capacity(n);
         for _ in 0..n {
-            let (x, y, turn, scale) = (i.f32()?, i.f32()?, i.f32()?, i.f32()?);
-            poses.push(Pose::new(glam::Vec2::new(x, y), turn, scale));
+            for list in [&mut poses, &mut speeds] {
+                let (x, y, turn, scale) = (i.f32()?, i.f32()?, i.f32()?, i.f32()?);
+                list.push(Pose::new(glam::Vec2::new(x, y), turn, scale));
+            }
         }
         let clock = ClockState::read(&mut i)?;
         let (xv, nf, id) = (i.bytes()?, i.bytes()?, i.bytes()?);
@@ -200,6 +205,7 @@ impl WaterState {
             deep_frames,
             pours,
             poses,
+            speeds,
             clock,
             xv,
             nf,
@@ -236,6 +242,7 @@ impl Water {
             deep_frames: self.deep_frames,
             pours: self.pours.clone(),
             poses: self.poses().to_vec(),
+            speeds: self.move_speeds().to_vec(),
             clock,
             xv: read(&self.by.xv, drops),
             nf: read(&self.by.nf, drops),
@@ -246,9 +253,8 @@ impl Water {
         }
     }
 
-    /// A body on `field` (the one the state's body was made on, its still field when parts move:
-    /// give it its parts at `state.poses` with [`Water::set_movers`]) that plays on exactly as the body
-    /// whose state `state` is did, given the same inputs each frame. `gravity`, `numbers` and
+    /// A body on `field` (the one the state's body was made on; when parts move, give it them with
+    /// [`Water::resume_movers`]) that plays on exactly as the body whose state `state` is did, given the same inputs each frame. `gravity`, `numbers` and
     /// `feels` are as [`Water::new`] takes them (the frame's inputs set them again before it plays).
     pub fn from_state(
         gpu: std::sync::Arc<super::WaterGpu>,
