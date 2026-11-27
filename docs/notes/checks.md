@@ -94,7 +94,8 @@ Design `docs/superpowers/specs/2026-11-22-gpu-picture-checks-design.md`, plan
 - **Pictures pinned to the card**: `crates/bpe-kit/tests/golden-unlit*.txt`, `golden-lit-flat*.txt`,
   `golden-liquid*.txt`, `crates/bpe-gfx/tests/golden-shapes.txt` (`paths_tests::shapes_draw_as_before`) and
   `crates/bpe-water/tests/golden-plain.txt` (`plain_pinned`, the plain water drawing of drops laid out by hand; one
-  file for debug and release). Their first line names the card and driver they were made on (`bpe_gfx::card_golden`). On
+  file for debug and release) and `crates/bpe-kit/tests/golden-water-looks.txt` (`water_looks_pinned`, the seven
+  ready-made Water looks on hand-laid drops; one file too). Their first line names the card and driver they were made on (`bpe_gfx::card_golden`). On
   another card (a cloud container's lavapipe) the tests draw and check what they can, print "not compared" and pass;
   on the same card a difference fails, and says so when the driver changed.
 - **Refreshing them**: Actions, "Refresh GPU pictures" (`gpu-pictures.yml`), "Run workflow", naming the branch (not

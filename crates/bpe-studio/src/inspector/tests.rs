@@ -448,9 +448,9 @@ fn a_picture_chosen_for_particles_is_kept_in_the_scene() {
 
 #[test]
 fn a_picture_chosen_for_a_water_back_goes_on_the_back_card() {
-    use bpe_kit::things::water::{StartingLook, new_water_scene};
+    use bpe_kit::things::water::new_water_scene;
     let reg = bpe_kit::registry();
-    let scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let scene = new_water_scene(&reg, "");
     let mut h = harness_of(scene, Some(ThingId::ROOT));
     let png: std::sync::Arc<[u8]> = b"\x89PNG\r\n\x1a\nsky".to_vec().into();
     let ctx = h.ctx.clone();
@@ -997,6 +997,29 @@ fn the_effects_card_lists_its_effects_and_adds_them_from_its_menu() {
     let lava = s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].layers[1].id;
     assert_eq!(s.inspector.selected_layer.get(&ThingId::ROOT), Some(&lava));
     assert!(h.query_all_by_label("Takes").next().is_none(), "no Takes on a material");
+}
+
+#[test]
+fn a_water_scene_adds_effects_but_only_the_ones_its_picture_can_feed() {
+    let reg = bpe_kit::registry();
+    let mut scene = bpe_kit::things::water::new_water_scene(&reg, "Water");
+    let mut h = harness_of(scene.clone(), Some(ThingId::ROOT));
+    h.get_by_role_and_label(Role::Button, "+ Add card").click();
+    h.run();
+    assert!(h.query_all_by_label("Effects").next().is_some(), "the Effects card is offered");
+    bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+    let mut h = harness_of(scene, Some(ThingId::ROOT));
+    h.get_by_role_and_label(Role::Button, "+ Add effect").click();
+    h.run();
+    for shown in ["Kaleidoscope", "Thermal vision", "Own code"] {
+        assert!(h.query_all_by_label(shown).next().is_some(), "{shown} is offered");
+    }
+    for hidden in ["Shockwaves", "Hue storm", "Ball worlds", "Lava", "Materials (paint the things)"] {
+        assert!(h.query_all_by_label(hidden).next().is_none(), "{hidden} is not offered");
+    }
+    h.get_all_by_label("Kaleidoscope").last().unwrap().click();
+    h.run();
+    assert_eq!(effect_kinds(h.state()), ["picture.kaleidoscope"]);
 }
 
 #[test]
@@ -1619,9 +1642,8 @@ fn a_text_cannot_add_a_particles_layer() {
 
 /// A new Water scene with one thing of `kind` added and selected (`None`: its settings).
 fn water_harness(kind: Option<&str>) -> Harness<'static, State> {
-    use bpe_kit::modules::water::StartingLook;
     let reg = bpe_kit::registry();
-    let mut scene = bpe_kit::things::water::new_water_scene(&reg, StartingLook::Plain, "");
+    let mut scene = bpe_kit::things::water::new_water_scene(&reg, "");
     let selected = match kind {
         Some(bpe_kit::things::water::COURSE) => bpe_kit::things::water::course_of(&scene).expect("it has a Course"),
         Some(kind) => bpe_kit::add_thing(&mut scene, &reg, kind, ThingId::ROOT).expect("a Water thing"),
@@ -1643,7 +1665,7 @@ fn a_water_scenes_settings_show_its_own_cards_and_none_of_the_balls() {
     for card in ["World", "Background", "Lighting", "Air", "Grade"] {
         assert!(!shown(&h, card), "{card} belongs to a Balls scene");
     }
-    assert!(shown(&h, "Screens wide") && shown(&h, "Starting look"));
+    assert!(shown(&h, "Screens wide") && !shown(&h, "Starting look"));
     // The scene's Water, Light and Back cards are what a Water scene is: they stay.
     for card in ["Water", "Light", "Back"] {
         assert!(!shown(&h, &format!("Remove {card}")), "{card} can't be removed");

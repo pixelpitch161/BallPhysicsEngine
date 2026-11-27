@@ -7,6 +7,7 @@
 pub mod carve;
 pub mod liquid;
 pub mod look;
+pub mod looks;
 pub mod pieces;
 pub mod places;
 pub mod scene;
@@ -17,9 +18,10 @@ pub use liquid::{FeelCard, HeatCard, MixesWhen, MixingCard};
 pub use look::{
     BackCard, BackShows, ColourFrom, GlowFrom, LampCard, LampKind, LightQuality, WaterLightCard, WaterLook,
 };
+pub use looks::{Keep, ReadyLook, apply_look};
 pub use pieces::{PALETTE, default_size, placed};
 pub use places::{CourseEdge, DrainCard, DrainKind, ForceCard, ForceKind, PourCard, PourKind};
-pub use scene::{DraftDetail, FinalDetail, SCREEN, StartingLook, WaterWorld};
+pub use scene::{DraftDetail, FinalDetail, SCREEN, WaterWorld};
 pub use solids::{Joint, LineEnds, MaterialCard, MaterialKind, MovesCard, MovesKind, PieceKind, PieceShape, WallLine};
 
 use bpe_core::{ModuleKind, Registry, SettingDef, Settings, SlotId};
@@ -307,14 +309,14 @@ mod tests {
     }
 
     #[test]
-    fn the_starting_looks_are_plain_and_the_six() {
-        let titles = StartingLook::ALL.map(StartingLook::title);
+    fn the_looks_are_plain_and_the_six() {
+        let titles = ReadyLook::ALL.map(ReadyLook::title);
         assert_eq!(
             titles,
             ["Plain", "Lamp-lit rock", "Glass lab", "Neon in the dark", "Paint on paper", "Molten", "Cartoon"]
         );
-        assert_eq!(StartingLook::default(), StartingLook::Plain);
-        for look in StartingLook::ALL {
+        assert_eq!(ReadyLook::default(), ReadyLook::Plain);
+        for look in ReadyLook::ALL {
             assert!(!look.words().is_empty());
         }
     }

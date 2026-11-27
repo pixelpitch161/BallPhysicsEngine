@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use bpe_cli::water::{self, FINAL_MISSING, FRAME_NOT_MADE, WaterSource};
 use bpe_cli::{ExportOptions, export_video, find_ffmpeg};
 use bpe_core::{Address, Scene, SlotId, Stroke, Strokes, ThingId, Value};
-use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
 use bpe_kit::{Kit, kit};
 use glam::Vec2;
 
@@ -29,7 +29,7 @@ fn set(scene: &mut Scene, id: ThingId, slot: SlotId, key: &str, v: Value) {
 /// detail, 270 x 480 at 30 frames a second.
 fn small(kit: &Kit) -> Scene {
     let reg = &kit.registry;
-    let mut scene = new_water_scene(reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(reg, "");
     let root = &mut scene.things.get_mut(&ThingId::ROOT).unwrap().params;
     root.set("width", Value::Int(270));
     root.set("height", Value::Int(480));

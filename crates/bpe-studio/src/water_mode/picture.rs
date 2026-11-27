@@ -19,13 +19,15 @@ const MOST_SIDE: f32 = 2048.0;
 /// on, so a draft catching up still shows how far it has got.
 const LONGEST_WAIT: Duration = Duration::from_millis(100);
 
-/// The picture for the whole course on screen at `pixels_per_point`: one picture pixel a screen
-/// pixel, at most [`MOST_SIDE`] a side and never finer than two a world pixel.
+/// The picture for the part of the world the view shows (the whole course, or the camera's shot)
+/// at `pixels_per_point`: one picture pixel a screen pixel, at most [`MOST_SIDE`] a side and never
+/// finer than two a world pixel.
 pub fn picture_view(view: &CourseView, pixels_per_point: f32) -> View {
-    let size = view.size.max(Vec2::ONE);
+    let (lo, size) = view.seen();
+    let size = size.max(Vec2::ONE);
     let scale = (view.scale() * pixels_per_point).clamp(1e-4, 2.0).min(MOST_SIDE / size.x).min(MOST_SIDE / size.y);
     View {
-        lo: -size / 2.0,
+        lo,
         scale,
         width: (size.x * scale).round().max(1.0) as u32,
         height: (size.y * scale).round().max(1.0) as u32,
@@ -47,8 +49,16 @@ struct Drawn {
     generation: u64,
     frame: u32,
     size: (u32, u32),
+    /// The part of the world shown (its corner and scale, as bits): the Shot view moves with the
+    /// camera at the same size.
+    place: [u32; 3],
     look: Look,
     rock: u64,
+}
+
+/// A view's corner and scale as bits, to tell views apart.
+pub fn place_of(v: &View) -> [u32; 3] {
+    [v.lo.x.to_bits(), v.lo.y.to_bits(), v.scale.to_bits()]
 }
 
 /// The stage's picture of the water.
@@ -88,6 +98,7 @@ impl StagePicture {
                 generation: live.generation,
                 frame: live.water.frames(),
                 size: (v.width, v.height),
+                place: place_of(&v),
                 look: look.clone(),
                 rock: rock.version,
             };
@@ -121,7 +132,7 @@ impl StagePicture {
         }
         let Some((id, ..)) = self.texture else { return false };
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        painter.image(id, view.rect, uv, style::UNTINTED);
+        painter.image(id, view.seen_rect(), uv, style::UNTINTED);
         true
     }
 

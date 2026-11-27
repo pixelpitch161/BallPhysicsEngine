@@ -76,7 +76,7 @@ impl Studio {
                 }
                 scene
             }
-            bpe_core::SimKind::Water => bpe_kit::things::water::new_water_scene(reg, new.look, &new.name),
+            bpe_core::SimKind::Water => bpe_kit::things::water::start_water_scene(reg, new.look, &new.name),
         };
         self.replace_scene(scene, None);
         self.status = match new.sim {

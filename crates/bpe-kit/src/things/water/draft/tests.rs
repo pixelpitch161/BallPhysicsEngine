@@ -1,11 +1,11 @@
 use super::*;
 use crate::modules::water::{self as cards, SCREEN};
-use crate::things::water::{COURSE, DRAIN, FORCE, KINDS, LAMP, PIECE, StartingLook, WALL, new_water_scene};
+use crate::things::water::{COURSE, DRAIN, FORCE, KINDS, LAMP, PIECE, WALL, new_water_scene};
 use bpe_core::{Address, Color, Registry, SettingDef, Stroke, Value, ValueType};
 use bpe_water::draw::{PlainLiquid, PlainLook};
 
 fn water_scene(reg: &Registry) -> Scene {
-    new_water_scene(reg, StartingLook::Plain, "")
+    new_water_scene(reg, "")
 }
 
 fn add(scene: &mut Scene, reg: &Registry, kind: &str, at: Vec2) -> ThingId {
@@ -776,6 +776,37 @@ fn slow_motion_lengthens_the_video_and_keeps_more_moments() {
         let back = r.water_time(r.video_time(t));
         assert!((back - t).abs() < 1e-6, "water time {t} came back as {back}");
     }
+}
+
+#[test]
+fn the_finish_reads_the_scenes_effects_over_the_picture_and_its_grade() {
+    use bpe_core::layered_key;
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, crate::modules::effects::EFFECTS).unwrap();
+    let k = scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, "picture.kaleidoscope").unwrap();
+    // (A material, pasted in: it paints things, which a Water scene has none of.)
+    scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, "picture.lava").unwrap();
+    let mix = Address { thing: ThingId::ROOT, slot: Some(SlotId::Shader), key: layered_key(k, "mix") };
+    scene.set_key(&reg, &mix, 0.0, Value::Number(0.0)).unwrap();
+    scene.set_key(&reg, &mix, 2.0, Value::Number(1.0)).unwrap();
+    let grade = crate::modules::grade::starting_card(&reg);
+    scene.things.get_mut(&ThingId::ROOT).unwrap().slots.insert(SlotId::Grade, grade);
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let got = crate::things::water::look::look_of(&scene, &resolved, 1.0).finish;
+    assert_eq!(got.effects.len(), 1, "only the effect over the picture");
+    let e = &got.effects[0];
+    assert!(e.wgsl.contains("name: Kaleidoscope") && e.stage == bpe_gfx::Stage::Picture);
+    assert!((e.blend - 0.5).abs() < 1e-6, "the Mix at 1 s, half way between its keys: {}", e.blend);
+    assert_eq!(
+        got.grade,
+        crate::modules::grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None)
+    );
+    assert!(!got.grade.masks.is_empty(), "the grade's Whole picture");
+    // The stage's whole course goes without them.
+    let course = got.without_shot_finish();
+    assert!(course.effects.is_empty() && course.grade.masks.is_empty());
+    assert_eq!((course.bloom, course.exposure), (got.bloom, got.exposure));
 }
 
 #[test]

@@ -572,7 +572,7 @@ offered, Grade mode opens, `a_water_scenes_toolbar_says_so_and_greys_grade` turn
 - [ ] `crates/bpe-kit/tests/water_looks_pinned.rs`: one hand-built course (`sets`-style, no physics: a carved cave,
   a pool, a stream, two pieces) drawn in each of the seven looks at 270 x 480, tiles pinned to the owner's card
   (`golden-water-looks.txt`) through the "Refresh GPU pictures" workflow.
-- [ ] Full-size look check `water-looks-*` (each look on a made final), looked at closely.
+- [x] Full-size look check `water-looks-*` (each look on a made final), looked at closely.
 - [ ] Notes "Part 6c (as built)", this plan's "As built", PR, CI, review, merge.
 - [ ] Aedan's ask: a still and a short render of each look (one demo course, a final, each look applied), into
   `/mnt/project-files/ballphysics/water-mode/part6-looks/`, sent in one message without waiting for him.
@@ -674,3 +674,43 @@ Built as planned (decisions 32 to 37), with these changes:
   sums' half-float rounding reads a false spread on an even fast stream (about 6.5 % of its speed), so foam now
   starts at no less than 7 % of the mean speed.
 
+
+### 6c
+
+Built as planned for decisions 38 to 42 and 44, with these changes:
+
+- **Split in two**: the Grade card on a Water scene, Grade mode on it (decision 44's first half), the Things masks
+  for water (decision 43) and the Light only and Glow only takes (decision 42's last sentence) went to a fourth
+  pull request, 6d, so 6c could be reviewed as one. `look_of` already reads the Grade card into `Look.finish`, so
+  6d only offers it and shows it.
+- **The Water card's Starting look is gone** (decisions 38 and 39): `start_water_scene` applies a `ReadyLook`, and
+  the chooser's tiles come from the table. A new scene's Liquid is named for its look.
+- **The Whole course | Shot switch is in the toolbar** beside Draft | Final, not the stage's strip. In the strip it
+  narrowed the tool's row so much that the Select hint wrapped, and the strip growing moved the course under the
+  pointer (`the_pour_tool_adds_a_pour...` caught it).
+- **The Shot view keeps every tool working**: `CourseView::fit_shot` keeps `rect` as the course's outline, larger
+  than the room, and adds the part shown, so the tools map points as they always did. Only the shot takes clicks.
+- **Hidden effects**: the seven over the picture that need balls, hits or things, Glitch and Breathing space (at
+  their defaults they wait for hits or beats, which a Water scene has none of; found in review), and the Materials
+  part of the menu (the three materials). Thermal vision stays: it reads the picture's brightness and adds the
+  balls only when there are some.
+- **What the review found**: the stage's pictures weren't drawn again when the Shot view's camera moved (the key
+  had the picture's size, not its place); Select took clicks beside the shot; ticking a Keep switch closed the
+  menu; Keep my colours let Neon and Molten turn a one-colour liquid to colour by speed. All fixed.
+- **Light only** in a Water scene changes nothing until 6d, and says so in its row.
+- **What the full-size look check found** (`water-looks`, a made final at 3 px), and the rows it changed:
+  - Glass lab was washed out to white (Ambient 0.9 and a Sun at 0.6 over a near-white back, Clarity 450): now
+    Ambient 0.75, Sun 0.25, Clarity 140, Glass `#a8c4d8`, Back `#e4ebf1`. With the Sun low the drops' shadows
+    straight down are faint.
+  - Neon glowed only where the water moved (Glow from Speed), so a still pool was dark: now Glow from Always at
+    0.2, a 3 px Outline `#ff9ae8` (the bright neon edge), and the gradient starting at `#2a0a4a`.
+  - Molten's pool was blown out to pale peach (Gives off light 2): now 0.8 with Glow colour `#ff6a1c`.
+  - Paint on paper: a line of paint shades everything under it from the lamp (light goes in the picture's plane),
+    so the Sun is 0.2 over Ambient 0.95.
+  - Lamp-lit rock: Caustics 0 for now. With a Spot beside the tap, the caustics through the falling stream drew a
+    wide striped, stair-stepped pattern on the rock (gone at Caustics 0, still plain at 0.6). Fixing the
+    caustics and giving the look its caustics back is on 6d's list, with the shadows of small drops in the air,
+    which come out dashed (both 6a's light).
+- Tests: `bpe-water/tests/look.rs` 20 (Mirror), the kit's finish test, `water_looks_pinned` (on part 3's pieces
+  course: the plan's one hand-built course, with its pool and pieces but no stream), the editor's Add effect,
+  Shot view and toolbar tests; the full-size look check `water-looks`.

@@ -297,16 +297,28 @@ impl Default for Lamp {
     }
 }
 
-/// The picture's finish: the Picture card (part 6c adds the Effects and the Grade).
+/// The picture's finish: the Picture card's bloom and exposure, the scene's Effects over the
+/// picture and its Grade, as a Balls frame's finish runs them (`bpe_gfx::Renderer::finish_picture`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FinishLook {
     pub bloom: f32,
     pub exposure: f32,
+    /// Bottom first; only the calls at [`bpe_gfx::Stage::Picture`] run.
+    pub effects: Vec<bpe_gfx::EffectCall>,
+    pub grade: bpe_gfx::GradeStack,
 }
 
 impl Default for FinishLook {
     fn default() -> Self {
-        FinishLook { bloom: 0.0, exposure: 1.0 }
+        FinishLook { bloom: 0.0, exposure: 1.0, effects: Vec::new(), grade: bpe_gfx::GradeStack::default() }
+    }
+}
+
+impl FinishLook {
+    /// The finish without the Effects and the Grade, which are made for the shot's shape (the
+    /// Water stage's Whole course view).
+    pub fn without_shot_finish(&self) -> FinishLook {
+        FinishLook { bloom: self.bloom, exposure: self.exposure, ..FinishLook::default() }
     }
 }
 

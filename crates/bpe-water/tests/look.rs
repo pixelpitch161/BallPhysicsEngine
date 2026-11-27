@@ -1,7 +1,7 @@
 //! The look drawing (`bpe_water::draw::look`, Water mode part 6): that it repeats, where it draws
 //! what, the lamps' light and shadows, light through the liquid, caustics, glow, the materials, the
-//! back, bend, shine, bands, that the light doesn't depend on the view, Quality, and the extras
-//! (bubbles, fizz, foam, mist, sparks). From drops laid
+//! back, bend, shine, bands, that the light doesn't depend on the view, Quality, the extras
+//! (bubbles, fizz, foam, mist, sparks) and the finish's Effects. From drops laid
 //! out by hand (`draw::sets`), never physics; on the software card at 270 x 480 or less.
 
 use std::sync::Arc;
@@ -764,6 +764,26 @@ fn wet_marks_darken_the_rock_the_water_has_touched() {
     assert!(before.pixels == dry.pixels, "dry at a frame before the marks");
     let dry_none = drawn(0.0, None);
     assert!(none.pixels == dry_none.pixels, "Wet marks 0 draws no marks");
+}
+
+/// Test 20: The finish runs the scene's Effects over the picture, as a Balls frame's: Mirror copies
+/// the left half onto the right and leaves the left as it was.
+#[test]
+fn the_finish_runs_the_effects_over_the_picture() {
+    let Some(gpu) = card() else { return };
+    let (field, mut look) = materials(&[MaterialKind::Flat, MaterialKind::Rock]);
+    let plain = draw(&gpu, &field, &[], View::screen(0.25), &look);
+    let mirror = bpe_gfx::effects::Builtin::find("mirror").expect("built in");
+    look.finish.effects.push(bpe_gfx::EffectCall {
+        params: bpe_gfx::effects::defaults(mirror.header()),
+        ..bpe_gfx::EffectCall::new(1, mirror.wgsl, bpe_gfx::Stage::Picture)
+    });
+    let mirrored = draw(&gpu, &field, &[], View::screen(0.25), &look);
+    // (The back between the blocks and the box's sides: dark at the left, light at the right.)
+    let (left, right) = (Vec2::new(-475.0, -850.0), Vec2::new(475.0, -850.0));
+    assert!(apart(plain.at(left), plain.at(right)) > 40, "{:?} and {:?}", plain.at(left), plain.at(right));
+    assert!(apart(mirrored.at(left), mirrored.at(right)) <= 2, "{:?} and {:?}", mirrored.at(left), mirrored.at(right));
+    assert!(apart(mirrored.at(left), plain.at(left)) <= 1, "the left half as it was");
 }
 
 /// The bench at 3 px under two warm Spots and a waved pool under a Sun, at full size, for looking at

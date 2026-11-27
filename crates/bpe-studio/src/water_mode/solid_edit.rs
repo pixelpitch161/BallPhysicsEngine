@@ -258,8 +258,10 @@ fn double_click(studio: &mut Studio, view: &CourseView, at: Pos2) -> bool {
 /// pieces' and walls' bodies.
 pub fn select(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &CourseView, markers: &[(ThingId, Vec2)]) {
     let alt = ui.input(|i| i.modifiers.alt);
+    // (Only on the part shown: in the Shot view the course reaches past the shot.)
     if response.drag_started()
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
+        && view.holds(press)
     {
         if let Some(grab) = handles(studio, view).and_then(|h| h.grab_at(press)) {
             studio.water_stage.grab = Some(grab);
@@ -299,12 +301,14 @@ pub fn select(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &Co
     }
     if response.double_clicked()
         && let Some(at) = response.interact_pointer_pos()
+        && view.holds(at)
         && double_click(studio, view, at)
     {
         return;
     }
     if response.clicked()
         && let Some(at) = response.interact_pointer_pos()
+        && view.holds(at)
     {
         let on_handle = handles(studio, view).is_some_and(|h| h.grab_at(at).is_some());
         if !on_handle {
@@ -327,7 +331,8 @@ pub fn let_go(studio: &mut Studio) {
 /// The picked piece's or wall's outline and handles (with Select in hand), and every other picked
 /// one's outline, inside the stage's `room`.
 pub fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, with_handles: bool) {
-    let painter = ui.painter_at(room);
+    // (In the Shot view only over the shot: the course reaches past it.)
+    let painter = ui.painter_at(if view.shot.is_some() { room.intersect(view.seen_rect()) } else { room });
     for id in studio.selection.all(&studio.scene) {
         if let Some(solid) = solid_of(studio, id) {
             draw_outlines(&painter, view, &solid.outline(), style::TEXT_STRONG);

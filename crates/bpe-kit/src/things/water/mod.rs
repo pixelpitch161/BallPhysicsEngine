@@ -10,8 +10,8 @@ pub mod finals;
 pub mod look;
 pub mod make;
 
-pub use crate::modules::water::StartingLook;
 use crate::modules::water::{BACK, LIGHT, WORLD};
+pub use crate::modules::water::{Keep, ReadyLook, apply_look};
 
 /// The one Course: the solid the water runs through, carved away where it is open.
 pub const COURSE: &str = "water_course";
@@ -201,10 +201,9 @@ pub fn carving_of(scene: &Scene) -> bpe_core::Strokes {
     }
 }
 
-/// A new Water scene: Scene settings with their Water, Light and Back cards, a Camera and the
-/// Course. Nothing else: no liquid and no pour. `look` is only recorded on the Water card (the
-/// looks themselves arrive in a later part); an empty `name` gives [`NEW_NAME`].
-pub fn new_water_scene(reg: &Registry, look: StartingLook, name: &str) -> Scene {
+/// A bare new Water scene: Scene settings with their Water, Light and Back cards, a Camera and the
+/// Course. Nothing else: no liquid and no pour. An empty `name` gives [`NEW_NAME`].
+pub fn new_water_scene(reg: &Registry, name: &str) -> Scene {
     let mut scene = Scene::empty(reg);
     scene.sim = SimKind::Water;
     scene.name = if name.trim().is_empty() { NEW_NAME.into() } else { name.trim().into() };
@@ -213,12 +212,17 @@ pub fn new_water_scene(reg: &Registry, look: StartingLook, name: &str) -> Scene 
     for (slot, card) in [(SlotId::Water, WORLD), (SlotId::WaterLight, LIGHT), (SlotId::Back, BACK)] {
         scene.add_slot(reg, root, slot, card).expect("the kit has the Water scene's cards");
     }
-    if look != StartingLook::Plain {
-        use bpe_core::Choice;
-        let card = scene.things.get_mut(&root).and_then(|t| t.slots.get_mut(&SlotId::Water)).expect("just added");
-        card.params.set("look", Value::Choice(look.name().into()));
-    }
     crate::add_thing(&mut scene, reg, COURSE, root).expect("the kit has the Course");
+    scene
+}
+
+/// A new Water scene started with `look` (decision 39): [`new_water_scene`], a Liquid named for
+/// the look (so the first Pour pours it), and the look's row with its lamps.
+pub fn start_water_scene(reg: &Registry, look: ReadyLook, name: &str) -> Scene {
+    let mut scene = new_water_scene(reg, name);
+    let liquid = crate::add_thing(&mut scene, reg, LIQUID, ThingId::ROOT).expect("the kit has the Liquid");
+    scene.things.get_mut(&liquid).expect("just added").name = look.liquid_name().into();
+    apply_look(&mut scene, reg, look, Keep::default());
     scene
 }
 
@@ -231,7 +235,7 @@ mod tests {
     #[test]
     fn a_new_water_scene_is_settings_a_camera_and_the_course() {
         let reg = crate::registry();
-        let scene = new_water_scene(&reg, StartingLook::Neon, "Cave run");
+        let scene = new_water_scene(&reg, "Cave run");
         assert_eq!((scene.sim, scene.name.as_str()), (SimKind::Water, "Cave run"));
         let kinds: Vec<&str> = scene.order.iter().map(|id| scene.things[id].kind.as_str()).collect();
         assert_eq!(kinds, ["scene", "camera", COURSE]);
@@ -240,11 +244,11 @@ mod tests {
         let resolved = bpe_core::resolve(&scene, &reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let w = cards::WaterWorld::from_params(&resolved.things[&ThingId::ROOT].slots[&SlotId::Water].params);
-        assert_eq!(w.look, StartingLook::Neon);
+        assert_eq!(w.screens(), (1, 1));
         let text = bpe_core::save(&scene);
         assert!(text.contains("sim: Water"), "{text}");
         assert_eq!(bpe_core::load(&text, &reg).unwrap(), scene, "it saves and loads");
-        assert_eq!(new_water_scene(&reg, StartingLook::Plain, " ").name, "Water course");
+        assert_eq!(new_water_scene(&reg, " ").name, "Water course");
         assert_eq!(course_of(&scene).map(|id| scene.things[&id].name.as_str()), Some("Course"));
         assert!(carving_of(&scene).list.is_empty(), "a new course is all rock");
     }
@@ -252,7 +256,7 @@ mod tests {
     #[test]
     fn the_carving_is_read_from_the_course() {
         let reg = crate::registry();
-        let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+        let mut scene = new_water_scene(&reg, "");
         let dot = bpe_core::Stroke { points: vec![[1.0, 2.0]], size: 50.0, strength: 1.0, ..Default::default() };
         let strokes = bpe_core::Strokes { list: vec![dot] };
         let course = course_of(&scene).unwrap();
@@ -279,7 +283,7 @@ mod tests {
             (FORCE, &[(SlotId::Main, cards::FORCE)]),
             (LAMP, &[(SlotId::Main, cards::LAMP)]),
         ];
-        let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+        let mut scene = new_water_scene(&reg, "");
         for (kind, cards) in want {
             let id = match kind {
                 COURSE => course_of(&scene).unwrap(),
@@ -321,7 +325,7 @@ mod tests {
     fn water_kinds_go_only_in_water_scenes_and_ball_kinds_only_in_balls_scenes() {
         let reg = crate::registry();
         let mut balls = crate::new_studio_scene(&reg);
-        let mut water = new_water_scene(&reg, StartingLook::Plain, "");
+        let mut water = new_water_scene(&reg, "");
         for kind in reg.things().filter(|k| !["scene", "camera", COURSE].contains(&k.id())) {
             let in_water = KINDS.contains(&kind.id()) || kind.id() == "folder";
             let in_balls = !KINDS.contains(&kind.id());
@@ -354,7 +358,7 @@ mod tests {
     #[test]
     fn a_water_scene_builds_an_empty_ball_world() {
         let reg = crate::registry();
-        let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+        let mut scene = new_water_scene(&reg, "");
         for kind in KINDS.into_iter().filter(|k| *k != COURSE) {
             crate::add_thing(&mut scene, &reg, kind, ThingId::ROOT).unwrap();
         }

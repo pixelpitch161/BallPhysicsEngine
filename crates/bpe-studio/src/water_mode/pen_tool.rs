@@ -131,7 +131,7 @@ pub fn drop_line(studio: &mut Studio) {
 /// The line drawn so far, with a line on to where the next point would land.
 pub fn show_line(ui: &Ui, studio: &Studio, view: &CourseView, hover: Option<Pos2>) {
     let Some(line) = studio.water_stage.line.as_ref() else { return };
-    let painter = ui.painter_at(view.rect);
+    let painter = ui.painter_at(view.clip(0.0));
     let mut points: Vec<Pos2> = line.iter().map(|p| view.to_screen(*p)).collect();
     if let Some(at) = hover.filter(|p| view.holds(*p)) {
         let alt = ui.input(|i| i.modifiers.alt);

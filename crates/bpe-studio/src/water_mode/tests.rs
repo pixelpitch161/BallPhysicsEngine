@@ -92,6 +92,79 @@ fn the_view_fits_the_course_and_maps_both_ways() {
 }
 
 #[test]
+fn the_shot_view_fits_the_shot_and_maps_both_ways() {
+    let room = Rect::from_min_size(Pos2::ZERO, vec2(832.0, 1032.0));
+    let course = Vec2::new(2160.0, 1920.0);
+    // A half-size shot (Zoom 2) round a point right of the middle.
+    let (centre, shot) = (Vec2::new(400.0, -200.0), Vec2::new(540.0, 960.0));
+    let v = CourseView::fit_shot(room, course, centre, shot);
+    let seen = v.seen_rect();
+    assert!((seen.height() - 1000.0).abs() < 0.01 && (seen.width() - 562.5).abs() < 0.01, "{seen:?}");
+    assert!((seen.center() - room.center()).length() < 1e-3);
+    assert!((v.to_screen(centre) - room.center()).length() < 1e-3);
+    assert_eq!(v.seen(), (centre - shot / 2.0, shot));
+    let p = Vec2::new(500.0, 100.0);
+    assert!((v.to_world(v.to_screen(p)) - p).length() < 1e-3);
+    // Only the shot takes clicks, and drawing stays inside it.
+    assert!(v.holds(v.to_screen(centre)) && !v.holds(v.to_screen(Vec2::new(-400.0, 0.0))));
+    assert!(v.clip(0.0) == seen);
+    // The whole course shows all of it.
+    let whole = CourseView::fit(room, course);
+    assert_eq!((whole.seen(), whole.seen_rect()), ((-course / 2.0, course), whole.rect));
+}
+
+#[test]
+fn the_shot_view_shows_the_finish_and_the_whole_course_none() {
+    use super::stage::Seen;
+    use bpe_core::{SlotId, ThingId};
+    use bpe_kit::modules::water::SCREEN;
+    let mut studio = water_studio();
+    let kit = studio.kit.clone();
+    studio.scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, bpe_kit::modules::effects::EFFECTS).unwrap();
+    studio.scene.add_layer(&kit.registry, ThingId::ROOT, SlotId::Shader, "picture.mirror").unwrap();
+    studio.scene_changed();
+    let mut h = harness(studio);
+    h.run();
+    let course = h.state().water_stage.view.expect("drawn");
+    assert!(course.shot.is_none(), "the whole course to start with");
+    h.state_mut().water_stage.seen = Seen::Shot;
+    h.run();
+    let studio = h.state();
+    assert_eq!(studio.water_stage.seen, Seen::Shot);
+    let shot = studio.water_stage.view.expect("drawn");
+    let (lo, size) = shot.seen();
+    assert_eq!((lo, size), (-SCREEN / 2.0, SCREEN), "the camera's shot: one screen round the middle");
+    assert_eq!(super::stage::look_now(studio, &shot).finish.effects.len(), 1, "Mirror on the shot");
+    assert!(super::stage::look_now(studio, &course).finish.effects.is_empty(), "none on the whole course");
+}
+
+#[test]
+fn in_the_shot_view_select_takes_clicks_only_on_the_shot() {
+    use super::stage::Seen;
+    use bpe_core::{Address, SlotId, ThingId, Value};
+    let mut studio = water_studio();
+    let kit = studio.kit.clone();
+    // Two screens wide: the camera's shot is the middle screen, and the course reaches past it.
+    let wide = Address::on(ThingId::ROOT, SlotId::Water, "screens_wide");
+    studio.scene.set_at(&kit.registry, &wide, Value::Int(2)).unwrap();
+    let beside = bpe_kit::add_thing(&mut studio.scene, &kit.registry, water::POUR, ThingId::ROOT).unwrap();
+    studio.scene.things.get_mut(&beside).unwrap().transform.position = Vec2::new(600.0, 0.0);
+    let inside = bpe_kit::add_thing(&mut studio.scene, &kit.registry, water::POUR, ThingId::ROOT).unwrap();
+    studio.scene.things.get_mut(&inside).unwrap().transform.position = Vec2::new(200.0, 0.0);
+    studio.scene_changed();
+    studio.water_stage.seen = Seen::Shot;
+    let mut h = harness(studio);
+    h.run();
+    let v = view(&h);
+    let (room, at) = (rooms_for_tests(Rect::from_min_size(Pos2::ZERO, SIZE)).2, v.to_screen(Vec2::new(600.0, 0.0)));
+    assert!(room.contains(at) && !v.seen_rect().contains(at), "the Pour beside the shot is in the room, off the shot");
+    click_at(&mut h, at);
+    assert_eq!(h.state().selection.primary, None, "a marker beside the shot isn't picked");
+    click_at(&mut h, v.to_screen(Vec2::new(200.0, 0.0)));
+    assert_eq!(h.state().selection.primary, Some(inside), "one on the shot is");
+}
+
+#[test]
 fn the_stage_follows_the_courses_size_on_the_water_card() {
     let mut studio = water_studio();
     let before = studio.scene.clone();
@@ -428,4 +501,33 @@ fn a_picked_pour_says_what_it_cannot_do_yet() {
     studio.selection.set(pour);
     h.run();
     assert!(h.query_by_label(LATER_KINDS).is_some());
+}
+
+#[test]
+fn use_a_look_sets_the_scene_to_it_as_one_undo_step() {
+    use bpe_core::{Settings, SlotId, ThingId};
+    use bpe_kit::modules::water::{ReadyLook, WaterLook};
+    let mut studio = water_studio();
+    let kit = studio.kit.clone();
+    let liquid = bpe_kit::add_thing(&mut studio.scene, &kit.registry, water::LIQUID, ThingId::ROOT).unwrap();
+    studio.scene_changed();
+    let mut h = harness(studio);
+    let before = h.state().scene.clone();
+    h.get_by_label("Use a look…").click();
+    h.run();
+    for look in ReadyLook::ALL {
+        assert!(h.query_all_by_label(look.title()).next().is_some(), "{} is in the menu", look.title());
+    }
+    assert!(h.query_all_by_label("Keep my colours").next().is_some());
+    assert!(h.query_all_by_label("Keep my lamps").next().is_some());
+    h.get_by_label("Lamp-lit rock").click();
+    h.run();
+    let studio = h.state();
+    assert_eq!(studio.status, "Using the Lamp-lit rock look.");
+    let look = WaterLook::from_params(&studio.resolved.things[&liquid].slots[&SlotId::Look].params);
+    assert_eq!(look, ReadyLook::LampLitRock.row().liquid);
+    assert_eq!(of_kind(studio, water::LAMP).len(), 2, "its two lamps");
+    assert!(h.state_mut().undo());
+    h.run();
+    assert_eq!(h.state().scene, before, "one undo puts it all back");
 }
