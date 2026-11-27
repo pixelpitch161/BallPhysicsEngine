@@ -487,6 +487,48 @@ fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
         if thing.kind == water::LAMP {
             lamp_marks(&painter, studio, view, id, place, ink);
         }
+        if thing.kind == water::DRAIN {
+            drain_marks(&painter, studio, view, id, place, ink);
+        }
+    }
+}
+
+/// A Drain's or Leak's reach as a circle, or the edges of the course an Edge drain runs along as
+/// thick lines.
+fn drain_marks(
+    painter: &egui::Painter,
+    studio: &Studio,
+    view: &CourseView,
+    id: ThingId,
+    place: Vec2,
+    ink: egui::Color32,
+) {
+    use bpe_kit::modules::water::{CourseEdge, DrainCard, DrainKind};
+    let Some(card) = studio.resolved.things.get(&id).and_then(|t| t.slots.get(&SlotId::Main)) else { return };
+    let drain = DrainCard::from_params(&card.params);
+    if drain.kind != DrainKind::EdgeOfTheCourse {
+        let r = (drain.radius.max(0.0) * view.scale()).max(MARKER_R + 3.0);
+        painter.circle_stroke(view.to_screen(place), r, Stroke::new(1.0, ink));
+        return;
+    }
+    let half = view.size / 2.0;
+    let (lt, rt, lb, rb) = (
+        view.to_screen(Vec2::new(-half.x, -half.y)),
+        view.to_screen(Vec2::new(half.x, -half.y)),
+        view.to_screen(Vec2::new(-half.x, half.y)),
+        view.to_screen(Vec2::new(half.x, half.y)),
+    );
+    let thick = Stroke::new(3.0, ink);
+    let all = drain.edge == CourseEdge::All;
+    for (edge, line) in [
+        (CourseEdge::Bottom, [lb, rb]),
+        (CourseEdge::Top, [lt, rt]),
+        (CourseEdge::Left, [lt, lb]),
+        (CourseEdge::Right, [rt, rb]),
+    ] {
+        if all || drain.edge == edge {
+            painter.line_segment(line, thick);
+        }
     }
 }
 
@@ -546,7 +588,8 @@ fn lamp_marks(
     }
 }
 
-/// A pour's aim and its stream's width (a tap), or the box it fills at the start.
+/// A pour's aim and its stream's width (a tap or rain), a burst's lump, or the box it fills at the
+/// start.
 fn pour_marks(
     painter: &egui::Painter,
     studio: &Studio,
@@ -570,7 +613,18 @@ fn pour_marks(
     painter.line_segment([at + way * MARKER_R, tip], line);
     painter.line_segment([tip, tip - way * 7.0 + way.rot90() * 4.0], line);
     painter.line_segment([tip, tip - way * 7.0 - way.rot90() * 4.0], line);
-    let half = ((pour.rate * pour.width).max(0.0) * view.scale() / 2.0).max(3.0);
+    use bpe_kit::modules::water::PourKind;
+    let width = match pour.kind {
+        PourKind::Tap => pour.rate * pour.width,
+        PourKind::Rain => pour.width,
+        PourKind::Burst => {
+            let r = (pour.burst_size.max(0.0) * view.scale() / 2.0).max(MARKER_R + 3.0);
+            painter.circle_stroke(at, r, line);
+            return;
+        }
+        PourKind::Drip | PourKind::FillAtTheStart => return,
+    };
+    let half = (width.max(0.0) * view.scale() / 2.0).max(3.0);
     let across = way.rot90() * half;
     painter.line_segment([at + way * (MARKER_R + 3.0) - across, at + way * (MARKER_R + 3.0) + across], line);
 }

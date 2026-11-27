@@ -214,6 +214,9 @@ pub struct Pour {
     pub until: f32,
     pub kind: u32,
     pub colour: u32,
+    /// It pours only what drains have taken (the body's tank: [`crate::Water::tank`]), at most a
+    /// sixth of the tank a frame and never more than it would pour unfed.
+    pub fed: bool,
 }
 
 impl Default for Pour {
@@ -228,6 +231,7 @@ impl Default for Pour {
             until: f32::MAX,
             kind: STOPS,
             colour: WATER,
+            fed: false,
         }
     }
 }
@@ -262,6 +266,23 @@ impl Pour {
         let columns = self.columns(layout);
         let s = Pour::spacing(layout);
         (if columns >= 1.0 { s } else { s / columns.max(1e-6) }) as f32
+    }
+
+    /// About how many drops it pours from `from` to `from + dt` seconds on `layout` (its width times
+    /// how far it runs, over the spacing squared).
+    pub fn amount(&self, layout: &Layout, from: f64, dt: f64) -> f64 {
+        let s = Pour::spacing(layout);
+        let width = f64::from(self.width);
+        if !(width.is_finite() && width > 0.0) {
+            return 0.0;
+        }
+        self.travel(from, dt) * width / (s * s)
+    }
+
+    /// How many drops one of its rows holds on `layout` (at least one).
+    pub fn row(&self, layout: &Layout) -> f64 {
+        let columns = self.columns(layout);
+        if columns.is_finite() { columns.floor().max(1.0) } else { 1.0 }
     }
 
     /// How far the stream runs (pixels) in the part of the step from `from` to `from + dt`
@@ -353,7 +374,7 @@ impl Pour {
 }
 
 /// The unit vector at `degrees`, the same on every platform.
-fn way_at(degrees: f32) -> Vec2 {
+pub(crate) fn way_at(degrees: f32) -> Vec2 {
     let (sin, cos) = degrees.to_radians().det_sin_cos();
     Vec2::new(cos, sin)
 }

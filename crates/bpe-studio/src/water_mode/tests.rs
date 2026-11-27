@@ -485,22 +485,28 @@ fn placing_a_pour_without_a_liquid_adds_water() {
 }
 
 #[test]
-fn a_picked_pour_says_what_it_cannot_do_yet() {
-    use bpe_kit::things::water::draft::LATER_KINDS;
+fn a_picked_pour_says_what_it_cannot_do() {
+    use bpe_kit::things::water::draft::NO_FEEDING_DRAIN;
     let mut h = harness(water_studio());
     h.state_mut().water_stage.tool = Tool::Pour;
     h.run();
     let v = view(&h);
     click_at(&mut h, v.to_screen(Vec2::new(0.0, -300.0)));
     let pour = of_kind(h.state(), water::POUR)[0];
-    assert!(h.query_by_label(LATER_KINDS).is_none(), "a tap pours");
-    let studio = h.state_mut();
-    let card = studio.scene.things.get_mut(&pour).unwrap().slots.get_mut(&bpe_core::SlotId::Main).unwrap();
-    card.params.set("kind", bpe_core::Value::Choice("rain".into()));
-    studio.scene_changed();
-    studio.selection.set(pour);
-    h.run();
-    assert!(h.query_by_label(LATER_KINDS).is_some());
+    let set = |h: &mut Harness<Studio>, key: &str, value: bpe_core::Value| {
+        let studio = h.state_mut();
+        let card = studio.scene.things.get_mut(&pour).unwrap().slots.get_mut(&bpe_core::SlotId::Main).unwrap();
+        card.params.set(key, value);
+        studio.scene_changed();
+        studio.selection.set(pour);
+        h.run();
+    };
+    assert!(h.query_by_label(NO_FEEDING_DRAIN).is_none(), "a tap pours");
+    set(&mut h, "kind", bpe_core::Value::Choice("rain".into()));
+    assert!(h.query_by_label(NO_FEEDING_DRAIN).is_none(), "and rain does");
+    set(&mut h, "kind", bpe_core::Value::Choice("tap".into()));
+    set(&mut h, "fed_by_drains", bpe_core::Value::Bool(true));
+    assert!(h.query_by_label(NO_FEEDING_DRAIN).is_some(), "a fed tap with no drain feeding it says so");
 }
 
 #[test]

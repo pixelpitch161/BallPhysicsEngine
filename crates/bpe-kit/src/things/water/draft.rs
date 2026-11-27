@@ -13,11 +13,17 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use bpe_core::{Params, Resolved, Scene, Settings, SlotId, Strokes, Target, ThingId, Track};
-use bpe_water::{Drop, Feel, Layout, Numbers, Pour, STOPS, SolidField, WATER, Water, WaterGpu};
+use bpe_water::{
+    Drain, Drop, Feel, Layout, LumpKind, Lumps, MOST_DRAINS, Numbers, Pour, STOPS, SolidField, Throw, Timed, WATER,
+    Water, WaterGpu,
+};
 use glam::Vec2;
 
-use super::{LIQUID, PIECE, POUR, WALL, carving_of, course_of};
-use crate::modules::water::{CarveMask, FeelCard, MaterialCard, PourCard, PourKind, WaterWorld, layout_for, mask_for};
+use super::{DRAIN, LIQUID, PIECE, POUR, WALL, carving_of, course_of};
+use crate::modules::water::{
+    CarveMask, CourseEdge, DrainCard, DrainKind, FeelCard, MaterialCard, PourCard, PourKind, WaterWorld, layout_for,
+    mask_for,
+};
 
 pub mod course;
 pub mod inputs;
@@ -48,8 +54,6 @@ pub const MOST_LIQUIDS: usize = bpe_water::drops::numbers::MOST_LIQUIDS;
 
 /// What the stage says about a pour with no Liquid to pour.
 pub const NO_LIQUID: &str = "This pour has no Liquid to pour.";
-/// What the stage says about a Rain, Drip or Burst pour.
-pub const LATER_KINDS: &str = "Rain, drips and bursts arrive in a later part of Water mode.";
 /// What the stage says about a pour of a Liquid past the most the water tells apart.
 pub const TOO_MANY_LIQUIDS: &str = "The water tells at most 16 liquids apart: this one isn't poured.";
 /// What the stage says about a tap past the most the water pours at once.
@@ -60,6 +64,15 @@ pub const IN_ROCK: &str = "This tap's spout is inside a solid: carve the rock aw
 /// takes a thin wall as thicker and may let water through a thin block (neither is thickened past
 /// what the physics needs), so the finer final can play it a little differently.
 pub const THIN: &str = "Thinner than two draft cells: the draft can't hold it exactly, so the water may act a little differently in the final.";
+/// What the stage says about a Drain past the most the water has.
+pub const TOO_MANY_DRAINS: &str = "The water has at most 32 drains: this one takes nothing.";
+/// What the stage says about a tap Fed by drains with no drain that Feeds pours.
+pub const NO_FEEDING_DRAIN: &str = "This tap is fed by drains, but no Drain feeds pours: it pours nothing.";
+/// How fast a Drain (and the Edge of the course) takes the liquid in its reach at Rate 1: the share
+/// a second is `1 - exp(-pull)`, so most of what is in a hole is gone within a few frames.
+pub const DRAIN_PULL: f32 = 30.0;
+/// How fast a Leak takes it at Rate 1: about two thirds of what sits in it in a second.
+pub const LEAK_PULL: f32 = 1.0;
 /// What the stage says about a Piece or Wall whose Moves card asks it to move.
 pub const MOVES_LATER: &str = "Moving pieces arrive in a later part of Water mode: this one stays where it is for now.";
 
@@ -127,6 +140,14 @@ pub struct PourSetup {
     card: Keyed,
 }
 
+/// One Drain as the water sees it.
+#[derive(Clone, Debug)]
+pub struct DrainSetup {
+    pub id: ThingId,
+    pub place: Vec2,
+    card: Keyed,
+}
+
 /// One frame's physics inputs, read from the keyframes at the frame's start.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameInputs {
@@ -137,6 +158,11 @@ pub struct FrameInputs {
     pub feels: Vec<Feel>,
     /// Every tap, in the setup's order (which stays the same all run).
     pub pours: Vec<Pour>,
+    /// The drops the frame's rain, drips and bursts give birth to, each at its moment (only with
+    /// the field: [`WaterSetup::inputs_on`]).
+    pub timed: Vec<Timed>,
+    /// Every drain, in the setup's order.
+    pub drains: Vec<Drain>,
 }
 
 /// A Water scene as the water engine's inputs, at draft detail.
@@ -149,6 +175,8 @@ pub struct WaterSetup {
     pub strokes: Arc<Strokes>,
     pub liquids: Vec<LiquidSetup>,
     pub pours: Vec<PourSetup>,
+    /// The enabled Drains, in the scene's order (at most [`MOST_DRAINS`]).
+    pub drains: Vec<DrainSetup>,
     /// The enabled Pieces and Walls, in the scene's order: the order they are laid over the rock.
     pub solids: Vec<SolidSetup>,
     /// What the stage says about a pour that can't pour, or a piece or wall that is not as it will be.
@@ -212,7 +240,6 @@ impl WaterSetup {
             let found = liquid_index(scene, &liquid_ids, &c.liquid);
             let mut liquid = found.filter(|i| *i < MOST_LIQUIDS);
             match (found, c.kind) {
-                (_, PourKind::Rain | PourKind::Drip | PourKind::Burst) => notes.push((id, LATER_KINDS)),
                 (None, _) => notes.push((id, NO_LIQUID)),
                 (Some(i), _) if i >= MOST_LIQUIDS => notes.push((id, TOO_MANY_LIQUIDS)),
                 (Some(_), PourKind::Tap) if taps >= bpe_water::drops::MOST_POURS => {
@@ -224,6 +251,22 @@ impl WaterSetup {
             }
             let place = scene.things[&id].transform.position;
             pours.push(PourSetup { id, liquid, kind: c.kind, place, card });
+        }
+        let mut drains = Vec::new();
+        for id in of_kind(DRAIN) {
+            let Some(card) = Keyed::of(scene, resolved, id, SlotId::Main) else { continue };
+            if drains.len() >= MOST_DRAINS {
+                notes.push((id, TOO_MANY_DRAINS));
+                continue;
+            }
+            drains.push(DrainSetup { id, place: scene.things[&id].transform.position, card });
+        }
+        let feeding = drains.iter().any(|d| d.card.card::<DrainCard>(0.0).feeds_pours);
+        for p in &pours {
+            let c: PourCard = p.card.card(0.0);
+            if p.kind == PourKind::Tap && p.liquid.is_some() && c.fed_by_drains && !feeding {
+                notes.push((p.id, NO_FEEDING_DRAIN));
+            }
         }
         let solids: Vec<SolidSetup> = scene
             .order
@@ -255,13 +298,17 @@ impl WaterSetup {
             (p.id, p.liquid, p.place.x.to_bits(), p.place.y.to_bits()).hash(&mut h);
             p.card.hash_into(None, &mut h);
         }
+        for d in &drains {
+            (d.id, d.place.x.to_bits(), d.place.y.to_bits()).hash(&mut h);
+            d.card.hash_into(None, &mut h);
+        }
         for s in &solids {
             (s.id, s.kind, s.at.x.to_bits(), s.at.y.to_bits(), s.turn.to_bits()).hash(&mut h);
             s.form.hash_into(None, &mut h);
             s.material.hash_into(Some(&["wetting"]), &mut h);
         }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, solids, notes, print, detail, world, rock }
+        WaterSetup { size, cell, strokes, liquids, pours, drains, solids, notes, print, detail, world, rock }
     }
 
     /// The grid the water runs on.
@@ -360,10 +407,61 @@ impl WaterSetup {
                     until: c.stops,
                     kind: liquid as u32 | STOPS,
                     colour: WATER,
+                    fed: c.fed_by_drains,
                 })
             })
             .collect();
-        FrameInputs { gravity: w.gravity, air_lift: w.bubble_rise, feels, pours }
+        let drains = self.drains.iter().map(|d| drain_of(d, d.card.card(time))).collect();
+        FrameInputs { gravity: w.gravity, air_lift: w.bubble_rise, feels, pours, timed: Vec::new(), drains }
+    }
+
+    /// Pour `p`'s lumps as they are at `time` seconds, if it is a Rain, Drip or Burst with a Liquid
+    /// to pour (its Drops a second, Drop size, Burst size, Every, Starts and Stops are read at the
+    /// start; its Width at `time`).
+    fn lumps_of(&self, p: &PourSetup, time: f64) -> Option<Lumps> {
+        let liquid = p.liquid?;
+        let c0: PourCard = p.card.card(0.0);
+        let c: PourCard = p.card.card(time);
+        let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let per_second = f64::from(finite(c0.drops_a_second));
+        let (kind, width, size, every) = match p.kind {
+            PourKind::Rain => (LumpKind::Rain, finite(c.width), c0.drop_size, 1.0 / per_second),
+            PourKind::Drip => (LumpKind::Drip, 0.0, c0.drop_size, 1.0 / per_second),
+            PourKind::Burst => (LumpKind::Burst, 0.0, c0.burst_size, f64::from(finite(c0.every))),
+            PourKind::Tap | PourKind::FillAtTheStart => return None,
+        };
+        if p.kind != PourKind::Burst && per_second <= 0.0 {
+            return None;
+        }
+        Some(Lumps {
+            kind,
+            place: p.place,
+            width,
+            size: finite(size),
+            every,
+            from: f64::from(c0.starts),
+            until: f64::from(c0.stops),
+            seed: u64::from(p.id.0).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x5851_F42D_4C95_7F2D,
+            kind_bits: liquid as u32 | STOPS,
+            colour: WATER,
+        })
+    }
+
+    /// The drops frame `frame`'s rain, drips and bursts give birth to on `field`, each at its
+    /// moment, set off by its pour's Aim, Speed and Spread then.
+    pub fn timed_on(&self, frame: u32, field: &SolidField) -> Vec<Timed> {
+        let (t0, t1) = (f64::from(frame) / 60.0, f64::from(frame + 1) / 60.0);
+        let clear = self.numbers().wall_off * self.cell;
+        let mut out = Vec::new();
+        for p in &self.pours {
+            let Some(lumps) = self.lumps_of(p, t0) else { continue };
+            let throw = |at: f64| {
+                let c: PourCard = p.card.card(at);
+                Throw { aim: c.aim, speed: c.speed, spread: c.spread }
+            };
+            out.extend(lumps.born(&field.layout, field, clear, t0, t1, throw));
+        }
+        out
     }
 
     /// The physics inputs of frame `frame` on `field` (this setup's): each tap's stream as wide as
@@ -374,13 +472,15 @@ impl WaterSetup {
         for pour in &mut inputs.pours {
             pour.width = open_width(pour, field, clear);
         }
+        inputs.timed = self.timed_on(frame, field);
         inputs
     }
 
     /// Sets `water`'s inputs for its next frame on `field` (this setup's): gravity, Bubbles rise,
-    /// the liquids' feel and the taps, none while the body holds `most` liquid drops or more (by
-    /// the liquid: trapped air comes and goes, and would stop and start the pours). The draft, the
-    /// final and a draft's export all play a frame this way.
+    /// the liquids' feel, the drains, and the taps and the rain, drips and bursts, none of those
+    /// while the body holds `most` liquid drops or more (by the liquid: trapped air comes and goes,
+    /// and would stop and start the pours). The draft, the final and a draft's export all play a
+    /// frame this way.
     pub fn set_inputs(&self, water: &mut Water, field: &SolidField, most: u32) {
         let inputs = self.inputs_on(water.frames(), field);
         water.set_gravity(inputs.gravity);
@@ -390,6 +490,8 @@ impl WaterSetup {
         }
         let full = water.liquid() >= most;
         water.set_pours(if full { &[] } else { &inputs.pours });
+        water.set_timed(if full { &[] } else { &inputs.timed });
+        water.set_drains(&inputs.drains);
     }
 
     /// A body on `field` (this setup's) from a restart point's `state`, made with the inputs of the
@@ -418,6 +520,12 @@ impl WaterSetup {
             let until = f64::from(c.stops).clamp(from, seconds);
             let width = f64::from((c.rate * c.width).max(0.0));
             poured += width * f64::from(c.speed.max(0.0)) * (until - from) / (spacing * spacing);
+        }
+        let layout = self.layout();
+        for p in &self.pours {
+            if let Some(lumps) = self.lumps_of(p, 0.0) {
+                poured += lumps.amount(&layout, 0.0, seconds);
+            }
         }
         (fills + poured).min(f64::from(FINAL_MOST)) as u32
     }
@@ -481,7 +589,30 @@ impl WaterSetup {
             water.add(&fills);
         }
         water.set_pours(&inputs.pours);
+        water.set_timed(&inputs.timed);
+        water.set_drains(&inputs.drains);
         water
+    }
+}
+
+/// Drain `d` as the water takes it, its card `c` as it is in the frame.
+fn drain_of(d: &DrainSetup, c: DrainCard) -> Drain {
+    let rate = if c.rate.is_finite() { c.rate.max(0.0) } else { 0.0 };
+    let reach = if c.radius.is_finite() { c.radius.max(0.0) } else { 0.0 };
+    let disc = |pull: f32| Drain { place: d.place, reach, pull: pull * rate, edges: 0, feeds: c.feeds_pours };
+    match c.kind {
+        DrainKind::Drain => disc(DRAIN_PULL),
+        DrainKind::Leak => disc(LEAK_PULL),
+        DrainKind::EdgeOfTheCourse => {
+            let edges = match c.edge {
+                CourseEdge::Bottom => Drain::BOTTOM,
+                CourseEdge::Top => Drain::TOP,
+                CourseEdge::Left => Drain::LEFT,
+                CourseEdge::Right => Drain::RIGHT,
+                CourseEdge::All => Drain::ALL_EDGES,
+            };
+            Drain { edges, feeds: c.feeds_pours, ..Drain::edge(edges, DRAIN_PULL * rate) }
+        }
     }
 }
 

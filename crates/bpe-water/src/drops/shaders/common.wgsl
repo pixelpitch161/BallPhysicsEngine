@@ -72,11 +72,17 @@ struct Fr {
     air: vec4<f32>,
     // each level of the pressure: where it starts in `cellp` and `coef`, its columns, its rows, 0
     lv: array<vec4<u32>, 12>,
+    // the drains (drains.rs): each one's middle (grid units), reach (cells) and chance a step
+    drains: array<vec4<f32>, 32>,
+    // each drain's edges, four to an entry (0 a disc; 1 left, 2 right, 4 top, 8 bottom)
+    dedges: array<vec4<u32>, 8>,
+    // how many drains, the frame's code for the drops they take (`drained_y`), 0, 0
+    dmeta: vec4<u32>,
 };
 
 // A step's numbers (one for each step of the frame, at its own offset): the drops this step, the
 // drops before this step's births, where its births start in the births buffer, and bit 0 the
-// frame's last step, bit 1 its first. The export takes (the first drop, how many, 0, 0); a pass of
+// frame's last step, bit 1 its first, bits 8 and up its number in the frame. The export takes (the first drop, how many, 0, 0); a pass of
 // the deep water's pressure (its number, 0, 0, 0).
 struct St {
     n: vec4<u32>,
@@ -239,6 +245,51 @@ fn slope(r: vec2<f32>, far: f32) -> vec2<f32> {
     let h = fr.k.x;
     let t = max(1.0 - far / h, 0.0);
     return r * (-30.0 / (PI * h * h * h) * t * t / far);
+}
+
+// A share in [0, 1) from three whole numbers, the same on every card (a hash, no generator).
+fn share_of(a: u32, b: u32, c: u32) -> f32 {
+    var h = (a * 0x9E3779B1u) ^ ((b + 0x7F4A7C15u) * 0x85EBCA77u) ^ ((c + 0x165667B1u) * 0xC2B2AE3Du);
+    h = (h ^ (h >> 16u)) * 0x7FEB352Du;
+    h = (h ^ (h >> 15u)) * 0x846CA68Bu;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// The drain that takes drop `i` at `x` (grid units) this step, or -1. A drain whose reach holds it
+// (a disc's within its reach of its middle, an edge's within `EDGE` + 0.8 cells of one of its edges:
+// the drops stop at `EDGE` + 0.05) takes it when one share, a hash of the drop's place in the order,
+// the frame and the step (the same every run), is under its chance; the first in the list that does
+// is the one. So where drains overlap the strongest decides, and one that takes nothing (a Rate of
+// 0) changes nothing.
+fn drain_taking(i: u32, x: vec2<f32>, step: u32) -> i32 {
+    if fr.dmeta.x == 0u {
+        return -1;
+    }
+    let share = share_of(i, fr.dmeta.y, step);
+    let strip = EDGE + 0.8;
+    let far = vec2<f32>(fr.grid.xy) - vec2<f32>(1.0 + strip);
+    for (var k = 0u; k < min(fr.dmeta.x, 32u); k = k + 1u) {
+        let e = fr.dedges[k / 4u][k % 4u];
+        var inside = false;
+        if e == 0u {
+            let r = x - fr.drains[k].xy;
+            inside = dot(r, r) <= fr.drains[k].z * fr.drains[k].z;
+        } else {
+            inside = ((e & 1u) != 0u && x.x < strip) || ((e & 2u) != 0u && x.x > far.x)
+                || ((e & 4u) != 0u && x.y < strip) || ((e & 8u) != 0u && x.y > far.y);
+        }
+        if inside && share < fr.drains[k].w {
+            return i32(k);
+        }
+    }
+    return -1;
+}
+
+// Where a drain sends the drops it takes in this frame: x says which drain (`-2e6 - k`), y the
+// frame (`drained_y`), both whole numbers a float holds exactly.
+fn drained_y() -> f32 {
+    return -1e6 - f32(fr.dmeta.y);
 }
 
 // The way from one drop to another that is on top of it: each its own, by their places in the

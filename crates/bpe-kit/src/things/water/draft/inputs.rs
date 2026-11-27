@@ -111,19 +111,42 @@ impl WaterSetup {
                 l.feel.describe(None, h)
             }));
         }
+        parts.push(part("drains".into(), 0.0, |h| {
+            let mut keys = Vec::new();
+            for (k, d) in self.drains.iter().enumerate() {
+                (d.id, d.place.x.to_bits(), d.place.y.to_bits()).hash(h);
+                keys.extend(d.card.describe(None, h).into_iter().map(|(key, list)| (format!("{k}/{key}"), list)));
+            }
+            keys
+        }));
+        // (Rain, drips and bursts keep nothing from frame to frame: each is told apart by its own id.)
+        let lumps = self
+            .pours
+            .iter()
+            .filter(|p| matches!(p.kind, PourKind::Rain | PourKind::Drip | PourKind::Burst) && p.liquid.is_some());
+        for p in lumps {
+            parts.push(part(format!("lumps:{}", p.id.0), lead_from(p), |h| {
+                (p.id, p.liquid, p.kind, p.place.x.to_bits(), p.place.y.to_bits()).hash(h);
+                p.card.describe(None, h)
+            }));
+        }
         let taps = self.pours.iter().filter(|p| p.kind == PourKind::Tap && p.liquid.is_some());
         for (k, p) in taps.enumerate() {
-            // (A tap keyed to start later still reads its Starts at the time: it may start at 0.)
-            let starts = p.card.card::<PourCard>(0.0).starts;
-            let keyed = p.card.tracks.iter().any(|(key, _)| key == "starts");
-            let from = if keyed || !starts.is_finite() { 0.0 } else { (f64::from(starts) - TAP_LEAD).max(0.0) };
-            parts.push(part(format!("tap:{k}"), from, |h| {
+            parts.push(part(format!("tap:{k}"), lead_from(p), |h| {
                 (p.id, p.liquid, p.place.x.to_bits(), p.place.y.to_bits()).hash(h);
                 p.card.describe(None, h)
             }));
         }
         WaterInputs { parts }
     }
+}
+
+/// From when pour `p` can first change the water: its Starts less [`TAP_LEAD`]. (A pour keyed to
+/// start later still reads its Starts at the time: it may start at 0.)
+fn lead_from(p: &super::PourSetup) -> f64 {
+    let starts = p.card.card::<PourCard>(0.0).starts;
+    let keyed = p.card.tracks.iter().any(|(key, _)| key == "starts");
+    if keyed || !starts.is_finite() { 0.0 } else { (f64::from(starts) - TAP_LEAD).max(0.0) }
 }
 
 impl WaterInputs {
