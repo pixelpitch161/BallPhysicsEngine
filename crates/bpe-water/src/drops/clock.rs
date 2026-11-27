@@ -241,6 +241,52 @@ impl Clock {
         fastest
     }
 
+    /// The host's side of this clock (every report read back first), for a restart point.
+    pub(super) fn state(&mut self, device: &wgpu::Device) -> ClockState {
+        self.read_all(device);
+        let recent = self
+            .recent
+            .iter()
+            .map(|e| {
+                let report = match &e.back {
+                    Back::Known(r) => **r,
+                    Back::OnCard { .. } => unreachable!("every report was read back"),
+                };
+                (e.frame, e.count, e.poured, report)
+            })
+            .collect();
+        ClockState {
+            recent,
+            let_go: self.let_go,
+            added: self.added,
+            settled: self.settled,
+            reported: self.reported,
+            spouts: self.spouts,
+            deep: self.deep,
+            air: self.air,
+            liquid: self.liquid,
+            last_steps: self.last_steps,
+        }
+    }
+
+    /// Takes the host's side from `state` (a body made from a restart point).
+    pub(super) fn set_state(&mut self, state: &ClockState) {
+        self.recent = state
+            .recent
+            .iter()
+            .map(|&(frame, count, poured, report)| Entry { frame, count, poured, back: Back::Known(Box::new(report)) })
+            .collect();
+        self.let_go = state.let_go;
+        self.added = state.added;
+        self.settled = state.settled;
+        self.reported = state.reported;
+        self.spouts = state.spouts;
+        self.deep = state.deep;
+        self.air = state.air;
+        self.liquid = state.liquid;
+        self.last_steps = state.last_steps;
+    }
+
     /// The host's side of this clock, for a copy (every report read back first).
     pub(super) fn copy_into(&mut self, device: &wgpu::Device, to: &mut Clock) {
         self.read_all(device);
@@ -254,5 +300,85 @@ impl Clock {
         to.air = self.air;
         to.liquid = self.liquid;
         to.last_steps = self.last_steps;
+    }
+}
+
+/// The host's side of a clock, every report known: what a restart point keeps of it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ClockState {
+    /// The last frames' (frame, drops at its end, liquid added by its end, report).
+    recent: Vec<(u32, u32, u32, Report)>,
+    let_go: u32,
+    added: [f32; SLOTS],
+    settled: Option<u32>,
+    reported: f32,
+    spouts: [f32; MOST_POURS],
+    deep: u32,
+    air: u32,
+    liquid: (u32, u32),
+    last_steps: u32,
+}
+
+impl ClockState {
+    pub(super) fn write(&self, o: &mut super::state::Out) {
+        o.u32(self.recent.len() as u32);
+        for (frame, count, poured, report) in &self.recent {
+            o.u32(*frame);
+            o.u32(*count);
+            o.u32(*poured);
+            o.bytes(bytemuck::bytes_of(report));
+        }
+        o.u32(self.let_go);
+        for a in self.added {
+            o.f32(a);
+        }
+        o.u32(u32::from(self.settled.is_some()));
+        o.u32(self.settled.unwrap_or(0));
+        o.f32(self.reported);
+        for s in self.spouts {
+            o.f32(s);
+        }
+        for v in [self.deep, self.air, self.liquid.0, self.liquid.1, self.last_steps] {
+            o.u32(v);
+        }
+    }
+
+    pub(super) fn read(i: &mut super::state::In) -> anyhow::Result<ClockState> {
+        let n = i.u32()? as usize;
+        if n > SLOTS {
+            anyhow::bail!("the state's clock has too many reports");
+        }
+        let mut recent = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (frame, count, poured) = (i.u32()?, i.u32()?, i.u32()?);
+            let bytes = i.bytes()?;
+            let report = bytemuck::try_pod_read_unaligned::<Report>(&bytes)
+                .map_err(|_| anyhow::anyhow!("the state's report is the wrong size"))?;
+            recent.push((frame, count, poured, report));
+        }
+        let let_go = i.u32()?;
+        let mut added = [0.0; SLOTS];
+        for a in &mut added {
+            *a = i.f32()?;
+        }
+        let settled = (i.u32()? != 0, i.u32()?);
+        let reported = i.f32()?;
+        let mut spouts = [0.0; MOST_POURS];
+        for s in &mut spouts {
+            *s = i.f32()?;
+        }
+        let (deep, air, l0, l1, last_steps) = (i.u32()?, i.u32()?, i.u32()?, i.u32()?, i.u32()?);
+        Ok(ClockState {
+            recent,
+            let_go,
+            added,
+            settled: settled.0.then_some(settled.1),
+            reported,
+            spouts,
+            deep,
+            air,
+            liquid: (l0, l1),
+            last_steps,
+        })
     }
 }

@@ -452,7 +452,12 @@ part adds its own tools to the rail.
    scene second is the C2 estimate; it is made faster only if it is well over that). **Slow motion**: a stretch
    of the final kept at 4 or 8 times the frames, so a splash plays slowly and smoothly, with speed ramps on the
    timeline. Until part 6 lands, Make final and export draw with the plain look. The take's format leaves room for
-   what parts 4, 4b and 5 add (more liquids, heat later, driven parts).
+   what parts 4, 4b and 5 add (more liquids, heat later, driven parts). **Built** (PR #242): takes in a finals
+   folder found by the scene's print, remade from the restart point before an edit (every 2 s), the Draft | Final
+   switch, Make final, the Final lane, Make final and export from the editor and `bpe-render-next`, Preview final
+   frame, and the Water card's Speed (keyframed for ramps) keeping 2, 4 or 8 moments a frame where the water plays
+   slowly. Measured on the RX 9070 XT: a one-screen final at 2 px (1.4 million drops) takes 10 s and 267 MB a scene
+   second, the C2 estimate (`plans/water-mode/part8-make-final-and-export.md`, "As built and measured").
 9. **Big courses.** The editor's tools for courses over one screen: whole-course view, Camera path, Follow, and
    tiles for the deep-water grid and the solid field (drops need none).
 10. **Video mode and clean-up.** Water clips in a video and the Scenes window. Removing the old Liquid thing from

@@ -2,6 +2,7 @@
 //! (`.ballvideo`) of several scenes.
 
 use anyhow::{Context, bail};
+use bpe_cli::water::{self, WaterSource};
 use bpe_cli::{Encoder, ExportOptions, export_arranged, export_video};
 use std::io::Write;
 use std::path::PathBuf;
@@ -28,7 +29,11 @@ Options:
   --stems          also save each bus and the master as 32-bit float WAVs beside the video
   --midi           also save the notes the shapes played as a MIDI file beside the video
   --bake           bake the lighting (the cinema render), whatever the Lighting card says
-  --live           draw the lighting as the editor does, whatever the Lighting card says";
+  --live           draw the lighting as the editor does, whatever the Lighting card says
+
+A Water scene is drawn from its final, made first where it is missing or out of date:
+  --draft          draw the draft instead (quick, coarse water)
+  --finals DIR     the finals folder (default: the editor's)";
 
 fn main() {
     if let Err(error) = run() {
@@ -56,6 +61,8 @@ fn run() -> anyhow::Result<()> {
     let mut stems = false;
     let mut midi = false;
     let mut bake = None;
+    let mut draft = false;
+    let mut finals = None;
 
     let mut i = 0;
     let value = |i: &mut usize, flag: &str| -> anyhow::Result<String> {
@@ -69,6 +76,8 @@ fn run() -> anyhow::Result<()> {
             "--midi" => midi = true,
             "--bake" => bake = Some(true),
             "--live" => bake = Some(false),
+            "--draft" => draft = true,
+            "--finals" => finals = Some(PathBuf::from(value(&mut i, "--finals")?)),
             "--scale" => scale = value(&mut i, "--scale")?.parse().context("--scale needs a number")?,
             "--frames" => frames = Some(value(&mut i, "--frames")?.parse().context("--frames needs a whole number")?),
             "--crf" => crf = value(&mut i, "--crf")?.parse().context("--crf needs a number from 0 to 51")?,
@@ -152,10 +161,26 @@ fn run() -> anyhow::Result<()> {
     if let Some(ffmpeg) = ffmpeg {
         options.ffmpeg = ffmpeg;
     }
+    options.water = if draft { WaterSource::Draft } else { WaterSource::MakeFinal };
+    options.finals = finals;
 
     let (device, queue) = bpe_gfx::headless_device().context("no graphics device for rendering")?;
     let started = std::time::Instant::now();
-    let encoder = export_video(&device, &queue, &scene, &kit, &options, show_progress)?;
+    let encoder = if bpe_cli::is_water(&scene) {
+        let mut said = -1i32;
+        let mut making = |share: f32| {
+            let percent = (share * 100.0).floor() as i32;
+            if percent != said {
+                said = percent;
+                print!("\rmaking the final: {percent} %");
+                let _ = std::io::stdout().flush();
+            }
+            true
+        };
+        water::export(&device, &queue, &scene, &kit, &options, &mut making, &mut show_progress)?
+    } else {
+        export_video(&device, &queue, &scene, &kit, &options, show_progress)?
+    };
     println!("\nwrote {} with the {} in {:.1} s", output.display(), encoder.name(), started.elapsed().as_secs_f32());
     Ok(())
 }

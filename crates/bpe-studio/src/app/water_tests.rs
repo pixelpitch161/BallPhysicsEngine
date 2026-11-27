@@ -123,12 +123,13 @@ fn a_water_scene_cannot_reach_grade_mode_or_a_video() {
 }
 
 #[test]
-fn a_water_scenes_toolbar_says_so_and_greys_export_and_grade() {
-    let size = egui::vec2(1500.0, 80.0);
+fn a_water_scenes_toolbar_says_so_and_greys_grade() {
+    let size = egui::vec2(1700.0, 80.0);
     let mut h = harness(Studio::headless_water(), size, |ui, s| s.toolbar(ui));
     h.run();
     assert!(has(&h, "Water scene"));
-    assert!(disabled(&h, "Export video…") && disabled(&h, "Grade"));
+    // (A Water scene exports from its final since part 8.)
+    assert!(!disabled(&h, "Export video…") && disabled(&h, "Grade"));
     assert!(!disabled(&h, "Build") && !disabled(&h, "Video"));
     // In Video mode the video can still be exported.
     h.state_mut().mode = crate::grade_mode::EditorMode::Video;

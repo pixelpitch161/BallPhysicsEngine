@@ -7,6 +7,8 @@
 
 use super::course_view::CourseView;
 use super::draft::frame_of;
+use super::final_job::WaterView;
+use super::final_view::{self, FinalShown};
 use super::picture::Rock;
 use super::rail::{self, RAIL_W, Tool};
 use crate::app::Studio;
@@ -207,12 +209,32 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     }
 }
 
-/// Plays the draft to the playhead and draws its water over the course. Returns whether a
-/// picture of it is on the stage.
+/// Plays the draft to the playhead and draws its water over the course, or in the Final view the
+/// final's moment where it is made. Returns whether a picture of the water is on the stage.
 fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     let Some(render) = studio.panels.inspector.render.clone() else { return false };
     studio.water_draft.start_on(&render);
     update_preview(studio);
+    let painter = ui.painter_at(room);
+    // The Final view: the final's moment, unless it isn't made (the draft shows then).
+    let wf = &mut studio.water_final;
+    let final_shown = match (&wf.found, wf.view) {
+        (Some(found), WaterView::Final) => Some(final_view::shown_at(found, studio.time)),
+        _ => None,
+    };
+    if let Some(shown) = final_shown
+        && shown != FinalShown::NotMade
+        && let Some(found) = &wf.found
+    {
+        let look = bpe_kit::things::water::draft::plain_look(&studio.scene, &studio.resolved, studio.time);
+        let drawn = wf.picture.show(&painter, &render, found, &wf.finals, &look, view, studio.time);
+        if let FinalShown::OutOfDate { restart } = shown {
+            pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), final_view::out_of_date(restart));
+        }
+        if drawn {
+            return true;
+        }
+    }
     let Some(job) = studio.water_draft.job.as_ref() else { return false };
     let target = frame_of(studio.time);
     job.follow(target);
@@ -223,7 +245,6 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
         (true, Some(last)) => last.clone(),
         _ => fresh(),
     };
-    let painter = ui.painter_at(room);
     let rock = Rock {
         version: studio.water_stage.preview_version,
         preview: studio.water_stage.preview.as_ref().map(|p| &p.field),
@@ -239,14 +260,21 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
             true => "Starting the water over…".to_owned(),
             false => format!("Working out the water… {:.1} s", f64::from(reached) / 60.0),
         };
-        let at = view.rect.center_top() + vec2(0.0, 14.0);
-        let small = egui::TextStyle::Small.resolve(ui.style());
-        let text = painter.layout_no_wrap(behind, small, style::TEXT);
-        let pill = Rect::from_center_size(at, text.size() + vec2(16.0, 6.0));
-        painter.rect_filled(pill, pill.height() / 2.0, style::PILL);
-        painter.galley(pill.center() - text.size() / 2.0, text, style::TEXT);
+        pill(ui, &painter, view.rect.center_top() + vec2(0.0, 14.0), behind);
+    }
+    if final_shown == Some(FinalShown::NotMade) {
+        pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), final_view::NOT_MADE.to_owned());
     }
     shown
+}
+
+/// A line of words in a pill centred at `at`.
+fn pill(ui: &Ui, painter: &egui::Painter, at: Pos2, words: String) {
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let text = painter.layout_no_wrap(words, small, style::TEXT);
+    let pill = Rect::from_center_size(at, text.size() + vec2(16.0, 6.0));
+    painter.rect_filled(pill, pill.height() / 2.0, style::PILL);
+    painter.galley(pill.center() - text.size() / 2.0, text, style::TEXT);
 }
 
 /// Makes the course as it will be while a carve stroke is painted (with the pieces and walls over

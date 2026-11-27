@@ -10,6 +10,7 @@ pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/deep.wgsl"),
     include_str!("shaders/air.wgsl"),
     include_str!("shaders/report.wgsl"),
+    include_str!("shaders/pack.wgsl"),
 );
 
 /// A pass.
@@ -45,6 +46,7 @@ pub(super) enum P {
     AirBorn,
     Report,
     Export,
+    Pack,
 }
 
 /// The bindings: 0 the frame's numbers, 1 the step's (at its offset), 2 the places and speeds, 3
@@ -56,7 +58,7 @@ pub(super) enum P {
 /// pressure, 22 the faces' open shares, 23 how full each cell is and then its depth share, 24 how far
 /// down its column a cell that is not full is, 25 the cells deep at the frame's end, 26 how full the
 /// drops-only water just above the deep water is; for trapped air (air.wgsl) 27 each cell's spots,
-/// 28 the blocks' running sums and every spot.
+/// 28 the blocks' running sums and every spot; for a kept moment (pack.wgsl) 29 the drops packed.
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_predict", &[0, 1, 2, 3, 4, 6, 7, 15, 16]),
     ("cs_sum_a", &[0, 1, 7, 8, 9]),
@@ -88,6 +90,7 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_air_born", &[0, 1, 2, 3, 5, 8, 27, 28]),
     ("cs_report", &[0, 1, 2, 5, 8, 15, 18, 25, 28]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
+    ("cs_pack", &[0, 1, 2, 5, 29]),
 ];
 
 /// The step's numbers' binding, and the room each step's take up in its buffer (the most a
@@ -170,7 +173,8 @@ mod tests {
 
     #[test]
     fn every_pass_has_its_entry_and_fits_the_limits() {
-        assert_eq!(ENTRIES.len(), P::Export as usize + 1);
+        assert_eq!(ENTRIES.len(), P::Pack as usize + 1);
+        assert_eq!(ENTRIES[P::Pack as usize].0, "cs_pack");
         assert_eq!(ENTRIES[P::Order as usize].0, "cs_order");
         assert_eq!(ENTRIES[P::Finish as usize].0, "cs_finish");
         assert_eq!(ENTRIES[P::Born as usize].0, "cs_born");

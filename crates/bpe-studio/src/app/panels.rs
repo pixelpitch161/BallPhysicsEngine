@@ -66,9 +66,7 @@ impl Studio {
                 let export = style::primary_button("Export video…").fill(style::TEXT);
                 let what =
                     if self.in_video_mode() { "Render the video to an mp4" } else { "Render the scene to an mp4" };
-                // A Water scene has nothing to export yet; a video still has.
-                let can = !self.water() || self.in_video_mode();
-                let export = ui.add_enabled(can, export).on_hover_text(what).on_disabled_hover_text(NO_WATER_EXPORT);
+                let export = ui.add(export).on_hover_text(what);
                 if export.clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
@@ -149,6 +147,8 @@ impl Studio {
                     "This is a Water scene: liquids running through a course, with its own stage and tools. \
                  New starts a Balls scene or another Water scene.",
                 );
+            crate::water_mode::final_ui::toolbar(ui, self);
+            style::bar_separator(ui);
         }
         ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(170.0).hint_text("Scene name"))
             .on_hover_text("The scene's name. Exported videos are named after it.");
@@ -567,6 +567,13 @@ impl Studio {
             if beside.is_some() || main.is_some() {
                 let (a, b) = (beside.unwrap_or_default(), main.unwrap_or_default());
                 ui.label(RichText::new(particles_readout(a.0 + b.0, a.1 + b.1)).small().color(style::MUTED));
+            }
+            // A Water scene's final: made, being made, or what making it takes.
+            if self.water()
+                && let Some((text, problem)) = self.water_final.words()
+            {
+                let colour = if problem { style::PROBLEM } else { style::MUTED };
+                ui.label(RichText::new(text).small().color(colour));
             }
             // A Water scene's water, playing at draft detail.
             if let Some(job) = &self.water_draft.job {

@@ -226,6 +226,7 @@ dependencies = [
  "bpe-kit",
  "bpe-runtime",
  "bpe-sound",
+ "bpe-water",
  "glam",
  "png",
  "tempfile",
@@ -277,12 +278,15 @@ dependencies = [
  "bpe-water",
  "glam",
  "i_overlay",
+ "libc",
  "png",
  "rayon",
  "ron",
  "rustybuzz",
  "serde",
  "skrifa",
+ "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -357,8 +361,10 @@ dependencies = [
  "bpe-water",
  "bytemuck",
  "glam",
+ "lz4_flex",
  "png",
  "pollster 1.0.1",
+ "serde",
  "wgpu",
 ]
 
@@ -1569,6 +1575,15 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "mach2"
@@ -3182,6 +3197,12 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "type-map"

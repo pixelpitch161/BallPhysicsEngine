@@ -15,8 +15,9 @@ pub mod probe;
 #[cfg(feature = "test-scenes")]
 pub mod scenes;
 pub mod solid;
+pub mod take;
 
 pub use drop::{AIR, Drop, Pour, Poured, STOPS, WATER, fill, fill_stacked};
 pub use drops::numbers::{Feel, Numbers};
-pub use drops::{DropBuffers, MOST_DROPS, Water, WaterGpu};
+pub use drops::{DropBuffers, MOST_DROPS, Water, WaterGpu, WaterState};
 pub use solid::{DEFAULT_WETTING, Layout, Part, Solid, SolidField};

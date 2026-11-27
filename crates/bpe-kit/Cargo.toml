@@ -25,6 +25,15 @@ i_overlay.workspace = true
 rayon = "1"
 # Water mode: the carved course's solid field and a Water scene as the water engine's inputs (part 2b).
 bpe-water.workspace = true
+wgpu.workspace = true
+# Water mode part 8: a final's take's head.
+ron.workspace = true
+
+# The free room on the disk a final is made on.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [features]
 # The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on. They are not the
@@ -35,4 +44,3 @@ test-scenes = []
 bpe-kit = { path = ".", features = ["test-scenes"] }
 # Water mode part 2a: the water core's test scenes (tests/water_core.rs).
 bpe-water = { workspace = true, features = ["test-scenes"] }
-ron.workspace = true

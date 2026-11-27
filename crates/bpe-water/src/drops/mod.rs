@@ -14,10 +14,12 @@ use wgpu::util::DeviceExt;
 
 mod air;
 mod buffers;
+pub mod capture;
 mod clock;
 pub mod deep;
 pub mod numbers;
 mod passes;
+pub mod state;
 
 use crate::drop::{Drop, Pour, Poured};
 use crate::solid::{Layout, SolidField};
@@ -29,6 +31,12 @@ pub use clock::{MOST_POURS, Report};
 use deep::{Deep, MOST_LEVELS, TICKS};
 use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
 use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
+pub use state::WaterState;
+
+/// The engine's shader, as it is built (what a take's engine print hashes).
+pub fn engine_source() -> &'static str {
+    passes::SOURCE
+}
 
 /// The most drops a body holds: each of its drops' buffers (16 bytes a drop) stays within the
 /// 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
@@ -80,6 +88,8 @@ struct FrameGpu {
 /// Where the deep water's pressure passes' numbers start among the step numbers' slots (after
 /// every step's and the export's).
 const TICK_SLOT: u32 = MOST_STEPS + 1;
+/// The first of the pack passes' numbers' slots ([`capture::PACK_SLOTS`]).
+const PACK_SLOT: u32 = TICK_SLOT + TICKS;
 
 /// A drop born in a step. Matches `Born` in common.wgsl.
 #[repr(C)]
@@ -202,7 +212,7 @@ impl Water {
         });
         let step_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water steps"),
-            size: u64::from(TICK_SLOT + TICKS) * STEP_ROOM,
+            size: u64::from(PACK_SLOT + capture::PACK_SLOTS) * STEP_ROOM,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -617,7 +627,7 @@ impl Water {
     pub fn frame(&mut self) {
         self.settle();
         let n = self.steps_now();
-        self.play_frame(n);
+        self.play_frame(n, None);
     }
 
     /// The frames that ran the deep part (deep water held up from below).
@@ -684,8 +694,9 @@ impl Water {
         }
     }
 
-    /// One frame of `n` steps.
-    fn play_frame(&mut self, n: u32) {
+    /// One frame of `n` steps (keeping its moments through `keep`'s capture, as many as it asks:
+    /// see [`capture`]).
+    fn play_frame(&mut self, n: u32, mut keep: Option<(&mut capture::Capture, u32)>) {
         let dt = FRAME / n as f32;
         let capped = n >= self.numbers.most_steps.min(MOST_STEPS);
         let k = self.frames;
@@ -717,6 +728,9 @@ impl Water {
         if end > 0 {
             self.grow_to(end + slots);
             self.births_room(born.len() as u32);
+            let counts: Vec<u32> = records.iter().map(|r| r[0]).collect();
+            let packing = keep.as_mut().map(|(c, f)| capture::Packing::prepare(self, c, n, *f, &counts, end + slots));
+            let cut_after = |j: u32| packing.as_ref().is_some_and(|p| p.cuts.contains(&j));
             let gpu = self.gpu.clone();
             let queue = &gpu.queue;
             queue.write_buffer(&self.frame_uniform, 0, bytemuck::bytes_of(&frame));
@@ -752,10 +766,14 @@ impl Water {
                     label: Some("water frame"),
                     timestamp_writes: None,
                 });
+                // (A pack pass's `now` is which of the frame's moments it keeps.)
+                let pack_groups: &[wgpu::BindGroup] = packing.as_ref().map_or(&[], |p| &p.groups);
                 let mut go2 = |p: P, now: usize, y_in: usize, step: u32, (gx, gy): (u32, u32)| {
                     pass.set_pipeline(&gpu.pipes.list[p as usize].0);
                     let offset = [step * STEP_ROOM as u32];
-                    pass.set_bind_group(0, &self.groups[(p as usize * 2 + now) * 2 + y_in], &offset);
+                    let group =
+                        if p == P::Pack { &pack_groups[now] } else { &self.groups[(p as usize * 2 + now) * 2 + y_in] };
+                    pass.set_bind_group(0, group, &offset);
                     pass.dispatch_workgroups(gx.max(1), gy.max(1), 1);
                 };
                 macro_rules! go {
@@ -779,7 +797,7 @@ impl Water {
                     let by_drop = count.div_ceil(WORKGROUP);
                     // (The first step falls from the kept places; the others' fall was joined with
                     // the last step's end, and only their births come in here.)
-                    if j == 0 || !joined {
+                    if j == 0 || !joined || cut_after(j - 1) {
                         go!(P::Predict, now, 0, j, by_drop);
                     } else if count > before {
                         go!(P::Born, now, 0, j, (count - before).div_ceil(WORKGROUP));
@@ -829,16 +847,25 @@ impl Water {
                         go!(if k == 0 { P::LambdaFirst } else { P::Lambda }, now, k % 2, j, by_drop);
                         go!(if k + 1 == iters { P::ApplyLast } else { P::Apply }, now, k % 2, j, by_drop);
                     }
-                    if joined && j + 1 < n {
+                    if joined && j + 1 < n && !cut_after(j) {
                         go!(P::FinishPredict, now, iters % 2, j + 1, by_drop);
                     } else {
                         go!(P::Finish, now, iters % 2, j, by_drop);
+                    }
+                    // (A moment kept inside the frame: the drops as this step left them.)
+                    if let Some(k) = packing.as_ref().and_then(|p| p.cuts.iter().position(|&c| c == j)) {
+                        go!(P::Pack, k, 0, PACK_SLOT + k as u32, by_drop);
                     }
                     // (After the drops in the course, over those that left and into the room kept:
                     // the kinds into the ones the step sorted into.)
                     if slots > 0 && j + 1 == n {
                         go!(P::AirDead, now, 0, j, slots.div_ceil(WORKGROUP));
                         go!(P::AirBorn, now, 0, j, by_cell);
+                    }
+                    // (The frame's end, with the air born at it.)
+                    if let Some(p) = packing.as_ref().filter(|_| j + 1 == n) {
+                        let last = p.cuts.len();
+                        go!(P::Pack, last, 0, PACK_SLOT + last as u32, (end + slots).div_ceil(WORKGROUP));
                     }
                 }
                 pass.set_pipeline(&gpu.pipes.list[P::Report as usize].0);
@@ -848,11 +875,36 @@ impl Water {
                 pass.dispatch_workgroups(end.div_ceil(WORKGROUP).max(1), 1, 1);
             }
             clock.copy_back(&mut encoder, k);
+            let moments: Vec<(capture::Moment, u32)> = packing
+                .as_ref()
+                .map(|p| {
+                    let inside =
+                        p.cuts.iter().map(|&j| (capture::Moment { frame: k, steps: j + 1, of: n }, counts[j as usize]));
+                    inside
+                        .chain(std::iter::once((capture::Moment { frame: k + 1, steps: 0, of: 1 }, end + slots)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let (Some(p), Some((c, _))) = (&packing, keep.as_ref()) {
+                let sizes: Vec<u32> = moments.iter().map(|m| m.1).collect();
+                p.copy_back(c, &mut encoder, &sizes);
+            }
             let index = queue.submit([encoder.finish()]);
+            if let (Some(p), Some((c, _))) = (packing, keep.as_mut()) {
+                p.sent(c, moments, index.clone());
+            }
             let _ = gpu.device.poll(wgpu::PollType::Poll);
             self.last = Some(index.clone());
             done = Some(index);
             self.now ^= n as usize & 1;
+        }
+        if done.is_none()
+            && let Some((c, f)) = keep.as_mut()
+        {
+            let inside = capture::cuts(n, *f).into_iter().map(|j| capture::Moment { frame: k, steps: j + 1, of: n });
+            let all: Vec<capture::Moment> =
+                inside.chain(std::iter::once(capture::Moment { frame: k + 1, steps: 0, of: 1 })).collect();
+            c.none(&all);
         }
         let end = if done.is_some() { end + slots } else { end };
         if done.is_some() {

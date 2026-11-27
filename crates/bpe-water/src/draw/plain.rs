@@ -422,6 +422,8 @@ pub struct Plain {
     pictures: Option<Pictures>,
     /// The last picture size told to be past the card's most (told once).
     told: Option<(u32, u32)>,
+    /// Seconds every drop is moved on by its speed in the next picture ([`Plain::draw_at`]).
+    ahead: f32,
 }
 
 impl std::fmt::Debug for Plain {
@@ -460,7 +462,17 @@ impl Plain {
             mapped_at_creation: false,
         });
         let depth = Depth::new(&gpu, &field.layout);
-        Plain { gpu, layout: field.layout, rest, field: field_buf, depth, uniform, pictures: None, told: None }
+        Plain {
+            gpu,
+            layout: field.layout,
+            rest,
+            field: field_buf,
+            depth,
+            uniform,
+            pictures: None,
+            told: None,
+            ahead: 0.0,
+        }
     }
 
     /// The course changed (its layout must be the drops' own).
@@ -522,7 +534,7 @@ impl Plain {
             solids[k] = [r, g, b, 1.0];
         }
         PlainU {
-            view: [view.lo.x, view.lo.y, view.scale, 0.0],
+            view: [view.lo.x, view.lo.y, view.scale, if self.ahead.is_finite() { self.ahead } else { 0.0 }],
             size: [width, height, l.cols, l.rows],
             layout: [l.origin.x, l.origin.y, l.cell, self.rest],
             splat: [r, peak, LEVEL, given.len().min(MOST_LIQUIDS) as f32],
@@ -641,7 +653,16 @@ impl Plain {
     /// Draws `drops` (in this drawing's layout's grid units) as `view` shows them, with `look`, and
     /// sends it to the card. The picture is [`Plain::output`] (and [`Plain::read`]).
     pub fn draw(&mut self, drops: &DropBuffers, view: &View, look: &PlainLook) {
+        self.ahead = 0.0;
         self.draw_times(drops, view, look, 1);
+    }
+
+    /// The same with every drop moved on by its speed for `ahead` seconds (a final's kept moment
+    /// drawn a little after it, part 8).
+    pub fn draw_at(&mut self, drops: &DropBuffers, view: &View, look: &PlainLook, ahead: f32) {
+        self.ahead = ahead;
+        self.draw_times(drops, view, look, 1);
+        self.ahead = 0.0;
     }
 
     fn draw_times(&mut self, drops: &DropBuffers, view: &View, look: &PlainLook, times: u32) {
@@ -672,6 +693,11 @@ impl Plain {
     /// The last picture drawn (rgba8 holding sRGB; the `Rgba8UnormSrgb` view may sample it).
     pub fn output(&self) -> Option<&wgpu::Texture> {
         self.pictures.as_ref().map(|p| &p.output)
+    }
+
+    /// The last picture's own view (rgba8 holding sRGB), for a readback.
+    pub fn output_view(&self) -> Option<&wgpu::TextureView> {
+        self.pictures.as_ref().map(|p| &p.output_view)
     }
 
     /// The last picture drawn, read back: rgba8, sRGB, rows packed (empty before any draw).

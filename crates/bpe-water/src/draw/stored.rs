@@ -53,6 +53,26 @@ impl StoredDrops {
         self.count
     }
 
+    /// Takes `xv` (place and speed, grid units) and `kinds` as its drops (a final's moment, part
+    /// 8), in its own buffers when they have room.
+    pub fn set(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, xv: &[[f32; 4]], kinds: &[u32]) {
+        let n = xv.len().min(kinds.len());
+        let bytes = (n as u64 * 16).max(16);
+        if self.xv.size() < bytes {
+            let room = (n as u64).next_power_of_two().max(1);
+            let full: Vec<[f32; 4]> = vec![[0.0, 0.0, 1.0, 0.0]; room as usize];
+            self.xv = buffer(device, queue, "stored drops places", &vec![0u8; (room * 16) as usize]);
+            self.nf = buffer(device, queue, "stored drops ways", bytemuck::cast_slice(&full));
+            self.id = buffer(device, queue, "stored drops kinds", &vec![0u8; (room * 16) as usize]);
+        }
+        let id: Vec<[u32; 4]> = kinds[..n].iter().map(|k| [*k, 0, crate::WATER, 0]).collect();
+        if n > 0 {
+            queue.write_buffer(&self.xv, 0, bytemuck::cast_slice(&xv[..n]));
+            queue.write_buffer(&self.id, 0, bytemuck::cast_slice(&id));
+        }
+        self.count = n as u32;
+    }
+
     /// The drops as the drawing reads a body's.
     pub fn buffers(&self) -> DropBuffers<'_> {
         DropBuffers { xv: &self.xv, nf: &self.nf, id: &self.id, count: self.count }

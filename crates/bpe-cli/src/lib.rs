@@ -17,6 +17,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub mod arranged;
+pub mod water;
 pub use arranged::{arranged_frames, export_arranged};
 
 #[derive(Clone, Debug)]
@@ -40,6 +41,10 @@ pub struct ExportOptions {
     /// Bake the lighting (the cinema render, lighting part 3): `None` does as the scene's Lighting
     /// card says (On export); a scene without the card always renders live.
     pub bake: Option<bool>,
+    /// Where a Water scene's pictures come from: its final (made first, or not), or its draft.
+    pub water: water::WaterSource,
+    /// The finals folder (`None`: the usual one, `Finals::default_dir`).
+    pub finals: Option<PathBuf>,
 }
 
 impl ExportOptions {
@@ -55,6 +60,8 @@ impl ExportOptions {
             stems: false,
             midi: false,
             bake: None,
+            water: water::WaterSource::Final,
+            finals: None,
         }
     }
 }
@@ -237,22 +244,26 @@ pub fn resolve_encoder(choice: Encoder, ffmpeg: &Path) -> Encoder {
     }
 }
 
-/// What a Water scene's export says until Make final exists.
-pub const NO_WATER_EXPORT: &str = "Water scenes can't be exported yet. Export arrives with Make final.";
+/// What a video holding a Water scene says (Video mode takes Water scenes in a later part).
+pub const NO_WATER_VIDEO_EXPORT: &str = "Water scenes can't go in a video yet.";
+/// What a Scenes-window clip of a Water scene says.
+pub const NO_WATER_CLIP: &str = "Water scenes have no preview clip.";
 
-/// Whether this renderer can make pictures of `scene`: not of a Water scene yet (Water mode part
-/// 1 holds its things as data; nothing draws them), which would come out as an empty picture.
+/// Whether `scene` is a Water scene (its pictures come from its final: [`water`]).
+pub fn is_water(scene: &Scene) -> bool {
+    scene.sim == bpe_core::SimKind::Water
+}
+
+/// Whether a video's scene can be drawn in it: not a Water scene yet (Video mode part 10).
 pub fn check_exportable(scene: &Scene) -> anyhow::Result<()> {
-    if scene.sim == bpe_core::SimKind::Water {
-        anyhow::bail!(NO_WATER_EXPORT);
+    if is_water(scene) {
+        anyhow::bail!(NO_WATER_VIDEO_EXPORT);
     }
     Ok(())
 }
 
-/// The root settings that size and time the video. Refuses a scene that can't be drawn
-/// ([`check_exportable`]): every export, final frame and preview clip starts here.
+/// The root settings that size and time the video.
 fn video_of(scene: &Scene, kit: &Kit) -> anyhow::Result<(bpe_core::Resolved, SceneSettings)> {
-    check_exportable(scene)?;
     let resolved = bpe_kit::resolve_scene(scene, &kit.registry);
     let settings = {
         let root = resolved.things.get(&bpe_core::ThingId::ROOT).context("the scene has no root")?;
@@ -279,6 +290,9 @@ pub fn export_video(
     options: &ExportOptions,
     mut progress: impl FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<Encoder> {
+    if is_water(scene) {
+        return water::export(device, queue, scene, kit, options, &mut |_| true, &mut progress);
+    }
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
     match export_with(device, queue, scene, kit, options, encoder, &mut progress) {
         Err(error) if retry_on_cpu(encoder, &error) => {
@@ -812,6 +826,10 @@ pub fn final_frame(
     bake: Option<bool>,
     stop: &std::sync::atomic::AtomicBool,
 ) -> anyhow::Result<(Vec<u8>, (u32, u32), f32)> {
+    if is_water(scene) {
+        let finals = bpe_kit::things::water::finals::Finals::default_dir();
+        return water::final_frame(device, queue, scene, kit, time, scale, &finals);
+    }
     // Huge swarms step on the card the picture is drawn with.
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
     // Liquids use their Export detail.
@@ -851,6 +869,9 @@ pub fn preview_clip(
     stop: &AtomicBool,
     mut each: impl FnMut(u32, Vec<u8>, (u32, u32)),
 ) -> anyhow::Result<u32> {
+    if is_water(scene) {
+        bail!(NO_WATER_CLIP);
+    }
     // Huge swarms step on the card the picture is drawn with.
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
     // Liquids use their Export detail.
@@ -958,18 +979,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_water_scene_is_refused_in_plain_words() {
+    fn a_video_with_a_water_scene_is_still_refused() {
         let kit = bpe_kit::kit();
         assert!(check_exportable(&bpe_kit::new_studio_scene(&kit.registry)).is_ok());
         let water = bpe_kit::things::water::new_water_scene(&kit.registry, Default::default(), "");
-        let error = check_exportable(&water).unwrap_err();
-        assert_eq!(error.to_string(), "Water scenes can't be exported yet. Export arrives with Make final.");
-        assert_eq!(video_of(&water, &kit).unwrap_err().to_string(), NO_WATER_EXPORT, "every export starts here");
-        // A video that kept one (a hand-edited file: the editor doesn't keep them) is refused too.
+        assert!(video_of(&water, &kit).is_ok(), "a Water scene exports on its own");
+        // A video that kept one (a hand-edited file: the editor doesn't keep them) is refused.
         let mut video = bpe_core::Video::new();
         let kept = bpe_core::video::KeptScene { scene: water, ..Default::default() };
         video.scenes.insert(bpe_core::video::KeptId(1), kept);
-        assert_eq!(crate::arranged::check_scenes(&video).unwrap_err().to_string(), NO_WATER_EXPORT);
+        assert_eq!(crate::arranged::check_scenes(&video).unwrap_err().to_string(), NO_WATER_VIDEO_EXPORT);
         assert!(crate::arranged::check_scenes(&bpe_core::Video::new()).is_ok());
     }
 
