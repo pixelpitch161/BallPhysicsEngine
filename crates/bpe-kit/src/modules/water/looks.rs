@@ -143,7 +143,7 @@ impl ReadyLook {
                 (m.material, m.colour, m.second_colour) = (MaterialKind::Rock, rgb(0x7a5c44), rgb(0x4a3626));
                 (m.texture_size, m.depth, m.roughness, m.wet_marks) = (160.0, 14.0, 0.7, 0.6);
                 (b.shows, b.darker) = (BackShows::DarkerRock, 0.65);
-                (light.ambient, light.bounce, light.caustics, light.shafts) = (0.12, 0.4, 1.2, 0.3);
+                (light.ambient, light.bounce, light.caustics, light.shafts) = (0.12, 0.4, 0.0, 0.3);
                 let spot = |aim: f32, x: f32| LampRow {
                     card: LampCard {
                         kind: LampKind::Spot,
@@ -160,17 +160,17 @@ impl ReadyLook {
                 row.bloom = 0.25;
             }
             ReadyLook::GlassLab => {
-                (l.colour, l.deep, l.clarity) = (rgb(0x35d0a8), rgb(0x0c5a6a), 450.0);
+                (l.colour, l.deep, l.clarity) = (rgb(0x35d0a8), rgb(0x0c5a6a), 140.0);
                 (l.shine, l.shine_size, l.edge_sheen, l.bubbles) = (0.9, 0.12, 0.6, 0.6);
-                (m.material, m.colour, m.depth, m.roughness) = (MaterialKind::Glass, rgb(0xc9d6e2), 8.0, 0.1);
-                (b.shows, b.colour) = (BackShows::Colour, rgb(0xeef3f7));
-                (light.ambient, light.caustics) = (0.9, 0.6);
+                (m.material, m.colour, m.depth, m.roughness) = (MaterialKind::Glass, rgb(0xa8c4d8), 8.0, 0.1);
+                (b.shows, b.colour) = (BackShows::Colour, rgb(0xe4ebf1));
+                (light.ambient, light.caustics) = (0.75, 0.6);
                 // (A Sun is stopped by a closed course's ceiling unless it throws no shadows.)
                 row.lamps = vec![LampRow {
                     card: LampCard {
                         kind: LampKind::Sun,
                         colour: Color::WHITE,
-                        brightness: 0.6,
+                        brightness: 0.25,
                         aim: 90.0,
                         softness: 0.8,
                         shadows: false,
@@ -182,8 +182,9 @@ impl ReadyLook {
             }
             ReadyLook::Neon => {
                 (l.colour, l.colour_from) = (rgb(0xff3dc8), ColourFrom::Speed);
-                l.colour_gradient = Gradient::even(&[rgb(0x6a1bff), rgb(0xff3dc8), Color::WHITE]);
-                (l.clarity, l.glow, l.glow_colour, l.glow_from) = (120.0, 2.5, rgb(0xff3dc8), GlowFrom::Speed);
+                l.colour_gradient = Gradient::even(&[rgb(0x2a0a4a), rgb(0xff3dc8), Color::WHITE]);
+                (l.clarity, l.glow, l.glow_colour, l.glow_from) = (120.0, 0.2, rgb(0xff3dc8), GlowFrom::Always);
+                (l.outline, l.outline_colour) = (3.0, rgb(0xff9ae8));
                 (m.material, m.colour) = (MaterialKind::Flat, rgb(0x12101e));
                 (b.shows, b.colour) = (BackShows::Colour, rgb(0x07060c));
                 (light.ambient, light.bounce) = (0.05, 0.5);
@@ -195,12 +196,12 @@ impl ReadyLook {
                 (m.material, m.colour, m.second_colour) = (MaterialKind::Paper, rgb(0xefe7d6), rgb(0xd9cdb4));
                 (m.texture_size, m.depth) = (40.0, 10.0);
                 (b.shows, b.darker) = (BackShows::DarkerRock, 0.08);
-                (light.ambient, light.caustics) = (0.85, 0.0);
+                (light.ambient, light.caustics) = (0.95, 0.0);
                 row.lamps = vec![LampRow {
                     card: LampCard {
                         kind: LampKind::Sun,
                         colour: rgb(0xfff4e0),
-                        brightness: 0.5,
+                        brightness: 0.2,
                         aim: 60.0,
                         softness: 1.0,
                         shadows: false,
@@ -212,7 +213,7 @@ impl ReadyLook {
             ReadyLook::Molten => {
                 (l.colour, l.colour_from, l.deep) = (rgb(0xff7a18), ColourFrom::Speed, rgb(0x3a0800));
                 l.colour_gradient = Gradient::even(&[rgb(0x6e0e00), rgb(0xff5a10), rgb(0xffd060)]);
-                (l.clarity, l.glow, l.glow_colour, l.sparks) = (40.0, 2.0, rgb(0xff8a30), 0.5);
+                (l.clarity, l.glow, l.glow_colour, l.sparks) = (40.0, 0.8, rgb(0xff6a1c), 0.5);
                 (m.material, m.colour, m.second_colour) = (MaterialKind::Basalt, rgb(0x241c1a), rgb(0x0e0a09));
                 m.roughness = 0.25;
                 (b.shows, b.darker) = (BackShows::DarkerRock, 0.7);
@@ -417,7 +418,8 @@ mod tests {
         assert_eq!((l.colour, l.glow_colour), (mine, mine), "my colours stay");
         assert_eq!(l.colour_gradient, WaterLook::default().colour_gradient, "and so does the gradient");
         assert_eq!(l.colour_from, WaterLook::default().colour_from, "and how the colour is picked");
-        assert_eq!((l.glow, l.sparks), (2.0, 0.5), "the rest is the look's");
+        let row = ReadyLook::Molten.row().liquid;
+        assert_eq!((l.glow, l.sparks), (row.glow, row.sparks), "the rest is the look's");
         let rock: MaterialCard = card(&r, ids(&scene, COURSE)[0], SlotId::Material);
         assert_eq!((rock.colour, rock.material), (MaterialCard::default().colour, MaterialKind::Basalt));
         assert_eq!(ids(&scene, LAMP), [lamp], "my lamp stays, and none is added");

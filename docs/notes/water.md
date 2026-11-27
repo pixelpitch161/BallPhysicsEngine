@@ -1185,4 +1185,9 @@ and that no two draw the same.
   `use_a_look_sets_the_scene_to_it_as_one_undo_step`.
 - The full-size look check `water-looks` (`LOOK_ONLY=water-looks`): a demo course made once (a chamber, a pool a
   quarter full, a tap on a Ramp spilling into a Basin), drawn at 2 s in each look. `LOOK_SCENES=<folder>` saves
-  each look's scene file, to render with `bpe-render-next --finals <LOOK_TAKES folder>`.
+  each look's scene file, to render with `bpe-render-next --finals <LOOK_TAKES folder>`. It changed four rows
+  (the plan's "As built / 6c"): Glass lab was washed out, Neon's still water was dark, Molten's pool blown out, and
+  Paint's lamp shaded everything under a line of paint too hard.
+- **Known, for 6d** (6a's light, seen in that check): a Spot beside a falling stream draws a wide striped,
+  stair-stepped caustic pattern on the rock behind (so Lamp-lit rock has Caustics 0 for now), and a small drop in
+  the air casts a dashed shadow.
