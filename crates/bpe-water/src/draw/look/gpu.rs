@@ -14,7 +14,14 @@ pub(crate) enum B {
     Storage,
     /// A float texture, read texel by texel.
     Texture,
+    /// A whole-number texture (who is seen, 6e).
+    Whole,
 }
+
+/// Who the compose saw at each pixel (6e: `Composed.who` in look.wgsl).
+pub(crate) const WHO: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
+/// A choice of things' coverage, as the Balls silhouettes are drawn.
+pub(crate) const COVERAGE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A pipeline and the bind group layout it draws with.
 pub(crate) struct Pipe {
@@ -35,6 +42,11 @@ pub struct LookGpu {
     pub(crate) spread_gather: Pipe,
     pub(crate) compose: Pipe,
     pub(crate) extras: Pipe,
+    /// The compose and the mist and sparks writing what the grade's Things masks and the Light
+    /// only take read (6e), and each choice of things' coverage made from it.
+    pub(crate) compose_all: Pipe,
+    pub(crate) extras_all: Pipe,
+    pub(crate) cover: Pipe,
     /// A 1 x 1 black texture, bound where a picture isn't drawn.
     pub(crate) black: wgpu::TextureView,
     /// One dry node, bound where there are no wet marks.
@@ -76,6 +88,11 @@ impl LookGpu {
                         },
                         B::Texture => wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        B::Whole => wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -130,7 +147,7 @@ impl LookGpu {
                 });
                 Pipe { pipeline, layout }
             };
-        use B::{Storage as S, Texture as T, Uniform as U};
+        use B::{Storage as S, Texture as T, Uniform as U, Whole as W};
         let drops = [(0, U), (1, S), (2, S), (10, U)];
         let three = [summed(), summed(), summed()];
         let splat = pipe("water look splats", &drops, "vs_look_splat", "fs_look_splat", &three);
@@ -162,48 +179,58 @@ impl LookGpu {
         let spread_down = pipe("water look spread down", &[(30, T)], "vs_full", "fs_spread_down", &one);
         let spread_gather =
             pipe("water look spread gather", &[(0, U), (5, S), (10, U), (29, T)], "vs_full", "fs_spread_gather", &one);
-        let compose = pipe(
-            "water look",
-            &[
-                (0, U),
-                (5, S),
-                (6, T),
-                (10, U),
-                (11, T),
-                (13, T),
-                (14, T),
-                (15, T),
-                (16, T),
-                (17, S),
-                (24, T),
-                (25, T),
-                (27, T),
-                (28, T),
-                (29, T),
-                (33, T),
-                (35, T),
-                (36, S),
-            ],
+        let compose_bindings = [
+            (0, U),
+            (5, S),
+            (6, T),
+            (10, U),
+            (11, T),
+            (13, T),
+            (14, T),
+            (15, T),
+            (16, T),
+            (17, S),
+            (24, T),
+            (25, T),
+            (27, T),
+            (28, T),
+            (29, T),
+            (33, T),
+            (35, T),
+            (36, S),
+        ];
+        let compose = pipe("water look", &compose_bindings, "vs_full", "fs_look", &[plain_target(bpe_gfx::HDR_FORMAT)]);
+        let compose_all = pipe(
+            "water look and who",
+            &compose_bindings,
             "vs_full",
-            "fs_look",
-            &[plain_target(bpe_gfx::HDR_FORMAT)],
+            "fs_look_all",
+            &[plain_target(bpe_gfx::HDR_FORMAT), plain_target(bpe_gfx::HDR_FORMAT), plain_target(WHO)],
         );
+        let cover =
+            pipe("water look things", &[(37, U), (38, W), (39, T)], "vs_full", "fs_cover", &[plain_target(COVERAGE)]);
         // Mist over the picture, sparks added to it (premultiplied).
         let over = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
             operation: wgpu::BlendOperation::Add,
         };
-        let extras = pipe(
-            "water look extras",
-            &[(0, U), (1, S), (2, S), (5, S), (10, U), (18, T), (24, T), (27, T)],
-            "vs_extra",
-            "fs_extra",
-            &[Some(wgpu::ColorTargetState {
-                format: bpe_gfx::HDR_FORMAT,
+        let laid_over = |format| {
+            Some(wgpu::ColorTargetState {
+                format,
                 blend: Some(wgpu::BlendState { color: over, alpha: over }),
                 write_mask: wgpu::ColorWrites::ALL,
-            })],
+            })
+        };
+        let extras_bindings = [(0, U), (1, S), (2, S), (5, S), (10, U), (18, T), (24, T), (27, T)];
+        let extras =
+            pipe("water look extras", &extras_bindings, "vs_extra", "fs_extra", &[laid_over(bpe_gfx::HDR_FORMAT)]);
+        let extras_all = pipe(
+            "water look extras and cover",
+            &extras_bindings,
+            "vs_extra",
+            "fs_extra_all",
+            &[laid_over(bpe_gfx::HDR_FORMAT), laid_over(PICTURE)],
         );
         let black = device
             .create_texture(&wgpu::TextureDescriptor {
@@ -236,6 +263,9 @@ impl LookGpu {
             spread_gather,
             compose,
             extras,
+            compose_all,
+            extras_all,
+            cover,
             black,
             no_wet,
         })

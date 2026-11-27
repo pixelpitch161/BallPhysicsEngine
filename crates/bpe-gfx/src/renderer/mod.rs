@@ -37,15 +37,21 @@ pub(crate) struct FinishInputs {
 pub(crate) enum Things {
     /// The frame's own things, drawn again as silhouettes.
     Frame,
-    /// None (a picture drawn elsewhere, Water mode part 6).
+    /// Coverage pictures drawn elsewhere, one a selection (Water mode part 6e).
+    Given(Vec<wgpu::TextureView>),
+    /// None (a picture drawn elsewhere with no Things parts).
     None,
 }
 
 /// What a picture drawn elsewhere gives the finish beside itself ([`Renderer::finish_picture`]):
-/// the picture before its light and its lit colour, for effects that take the light only.
+/// the picture before its light and its lit colour, for effects that take the light only; and the
+/// things its grade's Things parts choose, one coverage picture for each of
+/// [`Renderer::selections`] in order (`Rgba8Unorm`, this renderer's size, red the chosen things as
+/// seen, alpha every thing, as the Balls silhouettes are drawn).
 #[derive(Default)]
 pub struct GivenPicture {
     pub light: Option<(wgpu::TextureView, wgpu::TextureView)>,
+    pub things: Option<Vec<wgpu::TextureView>>,
 }
 
 pub(crate) const BLOOM_LEVELS: usize = 6;

@@ -4,7 +4,7 @@
 
 use bpe_core::{Address, Color, Gradient, Resolved, Scene, Settings, SlotId, ThingId};
 use bpe_water::draw::look::{
-    self, BackLook, FinishLook, GRADIENT_SAMPLES, Lamp, LightLook, LiquidLook, Look, MaterialLook, Quality,
+    self, BackLook, FinishLook, GRADIENT_SAMPLES, Lamp, LightLook, LiquidLook, Look, MaterialLook, Quality, ThingCodes,
 };
 use bpe_water::draw::{PlainLiquid, PlainLook};
 use glam::Vec2;
@@ -251,6 +251,33 @@ fn finish_of(scene: &Scene, resolved: &Resolved, time: f64) -> FinishLook {
         .into_iter()
         .filter(|e| e.stage == bpe_gfx::Stage::Picture)
         .collect();
-    let grade = crate::modules::grade::stack(at_time(SlotId::Grade).as_ref(), None);
-    FinishLook { bloom: s.bloom, exposure: s.exposure, effects, grade, video: (s.width.max(1), s.height.max(1)) }
+    let grade = crate::modules::grade::stack_in(at_time(SlotId::Grade).as_ref(), None, Some(scene));
+    FinishLook {
+        bloom: s.bloom,
+        exposure: s.exposure,
+        effects,
+        grade,
+        video: (s.width.max(1), s.height.max(1)),
+        things: things_of(scene, resolved),
+    }
+}
+
+/// The codes the grade's Things parts name the drawing's liquids and solids by, in the drawing's
+/// order (the liquids by kind as the draft gives them out, the solids by owner as its field does).
+fn things_of(scene: &Scene, resolved: &Resolved) -> ThingCodes {
+    let on = |id: &ThingId| resolved.things.contains_key(id);
+    let of_kind = |kinds: &[&str]| -> Vec<u32> {
+        scene
+            .order
+            .iter()
+            .copied()
+            .filter(|id| kinds.contains(&scene.things[id].kind.as_str()) && on(id))
+            .map(|id| bpe_gfx::thing_code(id) as u32)
+            .collect()
+    };
+    ThingCodes {
+        liquids: of_kind(&[LIQUID]).into_iter().take(MOST_LIQUIDS).collect(),
+        rock: course_of(scene).filter(on).map(|id| bpe_gfx::thing_code(id) as u32),
+        solids: of_kind(&[PIECE, WALL]),
+    }
 }

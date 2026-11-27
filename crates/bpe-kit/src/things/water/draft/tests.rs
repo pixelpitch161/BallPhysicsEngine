@@ -821,8 +821,10 @@ fn the_look_reads_every_card() {
     assert!(got.liquids.is_empty() && got.solids.is_empty() && got.lamps.is_empty());
     assert_eq!((got.rock, got.back), (MaterialLook::default(), BackLook::default()));
     assert_eq!((got.light.ambient, got.light), (1.0, LightLook::default()));
-    // (The finish measures in the video's pixels: the scene's size.)
-    assert_eq!(got.finish, look::FinishLook { video: (1080, 1920), ..look::FinishLook::default() });
+    // (The finish measures in the video's pixels: the scene's size; its masks name the course.)
+    let course = course_of(&scene).map(|id| bpe_gfx::thing_code(id) as u32);
+    let things = look::ThingCodes { rock: course, ..look::ThingCodes::default() };
+    assert_eq!(got.finish, look::FinishLook { video: (1080, 1920), things, ..look::FinishLook::default() });
     let a = add(&mut scene, &reg, LIQUID, Vec2::ZERO);
     let lamp = add(&mut scene, &reg, LAMP, Vec2::new(-200.0, -300.0));
     let got = look_at(&scene, 0.0);
@@ -879,4 +881,54 @@ fn the_look_reads_every_card() {
     let name = scene.add_picture("Sky", bytes.clone());
     set(&mut scene, ThingId::ROOT, SlotId::Back, "picture", Value::Text(name.clone()));
     assert_eq!(look_at(&scene, 0.0).back, BackLook::Picture(look::BackPicture { name, kept: Some(bytes) }));
+}
+
+#[test]
+fn a_water_scenes_things_parts_name_what_the_water_draws() {
+    use crate::modules::grade::{self, Combine, THINGS, ThingsOnly, ThingsPart};
+    use bpe_core::{Target, layered_key};
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let (a, b) = (add(&mut scene, &reg, LIQUID, Vec2::ZERO), add(&mut scene, &reg, LIQUID, Vec2::ZERO));
+    let piece = block(&mut scene, &reg, Vec2::new(0.0, 300.0), 80.0, 1.0);
+    let wall = add(&mut scene, &reg, WALL, Vec2::new(0.0, -300.0));
+    let course = course_of(&scene).unwrap();
+    let code = |id: ThingId| bpe_gfx::thing_code(id) as u32;
+    // The drawing names its liquids by kind and its solids by owner, in the draft's order.
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let things = crate::things::water::look::look_of(&scene, &resolved, 0.0).finish.things;
+    assert_eq!(things.liquids, [code(a), code(b)]);
+    assert_eq!((things.rock, &things.solids), (Some(code(course)), &vec![code(piece), code(wall)]));
+    let ids = setup(&scene, &reg).solids.iter().map(|s| code(s.id)).collect::<Vec<_>>();
+    assert_eq!(ids, things.solids, "owner k is the draft's solid k");
+    // What each Only covers.
+    let part = |only, target| ThingsPart { only, target, ..ThingsPart::default() }.water_things(&scene);
+    let covers = |only| part(only, Target::Anything);
+    let sorted = |mut v: Vec<u32>| {
+        v.sort_unstable();
+        Some((Some(v), false))
+    };
+    assert_eq!(covers(ThingsOnly::Liquids), sorted(vec![code(a), code(b)]));
+    assert_eq!(covers(ThingsOnly::Solids), sorted(vec![code(course), code(piece), code(wall)]));
+    assert_eq!(covers(ThingsOnly::Back), Some((None, true)));
+    assert_eq!(covers(ThingsOnly::Extras), sorted(vec![bpe_water::draw::look::EXTRAS]));
+    assert_eq!(covers(ThingsOnly::Balls), sorted(vec![]), "no balls in a Water scene");
+    assert_eq!(part(ThingsOnly::OneThing, Target::Thing(piece)), sorted(vec![code(piece)]));
+    assert_eq!(part(ThingsOnly::OneThing, Target::Kind(LIQUID.into())), sorted(vec![code(a), code(b)]));
+    assert_eq!(part(ThingsOnly::OneThing, Target::Thing(ThingId(999))), None, "left out");
+    // A new Things part starts on the Liquids, and reaches the finish's grade.
+    let mask = grade::add_mask(&mut scene, &reg, THINGS).unwrap();
+    let card = |scene: &Scene| scene.card(ThingId::ROOT, SlotId::Grade).unwrap().clone();
+    let first = grade::parts_of(&card(&scene), mask)[0].id;
+    let second = grade::add_part(&mut scene, &reg, mask, THINGS, Combine::Add).unwrap();
+    for part in [first, second] {
+        assert_eq!(card(&scene).params.get(&layered_key(part, "only")), Some(&Value::Choice("liquids".into())));
+    }
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let finish = crate::things::water::look::look_of(&scene, &resolved, 0.0).finish;
+    let area = finish.grade.masks[1].area.as_ref().unwrap();
+    match &area.parts[0].shape {
+        bpe_gfx::GradeShape::Things(t) => assert_eq!(t.things.as_deref(), Some(&[code(a), code(b)][..])),
+        other => panic!("{other:?}"),
+    }
 }

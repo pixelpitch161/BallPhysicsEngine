@@ -406,7 +406,8 @@ impl Default for BrushPart {
     }
 }
 
-/// Which things a Things part covers.
+/// Which things a Things part covers. A Balls scene offers Balls to Background, a Water scene
+/// Liquids to Extras ([`only_offered`]); both offer One thing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum ThingsOnly {
     /// Every Balls group's and Emitter's balls.
@@ -418,9 +419,32 @@ pub enum ThingsOnly {
     Particles,
     /// Where no thing is.
     Background,
+    /// Every Liquid (a Water scene).
+    Liquids,
+    /// The Course's rock and every Piece and Wall (a Water scene).
+    Solids,
+    /// Where no liquid, solid or extra is (a Water scene's back).
+    Back,
+    /// The foam, bubbles, mist and sparks (a Water scene).
+    Extras,
     /// One thing (or a tag, or a kind).
     OneThing,
 }
+
+/// Whether a Things part's Only offers `choice` in a scene of the `water` kind or not.
+pub fn only_offered(water: bool, choice: &str) -> bool {
+    let water_only = ["liquids", "solids", "back", "extras"];
+    let balls_only = ["balls", "shapes", "text", "particles", "background"];
+    !(if water { balls_only.contains(&choice) } else { water_only.contains(&choice) })
+}
+
+/// The kinds of thing a Water scene's Things parts can name: the ones its drawing draws.
+const WATER_DRAWN: [&str; 4] = [
+    crate::things::water::LIQUID,
+    crate::things::water::COURSE,
+    crate::things::water::PIECE,
+    crate::things::water::WALL,
+];
 
 /// A Things part's settings: what chosen things draw, as they show.
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -464,7 +488,8 @@ impl ThingsPart {
     /// names nothing there, so the part is left out.
     pub fn things(&self, world: Option<&World>) -> Option<(Option<Vec<u32>>, bool)> {
         let kinds: &[&str] = match self.only {
-            ThingsOnly::Background => return Some((None, true)),
+            ThingsOnly::Background | ThingsOnly::Back => return Some((None, true)),
+            ThingsOnly::Liquids | ThingsOnly::Solids | ThingsOnly::Extras => &[],
             ThingsOnly::Balls => &[crate::things::balls::KIND, crate::things::emitter::KIND],
             ThingsOnly::Shapes => &[crate::things::shape::KIND],
             ThingsOnly::Text => &[crate::things::text::KIND],
@@ -482,6 +507,45 @@ impl ThingsPart {
             return None;
         }
         let mut codes: Vec<u32> = ids.into_iter().map(|id| thing_code(id) as u32).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        Some((Some(codes), false))
+    }
+
+    /// The same in a Water scene (6e), from the scene: the codes of the things it covers as the
+    /// water's drawing names them (`bpe_water::draw::look::ThingCodes`, the extras
+    /// [`bpe_water::draw::look::EXTRAS`]). Balls, Shapes, Text and Particles cover nothing there.
+    pub fn water_things(&self, scene: &Scene) -> Option<(Option<Vec<u32>>, bool)> {
+        use crate::things::water::{COURSE, LIQUID, PIECE, WALL};
+        let of_kinds = |kinds: &[&str]| -> Vec<ThingId> {
+            scene.order.iter().copied().filter(|id| kinds.contains(&scene.things[id].kind.as_str())).collect()
+        };
+        let mut codes: Vec<u32> = match self.only {
+            ThingsOnly::Background | ThingsOnly::Back => return Some((None, true)),
+            ThingsOnly::Balls | ThingsOnly::Shapes | ThingsOnly::Text | ThingsOnly::Particles => Vec::new(),
+            ThingsOnly::Extras => vec![bpe_water::draw::look::EXTRAS],
+            ThingsOnly::Liquids => of_kinds(&[LIQUID]).into_iter().map(|id| thing_code(id) as u32).collect(),
+            ThingsOnly::Solids => {
+                of_kinds(&[COURSE, PIECE, WALL]).into_iter().map(|id| thing_code(id) as u32).collect()
+            }
+            ThingsOnly::OneThing => {
+                let named = |id: &ThingId| {
+                    let t = &scene.things[id];
+                    match &self.target {
+                        Target::Anything => true,
+                        Target::Me => false,
+                        Target::Thing(one) => one == id,
+                        Target::Tag(tag) => t.tags.contains(tag),
+                        Target::Kind(kind) => t.kind == *kind,
+                    }
+                };
+                let ids: Vec<ThingId> = of_kinds(&WATER_DRAWN).into_iter().filter(named).collect();
+                if ids.is_empty() {
+                    return None;
+                }
+                ids.into_iter().map(|id| thing_code(id) as u32).collect()
+            }
+        };
         codes.sort_unstable();
         codes.dedup();
         Some((Some(codes), false))
@@ -618,8 +682,10 @@ pub fn add_mask(scene: &mut Scene, reg: &Registry, part: &str) -> Result<LayerId
     ensure_grade(scene, reg);
     let (root, slot) = (ThingId::ROOT, SlotId::Grade);
     let mask = scene.add_layer(reg, root, slot, MASK)?;
+    let kind = part;
     let part = scene.add_sub_layer(reg, root, slot, mask, part)?;
     super::name_among_siblings(scene, reg, part);
+    water_start(scene, part, kind);
     let basic = scene.add_sub_layer(reg, root, slot, mask, BASIC)?;
     super::name_among_siblings(scene, reg, basic);
     Ok(mask)
@@ -636,12 +702,23 @@ pub fn add_part(
     ensure_grade(scene, reg);
     let id = scene.add_sub_layer(reg, ThingId::ROOT, SlotId::Grade, mask, kind)?;
     super::name_among_siblings(scene, reg, id);
+    water_start(scene, id, kind);
     if combine != Combine::Add
         && let Some(card) = scene.card_mut(ThingId::ROOT, SlotId::Grade)
     {
         card.params.set(&layered_key(id, "combine"), Value::Choice(combine.name().into()));
     }
     Ok(id)
+}
+
+/// A Things part new in a Water scene covers the Liquids (Balls is none of its choices).
+fn water_start(scene: &mut Scene, part: LayerId, kind: &str) {
+    if kind == THINGS
+        && scene.sim == bpe_core::SimKind::Water
+        && let Some(card) = scene.card_mut(ThingId::ROOT, SlotId::Grade)
+    {
+        card.params.set(&layered_key(part, "only"), Value::Choice(ThingsOnly::Liquids.name().into()));
+    }
 }
 
 /// Where a gradient placed by `place` sits this moment: one place, or one a ball for every ball
@@ -785,7 +862,14 @@ pub fn follow_note(world: &World, kind: &str, params: &Params) -> Option<String>
 /// Mask `mask`'s area in the resolved card: its shown parts in order, placed through `world`. A
 /// gradient with nowhere to be (what it follows isn't there, or no balls yet) is left out, as a
 /// hidden part is, so it covers nothing even inverted; a mask left with no parts covers nothing.
-pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: bool) -> GradeArea {
+/// In a Water scene (`water`) a Things part covers what [`ThingsPart::water_things`] says.
+pub fn area(
+    card: &ResolvedSlot,
+    mask: LayerId,
+    world: Option<&World>,
+    water: Option<&Scene>,
+    invert: bool,
+) -> GradeArea {
     let parts = card
         .layers
         .iter()
@@ -831,7 +915,10 @@ pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: b
                 }
                 THINGS => {
                     let s = ThingsPart::from_params(&params);
-                    let (things, background) = s.things(world)?;
+                    let (things, background) = match water {
+                        Some(scene) => s.water_things(scene)?,
+                        None => s.things(world)?,
+                    };
                     let shape =
                         GradeShape::Things(GradeThings { things, background, expand: s.expand, feather: s.feather });
                     (s.combine, s.invert, shape)

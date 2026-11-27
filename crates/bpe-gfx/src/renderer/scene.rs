@@ -413,8 +413,20 @@ impl Renderer {
             encoder,
             frame,
             scened,
-            FinishInputs { light: given.light, things: Things::None },
+            FinishInputs { light: given.light, things: given.things.map_or(Things::None, Things::Given) },
         );
+    }
+
+    /// The choices of things `stack`'s Things parts read, in the order [`GivenPicture::things`]
+    /// gives their coverage (none without Things parts).
+    pub fn selections(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        stack: &crate::GradeStack,
+    ) -> Vec<crate::grade::Selection> {
+        self.grade.sync(device, queue, stack);
+        self.grade.program(stack).map(|p| p.selections.clone()).unwrap_or_default()
     }
 
     /// The HDR picture a frame is drawn into before it is finished (`HDR_FORMAT`, this renderer's
@@ -498,6 +510,7 @@ impl Renderer {
         // Things masks read the things' silhouettes and how far each pixel is from them.
         let things = match inputs.things {
             Things::Frame => self.draw_silhouettes(device, queue, &mut encoder, frame, moved),
+            Things::Given(coverage) => self.flood_given(device, queue, &mut encoder, frame, &coverage),
             Things::None => None,
         };
         self.grade.set_things(device, things.as_ref());

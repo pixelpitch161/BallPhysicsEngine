@@ -485,6 +485,19 @@ impl Silhouettes {
         }
         let p = self.pictures.as_ref().expect("prepared");
         let from_silhouette = &p.from_silhouette.as_ref().expect("made above").1;
+        self.flood_from(encoder, index, plan, from_silhouette);
+    }
+
+    /// Floods selection `index`'s coverage, which `from_silhouette` reads (`plan` its steps), into
+    /// its layer of the field.
+    fn flood_from(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        index: usize,
+        plan: &[u32],
+        from_silhouette: &wgpu::BindGroup,
+    ) {
+        let p = self.pictures.as_ref().expect("prepared");
         let offset = |pass: usize| ((index * MOST_PASSES as usize + pass) as u64 * STRIDE) as u32;
         let run = |encoder: &mut wgpu::CommandEncoder,
                    pipeline: &wgpu::RenderPipeline,
@@ -582,6 +595,39 @@ impl Renderer {
         }
         self.layer_buffers = layer_buffers;
         self.overlay = overlay_buffers;
+        let field = sil.pictures.as_ref().map(|p| p.field.clone());
+        self.silhouettes = Some(sil);
+        field
+    }
+
+    /// The things field from coverage pictures drawn elsewhere (Water mode part 6e), one for each
+    /// of `frame`'s grade's selections in order, each flooded as a Balls silhouette is (none
+    /// without Things parts, or with too few pictures).
+    pub(crate) fn flood_given(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        coverage: &[wgpu::TextureView],
+    ) -> Option<wgpu::TextureView> {
+        let selections = self.grade.program(&frame.grade).map(|p| p.selections.clone()).unwrap_or_default();
+        if selections.is_empty() || coverage.len() < selections.len() {
+            return None;
+        }
+        let mut sil = self
+            .silhouettes
+            .take()
+            .unwrap_or_else(|| Silhouettes::new(device, &self.globals_layout, &self.paint_layout, &self.layers_layout));
+        let size = (self.targets.width, self.targets.height);
+        let scale = self.targets.height as f32 / frame.height.max(1) as f32;
+        let plans = sil.prepare(device, queue, &selections, size, scale, false);
+        let top = sil.pictures.as_ref().expect("prepared").top.clone();
+        drop(begin_pass(encoder, &top, "no silhouette on the screen", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
+        for (index, plan) in plans.iter().enumerate() {
+            let group = sil.flood_group(device, &coverage[index], &sil.no_uv, &top);
+            sil.flood_from(encoder, index, plan, &group);
+        }
         let field = sil.pictures.as_ref().map(|p| p.field.clone());
         self.silhouettes = Some(sil);
         field
