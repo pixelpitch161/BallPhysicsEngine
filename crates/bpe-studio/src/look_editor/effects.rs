@@ -66,7 +66,14 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     let lit = cx.scene.card(ThingId::ROOT, SlotId::Lighting).is_some();
     let takes = get("takes").and_then(|v| <TakesChoice as bpe_core::SettingValue>::from_value(&v));
     if takes == Some(TakesChoice::LightOnly) && !lit {
-        let words = "Light only needs a Lighting card: until the scene has one, this effect changes nothing.";
+        let words = match cx.scene.sim {
+            bpe_core::SimKind::Water => {
+                "Light only doesn't reach a Water scene's light yet: this effect changes nothing."
+            }
+            bpe_core::SimKind::Balls => {
+                "Light only needs a Lighting card: until the scene has one, this effect changes nothing."
+            }
+        };
         ui.label(RichText::new(words).small().color(style::MUTED));
     }
     let defs: Vec<SettingDef> =
@@ -74,11 +81,17 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     layer_settings(ui, inspector, cx, picked, &defs, edits);
 }
 
-/// The list's title and its add menu: the effects over the picture, the materials, own code.
+/// The list's title and its add menu: the effects over the picture, the materials, own code. A
+/// Water scene is offered only the effects over the picture that need no balls, hits or things
+/// (`fx::water_ok`), so it has no materials.
 fn header(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let reg = cx.reg();
-    let kinds: Vec<&dyn bpe_core::LayerKind> =
-        reg.layers_for(fx::EFFECTS).filter(|k| k.section() == LayerSection::Effect).collect();
+    let water = cx.scene.sim == bpe_core::SimKind::Water;
+    let kinds: Vec<&dyn bpe_core::LayerKind> = reg
+        .layers_for(fx::EFFECTS)
+        .filter(|k| k.section() == LayerSection::Effect)
+        .filter(|k| !water || fx::water_ok(k.id()))
+        .collect();
     let stage = |k: &&dyn bpe_core::LayerKind| fx::builtin_of(k.id()).map(|b| b.header().stage);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Effects").font(style::medium(12.0)).color(style::MUTED));
@@ -96,11 +109,13 @@ fn header(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
                     item(ui, *k);
                 }
                 ui.separator();
-                ui.label(RichText::new("Materials (paint the things)").small().color(style::MUTED));
-                for k in kinds.iter().filter(|k| stage(k) == Some(Stage::Things)) {
-                    item(ui, *k);
+                if !water {
+                    ui.label(RichText::new("Materials (paint the things)").small().color(style::MUTED));
+                    for k in kinds.iter().filter(|k| stage(k) == Some(Stage::Things)) {
+                        item(ui, *k);
+                    }
+                    ui.separator();
                 }
-                ui.separator();
                 for k in kinds.iter().filter(|k| k.id() == fx::OWN) {
                     item(ui, *k);
                 }

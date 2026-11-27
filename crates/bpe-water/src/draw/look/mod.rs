@@ -388,6 +388,8 @@ impl LookDraw {
             time: look.time,
             bloom: if look.finish.bloom.is_finite() { look.finish.bloom.max(0.0) } else { 0.0 },
             exposure: if look.finish.exposure.is_finite() { look.finish.exposure.max(0.0) } else { 1.0 },
+            effects: look.finish.effects.clone(),
+            grade: look.finish.grade.clone(),
             ..bpe_gfx::Frame::default()
         };
         for _ in 0..times.max(1) {

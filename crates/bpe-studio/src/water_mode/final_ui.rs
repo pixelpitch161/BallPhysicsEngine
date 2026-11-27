@@ -1,11 +1,13 @@
 //! A Water scene's final in the editor's frame (Water mode part 8): the toolbar's Draft | Final
-//! switch, Make final and the Finals menu; the make followed each frame (and the export after it);
-//! the Export window told what the final is; the playhead's speed in slow motion.
+//! switch (and part 6's Whole course | Shot), Make final and the Finals menu; the make followed
+//! each frame (and the export after it); the Export window told what the final is; the
+//! playhead's speed in slow motion.
 
 use bpe_kit::things::water::make::gb;
 use eframe::egui::{self, Button};
 
 use super::final_job::WaterView;
+use super::stage::Seen;
 use crate::app::Studio;
 use crate::style;
 
@@ -28,6 +30,19 @@ pub(crate) fn toolbar(ui: &mut egui::Ui, studio: &mut Studio) {
     if shown.clicked() {
         studio.water_final.view = WaterView::Final;
     }
+    ui.separator();
+    // What the stage shows (decision 44).
+    let seen = &mut studio.water_stage.seen;
+    let parts = [
+        (Seen::Course, "Whole course", "Show the whole course to work on (the Effects and the Grade show in Shot)."),
+        (Seen::Shot, "Shot", "Show the camera's shot as the video shows it, with the Effects and the Grade."),
+    ];
+    for (part, name, help) in parts {
+        if ui.add(style::toggle_button(name, *seen == part)).on_hover_text(help).clicked() {
+            *seen = part;
+        }
+    }
+    ui.separator();
     if studio.water_final.job.is_some() {
         let stop = ui
             .add(Button::new("Stop making").frame_when_inactive(false))

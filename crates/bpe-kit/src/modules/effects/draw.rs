@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use bpe_core::{Blend, LayerId, Params, SettingValue, SlotId, ThingId, Value};
+use bpe_core::{Blend, LayerId, Params, ResolvedSlot, SettingValue, SlotId, ThingId, Value};
 use bpe_gfx::effects::{Header, MAX_PARAM_FLOATS, ParamKind, memory_seconds};
 use bpe_gfx::{DrawCx, EffectCall, Frame, ModuleDraw, Stage, thing_code};
 
@@ -53,28 +53,36 @@ impl ModuleDraw for EffectsDraw {
 
     fn draw(&self, cx: &DrawCx, slot: SlotId, frame: &mut Frame) {
         let Some(rslot) = cx.resolved.slots.get(&slot) else { return };
-        let root = cx.thing.id == ThingId::ROOT;
-        for layer in &rslot.layers {
-            let p = rslot.layer_params(layer.id);
-            let Some(e) = EffectLayer::read(&layer.kind, &p) else { continue };
-            let glow_above = match p.get("glow_above") {
-                Some(Value::Number(x)) if x.is_finite() => *x as f32,
-                _ => 0.9,
-            };
-            let memory = memory_seconds(&e.header, &e.wgsl, &e.params);
-            let stage = e.header.stage;
-            frame.effects.push(EffectCall {
-                params: e.params,
-                blend: e.mix,
-                mode: e.blend,
-                takes: if stage == Stage::Picture { takes_of(&p).takes() } else { bpe_gfx::Takes::Whole },
-                glow_above,
-                memory,
-                apply_to: if root { 0.0 } else { thing_code(cx.thing.id) },
-                ..EffectCall::new(call_key(cx.thing.id, slot, layer.id), e.wgsl, stage)
-            });
-        }
+        frame.effects.extend(calls(rslot, cx.thing.id, slot));
     }
+}
+
+/// The effect calls of `thing`'s Effects card in `slot`, one per shown layer, bottom first (the
+/// root's paint the whole picture; a Water scene's finish reads them too).
+pub fn calls(rslot: &ResolvedSlot, thing: ThingId, slot: SlotId) -> Vec<EffectCall> {
+    let root = thing == ThingId::ROOT;
+    let mut out = Vec::new();
+    for layer in &rslot.layers {
+        let p = rslot.layer_params(layer.id);
+        let Some(e) = EffectLayer::read(&layer.kind, &p) else { continue };
+        let glow_above = match p.get("glow_above") {
+            Some(Value::Number(x)) if x.is_finite() => *x as f32,
+            _ => 0.9,
+        };
+        let memory = memory_seconds(&e.header, &e.wgsl, &e.params);
+        let stage = e.header.stage;
+        out.push(EffectCall {
+            params: e.params,
+            blend: e.mix,
+            mode: e.blend,
+            takes: if stage == Stage::Picture { takes_of(&p).takes() } else { bpe_gfx::Takes::Whole },
+            glow_above,
+            memory,
+            apply_to: if root { 0.0 } else { thing_code(thing) },
+            ..EffectCall::new(call_key(thing, slot, layer.id), e.wgsl, stage)
+        });
+    }
+    out
 }
 
 /// Tells one effect layer apart from every other, for its history.

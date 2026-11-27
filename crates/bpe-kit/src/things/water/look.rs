@@ -223,7 +223,8 @@ fn lamp_look(l: &LampCard, place: Vec2) -> Lamp {
     }
 }
 
-/// The scene's Bloom and Exposure (its Picture settings) at `time`.
+/// The scene's Bloom and Exposure (its Picture settings) at `time`, its Effects over the picture
+/// and its Grade (decision 42).
 fn finish_of(scene: &Scene, resolved: &Resolved, time: f64) -> FinishLook {
     let Some(root) = resolved.things.get(&ThingId::ROOT) else { return FinishLook::default() };
     let mut params = root.params.clone();
@@ -233,5 +234,23 @@ fn finish_of(scene: &Scene, resolved: &Resolved, time: f64) -> FinishLook {
         }
     }
     let s = SceneSettings::from_params(&params);
-    FinishLook { bloom: s.bloom, exposure: s.exposure }
+    // (Each card with its keyframes at `time`.)
+    let at_time = |slot: SlotId| {
+        let mut card = root.slots.get(&slot)?.clone();
+        for (a, track) in scene.tracks.iter().filter(|(a, _)| a.thing == ThingId::ROOT && a.slot == Some(slot)) {
+            if let Some(v) = track.value_at(time) {
+                card.params.set(&a.key, v);
+            }
+        }
+        Some(card)
+    };
+    let effects = at_time(SlotId::Shader)
+        .filter(|c| c.kind == crate::modules::effects::EFFECTS)
+        .map(|c| crate::modules::effects::draw::calls(&c, ThingId::ROOT, SlotId::Shader))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.stage == bpe_gfx::Stage::Picture)
+        .collect();
+    let grade = crate::modules::grade::stack(at_time(SlotId::Grade).as_ref(), None);
+    FinishLook { bloom: s.bloom, exposure: s.exposure, effects, grade }
 }

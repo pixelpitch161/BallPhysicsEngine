@@ -779,6 +779,37 @@ fn slow_motion_lengthens_the_video_and_keeps_more_moments() {
 }
 
 #[test]
+fn the_finish_reads_the_scenes_effects_over_the_picture_and_its_grade() {
+    use bpe_core::layered_key;
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, crate::modules::effects::EFFECTS).unwrap();
+    let k = scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, "picture.kaleidoscope").unwrap();
+    // (A material, pasted in: it paints things, which a Water scene has none of.)
+    scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, "picture.lava").unwrap();
+    let mix = Address { thing: ThingId::ROOT, slot: Some(SlotId::Shader), key: layered_key(k, "mix") };
+    scene.set_key(&reg, &mix, 0.0, Value::Number(0.0)).unwrap();
+    scene.set_key(&reg, &mix, 2.0, Value::Number(1.0)).unwrap();
+    let grade = crate::modules::grade::starting_card(&reg);
+    scene.things.get_mut(&ThingId::ROOT).unwrap().slots.insert(SlotId::Grade, grade);
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let got = crate::things::water::look::look_of(&scene, &resolved, 1.0).finish;
+    assert_eq!(got.effects.len(), 1, "only the effect over the picture");
+    let e = &got.effects[0];
+    assert!(e.wgsl.contains("name: Kaleidoscope") && e.stage == bpe_gfx::Stage::Picture);
+    assert!((e.blend - 0.5).abs() < 1e-6, "the Mix at 1 s, half way between its keys: {}", e.blend);
+    assert_eq!(
+        got.grade,
+        crate::modules::grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None)
+    );
+    assert!(!got.grade.masks.is_empty(), "the grade's Whole picture");
+    // The stage's whole course goes without them.
+    let course = got.without_shot_finish();
+    assert!(course.effects.is_empty() && course.grade.masks.is_empty());
+    assert_eq!((course.bloom, course.exposure), (got.bloom, got.exposure));
+}
+
+#[test]
 fn the_look_reads_every_card() {
     use bpe_water::draw::look::{self, BackLook, Lamp, LightLook, LiquidLook, MaterialLook, Quality};
     let reg = crate::registry();

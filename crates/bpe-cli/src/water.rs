@@ -81,6 +81,12 @@ impl WaterVideo {
 /// The camera's 9:16 shot at water time `tau` (its Position and Zoom then), as a `width` x
 /// `height` picture.
 pub fn shot_view(scene: &Scene, reg: &Registry, tau: f64, width: u32, height: u32) -> View {
+    let (centre, shot) = shot_at(scene, reg, tau);
+    View { lo: centre - shot / 2.0, scale: width as f32 / shot.x, width, height }
+}
+
+/// The camera's 9:16 shot at water time `tau`: its middle and its size, in world pixels.
+pub fn shot_at(scene: &Scene, reg: &Registry, tau: f64) -> (Vec2, Vec2) {
     let screen = bpe_kit::modules::water::SCREEN;
     let (centre, zoom) = match bpe_kit::camera_of(scene) {
         Some(camera) => {
@@ -97,8 +103,7 @@ pub fn shot_view(scene: &Scene, reg: &Registry, tau: f64, width: u32, height: u3
         }
         None => (Vec2::ZERO, 1.0),
     };
-    let shot = screen / zoom;
-    View { lo: centre - shot / 2.0, scale: width as f32 / shot.x, width, height }
+    (centre, screen / zoom)
 }
 
 /// Reads a take's moments by water time, keeping the chunks it read last open.

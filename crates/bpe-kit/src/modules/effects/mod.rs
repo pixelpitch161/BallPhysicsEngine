@@ -100,6 +100,12 @@ pub fn builtin_of(kind: &str) -> Option<&'static Builtin> {
     Builtin::find(kind.strip_prefix("picture.")?)
 }
 
+/// Whether a Water scene's Add effect menu offers a layer kind: own code, and the built-ins over
+/// the whole picture that need no balls, hits or things ([`Builtin::water_ok`]).
+pub fn water_ok(kind: &str) -> bool {
+    kind == OWN || builtin_of(kind).is_some_and(Builtin::water_ok)
+}
+
 /// Whether a layer kind is one of the Effects card's.
 pub fn is_effect(kind: &str) -> bool {
     kind.starts_with("picture.")

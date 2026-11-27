@@ -1000,6 +1000,29 @@ fn the_effects_card_lists_its_effects_and_adds_them_from_its_menu() {
 }
 
 #[test]
+fn a_water_scene_adds_effects_but_only_the_ones_its_picture_can_feed() {
+    let reg = bpe_kit::registry();
+    let mut scene = bpe_kit::things::water::new_water_scene(&reg, "Water");
+    let mut h = harness_of(scene.clone(), Some(ThingId::ROOT));
+    h.get_by_role_and_label(Role::Button, "+ Add card").click();
+    h.run();
+    assert!(h.query_all_by_label("Effects").next().is_some(), "the Effects card is offered");
+    bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+    let mut h = harness_of(scene, Some(ThingId::ROOT));
+    h.get_by_role_and_label(Role::Button, "+ Add effect").click();
+    h.run();
+    for shown in ["Kaleidoscope", "Thermal vision", "Own code"] {
+        assert!(h.query_all_by_label(shown).next().is_some(), "{shown} is offered");
+    }
+    for hidden in ["Shockwaves", "Hue storm", "Ball worlds", "Lava", "Materials (paint the things)"] {
+        assert!(h.query_all_by_label(hidden).next().is_none(), "{hidden} is not offered");
+    }
+    h.get_all_by_label("Kaleidoscope").last().unwrap().click();
+    h.run();
+    assert_eq!(effect_kinds(h.state()), ["picture.kaleidoscope"]);
+}
+
+#[test]
 fn the_header_is_name_kind_and_shown_then_tags() {
     let h = harness(Some(ThingId(2)));
     for label in ["Name", "Shown", "Tags"] {

@@ -13,7 +13,7 @@ use super::picture::Rock;
 use super::rail::{self, RAIL_W, Tool};
 use crate::app::Studio;
 use crate::style;
-use bpe_core::{Address, Settings, SlotId, ThingId, Value};
+use bpe_core::{Settings, SlotId, ThingId};
 use bpe_kit::modules::water::{Keep, ReadyLook, SCREEN, WaterWorld};
 use bpe_kit::things::water;
 use bpe_water::SolidField;
@@ -59,6 +59,19 @@ pub struct WaterStage {
     preview_version: u64,
     /// What Use a look leaves as it is.
     pub keep: Keep,
+    /// What the stage shows: the whole course, or the camera's shot with its whole finish.
+    pub seen: Seen,
+}
+
+/// What the Water stage shows (decision 44).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Seen {
+    /// The whole course, with bloom and exposure but no Effects or Grade (they are made for the
+    /// shot's shape).
+    #[default]
+    Course,
+    /// The camera's shot at the playhead, with the whole finish, as the video shows it.
+    Shot,
 }
 
 /// The course as it will be, and what it was made for.
@@ -169,7 +182,13 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     let tool = studio.water_stage.tool;
 
     let response = ui.allocate_rect(room, Sense::click_and_drag());
-    let view = CourseView::fit(room, course_size(studio));
+    let view = match studio.water_stage.seen {
+        Seen::Course => CourseView::fit(room, course_size(studio)),
+        Seen::Shot => {
+            let (centre, shot) = bpe_cli::water::shot_at(&studio.scene, &studio.kit.registry, studio.time);
+            CourseView::fit_shot(room, course_size(studio), centre, shot)
+        }
+    };
     studio.water_stage.view = Some(view);
     let step = studio.grid.step(ui.input(|i| i.modifiers.alt));
     let things = placed(studio);
@@ -220,7 +239,8 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     if water::carving_of(&studio.scene).list.is_empty() {
         // (A label that senses nothing, so the stage under it still takes the clicks.)
         let words = egui::Label::new(RichText::new(ALL_ROCK).color(style::MUTED)).selectable(false);
-        let at = Rect::from_center_size(view.rect.center(), vec2(view.rect.width().max(40.0), 40.0));
+        let seen = view.seen_rect();
+        let at = Rect::from_center_size(seen.center(), vec2(seen.width().max(40.0), 40.0));
         ui.put(at, words.wrap());
     }
 }
@@ -232,6 +252,7 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     studio.water_draft.start_on(&render);
     update_preview(studio);
     let painter = ui.painter_at(room);
+    let look_here = look_now(studio, view);
     // The Final view: the final's moment, unless it isn't made (the draft shows then).
     let wf = &mut studio.water_final;
     let final_shown = match (&wf.found, wf.view) {
@@ -242,10 +263,9 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
         && shown != FinalShown::NotMade
         && let Some(found) = &wf.found
     {
-        let look = look_now(studio.hold_runs, &studio.scene, &studio.resolved, studio.time);
-        let drawn = wf.picture.show(&painter, &render, found, &wf.finals, &look, view, studio.time);
+        let drawn = wf.picture.show(&painter, &render, found, &wf.finals, &look_here, view, studio.time);
         if let FinalShown::OutOfDate { restart } = shown {
-            pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), final_view::out_of_date(restart));
+            pill(ui, &painter, view.seen_rect().center_bottom() - vec2(0.0, 14.0), final_view::out_of_date(restart));
         }
         if drawn {
             return true;
@@ -256,10 +276,9 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     job.follow(target);
     let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
     // (Until the new body comes, the old one keeps the look its liquids were numbered for.)
-    let fresh = || look_now(studio.hold_runs, &studio.scene, &studio.resolved, studio.time);
     let look = match (restarting, studio.water_draft.picture.last_look()) {
         (true, Some(last)) => last.clone(),
-        _ => fresh(),
+        _ => look_here,
     };
     let rock = Rock {
         version: studio.water_stage.preview_version,
@@ -276,22 +295,25 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
             true => "Starting the water over…".to_owned(),
             false => format!("Working out the water… {:.1} s", f64::from(reached) / 60.0),
         };
-        pill(ui, &painter, view.rect.center_top() + vec2(0.0, 14.0), behind);
+        pill(ui, &painter, view.seen_rect().center_top() + vec2(0.0, 14.0), behind);
     }
     if final_shown == Some(FinalShown::NotMade) {
-        pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), final_view::NOT_MADE.to_owned());
+        pill(ui, &painter, view.seen_rect().center_bottom() - vec2(0.0, 14.0), final_view::NOT_MADE.to_owned());
     } else if let Some(note) = studio.water_draft.picture.notes().first() {
-        pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), note.clone());
+        pill(ui, &painter, view.seen_rect().center_bottom() - vec2(0.0, 14.0), note.clone());
     }
     shown
 }
 
-/// The scene's look at `time`, with Draft light while a drag holds the runs (`hold`), so the stage
-/// keeps up with it.
-fn look_now(hold: bool, scene: &bpe_core::Scene, resolved: &bpe_core::Resolved, time: f64) -> Look {
-    let mut look = water::look::look_of(scene, resolved, time);
-    if hold {
+/// The scene's look at the playhead, with Draft light while a drag holds the runs, so the stage
+/// keeps up with it; the whole course has no Effects or Grade (they are made for the shot).
+pub(super) fn look_now(studio: &Studio, view: &CourseView) -> Look {
+    let mut look = water::look::look_of(&studio.scene, &studio.resolved, studio.time);
+    if studio.hold_runs {
         look.light.quality = Quality::Draft;
+    }
+    if view.shot.is_none() {
+        look.finish = look.finish.without_shot_finish();
     }
     look
 }
@@ -401,9 +423,10 @@ fn place(studio: &mut Studio, kind: &'static str, at: Vec2) {
 /// The course's outline with a line between its screens, the camera's shot, and the markers; the
 /// flat ground under them where no water picture is (`shown` false).
 fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
-    let painter = ui.painter_at(room);
+    // (In the Shot view only the shot: the course reaches past it.)
+    let painter = ui.painter_at(if view.shot.is_some() { room.intersect(view.seen_rect()) } else { room });
     if !shown {
-        painter.rect_filled(view.rect, 0.0, style::GROUND);
+        painter.rect_filled(view.seen_rect(), 0.0, style::GROUND);
     }
     let soft = Stroke::new(1.0, style::LINE_SOFT);
     let (wide, tall) = ((view.size.x / SCREEN.x).round() as u32, (view.size.y / SCREEN.y).round() as u32);
@@ -416,7 +439,10 @@ fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
     painter.rect_stroke(view.rect, 0.0, Stroke::new(1.0, style::LINE), egui::StrokeKind::Outside);
 
     let small = egui::TextStyle::Small.resolve(ui.style());
-    if let Some(shot) = camera_shot(studio, view) {
+    // (The Shot view is the shot.)
+    if view.shot.is_none()
+        && let Some(shot) = camera_shot(studio, view)
+    {
         painter.rect_stroke(shot, 0.0, Stroke::new(1.0, style::MUTED), egui::StrokeKind::Inside);
         let at = shot.left_top() + vec2(4.0, 3.0);
         painter.text(at, Align2::LEFT_TOP, "Camera", small.clone(), style::MUTED);
@@ -529,18 +555,9 @@ fn pour_marks(
 
 /// The camera's 9:16 shot on screen, at its Position and Zoom at the playhead.
 fn camera_shot(studio: &Studio, view: &CourseView) -> Option<Rect> {
-    let camera = bpe_kit::camera_of(&studio.scene)?;
-    let reg = &studio.kit.registry;
-    let at = |key: &str| studio.scene.value_at_time(reg, &Address::own(camera, key), studio.time);
-    let centre = match at("position") {
-        Some(Value::Vec2([x, y])) => Vec2::new(x, y),
-        _ => Vec2::ZERO,
-    };
-    let zoom = match at("zoom") {
-        Some(Value::Number(z)) if z > 0.0 => z as f32,
-        _ => 1.0,
-    };
-    let size = SCREEN / zoom * view.scale();
+    bpe_kit::camera_of(&studio.scene)?;
+    let (centre, shot) = bpe_cli::water::shot_at(&studio.scene, &studio.kit.registry, studio.time);
+    let size = shot * view.scale();
     Some(Rect::from_center_size(view.to_screen(centre), vec2(size.x, size.y)))
 }
 

@@ -1266,7 +1266,7 @@ fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>
         light: LightLook { ambient: 0.12, bounce: 0.4, caustics: 1.2, shafts: 0.3, ..LightLook::default() },
         lamps: vec![spot(-350.0, 70.0), spot(350.0, 110.0)],
         time: 1.0,
-        finish: FinishLook { bloom: 0.25, exposure: 1.0 },
+        finish: FinishLook { bloom: 0.25, exposure: 1.0, ..FinishLook::default() },
         ..Look::default()
     };
     let material = |kind: MaterialKind, colour: [f32; 3], second: [f32; 3]| MaterialLook {
@@ -1329,7 +1329,7 @@ fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>
         back: BackLook::Colour([0.03, 0.02, 0.05]),
         light: LightLook { ambient: 0.05, bounce: 0.5, ..LightLook::default() },
         lamps: vec![],
-        finish: FinishLook { bloom: 0.8, exposure: 1.0 },
+        finish: FinishLook { bloom: 0.8, exposure: 1.0, ..FinishLook::default() },
         ..lit.clone()
     };
     let sun = Look {

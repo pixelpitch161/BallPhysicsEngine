@@ -103,6 +103,15 @@ fn the_toolbar_switches_the_view_and_export_is_on() {
     assert_eq!(h.state().water_final.view, WaterView::Draft);
     assert!(!disabled(&h, "Make final"));
     assert!(has(&h, "Finals"));
+    // And the stage shows the whole course or the camera's shot.
+    use crate::water_mode::stage::Seen;
+    assert_eq!(h.state().water_stage.seen, Seen::Course);
+    h.get_by_label("Shot").click();
+    h.run();
+    assert_eq!(h.state().water_stage.seen, Seen::Shot);
+    h.get_by_label("Whole course").click();
+    h.run();
+    assert_eq!(h.state().water_stage.seen, Seen::Course);
 }
 
 #[test]

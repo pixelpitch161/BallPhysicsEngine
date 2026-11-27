@@ -287,7 +287,7 @@ impl FinalPicture {
         match self.texture {
             Some((id, _)) if shows => {
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                painter.image(id, view.rect, uv, style::UNTINTED);
+                painter.image(id, view.seen_rect(), uv, style::UNTINTED);
                 true
             }
             _ => false,

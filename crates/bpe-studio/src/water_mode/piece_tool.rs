@@ -196,7 +196,7 @@ pub fn ghost(ui: &Ui, studio: &Studio, view: &CourseView, at: Pos2) {
     let shape = brush.shape();
     let to = landing(studio, view, &shape, brush.turn(), view.to_world(at), alt, None);
     let solids: Vec<_> = shape.parts().iter().map(|s| placed(s, to, brush.turn())).collect();
-    let painter = ui.painter_at(view.rect);
+    let painter = ui.painter_at(view.clip(0.0));
     draw_outlines(&painter, view, &outlines(&solids), style::MUTED);
 }
 

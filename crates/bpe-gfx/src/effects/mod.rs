@@ -946,7 +946,19 @@ impl Builtin {
     pub fn header(&self) -> &Header {
         self.header.get_or_init(|| parse(self.wgsl).unwrap_or_else(|e| panic!("built-in effect {}: {e}", self.id)))
     }
+
+    /// Whether a Water scene offers it (Water mode part 6): an effect over the whole picture that
+    /// doesn't need balls, hits or things, which a Water scene's picture has none of. (Materials
+    /// paint things, so none is offered.)
+    pub fn water_ok(&self) -> bool {
+        self.header().stage == Stage::Picture && !NEEDS_BALLS.contains(&self.id)
+    }
 }
+
+/// The built-in effects over the picture that are made of the balls, their hits or the things
+/// (a Water scene has none, so they would change nothing or next to nothing there).
+const NEEDS_BALLS: [&str; 7] =
+    ["ball_worlds", "fractal", "gravity_lens", "hue_storm", "op_art", "shockwave", "light_ripples"];
 
 #[cfg(test)]
 mod tests {
@@ -959,6 +971,22 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
             .validate(&module)
             .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn a_water_scene_is_offered_the_effects_that_need_no_balls() {
+        let ok: Vec<&str> = BUILTINS.iter().filter(|b| b.water_ok()).map(|b| b.id).collect();
+        assert_eq!(ok.len(), 19, "{ok:?}");
+        for id in NEEDS_BALLS {
+            assert!(Builtin::find(id).is_some_and(|b| b.header().stage == Stage::Picture && !b.water_ok()), "{id}");
+        }
+        // The materials paint things: none is offered.
+        for id in ["lava", "rainbow_flow", "hit_glow"] {
+            assert!(!Builtin::find(id).expect("built in").water_ok(), "{id}");
+        }
+        assert!(
+            ["kaleidoscope", "thermal", "film", "lens_flare"].iter().all(|id| Builtin::find(id).unwrap().water_ok())
+        );
     }
 
     #[test]

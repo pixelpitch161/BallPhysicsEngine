@@ -203,7 +203,7 @@ fn carve(studio: &mut Studio, strokes: Strokes) {
 pub fn outline(ui: &Ui, studio: &Studio, view: &CourseView, at: Pos2) {
     let brush = studio.water_stage.brush;
     let r = brush.radius() * view.scale();
-    let painter = ui.painter_at(view.rect.expand(r));
+    let painter = ui.painter_at(view.clip(r));
     let ink = if brush.fill { style::TEXT } else { style::TEXT_STRONG };
     let lines = [Line::new(2.5, style::OUTLINE), Line::new(1.0, ink)];
     for line in lines {
