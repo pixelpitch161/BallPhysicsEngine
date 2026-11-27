@@ -211,6 +211,30 @@ pub fn screen_pool(cell: f32, share: f32) -> Bench {
     Bench { drops: lay.drops, field }
 }
 
+/// Two liquids blending (part 4.2): a pool on the screen box's floor, the first liquid on its left
+/// and the second on its right, their colours running together across its middle third (each drop
+/// there carrying a share of the other, half at the middle, nothing at the third's edges), and a
+/// blob in the air of the first liquid carrying half of the second.
+pub fn mixed(cell: f32) -> Bench {
+    let layout = screen_layout(cell);
+    let solids = vec![Solid::rect(Vec2::new(-548.0, -968.0), Vec2::new(548.0, 968.0), false, 16.0)];
+    let field = SolidField::build_least(layout, &solids, LEAST_WALL * cell);
+    let mut lay = Laying { field: &field, drops: Vec::new() };
+    lay.lattice(Vec2::new(-540.0, 300.0), Vec2::new(540.0, 960.0), |_| true, |p| u32::from(p.x >= 0.0));
+    let blob = Vec2::new(0.0, -300.0);
+    lay.lattice(blob - Vec2::splat(120.0), blob + Vec2::splat(120.0), |p| p.distance(blob) <= 120.0, |_| 0);
+    let drops = lay
+        .drops
+        .into_iter()
+        .map(|d| {
+            let p = layout.to_world(Vec2::from(d.x));
+            let share = if p.y < 0.0 { 0.5 } else { ((180.0 - p.x.abs()) / 360.0).clamp(0.0, 0.5) };
+            d.with_mix(1 - d.liquid(), share)
+        })
+        .collect();
+    Bench { drops, field }
+}
+
 /// The screen's box open at the top: rock under y 900 and past x -500 and 500, the sky above.
 pub fn open_top(cell: f32) -> SolidField {
     const FAR: f32 = 1.0e4;

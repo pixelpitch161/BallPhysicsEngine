@@ -1194,7 +1194,7 @@ fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     use bpe_water::draw::{Plain, PlainGpu, StoredDrops, View, sets};
     type Make = fn() -> sets::Bench;
     type Look = fn() -> bpe_water::draw::PlainLook;
-    let all: [(&str, Make, Look); 6] = [
+    let all: [(&str, Make, Look); 7] = [
         ("water-bench-c8", || sets::bench(8.0), sets::look),
         ("water-bench-c3", || sets::bench(3.0), sets::look),
         ("water-bench-c2", || sets::bench(2.0), sets::look),
@@ -1202,6 +1202,8 @@ fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
         // Part 3: pieces in their own colours, at the draft's and Fine's detail.
         ("water-pieces-c8", || sets::pieces(8.0), sets::pieces_look),
         ("water-pieces-c3", || sets::pieces(3.0), sets::pieces_look),
+        // Part 4.2: two liquids' colours running together, and a blob carrying half of each.
+        ("water-mixed-c3", || sets::mixed(3.0), sets::look),
     ];
     let card = PlainGpu::new(&gpu.device, &gpu.queue);
     let mut out = Vec::new();
@@ -1353,6 +1355,7 @@ fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>
         ("water-look-bench-c3", Box::new(|| sets::bench(3.0)), lit.clone()),
         ("water-look-bench-c8", Box::new(|| sets::bench(8.0)), lit.clone()),
         ("water-look-pieces-c3", Box::new(|| sets::pieces(3.0)), pieces),
+        ("water-look-mixed-c3", Box::new(|| sets::mixed(3.0)), lit.clone()),
         ("water-look-back-darker", Box::new(|| sets::bench(3.0)), back(BackLook::DarkerRock(0.3))),
         ("water-look-back-colour", Box::new(|| sets::bench(3.0)), back(BackLook::Colour([0.1, 0.12, 0.2]))),
         (
@@ -1436,7 +1439,7 @@ fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     let mut chunk = Chunk::open(&finals.take_dir(head.print), 1).unwrap();
     let frame = FrameCodec::new().decode(&chunk.bytes(0).unwrap(), &head.layout()).unwrap();
     let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
-    stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+    stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds, &frame.mixes);
     let field = make.setup.field();
     let mut drawing = LookDraw::new(LookGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
     // (A new scene's look: the cards' defaults, no lamps.)
@@ -1525,7 +1528,7 @@ fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u
     {
         let mut c = Chunk::open(&dir, second).unwrap();
         let frame = FrameCodec::new().decode(&c.bytes(0).unwrap(), &layout).unwrap();
-        stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+        stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds, &frame.mixes);
         let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
         let mut look = base.clone();
         look.time = second as f32;
@@ -1629,7 +1632,7 @@ fn water_looks_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     let second = 2;
     let mut c = Chunk::open(&dir, second).unwrap();
     let frame = FrameCodec::new().decode(&c.bytes(0).unwrap(), &layout).unwrap();
-    stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+    stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds, &frame.mixes);
     let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
     let mut wet = HeldWet::default();
     wet.give(&gpu.device, &gpu.queue, layout, Some(&(marks, 60 * second)), &mut drawing);

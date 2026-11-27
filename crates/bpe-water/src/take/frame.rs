@@ -1,7 +1,8 @@
 //! A kept moment's drops on disk: by the layout's cells, a byte a cell for how many drops it holds
 //! (255 then four more bytes for 255 or more), then for each drop in cell order its place in its cell
-//! (x and y, 1/256 of a cell), its speed (x and y, a signed byte each on a log scale) and its
-//! kind's low byte, each as its own plane, the whole compressed with lz4.
+//! (x and y, 1/256 of a cell), its speed (x and y, a signed byte each on a log scale), its kind's low
+//! byte, and its colour mix (the share of another liquid it carries, of 255, and that liquid), each
+//! as its own plane, the whole compressed with lz4.
 
 use anyhow::{Context, bail, ensure};
 use bpe_core::maths::Maths;
@@ -9,7 +10,9 @@ use bpe_core::maths::Maths;
 use crate::drop::STOPS;
 use crate::solid::Layout;
 
-const MAGIC: &[u8; 4] = b"BPF1";
+const MAGIC: &[u8; 4] = b"BPF2";
+/// The planes a drop has.
+const PLANES: usize = 7;
 
 /// A speed (pixels a second) as the pack pass stores it: `round(15 ln(1 + |v| / 4))`, at most 127,
 /// its sign kept, as a two's-complement byte.
@@ -28,11 +31,13 @@ pub fn byte_speed(b: u8) -> f32 {
     if s < 0 { -m } else { m }
 }
 
-/// A moment's drops unpacked: place and speed (grid units, a second), and kind.
+/// A moment's drops unpacked: place and speed (grid units, a second), kind, and colour mix (as
+/// [`crate::Drop::mix`], its share kept to 1/255).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TakeFrame {
     pub xv: Vec<[f32; 4]>,
     pub kinds: Vec<u32>,
+    pub mixes: Vec<u32>,
 }
 
 impl TakeFrame {
@@ -58,9 +63,9 @@ impl FrameCodec {
         FrameCodec::default()
     }
 
-    /// A moment's bytes from the drops the card packed (`[cell | kind << 24, place and speed]`, all
-    /// ones for one not in the course) on a layout of `cells` cells.
-    pub fn encode(&mut self, packed: &[[u32; 2]], cells: u32) -> Vec<u8> {
+    /// A moment's bytes from the drops the card packed (`[cell | kind << 24, place and speed, mix]`,
+    /// all ones for one not in the course) on a layout of `cells` cells.
+    pub fn encode(&mut self, packed: &[[u32; 3]], cells: u32) -> Vec<u8> {
         let cells = cells as usize;
         self.counts.clear();
         self.counts.resize(cells + 1, 0);
@@ -95,16 +100,20 @@ impl FrameCodec {
             }
         }
         let at = self.planes.len();
-        self.planes.resize(at + 5 * live as usize, 0);
+        self.planes.resize(at + PLANES * live as usize, 0);
         let n = live as usize;
         for (k, &i) in self.order.iter().enumerate() {
-            let [w0, w1] = packed[i as usize];
+            let [w0, w1, mix] = packed[i as usize];
             let b = w1.to_le_bytes();
             self.planes[at + k] = b[0];
             self.planes[at + n + k] = b[1];
             self.planes[at + 2 * n + k] = b[2];
             self.planes[at + 3 * n + k] = b[3];
             self.planes[at + 4 * n + k] = (w0 >> 24) as u8;
+            // (Its share of 65535 to a byte; a share that rounds to nothing is unmixed.)
+            let share = ((mix >> 16) + 128) / 257;
+            self.planes[at + 5 * n + k] = share as u8;
+            self.planes[at + 6 * n + k] = if share == 0 { 0 } else { (mix & 15) as u8 };
         }
         let mut out = Vec::with_capacity(12 + self.planes.len() / 2);
         out.extend_from_slice(MAGIC);
@@ -124,12 +133,17 @@ impl FrameCodec {
         ensure!(cells == across * layout.rows.saturating_sub(1) as usize, "the moment is of another course");
         // (A garbled size never asks for more room than a moment of these drops can take.)
         let size = bytes.get(12..16).map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")) as usize);
-        ensure!(size.is_some_and(|s| s <= 5 * cells + 5 * live), "the moment is broken");
+        ensure!(size.is_some_and(|s| s <= 5 * cells + PLANES * live), "the moment is broken");
         let planes = lz4_flex::decompress_size_prepended(&bytes[12..]).context("the moment is broken")?;
         let mut at = 0;
-        let mut out = TakeFrame { xv: Vec::with_capacity(live), kinds: Vec::with_capacity(live) };
+        let mut out = TakeFrame {
+            xv: Vec::with_capacity(live),
+            kinds: Vec::with_capacity(live),
+            mixes: Vec::with_capacity(live),
+        };
         let body = |at: usize| -> anyhow::Result<&[u8]> {
-            let end = at.checked_add(5 * live).filter(|e| *e <= planes.len()).context("the moment is cut short")?;
+            let end =
+                at.checked_add(PLANES * live).filter(|e| *e <= planes.len()).context("the moment is cut short")?;
             Ok(&planes[at..end])
         };
         // (First the counts, to find where the drops' planes start.)
@@ -151,12 +165,14 @@ impl FrameCodec {
             bail!("the moment's counts don't add up");
         }
         let drops = body(at)?;
-        let (px, py, sx, sy, kinds) = (
+        let (px, py, sx, sy, kinds, shares, others) = (
             &drops[..live],
             &drops[live..2 * live],
             &drops[2 * live..3 * live],
             &drops[3 * live..4 * live],
-            &drops[4 * live..],
+            &drops[4 * live..5 * live],
+            &drops[5 * live..6 * live],
+            &drops[6 * live..],
         );
         let per_px = 1.0 / layout.cell.max(1e-6);
         let mut k = 0;
@@ -167,6 +183,8 @@ impl FrameCodec {
                 let y = cy + (f32::from(py[k]) + 0.5) / 256.0;
                 out.xv.push([x, y, byte_speed(sx[k]) * per_px, byte_speed(sy[k]) * per_px]);
                 out.kinds.push(u32::from(kinds[k]) | STOPS);
+                let share = u32::from(shares[k]) * 257;
+                out.mixes.push(if share == 0 { 0 } else { (u32::from(others[k]) & 15) | (share << 16) });
                 k += 1;
             }
         }
@@ -187,13 +205,13 @@ mod tests {
     use super::*;
     use glam::Vec2;
 
-    fn pack(x: f32, y: f32, vx: f32, vy: f32, kind: u32, layout: &Layout) -> [u32; 2] {
+    fn pack(x: f32, y: f32, vx: f32, vy: f32, kind: u32, layout: &Layout) -> [u32; 3] {
         let across = layout.cols - 1;
         let (cx, cy) = (x.floor().min((layout.cols - 2) as f32), y.floor().min((layout.rows - 2) as f32));
         let q = |f: f32| ((f * 256.0).clamp(0.0, 255.0)) as u32;
         let cell = cx as u32 + cy as u32 * across;
         let s = |v: f32| u32::from(speed_byte(v));
-        [cell | ((kind & 255) << 24), q(x - cx) | (q(y - cy) << 8) | (s(vx) << 16) | (s(vy) << 24)]
+        [cell | ((kind & 255) << 24), q(x - cx) | (q(y - cy) << 8) | (s(vx) << 16) | (s(vy) << 24), 0]
     }
 
     #[test]
@@ -218,7 +236,7 @@ mod tests {
             pack(0.0, 0.0, 10.0, -20.0, 0, &layout),
             pack(cols, rows, 0.0, 0.0, 3 | crate::AIR, &layout),
             pack(5.99, 7.01, -400.0, 1.0, 1, &layout),
-            [u32::MAX, u32::MAX],
+            [u32::MAX, u32::MAX, u32::MAX],
         ];
         // (A cell of 300 drops.)
         for k in 0..300 {
@@ -239,11 +257,38 @@ mod tests {
         let fast = back.xv.iter().find(|p| (p[0] - 5.99).abs() < 0.004).unwrap();
         assert!((fast[2] * layout.cell + 400.0).abs() < 28.0, "speed {}", fast[2] * layout.cell);
         assert_eq!(back.xv.iter().filter(|p| (p[1] - 4.5).abs() < 0.004).count(), 300);
+        assert!(back.mixes.iter().all(|m| *m == 0), "unmixed drops read back unmixed");
         assert!(codec.decode(&bytes[..bytes.len() - 3], &layout).is_err(), "a moment cut short is an error");
         let mut garbled = bytes.clone();
         garbled[20] ^= 0x5A;
         let _ = codec.decode(&garbled, &layout); // (an error or other drops, never a panic)
         let other = Layout::cover(Vec2::ZERO, Vec2::new(60.0, 30.0), 2.0);
         assert!(codec.decode(&bytes, &other).is_err(), "a moment of another course is refused");
+    }
+
+    #[test]
+    fn a_moment_keeps_each_drops_colour_mix() {
+        let layout = Layout::cover(Vec2::ZERO, Vec2::new(40.0, 30.0), 2.0);
+        let mixed = |x: f32, other: usize, share: f32| {
+            let mut p = pack(x, 2.5, 0.0, 0.0, 0, &layout);
+            p[2] = crate::mix_word(other, share);
+            p
+        };
+        let drops = [mixed(1.5, 3, 0.5), mixed(2.5, 15, 1.0), mixed(3.5, 2, 0.001), mixed(4.5, 1, 0.3)];
+        let cells = (layout.cols - 1) * (layout.rows - 1);
+        let mut codec = FrameCodec::new();
+        let bytes = codec.encode(&drops, cells);
+        let back = codec.decode(&bytes, &layout).unwrap();
+        let mix_at = |x: f32| {
+            let k = back.xv.iter().position(|p| (p[0] - x).abs() < 0.01).unwrap();
+            let m = back.mixes[k];
+            (m & 15, f32::from((m >> 16) as u16) / 65535.0)
+        };
+        let (o, s) = mix_at(1.5);
+        assert!(o == 3 && (s - 0.5).abs() <= 1.0 / 255.0, "{o} {s}");
+        assert_eq!(mix_at(2.5), (15, 1.0));
+        assert_eq!(mix_at(3.5), (0, 0.0), "a share under a 255th reads back unmixed");
+        let (o, s) = mix_at(4.5);
+        assert!(o == 1 && (s - 0.3).abs() <= 1.0 / 255.0, "{o} {s}");
     }
 }

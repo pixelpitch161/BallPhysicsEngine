@@ -301,7 +301,7 @@ fn water_final_speed() {
     let mut look = bpe_kit::things::water::look::look_of(&scene, &resolved, seconds / 2.0);
     let draw = std::time::Instant::now();
     let mut stored = StoredDrops::new(&device, &queue, &[]);
-    stored.set(&device, &queue, &frame.xv, &frame.kinds);
+    stored.set(&device, &queue, &frame.xv, &frame.kinds, &frame.mixes);
     let screen = bpe_water::draw::View::screen(1.0);
     drawing.draw_at(&stored.buffers(), &screen, &look, 0.0);
     let _ = drawing.read();

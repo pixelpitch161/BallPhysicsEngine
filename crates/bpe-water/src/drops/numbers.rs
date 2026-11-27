@@ -23,11 +23,80 @@ pub struct Feel {
     pub weight: f32,
     /// How fast its motion dies down (0: never).
     pub settles: f32,
+    /// Its Mixing card's: how much it keeps apart from other liquids (0 to 1: 1 is oil and water,
+    /// round drops and a sharp line, no colour running across).
+    pub keeps_apart: f32,
+    /// How fast colours run together where it meets other liquids (0 never to 1, [`MIX_MOST`]
+    /// px² a second at 1).
+    pub mix_speed: f32,
+    pub mixes_when: MixWhen,
 }
 
 impl Default for Feel {
     fn default() -> Self {
-        Feel { gravity: 1.0, surface_pull: 0.5, thickness: 0.02, stickiness: 0.0, weight: 1.0, settles: 0.0 }
+        Feel {
+            gravity: 1.0,
+            surface_pull: 0.5,
+            thickness: 0.02,
+            stickiness: 0.0,
+            weight: 1.0,
+            settles: 0.0,
+            keeps_apart: 0.0,
+            mix_speed: 0.0,
+            mixes_when: MixWhen::Always,
+        }
+    }
+}
+
+/// When a liquid's colour runs into its neighbours' (its Mixing card's Mixes when).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MixWhen {
+    #[default]
+    Always,
+    /// Only where the liquids move against each other ([`STIR`] px a second for all of it).
+    Stirred,
+    /// Only where they close on each other faster than [`HIT`] px a second.
+    Hits,
+}
+
+impl MixWhen {
+    /// Its number on the card (`Feel.c.w`).
+    fn code(self) -> f32 {
+        match self {
+            MixWhen::Always => 0.0,
+            MixWhen::Stirred => 1.0,
+            MixWhen::Hits => 2.0,
+        }
+    }
+}
+
+/// The lightest and heaviest a liquid's Weight is taken as.
+pub const LIGHTEST: f32 = 0.1;
+pub const HEAVIEST: f32 = 10.0;
+/// How fast colours run together at a Mix speed of 1: px² a second (a liquid's own is this times
+/// its Mix speed squared; between two, times both speeds).
+pub const MIX_MOST: f32 = 400.0;
+/// The most mix passes a frame (finer than about 1.5 px, a Mix speed near 1 mixes as fast as these
+/// allow).
+pub const MOST_MIX_PASSES: u32 = 64;
+/// The share of a drop's colour a mix pass may move at rest (the passes are enough to keep under it).
+const MIX_STEP: f64 = 0.45;
+/// Mixes when Only when stirred: the speed (px a second) two neighbours move at against each other
+/// for all of the mixing.
+pub const STIR: f32 = 200.0;
+/// Mixes when Only on hits: the speed (px a second) two neighbours close at for all of the mixing
+/// (none below half of it).
+pub const HIT: f32 = 150.0;
+
+impl Feel {
+    /// Its Weight as the engine takes it.
+    pub fn mass(&self) -> f32 {
+        if self.weight.is_finite() { self.weight.clamp(LIGHTEST, HEAVIEST) } else { 1.0 }
+    }
+
+    /// Its Mix speed as the engine takes it (0 to 1).
+    pub fn mixing(&self) -> f32 {
+        if self.mix_speed.is_finite() { self.mix_speed.clamp(0.0, 1.0) } else { 0.0 }
     }
 }
 
@@ -486,16 +555,53 @@ impl Numbers {
         let stick = feel.stickiness.max(0.0);
         let reach_px = self.reach * cell;
         let even = (self.evening(feel) * dt * 20.0 / (reach_px * reach_px)).min(0.5);
+        let keep = if feel.keeps_apart.is_finite() { feel.keeps_apart.clamp(0.0, 1.0) } else { 0.0 };
         FeelGpu {
             a: [feel.gravity, skin, skin * self.curv, self.adh * stick * gravity * feel.gravity.abs()],
-            b: [
-                8.0 * feel.settles * feel.settles,
-                self.drag + self.drag_stick * stick,
-                even,
-                feel.weight.clamp(0.05, 16.0),
-            ],
+            b: [8.0 * feel.settles * feel.settles, self.drag + self.drag_stick * stick, even, feel.mass()],
+            // (`c.z`, the mixing's root, is the frame's: it depends on how many passes it takes.)
+            c: [1.0 / feel.mass(), keep, 0.0, feel.mixes_when.code()],
         }
     }
+
+    /// The colour mixing's weight of a neighbour at rest, summed over the resting lattice (four drops
+    /// a cell): `(2 / rho0) 30 / (pi h^3) t^2 / d` for each neighbour `d` cells away, `t = 1 - d / h`
+    /// (`cs_mix`'s, the spiky kernel's weight for the Laplacian).
+    pub fn mix_at_rest(&self) -> f32 {
+        let (rho0, _) = self.at_rest();
+        let h = f64::from(self.reach);
+        let mut sum = 0.0f64;
+        let n = (h / 0.5).ceil() as i32 + 1;
+        for j in -n..=n {
+            for i in -n..=n {
+                let far = f64::from(i * i + j * j).sqrt() * 0.5;
+                if far >= h || (i == 0 && j == 0) {
+                    continue;
+                }
+                let t = 1.0 - far / h;
+                sum += 2.0 / f64::from(rho0) * 30.0 / (std::f64::consts::PI * h * h * h) * t * t / far.max(0.05 * h);
+            }
+        }
+        sum as f32
+    }
+
+    /// The colour mix passes a frame for `feels` on `cell`-pixel cells: enough that a pass moves at
+    /// most [`MIX_STEP`] of a resting drop's colour (1 to [`MOST_MIX_PASSES`]).
+    pub fn mix_passes(&self, feels: &[Feel], cell: f32) -> u32 {
+        let most = feels.iter().map(Feel::mixing).fold(0.0f32, f32::max);
+        let cell = f64::from(cell.max(1e-3));
+        let per_frame = f64::from(MIX_MOST * most * most) * f64::from(FRAME) / (cell * cell);
+        let passes = (per_frame * f64::from(self.mix_at_rest()) / MIX_STEP).ceil();
+        if passes.is_finite() { (passes as u32).clamp(1, MOST_MIX_PASSES) } else { MOST_MIX_PASSES }
+    }
+}
+
+/// The colour mixing's root for a liquid of Mix speed `mixing` over `passes` passes a frame on
+/// `cell`-pixel cells: a pass between two liquids moves colour by the product of their roots (cells²
+/// of their `D` over a pass's share of the frame).
+pub fn mix_root(mixing: f32, passes: u32, cell: f32) -> f32 {
+    let per_pass = f64::from(MIX_MOST) * f64::from(FRAME) / f64::from(passes.max(1));
+    (f64::from(mixing) * per_pass.sqrt() / f64::from(cell.max(1e-3))) as f32
 }
 
 /// A liquid's numbers on the card. Matches `Feel` in the engine's common.wgsl.
@@ -508,6 +614,9 @@ pub struct FeelGpu {
     /// damping (a second), drag along a face (a second), the share of the neighbours' mean speed
     /// taken a step, weight
     pub b: [f32; 4],
+    /// one over its weight, how much it keeps apart from other liquids, its colour mixing's root a
+    /// pass, when its colour mixes (0 always, 1 stirred, 2 on hits)
+    pub c: [f32; 4],
 }
 
 #[cfg(test)]
@@ -650,6 +759,19 @@ mod tests {
         assert_eq!(n.air_window(24.0), 3, "at least three cells");
         assert_eq!(n.air_window(0.5), 64, "at most 64");
         assert_eq!(Numbers { air_reach: f32::NAN, ..n }.air_window(6.0), 3);
+    }
+
+    #[test]
+    fn colour_mixing_takes_more_passes_on_finer_cells() {
+        let at = |cell: f32, mix_speed: f32| {
+            Numbers::for_cell(cell).mix_passes(&[Feel::default(), Feel { mix_speed, ..Feel::default() }], cell)
+        };
+        assert!(Numbers::for_cell(6.0).mix_at_rest() > 0.0);
+        assert_eq!(at(6.0, 0.0), 1, "no Mix speed: one pass (which moves nothing)");
+        assert!(at(3.0, 1.0) > at(6.0, 1.0), "{} passes at 3 px, {} at 6 px", at(3.0, 1.0), at(6.0, 1.0));
+        assert!(at(6.0, 0.5) < at(6.0, 1.0), "a slower mix takes fewer");
+        assert_eq!(at(0.5, 1.0), MOST_MIX_PASSES, "at most 64");
+        assert!((mix_root(1.0, 4, 6.0) * mix_root(1.0, 4, 6.0) * 4.0 * 36.0 - MIX_MOST * FRAME).abs() < 1e-3);
     }
 
     #[test]

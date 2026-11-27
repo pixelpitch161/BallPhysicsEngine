@@ -304,6 +304,172 @@ the decisions below; the decisions here are what each must hold to.
 - `docs/notes/water.md` "Part 4.1 (as built)"; this file's "As built: 4.1".
 - One review (a reviewer agent on the diff), fix, merge when green, then 4.2's tasks.
 
+## 4.2: Weight, Keeps apart and colour mixing
+
+Decisions 19 to 21, made exact here. Words: a drop's **inverse mass** `w = 1 / Weight` (air 1); a drop's **mix**
+is the share of one other liquid it carries (its colour, the dye in it; its motion stays its own liquid's).
+
+### What is decided for 4.2 (beyond 19 to 21)
+
+- **One flag says the weights differ** (`Fr.mixf.x` bit 0, set by the host when two of the body's liquids'
+  Weights, clamped to 0.1 to 10, are not equal). Off, every mass factor below is the literal 1.0 (`select`), the deep
+  gather's mass is the volume (so a lone liquid of any Weight moves to the bit as at Weight 1, where today a lone
+  Weight 3 liquid gathers three times the face mass), and the deep push is not scaled: a scene of Weight 1 liquids
+  runs the arithmetic it runs today. On, the pressure, the pair terms and the deep push share by mass.
+- **The pressure by mass** (`sweep.wgsl`): `lambda_at` sums `w_i |sum|^2 + sum_j w_j |g_j|^2` for the stiffness and
+  softens by `fr.k.z * w_i`; `apply_at` multiplies the drop's shift by `w_i` (before the cap and the solids). The
+  neighbours' `w_j` are read from `velb[j].z` only when the flag is on. Air keeps its own rules (pushed only by air
+  and the solids) with `w` 1.
+- **Pair terms by mass** (`finish.wgsl`): each pair's evening, closing loss, skin pull, lies and bend are scaled by
+  `2 w_i / (w_i + w_j)` (that is `2 m_j / (m_i + m_j)`: momentum kept, exactly 1 for two drops alike). A wetted face's
+  and the grip's terms are not (a face has no mass, and a liquid alone must move the same at any Weight).
+- **The deep push by mass**: `SUMS` becomes 7 (word 6: mass at the cell's middle, gathered only with the flag);
+  `cs_deep_across` writes each cell's (mass, volume) at its middle into a new per-cell buffer `dmass` (binding 31)
+  before it empties the sums; `cs_deep_push` scales the drop's push by `m_mean / m_i`, `m_mean` the bilinear mass
+  over the bilinear volume round it (1 where there is none), before the push's cap. Momentum per cell is kept (the
+  cell's drops share the face's change by mass).
+- **Keeps apart** (`MixingCard::keeps_apart`, 0 to 1, default 0; engine `Feel::keeps_apart`): between two liquid
+  drops of different liquids, the pair's skin pull, lies and bend are scaled by `1 - max(keep_i, keep_j)`. The pressure,
+  evening and closing loss are untouched (oil and water still fill a glass together). Between drops of one liquid,
+  nothing changes.
+- **The mix word** (`id.w`, and `Drop::mix` in place of the unused `e`): bits 0 to 3 the other liquid, bits 16 to 31
+  its share of 65535, rounded; 0 unmixed (a share under 1/65535 is unmixed). Born drops, air and drops a test adds
+  without one are unmixed. `Water::add` uploads a drop's mix.
+- **The mix passes** (`cs_mix`, `cs_mix_keep` in a new `mix.wgsl`): after the frame's last `cs_finish` (before the
+  drains are counted and air is born), when the flag's bit 1 is on (the body has two or more liquids and one has a
+  Mix speed above 0), `p` times over: `cs_mix` reads every drop's mix from the sorted ids (binding 5) and writes its
+  new one to `mixb` (binding 30), then `cs_mix_keep` copies `mixb` back into the ids' 4th word. Each drop sums, over
+  its liquid neighbours (the last step's bins, `xv`'s places), a 16-entry array of how much of each liquid they hold
+  (their own liquid `1 - s`, their other `s`), each by `coef_ij = gate_ij (1 - keep_ij) r_i r_j L_ij`, with
+  `L_ij = (2 / rho0) 30 / (pi h^3) t^2 / max(d, 0.05 h)` (the spiky kernel's Laplacian weight, `t = 1 - d / h`),
+  `keep_ij` as above between different liquids (0 between alike). Its new holding is
+  `c_i (1 - S) + acc` (`S` the coefficients' sum, all scaled by `0.9 / S` where `S > 0.9`, so a crowded spot stays
+  calm); its share is `1 - c_i[own]`, its other the liquid it holds most of but its own (the lower number on a tie),
+  clamped and rounded into the word. With three or more liquids round a drop the dye of the weaker others goes to the
+  strongest (own versus other is kept). Air and drops that left take no part and keep their word.
+- **Mix speed in px² a second**: `D = 400 s^2` px²/s (`s` the Mix speed, 0 to 1: about 20 px of blending in a
+  second at the default 0.5, 40 px at 1), between two liquids `D_ij = 400 s_i s_j`. `r_l` (`Feel.c.z` on the card) is
+  `s_l sqrt(400 FRAME / p) / cell`. The passes a frame: `p = ceil(max_l(400 s_l^2 FRAME / cell^2) L_rest / 0.45)`,
+  1 to 64 (`Numbers::mix_passes`), `L_rest` the sum of `L` over the resting lattice (`Numbers::mix_at_rest`, as
+  `at_rest`). At 2 px a Mix speed of 1 takes about 40 passes; at the cap (finer than 1.5 px at Mix speed 1) it mixes
+  as fast as 64 passes allow (an edge case, said in the notes).
+- **Mixes when** (`Feel.c.w`: 0 Always, 1 Only when stirred, 2 Only on hits), from the pair's speeds at the frame's
+  end: stirred `min(|v_i - v_j| / STIR, 1)`, `STIR` 200 px/s; hits `smoothstep(HIT / 2, HIT, closing)`, closing the
+  speed at which they close, `HIT` 150 px/s (`Fr.mixs.xy`, in cells a second); Always 1. The pair's gate is the
+  smaller of what each one's rule gives.
+- **Fades and Fades to leave the Mixing card** (they need drops that carry an age: Later). The card's colour
+  settings form the group "Meeting other liquids": Keeps apart, Mix speed, Mixes when.
+- **The take** (`TAKE_FORMAT` 3): `cs_pack` packs 3 words a drop (`packed: array<u32>`, the third the mix word);
+  `FrameCodec` keeps two more planes, the share as a byte (`round(share16 / 257)`) and the other liquid; `TakeFrame`
+  gains `mixes` (decoded back to the mix word, share byte times 257); `StoredDrops::set` takes the mixes.
+- **The look** (`look.wgsl`): `vs_look_splat` passes the drop's other liquid and share (flat); `fs_look_splat` and
+  `fs_look_weights` put `k (1 - s)` in the own liquid's channel and `k s` in the other's (only when `s > 0`: an
+  unmixed drop writes what it writes today), so every per-liquid look setting blends by the weights; `vs_look_nodes`
+  mixes the drop's sigma, glow and colour between its two liquids by `s` (again only when `s > 0`). Mist and Sparks
+  stay the drop's own liquid's. **The plain drawing** (`plain.wgsl` `vs_splat`) mixes colour and deep by `s` the
+  same way.
+- **The probe** colours a drop by its share instead of the stretch (`e` is gone).
+- `Fr` gains, at its end after the drains block, `mixf: vec4<u32>` (bit 0 the weights differ, bit 1 colours mix;
+  the passes; 0; 0) and `mixs: vec4<f32>` (STIR, HIT in cells a second; 0; 0); `Feel` gains `c` (inverse mass, keeps
+  apart, `r`, mixes when).
+
+### Edge cases (4.2)
+
+- Weight outside 0.1 to 10 is clamped (the card's range is 0.1 to 10 too).
+- Two liquids of the same Weight: the flag is off (they move as one liquid).
+- A heavy liquid poured onto a light pool sinks through it in deep water (the push by mass) and in thin water (the
+  pressure by mass); a light one poured under a heavy one rises.
+- Keeps apart 1 between two liquids with Mix speed above 0: no colour crosses (`1 - keep` is 0).
+- Mix speed 0 on one of two liquids: no colour crosses between them (`s_i s_j` is 0); each still mixes with liquids
+  of its own kind that carry dye.
+- A drop carrying a share of a liquid the scene no longer has: the look clamps the liquid number as it does a
+  drop's own.
+- Only when stirred with still water: no mixing. Only on hits at rest: none.
+- A restart point and a copy carry the mixes (they are the ids' 4th word, which both keep whole).
+
+### Not to do (4.2)
+
+- No new binding on `cs_finish_predict` (it is at 8) or `cs_finish`.
+- No mixing inside the steps (once a frame, after the last step).
+- No change to how drops are born, sorted or drained; no change to `fall()`.
+- No change to a drop's motion by its mix (it keeps its own Feel).
+- No random numbers: ties go to the lower liquid number, sums run in the sorted order.
+
+### Task 1: `bpe-water`: masses (`numbers.rs`, `common.wgsl`, `sweep.wgsl`, `finish.wgsl`, `deep.wgsl`, `deep.rs`, `drops/mod.rs`, `passes.rs`)
+
+- `Feel` gains `keeps_apart: f32`, `mix_speed: f32`, `mixes_when: MixWhen` (`Always`, `Stirred`, `Hits`; defaults
+  0, 0, Always); `FeelGpu` gains `c: [f32; 4]`; `feel_gpu` fills `c.x = 1 / clamp(weight, 0.1, 10)`, `c.y = keep`
+  clamped 0 to 1, `c.w` the code (`c.z` is filled by `frame_gpu`, which knows the passes). `b.w` becomes the clamped
+  weight 0.1 to 10.
+- `common.wgsl`: `Feel.c`, `Fr.mixf`, `Fr.mixs`; `fn weighted() -> bool`; `fn inv_mass(kind) -> f32` (1 for air);
+  `fn pair_mass(wi, wj) -> f32` (`2 wi / (wi + wj)`); `fn keep_of(ki, kj) -> f32` (0 unless both liquid and different).
+- `sweep.wgsl` as decided; `finish.wgsl` as decided (the factors multiply `wj`'s products, so with the flag off and
+  keep 0 each is `x * 1.0`).
+- `deep.wgsl`: `SUMS` 7, the gather's mass `select(1, weight, weighted) * VOL` (air 1), word 6 only when weighted;
+  `dmass` (binding 31) written by `cs_deep_across` when weighted; `cs_deep_push` scales by the mean mass over its own
+  when weighted. `deep.rs` `SUMS` 7 and the `dmass` buffer (8 bytes a cell). `passes.rs`: binding 31 on
+  `cs_deep_across` and `cs_deep_push` (7 storage each; the test that no pass binds more than 8 still passes).
+- `drops/mod.rs` `frame_gpu`: `mixf`, `mixs`, `c.z`; `weights_differ()`.
+- Tests (`tests/mixing.rs`, new, on the card): `a_liquid_alone_moves_the_same_at_any_weight` (a pool and a pour at
+  Weight 1 and at Weight 4, one liquid: the drops equal to the bit after 2 s); `two_liquids_alike_move_as_one` (half
+  the drops liquid 1, both Weight 1: the same drops as one liquid, to the bit); `heavy_liquid_sinks_and_light_rises`
+  (a box with a layer of Weight 3 over a layer of Weight 1, each 30 px deep, at 6 px and at 3 px: after 4 s the heavy
+  liquid's mean height is below the light's by at least half a layer); `a_deep_pool_settles_by_weight` (the same in a
+  pool deep enough for the deep part, 300 px, checked that the deep part ran); `oil_floats` (a blob of Weight 0.8
+  under a Weight 1 pool rises to the top within 4 s).
+
+### Task 2: `bpe-water`: Keeps apart (`finish.wgsl`)
+
+- As decided. Test `kept_apart_liquids_pull_into_round_drops`: a 60 x 60 px square of liquid 1 (Keeps apart 1,
+  Surface pull 1) in a still pool of liquid 0 (Weight equal, gravity 0): after 2 s its drops' furthest from their
+  middle shrinks by at least 8 % (a square rounding up), where with Keeps apart 0 it changes by under 3 %.
+
+### Task 3: `bpe-water`: colour mixing (`mix.wgsl`, `drops/mod.rs`, `passes.rs`, `drop.rs`, `numbers.rs`, `probe.rs`)
+
+- `Drop::mix` (replacing `e`), `Drop::with_mix(other, share)`, `Drop::mix_share()`, `Drop::mix_other()`;
+  `DropOut.mix`; `cs_export` writes `id_cur[i].w`; `Water::add` uploads `d.mix`.
+- `mix.wgsl` (in the engine's source list, so the engine's print sees it): `cs_mix`, `cs_mix_keep` as decided.
+  `passes.rs`: `P::Mix` and `P::MixKeep` (after `Drained`), bindings `[0, 1, 2, 5, 8, 30]` and `[0, 1, 5, 30]`; binding 30 is `mixb` (4 bytes a drop, grown with the drops).
+- The frame loop: after the last step's `Finish` (`j + 1 == n`), when mixing, `p` pairs of `Mix`, `MixKeep` on that
+  step's group.
+- `Numbers::mix_at_rest()`, `Numbers::mix_passes(feels, cell) -> u32`, `MIX_MOST` 400 px²/s, `MOST_MIX_PASSES` 64.
+- Tests (`tests/mixing.rs`): `colours_run_together_where_liquids_meet` (two still liquids side by side, gravity 0,
+  Mix speed 1, at 6 px: after 1 s drops within 10 px of the line carry shares between 0.15 and 0.85 of the other,
+  drops beyond 80 px carry under 0.02, and the amount of each liquid, own plus carried, is kept within 1 %);
+  `mixing_is_the_same_at_every_detail` (the blend's width, where shares are between 0.1 and 0.9, at 6 px and 3 px
+  agree within 30 %); `no_mix_speed_no_mixing` (Mix speed 0: every word stays 0); `kept_apart_colours_dont_cross`
+  (Keeps apart 1: every word stays 0); `stirred_mixing_waits_for_a_stir` (Only when stirred, still: words stay 0);
+  `a_restart_point_keeps_the_mixes` (state at 1 s, from_state, both on to 2 s: the same drops and words).
+  `numbers.rs` unit tests: the passes grow as the cell shrinks and stay within 1 to 64; `mix_at_rest` is positive.
+
+### Task 4: `bpe-water`: the take and the drawings (`pack.wgsl`, `capture.rs`, `take/{mod,frame}.rs`, `draw/stored.rs`, `look.wgsl`, `plain.wgsl`, `draw/sets.rs`)
+
+- As decided. `frame.rs` unit test: a moment with mixed drops reads back its mixes (the share within 1/255).
+  `tests/look.rs` `a_mixed_drop_draws_between_its_liquids` and `tests/plain.rs` `a_mixed_pool_draws_between_its_liquids`
+  (a red liquid and a blue one; a pool of the red carrying half the blue draws a colour between the two pools', with
+  both its red and blue within 25 % of the halfway). `draw/sets.rs` `mixed(cell)`: a pool whose shares run from 0 to
+  1 across it, for the full-size look check (`water-look-mixed-c3`, `water-mixed-c3` in `full_size_look.rs`).
+- `bpe-cli` and `bpe-studio` pass `frame.mixes` to `StoredDrops::set`.
+
+### Task 5: `bpe-kit`: the Mixing card and the setup (`modules/water/liquid.rs`, `things/water/draft.rs`, `draft/inputs.rs`, tests)
+
+- `MixingCard`: `keeps_apart` (Keeps apart, 0 to 1, default 0), Fades and Fades to removed, the group "Meeting other
+  liquids"; `FeelCard` Weight's range 0.1 to 10.
+- `LiquidSetup` gains `mixing: Keyed` (its Mixing card); `print` hashes its `keeps_apart`, `mix_speed`, `mixes_when`;
+  `inputs()`' `liquid:{k}` part describes them too; `inputs_at` fills the Feel's mixing fields.
+- `what_restarts_the_draft`: Mixing's `keeps_apart`, `mix_speed`, `mixes_when` restart, its Un-mix settings don't
+  (yet). A test that two Liquids with Mix speed 0.5 poured into one glass give drops carrying shares after 2 s
+  (`two_poured_liquids_mix`, kit draft tests, on the card).
+
+### Task 6: check, notes, review, merge
+
+- Focused tests: `cargo test -p bpe-water --test mixing --test look --test plain --test take -- --test-threads=2`,
+  the engine's unit tests, `cargo test -p bpe-kit --lib things::water`, `cargo test -p bpe-studio water_mode`,
+  clippy, fmt; the full-size look check `LOOK_ONLY=water-look-mixed,water-mixed`, looked at in full and in its 1:1
+  crops.
+- `docs/notes/water.md` "Part 4.2 (as built)"; this file's "As built: 4.2". One review, fix, merge when green, then
+  4.3's tasks.
+
 ## As built
 
 ### 4.1
@@ -331,3 +497,29 @@ Built as planned, with these changes (the detail is in `docs/notes/water.md`, "P
 - Restart points are `BPESTAT2` (timed drops, drains, tank, fed, the reports' drained counts).
 - The "a fed tap narrower than full" test was folded into the loop test (the loop keeps every drop, which needs the
   allowance to hold).
+
+### 4.2
+
+Built as planned, with these changes (the detail is in `docs/notes/water.md`, "Part 4.2"):
+
+- `P::Mix` and `P::MixKeep` sit after `AirBorn` and before `Report` (the passes after `Report` have no step bind
+  groups); they run once a frame on the last step's group, after `cs_drained` and trapped air's birth.
+- The deep gather's mass is `select(1, the liquid's clamped Weight, weighted)` (air 1) rather than
+  `1 / inv_mass`, which is not exact; so a lone liquid is the same at any Weight to the bit.
+- **Only when stirred** is `smoothstep(STIR / 4, STIR, |v_i - v_j|)`, not `min(|v_i - v_j| / STIR, 1)`: measured,
+  a pool resting under gravity has neighbours moving against each other at up to 34 px/s at 6 px cells and 35 px/s
+  at 3 px (the 99.9th percentile 19 and 27), so nothing under 50 px/s counts as a stir. (A body in zero gravity is
+  not at rest: its skin rounds it up and drops meet at over 100 px/s, so the still tests rest under gravity.)
+- Tests: `no_mix_speed_no_mixing` and `kept_apart_colours_dont_cross` are one test,
+  `colours_cross_only_when_they_may`; `stirred_mixing_waits_for_a_stir` became `colours_wait_for_a_stir_or_a_hit`
+  (two liquids resting on a floor, settled 2 s with no Mix speed, then Only when stirred and Only on hits: no word
+  changes in 1 s; a lump of one falling into the other mixes more than 20 drops where it lands);
+  `heavy_liquid_sinks_and_light_rises` is `a_heavy_liquid_sinks_through_a_light_one` (a block of Weight 3 over a
+  pool of Weight 1, 6 and 3 px). `kept_apart_liquids_pull_into_round_drops` measures from the start: the square's
+  furthest drop (40.3 px) is at 33.0 px within a quarter of a second at Keeps apart 1 (a round drop of its area
+  reaches 33.9 px) and at 42.2 px at Keeps apart 0 (the pool's jiggle), so the test asks under 88 % and over 95 %.
+- The kit's `two_poured_liquids_mix` (on the card) became a unit test, `the_mixing_card_reaches_the_water` (the
+  card's settings reach each liquid's Feel); the engine's tests show the mixing itself.
+- `src/lumps.rs` joined the engine's print roots in `build.rs` (4.1 left it out, so an edit to it would not have
+  changed the engine's print).
+- The probe's `picture` lost its tear colouring (`Drop.e`, the stretch, is now `Drop.mix`).

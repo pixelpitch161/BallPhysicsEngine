@@ -249,7 +249,7 @@ impl FinalPicture {
                 Some((frame, ahead)) => {
                     let stored =
                         self.stored.get_or_insert_with(|| StoredDrops::new(&render.device, &render.queue, &[]));
-                    stored.set(&render.device, &render.queue, &frame.xv, &frame.kinds);
+                    stored.set(&render.device, &render.queue, &frame.xv, &frame.kinds, &frame.mixes);
                     self.holds = Some((got.take, got.tau, ahead as f32));
                     self.wet = got.wet;
                 }

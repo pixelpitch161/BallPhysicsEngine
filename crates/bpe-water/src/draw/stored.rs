@@ -8,7 +8,7 @@ use crate::drop::Drop;
 use crate::drops::DropBuffers;
 
 /// Drops on the card, laid out as a body's: place and speed (`xv`), how full (`nf`, always full
-/// here), kind, serial and colour (`id`).
+/// here), kind, serial, colour and colour mix (`id`).
 pub struct StoredDrops {
     xv: wgpu::Buffer,
     nf: wgpu::Buffer,
@@ -40,7 +40,7 @@ impl StoredDrops {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, drops: &[Drop]) -> StoredDrops {
         let xv: Vec<[f32; 4]> = drops.iter().map(|d| [d.x[0], d.x[1], d.v[0], d.v[1]]).collect();
         let nf: Vec<[f32; 4]> = drops.iter().map(|_| [0.0, 0.0, 1.0, 0.0]).collect();
-        let id: Vec<[u32; 4]> = drops.iter().map(|d| [d.kind, d.serial, d.colour, 0]).collect();
+        let id: Vec<[u32; 4]> = drops.iter().map(|d| [d.kind, d.serial, d.colour, d.mix]).collect();
         StoredDrops {
             xv: buffer(device, queue, "stored drops places", bytemuck::cast_slice(&xv)),
             nf: buffer(device, queue, "stored drops ways", bytemuck::cast_slice(&nf)),
@@ -53,9 +53,9 @@ impl StoredDrops {
         self.count
     }
 
-    /// Takes `xv` (place and speed, grid units) and `kinds` as its drops (a final's moment, part
-    /// 8), in its own buffers when they have room.
-    pub fn set(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, xv: &[[f32; 4]], kinds: &[u32]) {
+    /// Takes `xv` (place and speed, grid units), `kinds` and `mixes` (each drop's colour mix, none
+    /// past its end) as its drops (a final's moment, part 8), in its own buffers when they have room.
+    pub fn set(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, xv: &[[f32; 4]], kinds: &[u32], mixes: &[u32]) {
         let n = xv.len().min(kinds.len());
         let bytes = (n as u64 * 16).max(16);
         if self.xv.size() < bytes {
@@ -65,7 +65,9 @@ impl StoredDrops {
             self.nf = buffer(device, queue, "stored drops ways", bytemuck::cast_slice(&full));
             self.id = buffer(device, queue, "stored drops kinds", &vec![0u8; (room * 16) as usize]);
         }
-        let id: Vec<[u32; 4]> = kinds[..n].iter().map(|k| [*k, 0, crate::WATER, 0]).collect();
+        let mix = |k: usize| mixes.get(k).copied().unwrap_or(0);
+        let id: Vec<[u32; 4]> =
+            kinds[..n].iter().enumerate().map(|(k, kind)| [*kind, 0, crate::WATER, mix(k)]).collect();
         if n > 0 {
             queue.write_buffer(&self.xv, 0, bytemuck::cast_slice(&xv[..n]));
             queue.write_buffer(&self.id, 0, bytemuck::cast_slice(&id));

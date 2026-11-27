@@ -14,15 +14,15 @@ use std::sync::Arc;
 
 use bpe_core::{Params, Resolved, Scene, Settings, SlotId, Strokes, Target, ThingId, Track};
 use bpe_water::{
-    Drain, Drop, Feel, Layout, LumpKind, Lumps, MOST_DRAINS, Numbers, Pour, STOPS, SolidField, Throw, Timed, WATER,
-    Water, WaterGpu,
+    Drain, Drop, Feel, Layout, LumpKind, Lumps, MOST_DRAINS, MixWhen, Numbers, Pour, STOPS, SolidField, Throw, Timed,
+    WATER, Water, WaterGpu,
 };
 use glam::Vec2;
 
 use super::{DRAIN, LIQUID, PIECE, POUR, WALL, carving_of, course_of};
 use crate::modules::water::{
-    CarveMask, CourseEdge, DrainCard, DrainKind, FeelCard, MaterialCard, PourCard, PourKind, WaterWorld, layout_for,
-    mask_for,
+    CarveMask, CourseEdge, DrainCard, DrainKind, FeelCard, MaterialCard, MixesWhen, MixingCard, PourCard, PourKind,
+    WaterWorld, layout_for, mask_for,
 };
 
 pub mod course;
@@ -127,7 +127,12 @@ impl Keyed {
 pub struct LiquidSetup {
     pub id: ThingId,
     feel: Keyed,
+    /// Its Mixing card (part 4.2: [`MIXING_KEYS`] reach the physics; Un-mix is part 4.4's).
+    mixing: Keyed,
 }
+
+/// The Mixing card's settings the physics reads.
+pub(super) const MIXING_KEYS: [&str; 3] = ["keeps_apart", "mix_speed", "mixes_when"];
 
 /// One Pour as the water sees it.
 #[derive(Clone, Debug)]
@@ -229,7 +234,11 @@ impl WaterSetup {
         let liquids: Vec<LiquidSetup> = liquid_ids
             .iter()
             .take(MOST_LIQUIDS)
-            .map(|id| LiquidSetup { id: *id, feel: Keyed::of(scene, resolved, *id, SlotId::Feel).unwrap_or_default() })
+            .map(|id| LiquidSetup {
+                id: *id,
+                feel: Keyed::of(scene, resolved, *id, SlotId::Feel).unwrap_or_default(),
+                mixing: Keyed::of(scene, resolved, *id, SlotId::Mixing).unwrap_or_default(),
+            })
             .collect();
         let mut pours = Vec::new();
         let mut notes = Vec::new();
@@ -293,6 +302,7 @@ impl WaterSetup {
         for l in &liquids {
             l.id.hash(&mut h);
             l.feel.hash_into(None, &mut h);
+            l.mixing.hash_into(Some(&MIXING_KEYS), &mut h);
         }
         for p in &pours {
             (p.id, p.liquid, p.place.x.to_bits(), p.place.y.to_bits()).hash(&mut h);
@@ -380,6 +390,7 @@ impl WaterSetup {
             .iter()
             .map(|l| {
                 let f: FeelCard = l.feel.card(time);
+                let m: MixingCard = l.mixing.card(time);
                 Feel {
                     gravity: 1.0,
                     surface_pull: f.surface_pull,
@@ -387,6 +398,13 @@ impl WaterSetup {
                     stickiness: f.stickiness,
                     weight: f.weight,
                     settles: 0.0,
+                    keeps_apart: m.keeps_apart,
+                    mix_speed: m.mix_speed,
+                    mixes_when: match m.mixes_when {
+                        MixesWhen::Always => MixWhen::Always,
+                        MixesWhen::OnlyWhenStirred => MixWhen::Stirred,
+                        MixesWhen::OnlyOnHits => MixWhen::Hits,
+                    },
                 }
             })
             .collect();

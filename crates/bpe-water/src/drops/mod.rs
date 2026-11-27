@@ -32,7 +32,7 @@ use clock::Clock;
 pub use clock::{MOST_POURS, Report};
 use deep::{Deep, MOST_LEVELS, TICKS};
 pub use drains::{Drain, MOST_DRAINS};
-use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
+use numbers::{FRAME, Feel, FeelGpu, HIT, MOST_LIQUIDS, Numbers, STIR, mix_root};
 use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
 pub use state::WaterState;
 
@@ -89,6 +89,8 @@ struct FrameGpu {
     drains: [[f32; 4]; MOST_DRAINS],
     dedges: [[u32; 4]; MOST_DRAINS / 4],
     dmeta: [u32; 4],
+    mixf: [u32; 4],
+    mixs: [f32; 4],
 }
 
 /// Where the deep water's pressure passes' numbers start among the step numbers' slots (after
@@ -422,6 +424,8 @@ impl Water {
                     26 => self.deep.rest.as_entire_binding(),
                     27 => self.air.cells.as_entire_binding(),
                     28 => self.air.blocks.as_entire_binding(),
+                    30 => self.by.mixb.as_entire_binding(),
+                    31 => self.deep.mass.as_entire_binding(),
                     _ => self.deep.count.as_entire_binding(),
                 };
                 wgpu::BindGroupEntry { binding: b, resource }
@@ -595,7 +599,7 @@ impl Water {
             fastest = fastest.max(glam::Vec2::from(d.v).length() * self.layout.cell);
             xv.push([d.x[0], d.x[1], d.v[0], d.v[1]]);
             nf.push([0.0f32, 0.0, 1.0, 0.0]);
-            id.push([d.kind, self.serial, d.colour, 0]);
+            id.push([d.kind, self.serial, d.colour, if d.is_air() { 0 } else { d.mix }]);
             self.serial = self.serial.wrapping_add(1);
         }
         let at = u64::from(self.count) * 16;
@@ -621,9 +625,12 @@ impl Water {
         let cell = self.layout.cell;
         let g = self.gravity / cell;
         let (rho0, stiff) = self.rest;
+        let mixing = self.colours_mix();
+        let passes = if mixing { n.mix_passes(&self.feels, cell) } else { 0 };
         let mut feels = [FeelGpu::default(); MOST_LIQUIDS];
         for (k, f) in self.feels.iter().enumerate() {
             feels[k] = n.feel_gpu(f, cell, g.length(), dt, capped);
+            feels[k].c[2] = if mixing { mix_root(f.mixing(), passes, cell) } else { 0.0 };
         }
         let mut spouts = [[0.0f32; 4]; MOST_POURS / 2];
         for (k, (p, _)) in self.pours.iter().enumerate() {
@@ -669,7 +676,25 @@ impl Water {
             drains,
             dedges,
             dmeta,
+            mixf: [u32::from(self.weights_differ()) | (u32::from(mixing) << 1), passes, 0, 0],
+            mixs: [STIR / cell, HIT / cell, 0.0, 0.0],
         }
+    }
+
+    /// Whether two of the liquids differ in Weight (as the engine takes it): only then do the
+    /// pressure, the drops' pulls on each other and the deep water share their moves by mass.
+    fn weights_differ(&self) -> bool {
+        self.feels.iter().any(|f| f.mass() != self.feels[0].mass())
+    }
+
+    /// Whether colours mix: two liquids or more, one with a Mix speed.
+    fn colours_mix(&self) -> bool {
+        self.feels.len() > 1 && self.feels.iter().any(|f| f.mixing() > 0.0)
+    }
+
+    /// How many colour mix passes frame `frames()` takes (0 when colours don't mix).
+    fn mix_passes(&self) -> u32 {
+        if self.colours_mix() { self.numbers.mix_passes(&self.feels, self.layout.cell) } else { 0 }
     }
 
     /// Settles the boundary the body is at (the start of frame `frames()`), once: drops that left
@@ -903,6 +928,7 @@ impl Water {
             let tiles: Vec<(u32, u32)> = (0..=top).map(|l| self.deep.tiles(l)).collect();
             let (pre, post, coarse) = (self.numbers.pre, self.numbers.post, self.numbers.coarse);
             let drains_on = !self.drains.is_empty();
+            let mix_passes = self.mix_passes();
             let clock = self.clock.get_mut().expect("the clock");
             let slot = clock.slot_of(k);
             let mut encoder =
@@ -1010,6 +1036,13 @@ impl Water {
                     // (A moment kept inside the frame: the drops as this step left them.)
                     if let Some(k) = packing.as_ref().and_then(|p| p.cuts.iter().position(|&c| c == j)) {
                         go!(P::Pack, k, 0, PACK_SLOT + k as u32, by_drop);
+                    }
+                    // (The colours mix once a frame, on the drops as its last step left them.)
+                    if j + 1 == n {
+                        for _ in 0..mix_passes {
+                            go!(P::Mix, now, 0, j, by_drop);
+                            go!(P::MixKeep, now, 0, j, by_drop);
+                        }
                     }
                     // (What each drain took this frame, before trapped air is born over the drops
                     // that left.)
