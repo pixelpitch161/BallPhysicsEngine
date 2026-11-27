@@ -1312,3 +1312,74 @@ what the water's drawing draws, and an effect on the Light only reads the water'
   Only covers, a new part on Liquids reaching the finish), `the_look_reads_every_card` (the course's code).
 - `bpe-studio`: `a_water_scenes_things_part_starts_on_liquids_and_offers_the_waters_things` (Grade mode's Only
   menu), `a_water_scenes_things_part_offers_the_waters_things`.
+
+## Part 4b: forces and ferrofluid (as built)
+
+The plan is `docs/superpowers/plans/water-mode/part4b-forces-and-ferrofluid.md` (its decisions and "As built and
+measured"). Wind, whirlpools and magnets push the water; a magnet stands its liquid up in spikes, and the eighth
+ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and Coolers wait for heat.
+
+### Forces in the engine (`bpe-water drops/forces.rs`, `shaders/forces.wgsl`)
+
+- **A force is an input, as gravity is**: `Water::set_forces(&[Force])` once a frame (at most `MOST_FORCES` 16,
+  those that can't be felt left out: not finite, no reach, no liquid, a magnet's pull 0, a rate 0), kept in
+  `Fr.forces` (48 bytes each: place, reach and the most push in cells; the kind's numbers; kind, the liquids'
+  bits, a magnet's spikes). Nothing of it is kept from frame to frame, so the take's format is as it was; a copy
+  carries the list. Every liquid drop the force names (not trapped air) takes its push in `fall()`, after gravity
+  and damping and before the speed cap: the magnets' pushes are added, then each whirlpool's and wind's draw on the
+  speed in the list's order. A push that isn't finite is left out, the drop kept.
+- **Magnet**: the slope of `Φ = −A·R·Ψ(u/s)`, `u = r/R`, `Ψ(v) = (1 − v²)³`, `A` = Strength × 4000 / 1.7173
+  (`PSI_SLOPE_MOST`: Strength gravities at most with no spikes). Its reach's share `s = 1 − depth·c(u)·(1 −
+  T(x))` dips between `spikes` teeth spread over `spread` round `aim`: `T = (1 − |x|)³` over a tooth's half width
+  (`SPIKE_WIDTH` 0.5 of the turn between two, so neighbouring teeth meet), its point rounded off within
+  `SPIKE_ROUND` 0.1 so the pull doesn't flip across a spike's middle, `c(u) = smoothstep(0.2, 0.45, u)` (round and
+  calm inside), the valleys' reach past the spread. Every level past `u` 0.45 is the same star, so the liquid's
+  skin stands in cones with sharp tips and round valleys, the same at every detail, and along every line out of
+  the middle the potential only rises, so the middle is the deepest place. A push is held to `MOST_PUSH` 256
+  gravities (a guard: held pushes are no longer down a slope, and the first magnet, which met its guard, churned).
+  It pulls through rock (the field isn't blocked; the drops are still kept off the solids).
+- **Whirlpool**: the speed round its middle is drawn toward `speed·2x/(1 + x²)`, `x = r/(0.3R)`, at `rate` a
+  second faded over the last 30 % of its reach, by the exact `1 − e^(−rate·dt)`, so every step count gives the same
+  change a second. **Wind**: a drop's speed is drawn toward the wind's at `rate` times how much of it meets the air
+  (`1 − smoothstep(0.35, 0.75, fullness)`: a lone drop all of it, a flat open top a little, inside nothing). Wind
+  blows everywhere; solids don't shelter (Known).
+- **Inside a magnet's reach the water holds itself up** (`in_magnet` in deep.wgsl's cells pass: no cell there is
+  full, so depth is measured from it): the deep water rests no fuller than the drops just above it (C2), a magnet
+  presses them fuller, and the deep pressure stirred the mound at about 100 px/s. Without it the mound comes to
+  rest. The water there is a little more pressed than elsewhere (Known).
+- **Steps**: `steps_now` adds each force's strongest push over two frames (`Force::strongest`: a magnet's worked
+  out over its reach and a tooth), as for gravity. A strong magnet at 3 px runs at the 32 steps' cap.
+
+### Force cards (`bpe-kit modules/water/places.rs`, `things/water/draft/forces.rs`)
+
+- The **Force** card: Kind, **Liquid** (Any Liquid by default; a Liquid, a tag), Strength (keyed), Reach (not
+  Wind), Aim and **Gusts** (Wind), Spikes (9), **Spike size** (0.75, keyed), **Spikes point** (−90, up) and **Spike
+  spread** (180°) for a Magnet.
+- `ForceSetup::all_of` reads the enabled Forces and the Drains whose Whirlpool is above 0 (at the start or on a
+  key) in the scene's order. Per frame, `force_at(time)`: a Magnet's pull `S·FORCE_UNIT/1.7173`, depth
+  `SPIKE_DEPTH` 0.6 × Spike size (0 with no spikes); a Whirlpool `S·SPIN_SPEED` (600 px/s), rate `SPIN_RATE` 4 ×
+  min(|S|, 1); a Wind `S·WIND_SPEED` (1000 px/s) × `1 + Gusts·gust(t)` along Aim, rate `WIND_RATE` 3 × min(|S|, 1),
+  so Strength 0 is no force; a Drain's whirlpool `Whirlpool·600`, rate 4 × min(Whirlpool, 1), reaching twice its
+  Radius, every liquid. `gust(t) = (sin 1.3t + sin(2.9t + 1) + sin(4.7t + 2))/3` (det maths). A force's place is
+  its position, read through `place_at(time)` for a later place track.
+- Notes: `HEAT_LATER` (Heater, Cooler), `NO_LIQUID_TO_MOVE` (its Liquid off, past 16, or none), `TOO_MANY_FORCES`
+  (past 16).
+- **What restarts**: every Force card setting, a Force's place and turning it off restart the draft and mark the
+  final out of date (the print, and `force:{k}` parts of `WaterInputs` from 0, by place in the list: whirlpools and
+  winds draw in its order); a Drain's Kind, Radius and Whirlpool likewise (its other settings wait for part 4).
+  `set_inputs`, `start` and `resume` set the forces.
+- The stage's held setup takes a note that changes with no physics (`WaterRun::renote`): a Force turned into a
+  Heater with no Liquid in the scene said nothing before.
+
+### The stage (`bpe-studio water_mode/stage.rs`)
+
+- `force_marks`: a Magnet's and a Whirlpool's ring at its Reach (`LINE_SOFT`), a Magnet's spikes as ticks across
+  it, a Whirlpool's spin as an arrow head at the ring's top (to the right above 0), a Wind's three arrows along its
+  Aim, all at the playhead with keyframes.
+
+### The Ferrofluid look (`bpe-kit modules/water/looks.rs`)
+
+- The eighth `ReadyLook` (title "Ferrofluid", Liquid "Ferrofluid"): ink black (`#08080b`), Solid 1, Clarity 0, no
+  Bend or Streaks, Smoothing 0.15 (spikes keep their points), Shine 0.95 of size 0.1, Edge sheen 0.55; a pale Flat
+  plate (`#e6e3dd`) on a pale Back (`#d4d1cb`); Ambient 0.6, Bounce 0.2, no caustics or shafts; two soft white
+  Spots from above at ±0.32 of the shot (aims 65° and 115°, Spread 80°, Softness 0.7, Brightness 1.2); Bloom 0.1.

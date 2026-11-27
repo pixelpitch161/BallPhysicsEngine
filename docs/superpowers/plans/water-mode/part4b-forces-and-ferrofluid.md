@@ -47,10 +47,10 @@ every detail", Parts 4b). Hand-over: `/mnt/project-files/ballphysics/water-mode/
    do nothing. A force that moves no Liquid says so on the stage (`NO_LIQUID_TO_MOVE`).
 4. **Magnet: a pull with a level the liquid rests on.** The push is the slope of a potential, so liquid comes to
    rest on a level of gravity plus magnet, at any detail, and nothing goes round and round for ever:
-   `Φ(x) = −A·R·Ψ(u)·M(u, φ)`, `u = r / R` (R the Reach), `Ψ(u) = (1 − u²)³` (nothing at the magnet's middle and
-   at its Reach, smooth at both), `A = S · FORCE_UNIT / 1.7173` (1.7173 is `Ψ'`'s largest size, so the strongest
-   pull without spikes is Strength gravities). Push `= A·[(Ψ'·M + Ψ·∂M/∂u) r̂ + (R/r)·Ψ·∂M/∂φ φ̂]`. Strength
-   below 0 pushes liquid away.
+   without spikes `Φ(x) = −A·R·Ψ(u)`, `u = r / R` (R the Reach), `Ψ(u) = (1 − u²)³` (nothing at the magnet's
+   middle and at its Reach, smooth at both), `A = S · FORCE_UNIT / 1.7173` (1.7173 is `Ψ'`'s largest size, so the
+   strongest pull without spikes is Strength gravities); the push is `−∇Φ`, and decision 5 shapes `Φ` into
+   spikes. Strength below 0 pushes liquid away.
 5. **Spikes are laid out, not left to chance.** Real ferrofluid's spikes come from its own surface pull; here the
    skin's reach is the drop spacing, so left to themselves the spikes would differ between the draft and the final.
    So the magnet's reach dips between **Spikes** teeth spread evenly across **Spike spread** (degrees, default 180)
@@ -105,7 +105,8 @@ every detail", Parts 4b). Hand-over: `/mnt/project-files/ballphysics/water-mode/
 ## Review Focus
 
 1. A scene whose forces all have Strength 0 plays the same water to the bit as a scene with none (magnet,
-   whirlpool) — wind at 0 is still air (drag toward nothing), which is meant and tested on its own.
+   whirlpool and wind: the kit gives a wind and a whirlpool the rate times the Strength's size up to 1, so at 0
+   they are not felt; `strength_zero_moves_nothing`, `no_force_at_strength_zero`).
 2. A Magnet placed inside the rock (under a floor, the usual set-up) pulls through the rock: the field is not
    blocked by solids, the drops are still kept off them.
 3. A Force naming a Liquid that is turned off or past the 16 the water tells apart moves nothing and says so.

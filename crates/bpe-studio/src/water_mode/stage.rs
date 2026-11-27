@@ -381,7 +381,7 @@ fn update_preview(studio: &mut Studio) {
     studio.water_stage.preview_version += 1;
 }
 
-/// The Use a look menu (decision 40): the seven looks, then the two switches.
+/// The Use a look menu (decision 40): the eight looks, then the two switches.
 fn look_menu(bar: &mut Ui, studio: &mut Studio) {
     let mut picked = None;
     let keep = &mut studio.water_stage.keep;

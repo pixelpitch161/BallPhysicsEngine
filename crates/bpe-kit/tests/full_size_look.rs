@@ -19,7 +19,7 @@
 //!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
 //! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with the look drawing's pictures
 //!   (`LOOK_ONLY=water-look`), a final made and drawn from its take (`LOOK_ONLY=water-final`), and
-//!   the extras and wet marks on a final (`LOOK_ONLY=water-extras`), and the seven ready-made looks on a final
+//!   the extras and wet marks on a final (`LOOK_ONLY=water-extras`), and the eight ready-made looks on a final
 //!   (`LOOK_ONLY=water-looks`; `LOOK_SCENES=<folder>` saves each look's scene file there, to render).
 //! - `LOOK_TAKES`: a folder the extras' and the looks' finals are kept in, so a change to the look draws again
 //!   without making it again (about 20 minutes on the cloud's software card).
@@ -1682,6 +1682,103 @@ fn water_looks_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     out
 }
 
+/// Water mode part 4b's ferrofluid at full size (`LOOK_ONLY=water-ferrofluid`): a chamber carved in the screen's
+/// middle, a pool of liquid on its floor in the Ferrofluid look, and a Magnet 40 px under the floor (in the rock:
+/// it pulls through it) with 9 spikes over 160°, its Strength keyed from 0 at 0 s to 3 at 1.5 s. Made at Normal
+/// detail (2 px) for 4 s and drawn from its take: the whole screen at 3 s (`water-ferrofluid`), the frame after it
+/// (`-next`, for flicker), and the spikes twice as near (`-near`, a 540 x 960 piece of the course at 2x).
+fn water_ferrofluid_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_kit::modules::water::{Keep, ReadyLook, apply_look};
+    use bpe_kit::things::water::finals::Finals;
+    use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
+    use bpe_kit::things::water::{FORCE, LIQUID, POUR, course_of, new_water_scene};
+    use bpe_water::draw::wet::HeldWet;
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
+    use bpe_water::take::{Chunk, FrameCodec, chunk};
+    if !wanted("water-ferrofluid", only) && !only.as_deref().is_some_and(|o| o.contains("water-ferrofluid")) {
+        return Vec::new();
+    }
+    let reg = kit().registry;
+    let mut scene = new_water_scene(&reg, "Ferrofluid");
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(4.0));
+    let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
+    water.params.set("final_detail", Value::Choice("normal".into()));
+    let course = course_of(&scene).unwrap();
+    // (A chamber 700 wide from y -500 to the floor at 200.)
+    let chamber = bpe_core::Stroke {
+        points: vec![[0.0, -150.0]],
+        size: 350.0,
+        strength: 1.0,
+        square: true,
+        ..Default::default()
+    };
+    let carved = Value::Strokes(bpe_core::Strokes { list: vec![chamber] });
+    scene.card_mut(course, SlotId::Form).unwrap().params.set("carved", carved);
+    bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+    let fill = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&fill).unwrap().transform.position = Vec2::new(0.0, 200.0 - 35.0);
+    let main = &mut scene.card_mut(fill, SlotId::Main).unwrap().params;
+    main.set("kind", Value::Choice("fill_at_the_start".into()));
+    main.set("fill_size", Value::Vec2([380.0, 70.0]));
+    let magnet = bpe_kit::add_thing(&mut scene, &reg, FORCE, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&magnet).unwrap().transform.position = Vec2::new(0.0, 240.0);
+    let main = &mut scene.card_mut(magnet, SlotId::Main).unwrap().params;
+    main.set("spike_spread", Value::Number(160.0));
+    let strength = bpe_core::Address { thing: magnet, slot: Some(SlotId::Main), key: "strength".into() };
+    scene.set_key(&reg, &strength, 0.0, Value::Number(0.0)).unwrap();
+    scene.set_key(&reg, &strength, 1.5, Value::Number(3.0)).unwrap();
+    apply_look(&mut scene, &reg, ReadyLook::Ferrofluid, Keep::default());
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let make = MakeFinal::of(&scene, &resolved, 4.0);
+    let kept = std::env::var_os("LOOK_TAKES").map(std::path::PathBuf::from);
+    let finals = Finals::at(
+        kept.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("bpe-look-ferro-{}", std::process::id()))),
+    );
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
+    let water_gpu = bpe_water::WaterGpu::new(&gpu.device, &gpu.queue);
+    let started = std::time::Instant::now();
+    let head = make.make(&water_gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+    let dir = finals.take_dir(head.print);
+    let layout = head.layout();
+    let field = make.setup.field();
+    let mut drawing = LookDraw::new(LookGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
+    let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
+    let second = 3;
+    let mut c = Chunk::open(&dir, second).unwrap();
+    let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
+    let mut wet = HeldWet::default();
+    wet.give(&gpu.device, &gpu.queue, layout, Some(&(marks, 60 * second)), &mut drawing);
+    let l = bpe_kit::things::water::look::look_of(&scene, &resolved, second as f64);
+    let near = View { lo: Vec2::new(-270.0, -380.0), scale: 2.0, width: 1080, height: 1920 };
+    let mut out = Vec::new();
+    for (name, frame, view) in [
+        ("water-ferrofluid", 0, View::screen(1.0)),
+        ("water-ferrofluid-next", 1, View::screen(1.0)),
+        ("water-ferrofluid-near", 0, near),
+    ] {
+        if !wanted(name, only) {
+            continue;
+        }
+        let frame = FrameCodec::new().decode(&c.bytes(frame).unwrap(), &layout).unwrap();
+        stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+        drawing.draw(&stored.buffers(), &view, &l);
+        out.push((name.to_string(), drawing.read()));
+    }
+    eprintln!(
+        "water-ferrofluid: {} drops at {} px, made in {:.0} s, take {}",
+        head.drops,
+        make.setup.cell,
+        started.elapsed().as_secs_f32(),
+        dir.display()
+    );
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
+    out
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1739,7 +1836,8 @@ fn render_at_full_size() {
     let finals = water_final_pictures(&gpu, &only)
         .into_iter()
         .chain(water_extras_pictures(&gpu, &only))
-        .chain(water_looks_pictures(&gpu, &only));
+        .chain(water_looks_pictures(&gpu, &only))
+        .chain(water_ferrofluid_pictures(&gpu, &only));
     for (name, pixels) in water.chain(finals) {
         thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
         count += 1;

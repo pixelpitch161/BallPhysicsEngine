@@ -285,3 +285,86 @@ fn forces_play_the_same_twice() {
     assert_eq!(probe::print_of(&first), probe::print_of(&b.read()), "twice");
     assert_eq!(probe::print_of(&first), probe::print_of(&c.read()), "from a copy");
 }
+
+/// The spike tips' heights (pixels from the magnet) of `teeth` teeth over `spread` degrees round straight up: in
+/// each tooth's share of the turn, the fourth farthest drop (so one loose drop doesn't count).
+fn tips(drops: &[(Vec2, Vec2)], middle: Vec2, teeth: u32, spread: f32) -> Vec<f32> {
+    let span = spread / teeth as f32;
+    (0..teeth)
+        .map(|k| {
+            let lo = -spread / 2.0 + k as f32 * span;
+            let mut far: Vec<f32> = drops
+                .iter()
+                .map(|(p, _)| *p - middle)
+                .filter(|r| {
+                    let deg = r.x.det_atan2(-r.y).to_degrees();
+                    deg >= lo && deg < lo + span
+                })
+                .map(|r| r.length())
+                .collect();
+            far.sort_by(f32::total_cmp);
+            far.iter().rev().nth(3).copied().unwrap_or(0.0)
+        })
+        .collect()
+}
+
+/// A measuring run for strong magnets (plan Task 6): `a_magnet_holds_its_mound_still`'s pool and magnet at
+/// Strength `S` (4) and Spike size `SIZE` (1), at `CELL` (6) px for `SECS` (4) s, its strength rising over the
+/// first second. Every half second it prints the steps a frame, the fastest drop, the drops' rms speed and the
+/// drops past the reach; at the end, each tip's height and how far the tips moved over the last second.
+/// `cargo test --release -p bpe-water --test forces -- --ignored --nocapture strong_spikes_measured`
+#[test]
+#[ignore = "a measuring run: by hand"]
+fn strong_spikes_measured() {
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let gpu = WaterGpu::new(&device, &queue);
+    let env = |key: &str, or: f32| std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
+    let (cell, strength, size, secs) = (env("CELL", 6.0), env("S", 4.0), env("SIZE", 1.0), env("SECS", 4.0) as u32);
+    let (layout, field) = open_box(cell);
+    let mut water = Water::new(gpu, &field, GRAVITY, Numbers::for_cell(cell), &[Feel::default()]);
+    let pool = bpe_water::fill_stacked(&layout, &field, Vec2::new(-200.0, 380.0), Vec2::new(200.0, 448.0), STOPS, 0.25);
+    water.add(&pool);
+    let middle = Vec2::new(0.0, 490.0);
+    // (The kit's Spike size 1 is a depth of 0.6.)
+    let mut full = magnet(middle, strength, 9, 160.0, u32::MAX);
+    if let Push::Magnet { depth, .. } = &mut full.push {
+        *depth = 0.6 * size;
+    }
+    let started = std::time::Instant::now();
+    let read = |water: &Water| -> Vec<(Vec2, Vec2)> {
+        let drops = probe::liquid(&water.read()).into_owned();
+        drops.iter().map(|d| (layout.to_world(Vec2::from(d.x)), Vec2::from(d.v) * layout.cell)).collect()
+    };
+    let mut before = Vec::new();
+    let mut most_steps = 0;
+    for frame in 0..secs * 60 {
+        let mut f = full;
+        if let Push::Magnet { pull, .. } = &mut f.push {
+            *pull *= (frame as f32 / 60.0).min(1.0);
+        }
+        water.set_forces(&[f]);
+        water.frame();
+        most_steps = most_steps.max(water.steps_last_frame());
+        if frame % 30 == 29 {
+            let drops = read(&water);
+            let fastest = drops.iter().map(|(_, v)| v.length()).fold(0.0, f32::max);
+            let rms = (drops.iter().map(|(_, v)| v.length_squared()).sum::<f32>() / drops.len() as f32).sqrt();
+            let past = drops.iter().filter(|(p, _)| p.distance(middle) > 300.0).count();
+            eprintln!(
+                "{:.1} s: {} steps, fastest {fastest:.0} px/s, rms {rms:.1} px/s, {past} past the reach ({:.0} s)",
+                (frame + 1) as f32 / 60.0,
+                water.steps_last_frame(),
+                started.elapsed().as_secs_f32()
+            );
+            if frame + 1 == (secs - 1) * 60 {
+                before = tips(&drops, middle, 9, 160.0);
+            }
+        }
+    }
+    let after = tips(&read(&water), middle, 9, 160.0);
+    let moved: Vec<f32> = after.iter().zip(&before).map(|(a, b)| a - b).collect();
+    let rms = (moved.iter().map(|m| m * m).sum::<f32>() / moved.len() as f32).sqrt();
+    eprintln!("{} drops at {cell} px, at most {most_steps} steps a frame", pool.len());
+    eprintln!("tips (px from the magnet): {:?}", after.iter().map(|t| t.round()).collect::<Vec<_>>());
+    eprintln!("tips moved over the last second: rms {rms:.2} px, at most {:.1} px", moved.iter().map(|m| m.abs()).fold(0.0, f32::max));
+}

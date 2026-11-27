@@ -499,6 +499,7 @@ impl Water {
         self.forces = forces.iter().filter(|f| f.is_felt()).take(MOST_FORCES).copied().collect();
     }
 
+    /// The forces it feels each frame until they are set again.
     pub fn forces(&self) -> &[Force] {
         &self.forces
     }
