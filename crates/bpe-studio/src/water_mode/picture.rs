@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use bpe_gfx::wgpu;
-use bpe_kit::modules::water::CarveMask;
+use bpe_water::SolidField;
 use bpe_water::draw::{PlainLook, View};
 use eframe::egui::{self, Painter, Rect, pos2};
 use glam::Vec2;
@@ -32,12 +32,13 @@ pub fn picture_view(view: &CourseView, pixels_per_point: f32) -> View {
     }
 }
 
-/// The rock the picture shows.
+/// The solids the picture shows.
 pub struct Rock<'a> {
-    /// Goes up whenever `painting` changes.
+    /// Goes up whenever `preview` changes.
     pub version: u64,
-    /// The course with the carve stroke being painted (`None`: the body's own).
-    pub painting: Option<&'a CarveMask>,
+    /// The course as it will be (a carve stroke being painted, a piece being moved or moulded;
+    /// `None`: the body's own field).
+    pub preview: Option<&'a SolidField>,
 }
 
 /// What a drawn picture showed.
@@ -120,9 +121,10 @@ impl StagePicture {
         true
     }
 
-    /// Gives the drawing the field of `rock` if it hasn't it yet: the stroke's course being
-    /// painted, or the body's own again once it is let go or dropped. (Set here, under the body's
-    /// lock, so a stroke dropped while the draft is busy is never left on the stage.)
+    /// Gives the drawing the field of `rock` if it hasn't it yet: the course as it will be while a
+    /// stroke is painted or a piece moved, or the body's own again once it is let go or dropped.
+    /// (Set here, under the body's lock, so a preview dropped while the draft is busy is never left
+    /// on the stage.)
     fn set_rock(&mut self, live: &mut super::draft::Live, rock: &Rock) {
         let now = (live.generation, rock.version);
         if self.rock == Some(now) {
@@ -132,11 +134,10 @@ impl StagePicture {
             // (A new body's drawing shows its own field.)
             self.previewing = false;
         }
-        match rock.painting {
-            Some(mask) => {
-                let field = mask.field(live.field.layout.cell);
+        match rock.preview {
+            Some(field) => {
                 if field.layout == live.field.layout {
-                    live.plain.set_field(&field);
+                    live.plain.set_field(field);
                     self.previewing = true;
                 }
             }

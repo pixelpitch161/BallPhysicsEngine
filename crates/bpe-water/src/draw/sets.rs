@@ -9,7 +9,7 @@ use glam::Vec2;
 use crate::draw::plain::{PlainLiquid, PlainLook};
 use crate::drop::{Drop, WATER};
 use crate::drops::LEAST_WALL;
-use crate::solid::{Layout, Solid, SolidField};
+use crate::solid::{Layout, Part, Solid, SolidField};
 
 /// How far off a face the drops rest, in cells (the engine's `Numbers::wall_off`).
 pub const REST: f32 = 0.25;
@@ -130,6 +130,71 @@ pub fn bench(cell: f32) -> Bench {
     drops.push(Drop::new(Vec2::new(-4.0, -4.0), Vec2::ZERO, 0, n, WATER));
     drops.push(Drop::new(Vec2::new(f32::NAN, 10.0), Vec2::ZERO, 0, n + 1, WATER));
     Bench { field, drops }
+}
+
+/// Part 3's pieces on the bench's carved box, each its own colour ([`pieces_look`]): a ramp with a
+/// pillar laid over its tip, a basin holding water, a wheel (a rim and four paddles), a pipe cut
+/// through the right-hand rock and lined with its walls, and a square-ended pen wall standing in
+/// the pool on the floor. For the look check: the edges where colours meet, and where a cut meets
+/// rock.
+pub fn pieces(cell: f32) -> Bench {
+    let layout = screen_layout(cell);
+    let least = LEAST_WALL * cell;
+    let rock = carved(&[Solid::rect(Vec2::new(-500.0, -900.0), Vec2::new(500.0, 900.0), false, 16.0)], least);
+    let mut field = SolidField::build_least(layout, &rock, least);
+    let v = Vec2::new;
+    let line =
+        |points: &[Vec2], thickness: f32, square: bool| Solid::Polyline { points: points.to_vec(), thickness, square };
+    let part = |solids: Vec<Solid>, cut: Vec<Solid>| Part { solids, cut, wetting: 1.0 };
+    let wheel = v(250.0, -450.0);
+    let mut spokes = vec![Solid::Circle { centre: wheel, radius: 90.0, filled: false, thickness: 12.0 }];
+    for k in 0..4 {
+        let (s, c) = (0.3 + std::f32::consts::FRAC_PI_4 * k as f32).det_sin_cos();
+        spokes.push(Solid::Line { a: wheel - v(c, s) * 84.0, b: wheel + v(c, s) * 84.0, thickness: 10.0 });
+    }
+    let parts = [
+        part(
+            vec![Solid::Polygon {
+                points: vec![v(-492.0, -120.0), v(-110.0, -120.0), v(-492.0, -320.0)],
+                filled: true,
+                thickness: 0.0,
+            }],
+            vec![],
+        ),
+        part(vec![Solid::rect(v(-150.0, -300.0), v(-100.0, 20.0), true, 0.0)], vec![]),
+        part(vec![line(&[v(-40.0, -220.0), v(-40.0, -60.0), v(240.0, -60.0), v(240.0, -220.0)], 16.0, false)], vec![]),
+        part(spokes, vec![]),
+        part(
+            vec![
+                line(&[v(300.0, 212.0), v(720.0, 212.0)], 12.0, true),
+                line(&[v(300.0, 288.0), v(720.0, 288.0)], 12.0, true),
+            ],
+            vec![line(&[v(300.0, 250.0), v(720.0, 250.0)], 88.0, true)],
+        ),
+        part(vec![line(&[v(-400.0, 640.0), v(-150.0, 700.0), v(100.0, 650.0)], 24.0, true)], vec![]),
+    ];
+    for (k, p) in parts.iter().enumerate() {
+        field.add_part(p, k as u16 + 1, least);
+    }
+    let mut lay = Laying { field: &field, drops: Vec::new() };
+    let top = |x: f32| 560.0 + 10.0 * (x / 60.0).det_sin();
+    lay.lattice(v(-492.0, 500.0), v(492.0, 892.0), |p| p.y >= top(p.x), |_| 0);
+    lay.lattice(v(-32.0, -150.0), v(232.0, -68.0), |_| true, |_| 1);
+    let drops = lay.drops;
+    Bench { field, drops }
+}
+
+/// [`pieces`]' look: the sets' liquids, and each piece in its own colour.
+pub fn pieces_look() -> PlainLook {
+    let solids = vec![
+        [0.78, 0.42, 0.30],
+        [0.45, 0.50, 0.60],
+        [0.20, 0.62, 0.60],
+        [0.55, 0.35, 0.80],
+        [0.75, 0.85, 0.90],
+        [0.92, 0.78, 0.25],
+    ];
+    PlainLook { solids, ..look() }
 }
 
 /// The screen's box (its faces on the screen's edges) filled with liquid to `share` of its height:

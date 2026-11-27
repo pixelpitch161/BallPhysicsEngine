@@ -1,5 +1,5 @@
-//! The Water stage's tool rail: the nine tools down the stage's left edge. The ones whose part
-//! has not landed are greyed with a line saying so.
+//! The Water stage's tool rail: the nine tools down the stage's left edge. The one whose part has
+//! not landed (Camera path) is greyed with a line saying so.
 
 use crate::style;
 use bpe_kit::things::water;
@@ -57,12 +57,14 @@ impl Tool {
     /// One line for the strip above the stage.
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click a thing to pick it. Drag it to move it.",
+            Tool::Select => {
+                "Click a thing to pick it. Drag it to move it, or a picked piece's dots to turn and size it."
+            }
             Tool::Carve => {
                 "Paint to dig the course out of the rock. Alt fills it back in. Shift draws a straight line."
             }
-            Tool::Piece => "Place a ready-made piece: a ramp, a funnel, a pipe, a wheel, a bucket.",
-            Tool::Pen => "Draw a wall, point by point.",
+            Tool::Piece => "Pick a piece, then click to place it. Alt places it off the grid.",
+            Tool::Pen => "Click to add points. Double-click or Enter finishes the wall, Escape drops it.",
             Tool::Pour => "Click where liquid should pour in.",
             Tool::Drain => "Click where liquid should leave.",
             Tool::Lamp => "Click where a lamp should go.",
@@ -73,7 +75,7 @@ impl Tool {
 
     /// Whether the tool works yet.
     pub fn ready(self) -> bool {
-        matches!(self, Tool::Select | Tool::Carve | Tool::Pour | Tool::Drain | Tool::Lamp | Tool::Force)
+        !matches!(self, Tool::CameraPath)
     }
 
     /// The thing kind a click with the tool adds.

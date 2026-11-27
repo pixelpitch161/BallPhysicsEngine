@@ -17,7 +17,7 @@ use glam::Vec2;
 const SIZE: egui::Vec2 = egui::Vec2::new(700.0, 900.0);
 
 /// The stage alone, recording each frame's edit as the editor's frame does.
-fn harness<'a>(studio: Studio) -> Harness<'a, Studio> {
+pub(super) fn harness<'a>(studio: Studio) -> Harness<'a, Studio> {
     let mut h = Harness::builder()
         .with_size(SIZE)
         .with_step_dt(1.0 / 60.0)
@@ -35,27 +35,27 @@ fn harness<'a>(studio: Studio) -> Harness<'a, Studio> {
     h
 }
 
-fn water_studio() -> Studio {
+pub(super) fn water_studio() -> Studio {
     let mut studio = Studio::headless_water();
     studio.grid.snap = false;
     studio
 }
 
-fn view(h: &Harness<Studio>) -> CourseView {
+pub(super) fn view(h: &Harness<Studio>) -> CourseView {
     h.state().water_stage.view.expect("the stage was drawn")
 }
 
-fn of_kind(studio: &Studio, kind: &str) -> Vec<bpe_core::ThingId> {
+pub(super) fn of_kind(studio: &Studio, kind: &str) -> Vec<bpe_core::ThingId> {
     studio.scene.order.iter().copied().filter(|id| studio.scene.things[id].kind == kind).collect()
 }
 
-fn button(h: &mut Harness<Studio>, at: Pos2, pressed: bool) {
+pub(super) fn button(h: &mut Harness<Studio>, at: Pos2, pressed: bool) {
     let button = egui::PointerButton::Primary;
     h.event(egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE });
     h.step();
 }
 
-fn click_at(h: &mut Harness<Studio>, at: Pos2) {
+pub(super) fn click_at(h: &mut Harness<Studio>, at: Pos2) {
     h.hover_at(at);
     h.step();
     button(h, at, true);
@@ -64,7 +64,7 @@ fn click_at(h: &mut Harness<Studio>, at: Pos2) {
 }
 
 /// Presses at `from`, moves to `to` in a few steps and lets go.
-fn drag(h: &mut Harness<Studio>, from: Pos2, to: Pos2) {
+pub(super) fn drag(h: &mut Harness<Studio>, from: Pos2, to: Pos2) {
     h.hover_at(from);
     h.step();
     button(h, from, true);
@@ -116,7 +116,7 @@ fn the_rail_has_the_nine_tools_and_only_the_built_ones_work() {
         assert_eq!(node.accesskit_node().is_disabled(), !tool.ready(), "{}", tool.name());
     }
     let disabled: Vec<&str> = Tool::ALL.into_iter().filter(|t| !t.ready()).map(Tool::name).collect();
-    assert_eq!(disabled, ["Piece", "Pen", "Camera path"]);
+    assert_eq!(disabled, ["Camera path"]);
     // The strip says what the tool in hand does.
     assert!(h.query_by_label(Tool::Select.hint()).is_some());
     h.get_by_role_and_label(Role::Button, "Pour").click();
@@ -124,7 +124,7 @@ fn the_rail_has_the_nine_tools_and_only_the_built_ones_work() {
     assert_eq!(h.state().water_stage.tool, Tool::Pour);
     assert!(h.query_by_label(Tool::Pour.hint()).is_some());
     // A tool that is not built yet stays out of hand.
-    h.get_by_role_and_label(Role::Button, "Piece").click();
+    h.get_by_role_and_label(Role::Button, "Camera path").click();
     h.run();
     assert_eq!(h.state().water_stage.tool, Tool::Pour);
 }
