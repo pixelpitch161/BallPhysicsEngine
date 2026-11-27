@@ -34,6 +34,7 @@ pub struct LookGpu {
     pub(crate) spread_down: Pipe,
     pub(crate) spread_gather: Pipe,
     pub(crate) compose: Pipe,
+    pub(crate) extras: Pipe,
     /// A 1 x 1 black texture, bound where a picture isn't drawn.
     pub(crate) black: wgpu::TextureView,
 }
@@ -132,13 +133,14 @@ impl LookGpu {
         let three = [summed(), summed(), summed()];
         let splat = pipe("water look splats", &drops, "vs_look_splat", "fs_look_splat", &three);
         let weights = pipe("water look weights", &drops, "vs_look_splat", "fs_look_weights", &three);
-        let nodes = pipe("water look nodes", &drops, "vs_look_nodes", "fs_look_nodes", &three);
+        let four = [summed(), summed(), summed(), summed()];
+        let nodes = pipe("water look nodes", &drops, "vs_look_nodes", "fs_look_nodes", &four);
         let half = pipe(
             "water look half",
-            &[(21, T), (22, T), (23, T)],
+            &[(21, T), (22, T), (23, T), (34, T)],
             "vs_full",
             "fs_half",
-            &[plain_target(PICTURE), plain_target(PICTURE), plain_target(PICTURE)],
+            &[plain_target(PICTURE), plain_target(PICTURE), plain_target(PICTURE), plain_target(PICTURE)],
         );
         let light = pipe(
             "water look light",
@@ -177,10 +179,28 @@ impl LookGpu {
                 (28, T),
                 (29, T),
                 (33, T),
+                (35, T),
             ],
             "vs_full",
             "fs_look",
             &[plain_target(bpe_gfx::HDR_FORMAT)],
+        );
+        // Mist over the picture, sparks added to it (premultiplied).
+        let over = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let extras = pipe(
+            "water look extras",
+            &[(0, U), (1, S), (2, S), (5, S), (10, U), (18, T), (24, T), (27, T)],
+            "vs_extra",
+            "fs_extra",
+            &[Some(wgpu::ColorTargetState {
+                format: bpe_gfx::HDR_FORMAT,
+                blend: Some(wgpu::BlendState { color: over, alpha: over }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
         );
         let black = device
             .create_texture(&wgpu::TextureDescriptor {
@@ -206,6 +226,7 @@ impl LookGpu {
             spread_down,
             spread_gather,
             compose,
+            extras,
             black,
         })
     }

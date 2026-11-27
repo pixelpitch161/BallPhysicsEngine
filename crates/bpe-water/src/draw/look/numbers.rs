@@ -21,6 +21,12 @@ pub(crate) struct LiquidU {
     body: [f32; 4],
     shape: [f32; 4],
     more: [f32; 4],
+    foam: [f32; 4],
+    bubble: [f32; 4],
+    mist: [f32; 4],
+    spark: [f32; 4],
+    sizes: [f32; 4],
+    lives: [f32; 4],
 }
 
 #[repr(C)]
@@ -163,6 +169,12 @@ fn liquid_u(l: &LiquidLook, cell: f32, scale: f32) -> LiquidU {
         ],
         shape: [r, peak, finite(l.streaks, 0.0).max(0.0), l.bands.min(16) as f32],
         more: [finite(l.band_softness, 0.2).clamp(0.0, 1.0), radius, 0.0, 0.0],
+        foam: c4(linear3(l.foam_colour), finite(l.foam, 0.0).clamp(0.0, 1.0)),
+        bubble: c4(linear3(l.bubble_colour), finite(l.bubbles, 0.0).clamp(0.0, 1.0)),
+        mist: c4(linear3(l.mist_colour), finite(l.mist, 0.0).clamp(0.0, 1.0)),
+        spark: c4(linear3(l.spark_colour), finite(l.sparks, 0.0).clamp(0.0, 1.0)),
+        sizes: [l.foam_size, l.bubble_size, l.mist_size, l.spark_size].map(|v| finite(v, 6.0).max(0.5)),
+        lives: [finite(l.bubbles_life, 1.0).max(0.05), finite(l.sparks_life, 1.0).max(0.05), 0.0, 0.0],
     }
 }
 
@@ -321,6 +333,11 @@ pub(crate) fn spreads(look: &Look) -> bool {
     let glows = liquids_of(look).iter().any(|l| l.glow > 0.0 && l.glow.is_finite());
     let bounces = look.light.bounce > 0.0 && look.lamps.iter().any(|l| l.brightness > 0.0);
     glows || bounces
+}
+
+/// Whether any liquid draws mist or sparks (the sprite pass over the picture).
+pub(crate) fn extras(look: &Look) -> bool {
+    liquids_of(look).iter().take(MOST_LIQUIDS).any(|l| [l.mist, l.sparks].iter().any(|&v| v > 0.0 && v.is_finite()))
 }
 
 /// How far past the view the picture reads the shot's light (world px): a solid takes the light
