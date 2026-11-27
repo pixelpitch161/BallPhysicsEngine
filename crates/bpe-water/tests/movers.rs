@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use bpe_water::drops::LEAST_WALL;
-use bpe_water::scenes;
 use bpe_water::{
     Drop, Feel, Layout, Mover, MoverShape, Movers, Numbers, Pose, STOPS, Solid, SolidField, WATER, Water, WaterGpu,
 };
+use bpe_water::{fill_stacked, probe, scenes};
 use glam::Vec2;
 
 fn card() -> Option<Arc<WaterGpu>> {
@@ -95,4 +95,203 @@ fn a_still_mover_is_where_it_is() {
         assert_eq!(water.poses(), &[there]);
         check_field(&water, &movers, there, here.at, 80.0);
     }
+}
+
+/// A closed box of rock 600 x 400 (its wall 3 px, taken as a cell and a half), open inside.
+fn course() -> SolidField {
+    let half = Vec2::new(300.0, 200.0);
+    let layout = Layout::cover(-half - Vec2::splat(40.0), half + Vec2::splat(40.0), CELL);
+    SolidField::build_least(layout, &[Solid::rect(-half, half, false, 3.0)], LEAST_WALL * CELL)
+}
+
+/// The box's floor's and walls' faces (the rock is 12 px thick to the physics).
+const FLOOR: f32 = 194.0;
+const SIDE: f32 = 294.0;
+
+/// A `w` x `h` plate centred on its place, as one moving part of `still`.
+fn plate(still: &SolidField, w: f32, h: f32, place: Vec2) -> Movers {
+    mover_of(still, &[Solid::rect(Vec2::new(-w, -h) * 0.5, Vec2::new(w, h) * 0.5, true, 0.0)], place)
+}
+
+/// A body on `movers`' still field with its part at `keys(0)`, and water over `lo` to `hi` (where
+/// the part isn't).
+fn body(gpu: &Arc<WaterGpu>, movers: &Movers, start: Pose, lo: Vec2, hi: Vec2) -> Water {
+    let numbers = Numbers::for_cell(CELL);
+    let feels = [Feel { surface_pull: 0.2, ..Feel::default() }];
+    let mut water = Water::new(gpu.clone(), &movers.still, scenes::GRAVITY, numbers, &feels);
+    water.set_movers(movers.clone(), &[start]);
+    let field = movers.field_at(&[start]);
+    water.add(&fill_stacked(&water.layout(), &field, lo, hi, STOPS, numbers.wall_off));
+    water
+}
+
+/// Plays `frames` frames, the part keyed at `keys(seconds)` at each frame's end.
+fn play(water: &mut Water, keys: &impl Fn(f64) -> Pose, frames: u32) {
+    for _ in 0..frames {
+        let t = f64::from(water.frames() + 1) / 60.0;
+        water.move_to(&[keys(t)]);
+        water.frame();
+    }
+}
+
+/// How far the deepest drop is inside a solid (pixels; 0 when none is), with the parts at `poses`.
+fn deepest_inside(water: &Water, movers: &Movers, poses: &[Pose]) -> f32 {
+    let field = movers.field_at(poses);
+    let l = water.layout();
+    water.read().iter().map(|d| -field.at(l.to_world(Vec2::from(d.x)))).fold(0.0, f32::max)
+}
+
+/// The liquid drops in the course (trapped air left out: a part sweeping through water traps some).
+fn liquid(water: &Water) -> usize {
+    water.read().iter().filter(|d| !d.is_air()).count()
+}
+
+fn mean_x(water: &Water) -> f32 {
+    let l = water.layout();
+    let drops = water.read();
+    drops.iter().map(|d| l.to_world(Vec2::from(d.x)).x).sum::<f32>() / drops.len().max(1) as f32
+}
+
+/// A smooth key from `a` at `from` to `b` at `to` (seconds).
+fn ease(a: f32, b: f32, from: f64, to: f64, t: f64) -> f32 {
+    let u = ((t - from) / (to - from)).clamp(0.0, 1.0) as f32;
+    a + (b - a) * u * u * (3.0 - 2.0 * u)
+}
+
+/// A plate swept through a pool pushes the water along, keeps every drop and lets none into it.
+#[test]
+fn a_paddle_pushes_the_water() {
+    let Some(gpu) = card() else { return };
+    let still = course();
+    let start = Pose::new(Vec2::new(-200.0, 110.0), 0.0, 1.0);
+    let movers = plate(&still, 20.0, 140.0, start.at);
+    let keys = |t: f64| Pose::new(Vec2::new(ease(-200.0, 150.0, 0.0, 1.5, t), 110.0), 0.0, 1.0);
+    let mut water = body(&gpu, &movers, start, Vec2::new(-SIDE, FLOOR - 100.0), Vec2::new(SIDE, FLOOR));
+    let count = liquid(&water);
+    let before = mean_x(&water);
+    // (Near the end of its sweep: once it stops, the water piled up before it runs back.)
+    play(&mut water, &keys, 75);
+    let moved = mean_x(&water) - before;
+    assert!(moved > 60.0, "the water moved {moved} px");
+    play(&mut water, &keys, 45);
+    let inside = deepest_inside(&water, &movers, water.poses());
+    assert!(inside < 0.5 * CELL, "a drop is {inside} px inside");
+    assert_eq!(liquid(&water), count);
+}
+
+/// Water held behind a gate goes through once the gate is lifted.
+#[test]
+fn a_gate_lifted_lets_the_water_through() {
+    let Some(gpu) = card() else { return };
+    let still = course();
+    let start = Pose::new(Vec2::ZERO, 0.0, 1.0);
+    let movers = plate(&still, 20.0, 400.0, start.at);
+    let keys = |t: f64| Pose::new(Vec2::new(0.0, ease(0.0, -200.0, 1.0, 1.5, t)), 0.0, 1.0);
+    let mut water = body(&gpu, &movers, start, Vec2::new(-SIDE, FLOOR - 120.0), Vec2::new(-10.0, FLOOR));
+    let right = |water: &Water| {
+        let l = water.layout();
+        let drops = water.read();
+        drops.iter().filter(|d| l.to_world(Vec2::from(d.x)).x > 10.0).count() as f32 / drops.len().max(1) as f32
+    };
+    play(&mut water, &keys, 60);
+    assert!(right(&water) < 0.01, "{} through the shut gate", right(&water));
+    play(&mut water, &keys, 180);
+    assert!(right(&water) > 0.2, "only {} through the open gate", right(&water));
+}
+
+/// A bar turning two turns a second in a pool keeps the water out, and the frames take steps
+/// enough for its tips.
+#[test]
+fn a_fast_turning_bar_keeps_the_water_out() {
+    let Some(gpu) = card() else { return };
+    let still = course();
+    let place = Vec2::new(0.0, 100.0);
+    let movers = plate(&still, 160.0, 16.0, place);
+    let spin = 4.0 * std::f64::consts::PI;
+    let keys = |t: f64| Pose::new(place, (spin * t) as f32, 1.0);
+    let mut water = body(&gpu, &movers, keys(0.0), Vec2::new(-SIDE, FLOOR - 100.0), Vec2::new(SIDE, FLOOR));
+    let count = liquid(&water);
+    play(&mut water, &keys, 120);
+    let inside = deepest_inside(&water, &movers, water.poses());
+    assert!(inside < 0.5 * CELL, "a drop is {inside} px inside");
+    assert_eq!(liquid(&water), count);
+    let tip = 80.0 * spin as f32;
+    let want = Numbers::for_cell(CELL).steps_for(tip, water.feels(), CELL);
+    assert!(water.steps_last_frame() >= want, "{} steps, the tips need {want}", water.steps_last_frame());
+}
+
+/// A plate pushed into the rock that holds the pool pushes no water through the rock.
+#[test]
+fn a_paddle_into_the_rock_lets_no_water_through() {
+    let Some(gpu) = card() else { return };
+    let still = course();
+    let start = Pose::new(Vec2::new(150.0, 110.0), 0.0, 1.0);
+    let movers = plate(&still, 20.0, 140.0, start.at);
+    let keys = |t: f64| Pose::new(Vec2::new(ease(150.0, 305.0, 0.0, 1.0, t), 110.0), 0.0, 1.0);
+    let mut water = body(&gpu, &movers, start, Vec2::new(-SIDE, FLOOR - 100.0), Vec2::new(SIDE, FLOOR));
+    let count = liquid(&water);
+    for _ in 0..12 {
+        play(&mut water, &keys, 10);
+        let l = water.layout();
+        let drops = water.read();
+        assert_eq!(drops.iter().filter(|d| !d.is_air()).count(), count);
+        for d in &drops {
+            let p = l.to_world(Vec2::from(d.x));
+            assert!(p.x < SIDE + 2.0 && p.y < FLOOR + 2.0, "a drop at {p} is through the rock");
+        }
+    }
+}
+
+/// A lid closed down into a cup full of water squeezes it out, every drop whole.
+#[test]
+fn a_lid_closing_on_water_keeps_every_drop() {
+    let Some(gpu) = card() else { return };
+    let half = Vec2::new(300.0, 200.0);
+    let layout = Layout::cover(-half - Vec2::splat(40.0), half + Vec2::splat(40.0), CELL);
+    let cup = Solid::Polyline {
+        points: vec![Vec2::new(-60.0, 60.0), Vec2::new(-60.0, 180.0), Vec2::new(60.0, 180.0), Vec2::new(60.0, 60.0)],
+        thickness: 3.0,
+        square: true,
+    };
+    let still = SolidField::build_least(layout, &[Solid::rect(-half, half, false, 3.0), cup], LEAST_WALL * CELL);
+    let start = Pose::new(Vec2::new(0.0, 40.0), 0.0, 1.0);
+    let movers = plate(&still, 100.0, 20.0, start.at);
+    let keys = |t: f64| Pose::new(Vec2::new(0.0, ease(40.0, 80.0, 0.2, 0.7, t)), 0.0, 1.0);
+    let mut water = body(&gpu, &movers, start, Vec2::new(-54.0, 60.0), Vec2::new(54.0, 174.0));
+    let count = liquid(&water);
+    assert!(count > 500, "{count}");
+    let numbers = Numbers::for_cell(CELL);
+    for _ in 0..6 {
+        play(&mut water, &keys, 10);
+        let drops = water.read();
+        assert_eq!(drops.iter().filter(|d| !d.is_air()).count(), count, "every drop is kept, its place a number");
+        let cap = numbers.most_move * water.steps_last_frame() as f32 * 60.0 * 1.01;
+        for d in &drops {
+            let v = Vec2::from(d.v);
+            assert!(v.is_finite() && v.length() <= cap, "a drop moves at {v} cells a second (the cap is {cap})");
+        }
+    }
+}
+
+/// Water a part moves repeats: twice from the start, and from a copy made on the way.
+#[test]
+fn moving_water_repeats() {
+    let Some(gpu) = card() else { return };
+    let still = course();
+    let start = Pose::new(Vec2::new(-200.0, 110.0), 0.0, 1.0);
+    let movers = plate(&still, 20.0, 140.0, start.at);
+    let keys = |t: f64| Pose::new(Vec2::new(ease(-200.0, 150.0, 0.0, 1.5, t), 110.0), (t * 0.5) as f32, 1.0);
+    let run = |copy_at: Option<u32>| {
+        let mut water = body(&gpu, &movers, start, Vec2::new(-SIDE, FLOOR - 100.0), Vec2::new(SIDE, FLOOR));
+        if let Some(at) = copy_at {
+            play(&mut water, &keys, at);
+            water = water.copy();
+        }
+        let left = 100 - water.frames();
+        play(&mut water, &keys, left);
+        probe::print_of(&water.read())
+    };
+    let first = run(None);
+    assert_eq!(first, run(None), "twice from the start");
+    assert_eq!(first, run(Some(40)), "from a copy made at frame 40");
 }
