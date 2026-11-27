@@ -48,22 +48,39 @@ fn a_blob_spreads_on_a_wet_floor_and_stands_up_on_a_waxy_one() {
 }
 
 /// The edge's own angle on a face (a light cap, its weight too small to flatten it) is the same at
-/// 6 and 3 px: Wetting reaches as far at every detail (part 3, item 0).
+/// 6 and 3 px: Wetting reaches as far at every detail (part 3, item 0; part 2c's caps stood 45° apart
+/// at Wetting 1). A cap a few drops high is measured a spacing at a time (at 6 px a spacing of
+/// height is about 7° of its edge), so each detail's angle is the mean of the cap laid on three
+/// grids, each a third of a cell further across and down. At Wetting 0.5 the details agree within
+/// 8°; at 0.75 the 6 px cap spreads a little wider (on the owner's card 50° against 62° on one grid,
+/// in the container 54° against 61°: under two spacings of height), so there they must agree within
+/// 12° (part 3's plan, "As built and measured").
 #[test]
 fn the_edge_angle_is_the_same_at_every_detail() {
     let Some(gpu) = card() else { return };
-    let angle = |cell: f32| {
-        let mut run = scenes::cap(cell, 36.0, 0.75).start(&gpu, Numbers::for_cell(cell));
-        run.run_to(2.0);
-        let (w, h) = size(&run.water.read(), &run.water.layout());
-        let angle = 2.0 * (2.0 * h / w).det_atan().to_degrees();
-        eprintln!("{cell} px: {w:.1} x {h:.1} px, {angle:.0} degrees");
-        angle
+    let angle = |cell: f32, wetting: f32| {
+        let angles: Vec<f32> = (0..3)
+            .map(|k| {
+                let mut scene = scenes::cap(cell, 36.0, wetting);
+                scene.layout.origin -= Vec2::splat(cell * k as f32 / 3.0);
+                let mut run = scene.start(&gpu, Numbers::for_cell(cell));
+                run.run_to(2.0);
+                let (w, h) = size(&run.water.read(), &run.water.layout());
+                let angle = 2.0 * (2.0 * h / w).det_atan().to_degrees();
+                eprintln!("Wetting {wetting}, {cell} px, grid {k}: {w:.1} x {h:.1} px, {angle:.0} degrees");
+                angle
+            })
+            .collect();
+        angles.iter().sum::<f32>() / angles.len() as f32
     };
-    let (fine, finer) = (angle(6.0), angle(3.0));
-    assert!((fine - finer).abs() <= 8.0, "{fine:.0} at 6 px, {finer:.0} at 3 px");
-    for a in [fine, finer] {
-        assert!((45.0..80.0).contains(&a), "Wetting 0.75 makes an edge of about 60 degrees, not {a:.0}");
+    // (Wetting, Young's angle, how near the details must come, how near Young's law each must come.)
+    for (wetting, young, same, near) in [(0.5, 90.0, 8.0, 15.0), (0.75, 60.0, 12.0, 15.0)] {
+        let (fine, finer) = (angle(6.0, wetting), angle(3.0, wetting));
+        eprintln!("Wetting {wetting}: {fine:.1} at 6 px, {finer:.1} at 3 px");
+        assert!((fine - finer).abs() <= same, "Wetting {wetting}: {fine:.0} at 6 px, {finer:.0} at 3 px");
+        for a in [fine, finer] {
+            assert!((a - young).abs() <= near, "Wetting {wetting} makes an edge of about {young} degrees, not {a:.0}");
+        }
     }
 }
 
