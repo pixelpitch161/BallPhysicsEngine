@@ -77,6 +77,7 @@ fn a_tap_pours_its_liquid_at_its_place() {
         until: 3.0,
         kind: STOPS,
         colour: WATER,
+        fed: false,
     };
     assert_eq!(inputs.pours, [want]);
     assert_eq!(inputs.feels, [Feel::default()], "the Feel card's defaults are the engine's");
@@ -231,19 +232,102 @@ fn a_pour_finds_its_liquid() {
 }
 
 #[test]
-fn later_pour_kinds_pour_nothing_yet() {
+fn rain_drips_and_bursts_pour_at_their_moments() {
     let reg = crate::registry();
     let mut scene = water_scene(&reg);
     carve(&mut scene, vec![hole([0.0, 0.0], 300.0)]);
     add(&mut scene, &reg, LIQUID, Vec2::ZERO);
-    for kind in ["rain", "drip", "burst"] {
-        let p = add(&mut scene, &reg, POUR, Vec2::ZERO);
-        set(&mut scene, p, SlotId::Main, "kind", Value::Choice(kind.into()));
-        let s = setup(&scene, &reg);
-        assert_eq!(s.note_for(p), Some(LATER_KINDS), "{kind}");
-        assert!(s.inputs_at(0).pours.is_empty(), "{kind}");
-        assert!(s.fills(&s.layout(), &s.field()).is_empty(), "{kind}");
+    let rain = add(&mut scene, &reg, POUR, Vec2::new(0.0, -200.0));
+    set(&mut scene, rain, SlotId::Main, "kind", Value::Choice("rain".into()));
+    set(&mut scene, rain, SlotId::Main, "width", Value::Number(400.0));
+    set(&mut scene, rain, SlotId::Main, "drops_a_second", Value::Number(30.0));
+    set(&mut scene, rain, SlotId::Main, "starts", Value::Number(1.0));
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    assert_eq!(s.note_for(rain), None, "rain pours");
+    assert!(s.inputs_on(59, &field).timed.is_empty(), "nothing before its Starts");
+    let frame = s.inputs_on(60, &field).timed;
+    assert!(!frame.is_empty(), "its first lump comes at its Starts");
+    assert!(frame.iter().all(|t| (1.0..1.0 + 1.0 / 60.0).contains(&t.at)));
+    let layout = s.layout();
+    // (Half the rain's width is over the rock: none is born there.)
+    let (mut open, mut lumps) = (0, 0);
+    for f in 60..180 {
+        for t in s.inputs_on(f, &field).timed {
+            let p = layout.to_world(Vec2::from(t.drop.x));
+            assert!(field.at(p) > 0.0, "a drop born in the rock at {p}");
+            open += 1;
+        }
+        lumps += 1;
     }
+    assert!(open > 100 && lumps == 120, "{open} drops born in 2 s");
+    assert!(s.drops_about(&field, 10.0) > 0, "the rain counts in the drops the final holds");
+    assert!(s.inputs_at(60).pours.is_empty(), "rain is no tap");
+    // A burst: once at its Starts, or again every so often.
+    let burst = add(&mut scene, &reg, POUR, Vec2::new(0.0, 0.0));
+    set(&mut scene, rain, SlotId::Main, "kind", Value::Choice("drip".into()));
+    set(&mut scene, rain, SlotId::Main, "drops_a_second", Value::Number(0.0));
+    set(&mut scene, burst, SlotId::Main, "kind", Value::Choice("burst".into()));
+    set(&mut scene, burst, SlotId::Main, "starts", Value::Number(0.5));
+    let born = |scene: &Scene| -> Vec<u32> {
+        let s = setup(scene, &reg);
+        let field = s.field();
+        (0..180).filter(|f| !s.inputs_on(*f, &field).timed.is_empty()).collect()
+    };
+    assert_eq!(born(&scene), [30], "one burst at 0.5 s (and a drip at 0 a second drips nothing)");
+    set(&mut scene, burst, SlotId::Main, "every", Value::Number(1.0));
+    assert_eq!(born(&scene), [30, 90, 150]);
+}
+
+#[test]
+fn drains_are_read_each_frame() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let drain = add(&mut scene, &reg, DRAIN, Vec2::new(30.0, 40.0));
+    let leak = add(&mut scene, &reg, DRAIN, Vec2::new(-30.0, 40.0));
+    let edge = add(&mut scene, &reg, DRAIN, Vec2::ZERO);
+    set(&mut scene, leak, SlotId::Main, "kind", Value::Choice("leak".into()));
+    set(&mut scene, leak, SlotId::Main, "feeds_pours", Value::Bool(false));
+    set(&mut scene, edge, SlotId::Main, "kind", Value::Choice("edge_of_the_course".into()));
+    set(&mut scene, edge, SlotId::Main, "edge", Value::Choice("left".into()));
+    let rate = Address { thing: drain, slot: Some(SlotId::Main), key: "rate".into() };
+    scene.set_key(&reg, &rate, 0.0, Value::Number(1.0)).unwrap();
+    scene.set_key(&reg, &rate, 1.0, Value::Number(2.0)).unwrap();
+    let s = setup(&scene, &reg);
+    let inputs = s.inputs_at(60);
+    assert_eq!(
+        inputs.drains,
+        [
+            Drain { place: Vec2::new(30.0, 40.0), reach: 40.0, pull: 2.0 * DRAIN_PULL, edges: 0, feeds: true },
+            Drain { place: Vec2::new(-30.0, 40.0), reach: 40.0, pull: LEAK_PULL, edges: 0, feeds: false },
+            Drain { place: Vec2::ZERO, reach: 0.0, pull: DRAIN_PULL, edges: Drain::LEFT, feeds: true },
+        ]
+    );
+    assert_eq!(s.inputs_at(0).drains[0].pull, DRAIN_PULL, "its Rate as keyed then");
+    // (Past the most drains, the rest take nothing and say so.)
+    let mut many = scene.clone();
+    let extra: Vec<ThingId> = (0..MOST_DRAINS).map(|_| add(&mut many, &reg, DRAIN, Vec2::ZERO)).collect();
+    let s = setup(&many, &reg);
+    assert_eq!(s.inputs_at(0).drains.len(), MOST_DRAINS);
+    assert_eq!(s.note_for(*extra.last().unwrap()), Some(TOO_MANY_DRAINS));
+    assert_eq!(s.note_for(extra[0]), None);
+}
+
+#[test]
+fn a_fed_tap_says_when_no_drain_feeds_it() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 300.0)]);
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let tap = add(&mut scene, &reg, POUR, Vec2::new(0.0, -100.0));
+    set(&mut scene, tap, SlotId::Main, "fed_by_drains", Value::Bool(true));
+    let s = setup(&scene, &reg);
+    assert_eq!(s.note_for(tap), Some(NO_FEEDING_DRAIN));
+    assert!(s.inputs_at(0).pours[0].fed, "it is fed");
+    let drain = add(&mut scene, &reg, DRAIN, Vec2::new(0.0, 200.0));
+    assert_eq!(setup(&scene, &reg).note_for(tap), None, "a drain feeds it");
+    set(&mut scene, drain, SlotId::Main, "feeds_pours", Value::Bool(false));
+    assert_eq!(setup(&scene, &reg).note_for(tap), Some(NO_FEEDING_DRAIN));
 }
 
 #[test]
@@ -357,7 +441,7 @@ fn what_restarts_the_draft() {
         }
         cards::MATERIAL => key == "wetting",
         cards::MOVES => key == "moves",
-        cards::CARVE | cards::FEEL | cards::POUR | cards::SHAPE | cards::LINE => true,
+        cards::CARVE | cards::FEEL | cards::POUR | cards::DRAIN | cards::SHAPE | cards::LINE => true,
         _ => false,
     };
     let mut checked = 0;
@@ -383,7 +467,7 @@ fn what_restarts_the_draft() {
             let mut moved = scene.clone();
             moved.things.get_mut(&id).unwrap().transform.position += Vec2::new(5.0, 0.0);
             let restarts = setup(&moved, &reg).print != base;
-            if restarts != [POUR, PIECE, WALL].contains(&thing.kind.as_str()) {
+            if restarts != [POUR, PIECE, WALL, DRAIN].contains(&thing.kind.as_str()) {
                 wrong.push(format!("moving a {}: restarts {restarts}", thing.kind));
             }
             let mut turned = scene.clone();
@@ -398,7 +482,7 @@ fn what_restarts_the_draft() {
             let mut off = scene.clone();
             off.things.get_mut(&id).unwrap().enabled = false;
             let restarts = setup(&off, &reg).print != base;
-            if restarts != [LIQUID, POUR, PIECE, WALL].contains(&thing.kind.as_str()) {
+            if restarts != [LIQUID, POUR, PIECE, WALL, DRAIN].contains(&thing.kind.as_str()) {
                 wrong.push(format!("turning off a {}: restarts {restarts}", thing.kind));
             }
             checked += 1;
@@ -747,6 +831,14 @@ fn the_earliest_change_is_where_the_water_can_first_differ() {
         s.order.insert(at, t);
     });
     assert!((ahead.unwrap() - (2.0 - 3.0 / 60.0)).abs() < 1e-9, "{ahead:?}");
+    // Rain from 4 s changes the water from just before then; a drain from the start.
+    let rain = change(&|s| {
+        let r = add(s, &reg, POUR, Vec2::new(0.0, -200.0));
+        set(s, r, SlotId::Main, "kind", Value::Choice("rain".into()));
+        set(s, r, SlotId::Main, "starts", Value::Number(4.0));
+    });
+    assert!((rain.unwrap() - (4.0 - 3.0 / 60.0)).abs() < 1e-9, "{rain:?}");
+    assert_eq!(change(&|s| _ = add(s, &reg, DRAIN, Vec2::new(0.0, 200.0))), Some(0.0));
 }
 
 /// Slow motion: the video plays a water second at Speed s for 1/s seconds, and keeps more

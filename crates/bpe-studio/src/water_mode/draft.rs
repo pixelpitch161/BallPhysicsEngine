@@ -337,7 +337,9 @@ impl Run {
                 None => live.water = setup.start(self.water_gpu.clone(), &live.field, self.most),
             }
         } else if at < target {
-            // (Its moving parts where they are next, gravity, the feels and the taps.)
+            // (As the final and the export play a frame: its moving parts where they are next, the
+            // taps, rain and drains as the frame has them, none of the pours while the draft holds its
+            // most liquid.)
             setup.set_inputs(&mut live.water, &live.field, self.most);
             let water = &mut live.water;
             water.frame();

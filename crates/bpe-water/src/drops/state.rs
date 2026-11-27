@@ -6,12 +6,14 @@ use anyhow::{Context, bail};
 
 use super::Water;
 use super::clock::ClockState;
-use crate::drop::{Pour, Poured};
+use super::drains::{Drain, MOST_DRAINS};
+use crate::drop::{Drop, Pour, Poured};
 use crate::drops::numbers::{Feel, Numbers};
+use crate::lumps::Timed;
 use crate::parts::{MOST_MOVERS, Pose};
 use crate::solid::SolidField;
 
-const MAGIC: &[u8; 8] = b"BPESTAT2";
+const MAGIC: &[u8; 8] = b"BPESTAT3";
 
 /// A body's state at a frame boundary (before frame `frames` starts).
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +34,10 @@ pub struct WaterState {
     pub deep_hold: u32,
     pub deep_frames: u32,
     pub pours: Vec<(Pour, Poured)>,
+    /// The drops the next frame was to give birth to, the drains, and the tank fed pours pour from.
+    pub timed: Vec<Timed>,
+    pub drains: Vec<Drain>,
+    pub tank: u64,
     /// Where each moving part is (part 5) and how fast it moved over the frame before: a body made
     /// from the state is given its parts there ([`Water::resume_movers`]).
     pub poses: Vec<Pose>,
@@ -116,10 +122,25 @@ impl WaterState {
             }
             o.u32(p.kind);
             o.u32(p.colour);
+            o.u32(u32::from(p.fed));
             o.f32(s.owed);
             o.u32(s.born);
             o.f32(s.extra);
         }
+        o.u32(self.timed.len() as u32);
+        for t in &self.timed {
+            o.u64(t.at.to_bits());
+            o.0.extend_from_slice(bytemuck::bytes_of(&t.drop));
+        }
+        o.u32(self.drains.len() as u32);
+        for d in &self.drains {
+            for v in [d.place.x, d.place.y, d.reach, d.pull] {
+                o.f32(v);
+            }
+            o.u32(u32::from(d.edges));
+            o.u32(u32::from(d.feeds));
+        }
+        o.u64(self.tank);
         o.u32(self.poses.len() as u32);
         let speeds = self.speeds.iter().chain(std::iter::repeat(&super::movers::STILL));
         for (p, s) in self.poses.iter().zip(speeds) {
@@ -164,10 +185,33 @@ impl WaterState {
                 until: f[7],
                 kind: i.u32()?,
                 colour: i.u32()?,
+                fed: i.u32()? != 0,
             };
             let state = Poured { owed: i.f32()?, born: i.u32()?, extra: i.f32()? };
             pours.push((pour, state));
         }
+        let n = i.u32()? as usize;
+        if n > super::MOST_BIRTHS as usize {
+            bail!("the state has too many timed drops");
+        }
+        let mut timed = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = f64::from_bits(i.u64()?);
+            let drop = bytemuck::try_pod_read_unaligned::<Drop>(i.take(std::mem::size_of::<Drop>())?)
+                .map_err(|_| anyhow::anyhow!("the state's timed drop is the wrong size"))?;
+            timed.push(Timed { at, drop });
+        }
+        let n = i.u32()? as usize;
+        if n > MOST_DRAINS {
+            bail!("the state has too many drains");
+        }
+        let mut drains = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (x, y, reach, pull) = (i.f32()?, i.f32()?, i.f32()?, i.f32()?);
+            let edges = u8::try_from(i.u32()?).context("the state's drain edges")?;
+            drains.push(Drain { place: glam::Vec2::new(x, y), reach, pull, edges, feeds: i.u32()? != 0 });
+        }
+        let tank = i.u64()?;
         let n = i.u32()? as usize;
         if n > MOST_MOVERS {
             bail!("the state has too many moving parts");
@@ -204,6 +248,9 @@ impl WaterState {
             deep_hold,
             deep_frames,
             pours,
+            timed,
+            drains,
+            tank,
             poses,
             speeds,
             clock,
@@ -241,6 +288,9 @@ impl Water {
             deep_hold: self.deep_hold,
             deep_frames: self.deep_frames,
             pours: self.pours.clone(),
+            timed: self.timed.clone(),
+            drains: self.drains.clone(),
+            tank: self.tank,
             poses: self.poses().to_vec(),
             speeds: self.move_speeds().to_vec(),
             clock,
@@ -299,6 +349,9 @@ impl Water {
         new.frames = state.frames;
         new.edges_shut = state.edges_shut;
         new.pours = state.pours.clone();
+        new.timed = state.timed.clone();
+        new.drains = state.drains.clone();
+        new.tank = state.tank;
         new.deep_last = state.deep_last;
         new.deep_dt = state.deep_dt;
         new.prime_next = state.prime_next;
