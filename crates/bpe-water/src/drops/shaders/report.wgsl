@@ -17,6 +17,8 @@ struct Report {
     // the liquid's drops in the course at the frame's end (air left out)
     liquid: atomic<u32>,
     spout: array<f32, 64>,
+    // each drain's liquid taken in the frame (`cs_drained`)
+    drained: array<atomic<u32>, 32>,
 };
 
 @group(0) @binding(18) var<storage, read_write> report: Report;
@@ -78,5 +80,20 @@ fn cs_report(@builtin(global_invocation_id) gid: vec3<u32>) {
     let speed = length(p.zw) * fr.s.x;
     if speed > 0.0 && speed < 1e30 {
         atomicMax(&report.fastest, bitcast<u32>(speed));
+    }
+}
+
+// Each drain's liquid taken in the frame: the dead drops at its place for this frame (`finish_at`).
+// After the frame's last step and before trapped air is born over the drops that left.
+@compute @workgroup_size(256)
+fn cs_drained(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= st.n.x || fr.dmeta.x == 0u {
+        return;
+    }
+    let p = xv[i].xy;
+    let k = -2e6 - p.x;
+    if p.y == drained_y() && k > -0.5 && k < 31.5 {
+        atomicAdd(&report.drained[u32(k + 0.5)], 1u);
     }
 }

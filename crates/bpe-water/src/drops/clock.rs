@@ -6,10 +6,12 @@ use std::collections::VecDeque;
 
 use bytemuck::{Pod, Zeroable};
 
+use super::drains::MOST_DRAINS;
+
 /// The most pours a body has (each has its spout's fullness in the report).
 pub const MOST_POURS: usize = 64;
 /// Reports on their way back at once.
-const SLOTS: usize = 3;
+pub(super) const SLOTS: usize = 3;
 
 /// What the card reports at the end of a frame. Matches `Report` in report.wgsl.
 #[repr(C)]
@@ -28,6 +30,8 @@ pub struct Report {
     pub liquid: u32,
     /// Each pour's fullness at its spout (1 is full).
     pub spout: [f32; MOST_POURS],
+    /// The liquid's drops each drain took in the frame.
+    pub drained: [u32; MOST_DRAINS],
 }
 
 impl Report {
@@ -38,7 +42,7 @@ impl Report {
     }
 
     fn of(live: u32) -> Report {
-        Report { fastest: 0, live, deep: 0, air: 0, liquid: 0, spout: [0.0; MOST_POURS] }
+        Report { fastest: 0, live, deep: 0, air: 0, liquid: 0, spout: [0.0; MOST_POURS], drained: [0; MOST_DRAINS] }
     }
 }
 
@@ -50,13 +54,15 @@ enum Back {
     OnCard { slot: usize, done: wgpu::SubmissionIndex },
 }
 
-/// A frame's report, how many drops the frame ended with, and how many liquid drops had been added
-/// by its end (counting on from the body's start, wrapping).
+/// A frame's report, how many drops the frame ended with, how many liquid drops had been added
+/// by its end (counting on from the body's start, wrapping), and which of its drains fed the tank
+/// (bit `k` drain `k`, as the drains were when it ran).
 #[derive(Clone, Debug)]
 struct Entry {
     frame: u32,
     count: u32,
     poured: u32,
+    feeds: u32,
     back: Back,
 }
 
@@ -82,6 +88,9 @@ pub(super) struct Clock {
     /// drops had been added by that frame's end (as `Entry::poured`).
     pub(super) liquid: (u32, u32),
     pub(super) last_steps: u32,
+    /// What each drain took in that report's frame, and how much of it went to the tank.
+    pub(super) drained: [u32; MOST_DRAINS],
+    pub(super) fed: u64,
 }
 
 impl Clock {
@@ -116,6 +125,8 @@ impl Clock {
             air: 0,
             liquid: (0, 0),
             last_steps: 0,
+            drained: [0; MOST_DRAINS],
+            fed: 0,
         }
     }
 
@@ -135,12 +146,13 @@ impl Clock {
     }
 
     /// Frame `frame`, which ended with `count` drops and `poured` liquid drops added since the start,
-    /// was sent as `done` (or had no drops).
+    /// was sent as `done` (or had no drops), its drains `feeds` feeding the tank.
     pub(super) fn sent(
         &mut self,
         frame: u32,
         count: u32,
         poured: u32,
+        feeds: u32,
         done: Option<wgpu::SubmissionIndex>,
         steps: u32,
     ) {
@@ -152,7 +164,7 @@ impl Clock {
             }
             None => Back::Known(Box::new(Report::of(0))),
         };
-        self.recent.push_back(Entry { frame, count, poured, back });
+        self.recent.push_back(Entry { frame, count, poured, feeds, back });
         while self.recent.len() > SLOTS {
             self.recent.pop_front();
         }
@@ -193,19 +205,21 @@ impl Clock {
         }
     }
 
-    /// The report of frame `frame`, the count it ended with and the liquid drops added by then, if
-    /// the clock has it.
-    fn report_of(&mut self, device: &wgpu::Device, frame: u32) -> Option<(Report, u32, u32)> {
+    /// The report of frame `frame`, the count it ended with, the liquid drops added by then and the
+    /// drains that fed the tank, if the clock has it.
+    fn report_of(&mut self, device: &wgpu::Device, frame: u32) -> Option<(Report, u32, u32, u32)> {
         let i = self.recent.iter().position(|e| e.frame == frame)?;
         let report = self.resolve(device, i);
-        Some((report, self.recent[i].count, self.recent[i].poured))
+        let e = &self.recent[i];
+        Some((report, e.count, e.poured, e.feeds))
     }
 
     /// Settles boundary `k` (the start of frame `k`), once: reads frame `k - 2`'s report and returns
-    /// how many drops to let go from the end (dead ones: they sort last and never come back).
-    pub(super) fn settle(&mut self, device: &wgpu::Device, k: u32) -> u32 {
+    /// how many drops to let go from the end (dead ones: they sort last and never come back), and
+    /// how many liquid drops that frame's feeding drains took (none when `k` was settled before).
+    pub(super) fn settle(&mut self, device: &wgpu::Device, k: u32) -> (u32, u64) {
         if self.settled == Some(k) {
-            return 0;
+            return (0, 0);
         }
         self.settled = Some(k);
         // (The boundary after this one takes the place of the one two before.)
@@ -214,10 +228,14 @@ impl Clock {
         self.spouts = [0.0; MOST_POURS];
         self.deep = 0;
         self.air = 0;
+        self.drained = [0; MOST_DRAINS];
+        self.fed = 0;
         let mut go = 0;
         if k >= 2
-            && let Some((report, count, poured)) = self.report_of(device, k - 2)
+            && let Some((report, count, poured, feeds)) = self.report_of(device, k - 2)
         {
+            self.drained = report.drained;
+            self.fed = (0..MOST_DRAINS).filter(|&d| feeds & (1 << d) != 0).map(|d| u64::from(report.drained[d])).sum();
             self.liquid = (report.liquid, poured);
             self.reported = report.fastest_px();
             self.spouts = report.spout;
@@ -228,7 +246,7 @@ impl Clock {
             go = count.saturating_sub(report.live).saturating_sub(self.let_go);
         }
         self.let_go = go;
-        go
+        (go, self.fed)
     }
 
     /// The fastest speed (pixels a second) frame `k` must allow for, before headroom: frame
@@ -252,7 +270,7 @@ impl Clock {
                     Back::Known(r) => **r,
                     Back::OnCard { .. } => unreachable!("every report was read back"),
                 };
-                (e.frame, e.count, e.poured, report)
+                (e.frame, e.count, e.poured, e.feeds, report)
             })
             .collect();
         ClockState {
@@ -266,6 +284,8 @@ impl Clock {
             air: self.air,
             liquid: self.liquid,
             last_steps: self.last_steps,
+            drained: self.drained,
+            fed: self.fed,
         }
     }
 
@@ -274,7 +294,13 @@ impl Clock {
         self.recent = state
             .recent
             .iter()
-            .map(|&(frame, count, poured, report)| Entry { frame, count, poured, back: Back::Known(Box::new(report)) })
+            .map(|&(frame, count, poured, feeds, report)| Entry {
+                frame,
+                count,
+                poured,
+                feeds,
+                back: Back::Known(Box::new(report)),
+            })
             .collect();
         self.let_go = state.let_go;
         self.added = state.added;
@@ -285,6 +311,8 @@ impl Clock {
         self.air = state.air;
         self.liquid = state.liquid;
         self.last_steps = state.last_steps;
+        self.drained = state.drained;
+        self.fed = state.fed;
     }
 
     /// The host's side of this clock, for a copy (every report read back first).
@@ -300,14 +328,16 @@ impl Clock {
         to.air = self.air;
         to.liquid = self.liquid;
         to.last_steps = self.last_steps;
+        to.drained = self.drained;
+        to.fed = self.fed;
     }
 }
 
 /// The host's side of a clock, every report known: what a restart point keeps of it.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ClockState {
-    /// The last frames' (frame, drops at its end, liquid added by its end, report).
-    recent: Vec<(u32, u32, u32, Report)>,
+    /// The last frames' (frame, drops at its end, liquid added by its end, feeding drains, report).
+    recent: Vec<(u32, u32, u32, u32, Report)>,
     let_go: u32,
     added: [f32; SLOTS],
     settled: Option<u32>,
@@ -317,15 +347,18 @@ pub(super) struct ClockState {
     air: u32,
     liquid: (u32, u32),
     last_steps: u32,
+    drained: [u32; MOST_DRAINS],
+    fed: u64,
 }
 
 impl ClockState {
     pub(super) fn write(&self, o: &mut super::state::Out) {
         o.u32(self.recent.len() as u32);
-        for (frame, count, poured, report) in &self.recent {
+        for (frame, count, poured, feeds, report) in &self.recent {
             o.u32(*frame);
             o.u32(*count);
             o.u32(*poured);
+            o.u32(*feeds);
             o.bytes(bytemuck::bytes_of(report));
         }
         o.u32(self.let_go);
@@ -341,6 +374,11 @@ impl ClockState {
         for v in [self.deep, self.air, self.liquid.0, self.liquid.1, self.last_steps] {
             o.u32(v);
         }
+        for d in self.drained {
+            o.u32(d);
+        }
+        o.u32(self.fed as u32);
+        o.u32((self.fed >> 32) as u32);
     }
 
     pub(super) fn read(i: &mut super::state::In) -> anyhow::Result<ClockState> {
@@ -350,11 +388,11 @@ impl ClockState {
         }
         let mut recent = Vec::with_capacity(n);
         for _ in 0..n {
-            let (frame, count, poured) = (i.u32()?, i.u32()?, i.u32()?);
+            let (frame, count, poured, feeds) = (i.u32()?, i.u32()?, i.u32()?, i.u32()?);
             let bytes = i.bytes()?;
             let report = bytemuck::try_pod_read_unaligned::<Report>(&bytes)
                 .map_err(|_| anyhow::anyhow!("the state's report is the wrong size"))?;
-            recent.push((frame, count, poured, report));
+            recent.push((frame, count, poured, feeds, report));
         }
         let let_go = i.u32()?;
         let mut added = [0.0; SLOTS];
@@ -368,6 +406,11 @@ impl ClockState {
             *s = i.f32()?;
         }
         let (deep, air, l0, l1, last_steps) = (i.u32()?, i.u32()?, i.u32()?, i.u32()?, i.u32()?);
+        let mut drained = [0; MOST_DRAINS];
+        for d in &mut drained {
+            *d = i.u32()?;
+        }
+        let fed = u64::from(i.u32()?) | (u64::from(i.u32()?) << 32);
         Ok(ClockState {
             recent,
             let_go,
@@ -379,6 +422,8 @@ impl ClockState {
             air,
             liquid: (l0, l1),
             last_steps,
+            drained,
+            fed,
         })
     }
 }
