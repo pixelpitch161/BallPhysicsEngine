@@ -662,3 +662,117 @@ fn a_field_with_forty_pieces_builds_quickly() {
     assert!(took.as_secs_f32() < 2.0, "{took:?}");
     assert_eq!(field.layout.cell, 6.0);
 }
+
+/// The final's setup is at Final detail and its print follows Final detail, the draft's Draft
+/// detail; Speed is neither's physics (part 8).
+#[test]
+fn the_final_is_at_final_detail_and_speed_is_no_physics() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let (draft, fin) = (WaterSetup::of(&scene, &resolved), WaterSetup::final_of(&scene, &resolved));
+    assert_eq!((draft.cell, fin.cell), (8.0, 2.0));
+    assert_eq!(fin.detail, Detail::Final);
+    let prints = |scene: &Scene| {
+        let r = bpe_core::resolve(scene, &reg);
+        (WaterSetup::of(scene, &r).print, WaterSetup::final_of(scene, &r).print)
+    };
+    let base = prints(&scene);
+    let mut edited = scene.clone();
+    set(&mut edited, ThingId::ROOT, SlotId::Water, "final_detail", Value::Choice("fine".into()));
+    let p = prints(&edited);
+    assert!(p.0 == base.0 && p.1 != base.1, "Final detail is the final's alone");
+    let mut edited = scene.clone();
+    set(&mut edited, ThingId::ROOT, SlotId::Water, "draft_detail", Value::Choice("fine".into()));
+    let p = prints(&edited);
+    assert!(p.0 != base.0 && p.1 == base.1, "Draft detail is the draft's alone");
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "speed", Value::Number(0.25));
+    let speed = Address { thing: ThingId::ROOT, slot: Some(SlotId::Water), key: "speed".into() };
+    scene.set_key(&reg, &speed, 1.0, Value::Number(0.5)).unwrap();
+    assert_eq!(prints(&scene), base, "Speed changes no water");
+    assert_eq!(fin.clone().with_cell(8.0).cell, 8.0);
+    assert_ne!(fin.clone().with_cell(8.0).print, fin.print);
+}
+
+/// The earliest time two scenes' water can differ at.
+#[test]
+fn the_earliest_change_is_where_the_water_can_first_differ() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 300.0)]);
+    let liquid = add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let tap = add(&mut scene, &reg, POUR, Vec2::new(0.0, -100.0));
+    set(&mut scene, tap, SlotId::Main, "starts", Value::Number(5.0));
+    let gravity = Address { thing: ThingId::ROOT, slot: Some(SlotId::Water), key: "gravity".into() };
+    scene.set_key(&reg, &gravity, 1.0, Value::Vec2([0.0, 4000.0])).unwrap();
+    let inputs = |scene: &Scene| WaterSetup::final_of(scene, &bpe_core::resolve(scene, &reg)).inputs();
+    let base = inputs(&scene);
+    let change = |edit: &dyn Fn(&mut Scene)| {
+        let mut s = scene.clone();
+        edit(&mut s);
+        let got = base.earliest_change(&inputs(&s));
+        assert_eq!(got, inputs(&s).earliest_change(&base), "both ways round");
+        got
+    };
+    assert_eq!(base.earliest_change(&inputs(&scene)), None, "the same scene makes the same water");
+    assert_eq!(change(&|s| set(s, liquid, SlotId::Look, "colour", Value::Color(Color::rgb(1, 2, 3)))), None);
+    assert_eq!(change(&|s| set(s, liquid, SlotId::Feel, "thickness", Value::Number(0.7))), Some(0.0));
+    assert_eq!(change(&|s| carve(s, vec![hole([0.0, 0.0], 290.0)])), Some(0.0));
+    let rate = change(&|s| set(s, tap, SlotId::Main, "rate", Value::Number(2.0))).unwrap();
+    assert!((rate - (5.0 - 3.0 / 60.0)).abs() < 1e-9, "a tap's change shows from just before it starts: {rate}");
+    let later = change(&|s| s.set_key(&reg, &gravity, 3.0, Value::Vec2([0.0, 1000.0])).map(|_| ()).unwrap()).unwrap();
+    assert_eq!(later, 1.0, "a key added after one at 1 s changes the water from 1 s");
+    let first = change(&|s| s.set_key(&reg, &gravity, 0.5, Value::Vec2([0.0, 1000.0])).map(|_| ()).unwrap()).unwrap();
+    assert_eq!(first, 0.0, "a key before every other changes it from the start");
+    let speed = Address { thing: ThingId::ROOT, slot: Some(SlotId::Water), key: "speed".into() };
+    assert_eq!(
+        change(&|s| s.set_key(&reg, &speed, 2.0, Value::Number(0.25)).map(|_| ()).unwrap()),
+        None,
+        "Speed is no physics"
+    );
+    // A tap put in front of it: the taps are told apart by their place, so from the earlier start.
+    let ahead = change(&|s| {
+        let t = add(s, &reg, POUR, Vec2::new(50.0, -100.0));
+        set(s, t, SlotId::Main, "starts", Value::Number(2.0));
+        let at = s.order.iter().position(|id| *id == tap).unwrap();
+        s.order.retain(|id| *id != t);
+        s.order.insert(at, t);
+    });
+    assert!((ahead.unwrap() - (2.0 - 3.0 / 60.0)).abs() < 1e-9, "{ahead:?}");
+}
+
+/// Slow motion: the video plays a water second at Speed s for 1/s seconds, and keeps more
+/// moments a frame where it is slow.
+#[test]
+fn slow_motion_lengthens_the_video_and_keeps_more_moments() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let speeds = |scene: &Scene| Speeds::of(scene, &bpe_core::resolve(scene, &reg), 10.0);
+    let real = speeds(&scene);
+    assert!(!real.slowed());
+    assert!((real.video_length(10.0) - 10.0).abs() < 1e-9);
+    assert_eq!(real.keep_for(100), 1);
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "speed", Value::Number(0.25));
+    let slow = speeds(&scene);
+    assert!(slow.slowed());
+    assert!((slow.video_length(10.0) - 40.0).abs() < 1e-6, "{}", slow.video_length(10.0));
+    assert_eq!(slow.keep_for(0), 4);
+    // A ramp from real time at 0 s to an eighth at 1 s, and back to real time at 2 s.
+    let speed = Address { thing: ThingId::ROOT, slot: Some(SlotId::Water), key: "speed".into() };
+    let mut ramp = water_scene(&reg);
+    for (t, v) in [(0.0, 1.0), (1.0, 0.125), (2.0, 1.0)] {
+        ramp.set_key(&reg, &speed, t, Value::Number(v)).unwrap();
+    }
+    let r = speeds(&ramp);
+    assert!(r.slowed());
+    let keeps: Vec<u32> = [2, 30, 45, 58, 61, 118].iter().map(|f| r.keep_for(*f)).collect();
+    assert_eq!(keeps[0], 1, "real time at the start: {keeps:?}");
+    assert!(keeps.windows(2).take(3).all(|w| w[0] <= w[1]), "more and more toward the slowest: {keeps:?}");
+    assert_eq!(keeps[4], 8, "eight at the slowest: {keeps:?}");
+    let v = r.video_length(10.0);
+    assert!(v > 11.0 && v < 18.0, "the ramp lengthens the video: {v}");
+    for t in [0.0, 0.3, 1.0, 1.7, 2.5, 9.0] {
+        let back = r.water_time(r.video_time(t));
+        assert!((back - t).abs() < 1e-6, "water time {t} came back as {back}");
+    }
+}

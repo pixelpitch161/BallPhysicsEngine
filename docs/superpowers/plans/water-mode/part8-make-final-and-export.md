@@ -65,8 +65,9 @@ part8-handover.md`.
    physics keyframe move whenever the Speed changed, and Speed would become physics. Song sync happens in Video
    mode (part 10), whose timeline is the video's.
 3. **What is kept.** A take keeps every water frame (the state at `k/60` s), and in a frame whose Speed is under 1
-   it keeps `f − 1` more, evenly inside it: `f` is the smallest of 1, 2, 4, 8 at least `1 / s` (the least Speed at
-   the frame's start, middle and end), capped at 8. At Final detail every frame is 32 steps (`Numbers::for_cell`:
+   it keeps `f − 1` more, evenly inside it: `f` is the smallest of 1, 2, 4, 8 at least `0.8 / s` (the least Speed
+   at the frame's start, middle and end; a frame barely slowed needs no more, as a moment drawn a little after it
+   moves its drops on), capped at 8. At Final detail every frame is 32 steps (`Numbers::for_cell`:
    the floor at 3 px and finer is 32, never more than `most_steps` 32), so the in-between frames land on whole
    steps (every 16, 8 or 4 steps). A frame that takes another count puts in-between frame `i` at step
    `round(i · n / f)` and records its exact time.

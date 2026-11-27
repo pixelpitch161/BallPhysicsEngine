@@ -142,6 +142,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Course",
     "Carving",
     "Trapped air",
+    "Slow motion",
     "Back",
     "Material",
     "Joint",

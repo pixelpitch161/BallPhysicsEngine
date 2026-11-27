@@ -24,11 +24,26 @@ use crate::modules::water::{
 };
 
 pub mod course;
+pub mod inputs;
+pub mod slow;
 
 pub use course::{Form, SolidSetup};
+pub use inputs::{InputPart, WaterInputs};
+pub use slow::Speeds;
 
 /// The most drops a draft holds (water spec, Detail): past it the pours stop.
 pub const DRAFT_MOST: u32 = 500_000;
+/// The most drops a final holds (water spec, Caps): past it the pours stop.
+pub const FINAL_MOST: u32 = 8_000_000;
+
+/// Which of a Water scene's details a setup is at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Detail {
+    /// Draft detail: what the editor plays while editing.
+    Draft,
+    /// Final detail: what Make final works out and the video shows.
+    Final,
+}
 
 /// The most liquids the water tells apart.
 pub const MOST_LIQUIDS: usize = bpe_water::drops::numbers::MOST_LIQUIDS;
@@ -142,6 +157,8 @@ pub struct WaterSetup {
     pub notes: Vec<(ThingId, &'static str)>,
     /// Changes exactly when what the physics reads changes.
     pub print: u64,
+    /// Draft or Final.
+    pub detail: Detail,
     world: Keyed,
     /// The Course's Rock card.
     rock: Keyed,
@@ -150,9 +167,31 @@ pub struct WaterSetup {
 impl WaterSetup {
     /// The scene's water at its Draft detail.
     pub fn of(scene: &Scene, resolved: &Resolved) -> WaterSetup {
+        WaterSetup::of_detail(scene, resolved, Detail::Draft)
+    }
+
+    /// The scene's water at its Final detail (Make final, part 8).
+    pub fn final_of(scene: &Scene, resolved: &Resolved) -> WaterSetup {
+        WaterSetup::of_detail(scene, resolved, Detail::Final)
+    }
+
+    /// The same at `cell` pixels a cell (tests, and the measuring runs).
+    pub fn with_cell(mut self, cell: f32) -> WaterSetup {
+        let mut h = DefaultHasher::new();
+        (self.print, cell.to_bits()).hash(&mut h);
+        self.print = h.finish();
+        self.cell = cell;
+        self
+    }
+
+    fn of_detail(scene: &Scene, resolved: &Resolved, detail: Detail) -> WaterSetup {
         let world = Keyed::of(scene, resolved, ThingId::ROOT, SlotId::Water).unwrap_or_default();
         let w: WaterWorld = world.card(0.0);
-        let (size, cell) = (w.course_size(), w.draft_detail.cell_px());
+        let cell = match detail {
+            Detail::Draft => w.draft_detail.cell_px(),
+            Detail::Final => w.final_detail.cell_px(),
+        };
+        let size = w.course_size();
         let course = course_of(scene).filter(|id| resolved.things.contains_key(id));
         let strokes = Arc::new(if course.is_some() { carving_of(scene) } else { Strokes::default() });
         let rock = course.and_then(|id| Keyed::of(scene, resolved, id, SlotId::Material)).unwrap_or_default();
@@ -203,8 +242,11 @@ impl WaterSetup {
             }
         }
         let mut h = DefaultHasher::new();
-        let world_keys = ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"];
-        world.hash_into(Some(&world_keys), &mut h);
+        let detail_key = match detail {
+            Detail::Draft => "draft_detail",
+            Detail::Final => "final_detail",
+        };
+        world.hash_into(Some(&world_keys(detail_key)), &mut h);
         strokes.hash64().hash(&mut h);
         rock.hash_into(Some(&["wetting"]), &mut h);
         for l in &liquids {
@@ -221,7 +263,7 @@ impl WaterSetup {
             s.material.hash_into(Some(&["wetting"]), &mut h);
         }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, solids, notes, print, world, rock }
+        WaterSetup { size, cell, strokes, liquids, pours, solids, notes, print, detail, world, rock }
     }
 
     /// The grid the water runs on.
@@ -337,6 +379,51 @@ impl WaterSetup {
         inputs
     }
 
+    /// Sets `water`'s inputs for its next frame on `field` (this setup's): gravity, Bubbles rise,
+    /// the liquids' feel and the taps, none while the body holds `most` liquid drops or more (by
+    /// the liquid: trapped air comes and goes, and would stop and start the pours). The draft, the
+    /// final and a draft's export all play a frame this way.
+    pub fn set_inputs(&self, water: &mut Water, field: &SolidField, most: u32) {
+        let inputs = self.inputs_on(water.frames(), field);
+        water.set_gravity(inputs.gravity);
+        water.set_air_lift(inputs.air_lift);
+        if !inputs.feels.is_empty() {
+            water.set_feels(&inputs.feels);
+        }
+        let full = water.liquid() >= most;
+        water.set_pours(if full { &[] } else { &inputs.pours });
+    }
+
+    /// A body on `field` (this setup's) from a restart point's `state`, made with the inputs of the
+    /// frame it is at.
+    pub fn resume(
+        &self,
+        gpu: Arc<WaterGpu>,
+        field: &SolidField,
+        state: &bpe_water::WaterState,
+    ) -> anyhow::Result<Water> {
+        let inputs = self.inputs_on(state.frames, field);
+        let feels = if inputs.feels.is_empty() { vec![Feel::default()] } else { inputs.feels.clone() };
+        let numbers = Numbers { air_lift: inputs.air_lift, ..self.numbers() };
+        Water::from_state(gpu, field, inputs.gravity, numbers, &feels, state)
+    }
+
+    /// About how many drops the final holds at most: its fills and what its taps pour in `seconds`
+    /// (an estimate: drops that leave the course, or a full course, make it less).
+    pub fn drops_about(&self, field: &SolidField, seconds: f64) -> u32 {
+        let fills = self.fills(&field.layout, field).len() as f64;
+        let spacing = f64::from(self.cell) * 0.5;
+        let mut poured = 0.0;
+        for p in self.pours.iter().filter(|p| p.kind == PourKind::Tap && p.liquid.is_some()) {
+            let c: PourCard = p.card.card(0.0);
+            let from = f64::from(c.starts).clamp(0.0, seconds);
+            let until = f64::from(c.stops).clamp(from, seconds);
+            let width = f64::from((c.rate * c.width).max(0.0));
+            poured += width * f64::from(c.speed.max(0.0)) * (until - from) / (spacing * spacing);
+        }
+        (fills + poured).min(f64::from(FINAL_MOST)) as u32
+    }
+
     /// The taps (with a Liquid to pour) whose spouts are in the solid of `field`.
     pub fn taps_in_rock(&self, field: &SolidField) -> Vec<ThingId> {
         let clear = self.numbers().wall_off * self.cell;
@@ -398,6 +485,11 @@ impl WaterSetup {
         water.set_pours(&inputs.pours);
         water
     }
+}
+
+/// The Water card's settings the physics reads (with the detail's own).
+fn world_keys(detail: &str) -> [&str; 6] {
+    ["gravity", "screens_wide", "screens_tall", detail, "trapped_air", "bubble_rise"]
 }
 
 /// Whether world point `p` is more than `clear` pixels from the rock of `field` (a field that

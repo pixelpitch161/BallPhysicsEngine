@@ -150,6 +150,11 @@ pub struct WaterWorld {
         group = "Trapped air"
     )]
     pub bubble_rise: f32,
+    /// How fast the water plays in the video: 1 is real time, 0.25 plays it four times slower (the
+    /// final keeps four times the frames there, so it stays smooth), 2 twice as fast. Keyframe it
+    /// to ramp into slow motion and out again. Slow motion makes the video longer.
+    #[setting(label = "Speed", range(0.125, 4), span(0.125, 2), unit = "×", simple, keyframe, group = "Slow motion")]
+    pub speed: f32,
 }
 
 impl Default for WaterWorld {
@@ -163,6 +168,7 @@ impl Default for WaterWorld {
             final_detail: FinalDetail::Normal,
             trapped_air: true,
             bubble_rise: 1.0,
+            speed: 1.0,
         }
     }
 }

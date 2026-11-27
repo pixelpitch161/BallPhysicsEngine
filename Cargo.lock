@@ -277,12 +277,15 @@ dependencies = [
  "bpe-water",
  "glam",
  "i_overlay",
+ "libc",
  "png",
  "rayon",
  "ron",
  "rustybuzz",
  "serde",
  "skrifa",
+ "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
