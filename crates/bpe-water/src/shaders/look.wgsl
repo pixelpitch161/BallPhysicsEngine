@@ -1209,6 +1209,11 @@ const FOAM_FRONT: vec2<f32> = vec2<f32>(300.0, 900.0);
 const FOAM_CYCLE: f32 = 1.0;
 // How fast fizz rises (world px a second).
 const FIZZ_RISE: f32 = 120.0;
+// The share of fizz's spots that have a bubble at Bubbles 1 (more read as dots printed on it).
+const FIZZ_SHARE: f32 = 0.3;
+// The mean speed (world px a second, over FOAM_REACH) past which fizz fades out, and is gone: in
+// fast water the bubbles ride the flow, and a still lattice rising through it reads as printed.
+const FIZZ_STILL: vec2<f32> = vec2<f32>(250.0, 600.0);
 
 // The liquid's motion round world point `p`, over about `size` world px: its mean speed (world px a
 // second) and the spread of its speeds about that mean (world px a second, `E|v|² - |Ev|²` rooted),
@@ -1262,9 +1267,10 @@ fn foam_at(p: vec2<f32>, mean: vec2<f32>, size: f32, t: f32) -> f32 {
     return sum;
 }
 
-// Fizz at world point `p`: small bubbles `size` world px across rising at FIZZ_RISE from a lattice
-// that rises with them (one spot a cell of 3 sizes), each living `life` seconds, fading in and out,
-// then born again somewhere else in its cell; `count` of the spots have one. How much of the point
+// Fizz at world point `p`: small bubbles up to `size` world px across (each its own, from half of it)
+// rising at FIZZ_RISE from a lattice that rises with them (one spot a cell of 3 sizes), each living
+// `life` seconds, fading in and out, then born again somewhere else in its cell; `count` of the
+// spots have one. How much of the point
 // a bubble's rim takes and how much its inside (rim, inside), at water time `t`, `scale` picture px
 // a world px.
 fn fizz_at(p: vec2<f32>, size: f32, life: f32, count: f32, t: f32, scale: f32) -> vec2<f32> {
@@ -1280,8 +1286,9 @@ fn fizz_at(p: vec2<f32>, size: f32, life: f32, count: f32, t: f32, scale: f32) -
     }
     // (A bubble's radius is a sixth of its cell, so it is always inside it.)
     let centre = vec2<f32>(c) + 1.0 / 6.0 + (2.0 / 3.0) * vec2<f32>(hash2(h), hash2(h + vec2<i32>(57, 11)));
-    let r_px = 0.5 * size * scale;
-    let d = 6.0 * length(q - centre);
+    let own = mix(0.5, 1.0, hash2(h + vec2<i32>(23, 7)));
+    let r_px = 0.5 * own * size * scale;
+    let d = 6.0 * length(q - centre) / own;
     let aa = 1.0 / max(r_px, 1e-3);
     let ring = max(0.3, 1.5 * aa);
     let outer = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, d);
@@ -1294,8 +1301,8 @@ fn fizz_at(p: vec2<f32>, size: f32, life: f32, count: f32, t: f32, scale: f32) -
 // ---- wet marks (6b) ----
 
 // How far in from its face a solid shows its wet marks (world px), and how much darker it is.
-const WET_REACH: f32 = 6.0;
-const WET_DARK: f32 = 0.45;
+const WET_REACH: f32 = 12.0;
+const WET_DARK: f32 = 0.5;
 
 // How wet world point `p` is by the frame drawn (0 to 1, between the nodes round it).
 fn wet_at(p: vec2<f32>) -> f32 {
@@ -1537,8 +1544,13 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                 let rim = (1.0 - smoothstep(0.5 * rim_px - 0.5, 0.5 * rim_px + 0.5, abs(inside)))
                     * bubble.w * smoothstep(0.2 * level, 0.6 * level, air);
                 let size = max(sizes.y, 0.5);
+                var fizz = vec2<f32>(0.0);
                 let deep_enough = smoothstep(0.5 * size, size, inside_w) * (1.0 - pocket);
-                let fizz = fizz_at(w, size, max(lives.x, 0.05), bubble.w, lu.time.x, scale) * deep_enough;
+                if deep_enough > 0.0 {
+                    let still = 1.0 - smoothstep(FIZZ_STILL.x, FIZZ_STILL.y, length(churn_at(w, FOAM_REACH).mean));
+                    let count = FIZZ_SHARE * bubble.w;
+                    fizz = fizz_at(w, size, max(lives.x, 0.05), count, lu.time.x, scale) * deep_enough * still;
+                }
                 body = mix(body, 1.1 * body + 0.08 * bubble_lit, fizz.y);
                 body = mix(body, bubble_lit, max(rim, 0.85 * fizz.x));
             }
@@ -1618,8 +1630,8 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
 //
 // A sprite pass over the drops (`vs_extra`, two sprites a drop, the drops that don't qualify put
 // off the picture): lone drops moving fast draw soft dots of Mist with a faint haze round them
-// (premultiplied, over), lone or edge drops moving faster draw thin bright streaks behind them along
-// their speed (added, HDR). Each is a function of the drop and the moment alone.
+// (premultiplied, over); lone drops, and drops leaving a body at its edge, moving faster draw
+// thin bright streaks behind them along their speed (added, HDR). Each is a function of the drop and the moment alone.
 
 // The speeds that start mist and sparks (world px a second; each fades in over 200 px/s round it).
 const MIST_SPEED: f32 = 600.0;
@@ -1672,19 +1684,36 @@ fn vs_extra(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> E
     let speed = length(vel);
     let world = u.grid.xy + place(i) * u.grid.z;
     // How much liquid is round it, over about 4 cells (a body at rest 1, a lone drop about 1/64).
-    let crowd = density_at(world, min(2, i32(textureNumLevels(dens)) - 1)).a;
+    let k = min(2, i32(textureNumLevels(dens)) - 1);
+    let crowd = density_at(world, k).a;
+    let along = vel / max(speed, 1e-6);
     var share: f32;
     if spark {
-        share = amount * (1.0 - smoothstep(0.35, 0.7, crowd)) * smoothstep(SPARK_SPEED - 100.0, SPARK_SPEED + 100.0, speed);
+        // Lone drops spark, and drops at an edge that are leaving the body (moving out along the
+        // way its liquid thins): a drop at a stream's edge moves along it, and every one sparking
+        // would draw the stream's edges as a bright outline.
+        let h = 4.0 * u.grid.z;
+        let thins = -vec2<f32>(
+            density_at(world + vec2<f32>(h, 0.0), k).a - density_at(world - vec2<f32>(h, 0.0), k).a,
+            density_at(world + vec2<f32>(0.0, h), k).a - density_at(world - vec2<f32>(0.0, h), k).a,
+        );
+        let tl = length(thins);
+        let leaving = select(0.0, smoothstep(0.4, 0.8, dot(along, thins / max(tl, 1e-6))), tl > 1e-3);
+        let lone = 1.0 - smoothstep(0.08, 0.2, crowd);
+        let edge = (1.0 - smoothstep(0.35, 0.7, crowd)) * leaving;
+        share = amount * max(lone, edge) * smoothstep(SPARK_SPEED - 100.0, SPARK_SPEED + 100.0, speed);
     } else {
         share = amount * (1.0 - smoothstep(0.08, 0.2, crowd)) * smoothstep(MIST_SPEED - 100.0, MIST_SPEED + 100.0, speed);
     }
+    // Near a solid, only drops leaving it (a splash off a wall): a thin sheet running along a wall
+    // is lone drops to the density, and drew a bright line down the wall.
+    let off_solid = smoothstep(1.5 * u.grid.z, 3.0 * u.grid.z, field_at(world));
+    share *= max(off_solid, smoothstep(0.3, 0.6, dot(along, field_normal(world))));
     if share <= 0.0 {
         return out;
     }
     let scale = u.view.z;
     let head = (world - u.view.xy) * scale;
-    let along = vel / max(speed, 1e-6);
     let across = vec2<f32>(-along.y, along.x);
     var p: vec2<f32>;
     if spark {

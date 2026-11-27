@@ -249,7 +249,7 @@ impl MakeFinal {
             // (The marks by a chunk's end go to the writer before any moment of the next chunk; the
             // last frame's end may be a chunk of its own.)
             let ends = k + 1 == self.frames;
-            if now % 60 == 0 || ends {
+            if now.is_multiple_of(60) || ends {
                 let marks = wet.read();
                 if ends && now / 60 != k / 60 {
                     let _ = send.send(Message::Wet { second: now / 60, marks: marks.clone() });

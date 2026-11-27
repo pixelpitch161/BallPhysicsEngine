@@ -509,7 +509,7 @@ src/water.rs`, `crates/bpe-kit/tests/water_draft.rs`, `water_final.rs`.
   `LOOK_ONLY=water-look`, open every picture and its 1:1 crops: no jagged edges, light leaks, banding, seams, or
   anything that doesn't make sense. Fix and look again.
 - [x] `docs/notes/water.md` "Part 6a (as built)"; this plan's "As built" for 6a.
-- [ ] fmt, clippy, the focused tests; PR (draft), CI, one Opus review, fixes, merge.
+- [x] fmt, clippy, the focused tests; PR (draft), CI, one Opus review, fixes, merge.
 
 ## 6b: extras and wet marks
 
@@ -540,7 +540,7 @@ compose's bubbles and foam), `crates/bpe-kit/src/modules/water/look.rs` (Bubbles
 
 ### Task 9: look at it, notes, review, merge
 
-- [ ] Full-size look check `water-extras-*` (a tap into a pool with foam, bubbles and mist; sparks on fast streams;
+- [x] Full-size look check `water-extras-*` (a tap into a pool with foam, bubbles and mist; sparks on fast streams;
   wet marks on a course the water has run down), notes "Part 6b (as built)", PR, CI, review, merge.
 
 ## 6c: the six looks and the shared finish
@@ -657,5 +657,16 @@ Built as planned (decisions 32 to 37), with these changes:
   frame's start reads one frame early.
 - Tests: `tests/look.rs` 14 to 19, `tests/wet.rs`, `take::chunk`'s wet test, `water_final`'s wet checks and the
   draft's `the_draft_keeps_its_wet_marks_going_back`; the full-size look check `water-extras` (a fast tap thrown
-  at a pool's wall, from a made final).
+  at a pool's wall, from a made final; `LOOK_TAKES` keeps the final between runs).
+- **What the full-size check found, and the changes it made:**
+  - Fizz at Bubbles 0.8 lit nearly every spot, so it read as dots printed on the water, and rose through the
+    fast stream. Now 0.3 of the spots have a bubble, each its own size (half to all of Bubble size), and it fades
+    out where the mean speed is 250 to 600 px/s.
+  - Every edge drop sparked, so a fast stream's edges were a bright outline, and drops arriving at a wall drew a
+    burst there and a line down it. Now lone drops spark, and edge drops only when leaving the body (moving out
+    the way its liquid thins); near a solid, only drops leaving it.
+  - Wet marks 6 px deep and 45 % darker hardly showed: now 12 px and 50 %.
+  - A wide cavity the pour opens in the pool stays a hole with Bubbles on: the physics finds trapped air only
+    within 48 px of the water round it (part 2c's `air_reach`), so a cavity much wider than that holds none (the
+    probe picture of the moment showed air in every small pocket and none in the big ones). Left to the physics.
 

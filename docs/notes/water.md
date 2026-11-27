@@ -1009,9 +1009,12 @@ the one part of the look with a memory, so the water keeps them.
   colour on the outline (a tenth of Bubble size, at least 1 px). With Bubbles 0 the hole is drawn as before. The
   liquid block now also runs where only air splats reach.
 - **Fizz**: a lattice of cells 3 Bubble sizes across that rises at 120 px/s with its bubbles.
-  - In each life a spot is lit with chance Bubbles, at a hashed place inside its cell. It lives Bubbles last,
-    fading in over its first fifth and out over its last 30 %.
-  - It shows only where the liquid is deeper than the bubble and not in a pocket.
+  - In each life a spot is lit with chance 0.3 × Bubbles (`FIZZ_SHARE`; at Bubbles 0.8 every spot read as
+    dots printed on the water), at a hashed place inside its cell, half to all of Bubble size. It lives
+    Bubbles last, fading in over its first fifth and out over its last 30 %.
+  - It shows only where the liquid is deeper than the bubble, not in a pocket, and where the water's mean
+    speed over 30 px is under 250 px/s, gone by 600 (`FIZZ_STILL`: a still lattice rising through a fast
+    stream read as printed on it).
   - It is drawn as a ring and a lighter inside, fading out when smaller than a pixel.
 
 ### Mist and sparks (`vs_extra`, `fs_extra`)
@@ -1020,10 +1023,14 @@ the one part of the look with a memory, so the water keeps them.
   drawn over, sparks are added (alpha 0). It is never drawn over a solid, and it runs only when a liquid has Mist
   or Sparks.
 - **Lone and edge drops**: a drop is lone where the density field's level 2 holds under about 0.1 (a body at rest
-  is 1, a lone drop about 1/64), and at an edge under about 0.5.
+  is 1, a lone drop about 1/64), and at an edge under about 0.5. An edge drop is **leaving** when it moves out
+  along the way the liquid thins (the level's slope over 4 cells, within about 50°). Within 1.5 to 3 cells of a solid
+  neither is drawn unless the drop is leaving the solid (moving out from its face, within about 60°): a thin sheet
+  running along a wall is lone drops to the density, and drew a bright line down the wall.
 - **Mist**: lone drops over 600 px/s (fading in over 200). Each draws a soft dot of Mist size and a haze 4 times as
   wide, lit by Ambient, the shot's light and the spread light at the drop.
-- **Sparks**: lone or edge drops over 900 px/s. Each draws a streak back along its speed, `Sparks last × speed`
+- **Sparks**: lone drops, and edge drops leaving the body, over 900 px/s. (Every edge drop sparked at first,
+  and a fast stream's drops move along its edges, so its edges were drawn as a bright outline.) Each draws a streak back along its speed, `Sparks last × speed`
   long (at most 160 px) and half Spark size wide (at least 0.75 px, dimmer when thinner). It is Spark colour × 3
   at its head, fading to the tail.
 
@@ -1034,9 +1041,9 @@ the one part of the look with a memory, so the water keeps them.
   `upload`, `read` and `clear`. `HeldWet` puts marks read from a take on the card for a drawing, sending them again
   only when they change.
 - **Drawn** (`LookDraw::set_wet(field, frame)`; marks on another layout draw none; the frame rides in `LU.time.w`,
-  below 0 for none). A solid within 6 px of its face is drawn wet where the nodes half a cell outside the face are
-  wet by the frame drawn. It is `Wet marks × 45 %` darker, its Roughness down by half the mark, fading over its
-  last 3 px.
+  below 0 for none). A solid within 12 px of its face is drawn wet where the nodes half a cell outside the face are
+  wet by the frame drawn. It is `Wet marks × 50 %` darker, its Roughness down by half the mark, fading over its
+  last 6 px. (At first 6 px and 45 %, which hardly showed at full size.)
 - **The draft** (`bpe-studio water_mode/draft.rs`): `Live.wet` is marked at a new body's start and after every
   frame the thread plays. Going back keeps it, as the stage reads it against the playhead's frame. A new body starts
   dry. The draft export marks its own (`bpe-cli water.rs`).
@@ -1057,9 +1064,9 @@ the one part of the look with a memory, so the water keeps them.
 
 - `bpe-water/tests/look.rs`:
   - 14: trapped air draws a bubble, or a hole with Bubbles 0;
-  - 15: fizz rises inside still water and never shows in the air;
+  - 15: fizz rises inside still water, and never shows in the air or in a pool running fast;
   - 16: churning water foams and still water doesn't;
-  - 17: fast lone drops draw mist and sparks, slow ones neither;
+  - 17: fast lone drops draw mist and sparks, slow ones neither, and nor do a fast band's edges;
   - 18: every extra draws the same twice;
   - 19: wet marks darken the rock near its face, not with Wet marks 0, and not before the frame.
 - `tests/wet.rs`: the nodes round a drop, a later frame never moves a mark, air marks none, the drops' order doesn't
@@ -1073,6 +1080,8 @@ the one part of the look with a memory, so the water keeps them.
 
 - A big air pocket's middle, where no liquid splat reaches, takes the first liquid's look (air drops carry no
   liquid).
+- A cavity much wider than the physics' air reach (48 px) holds no air drops, so it stays a hole with Bubbles on
+  (the full-size check's pool: air in every small pocket, none in the two big ones).
 - Wet marks are on the course's grid, so a piece that moves would leave its marks where it was (pieces don't move
   yet).
 - Mist and sparks are drawn over the liquid in front, and over each other in the drops' order.

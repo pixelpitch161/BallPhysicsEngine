@@ -20,6 +20,8 @@
 //! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with the look drawing's pictures
 //!   (`LOOK_ONLY=water-look`), a final made and drawn from its take (`LOOK_ONLY=water-final`), and
 //!   the extras and wet marks on a final (`LOOK_ONLY=water-extras`).
+//! - `LOOK_TAKES`: a folder the extras' final is kept in, so a change to the look draws again without making it
+//!   again (about 20 minutes on the cloud's software card).
 
 use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
@@ -1497,8 +1499,14 @@ fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u
     main.set("width", Value::Number(40.0));
     let resolved = bpe_core::resolve(&scene, &reg);
     let make = MakeFinal::of(&scene, &resolved, 2.0);
-    let finals = Finals::at(std::env::temp_dir().join(format!("bpe-look-extras-{}", std::process::id())));
-    std::fs::remove_dir_all(finals.dir()).ok();
+    // (LOOK_TAKES=<folder> keeps the final there, so a look change draws again without making it again.)
+    let kept = std::env::var_os("LOOK_TAKES").map(std::path::PathBuf::from);
+    let finals = Finals::at(
+        kept.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("bpe-look-extras-{}", std::process::id()))),
+    );
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
     let water_gpu = bpe_water::WaterGpu::new(&gpu.device, &gpu.queue);
     let head = make.make(&water_gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
     let dir = finals.take_dir(head.print);
@@ -1540,7 +1548,9 @@ fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u
         out.push((name.to_string(), drawing.read()));
     }
     eprintln!("water-extras: {} drops at {} px", head.drops, make.setup.cell);
-    std::fs::remove_dir_all(finals.dir()).ok();
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
     out
 }
 

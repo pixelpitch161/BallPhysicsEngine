@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use bpe_core::maths::Maths;
+
 use bpe_water::draw::look::{
     BackLook, BackPicture, Lamp, LampKind, LiquidLook, Look, MaterialKind, MaterialLook, Quality,
 };
@@ -13,6 +15,12 @@ use bpe_water::draw::sets::{self, REST};
 use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
 use bpe_water::{Drop, Layout, Part, Solid, SolidField};
 use glam::Vec2;
+
+/// The unit way at angle `a` (radians).
+fn turn(a: f32) -> Vec2 {
+    let (s, c) = a.det_sin_cos();
+    Vec2::new(c, s)
+}
 
 fn card() -> Option<Arc<LookGpu>> {
     let (device, queue) = bpe_gfx::test_device().ok()?;
@@ -570,7 +578,7 @@ fn trapped_air_draws_a_bubble_or_a_hole() {
     let rim = (0..64)
         .flat_map(|k| {
             let a = k as f32 / 64.0 * std::f32::consts::TAU;
-            (0..10).map(move |j| centre + Vec2::new(a.cos(), a.sin()) * (32.0 + 2.0 * j as f32))
+            (0..10).map(move |j| centre + turn(a) * (32.0 + 2.0 * j as f32))
         })
         .map(|p| luma(bubble.at(p)))
         .fold(0.0, f32::max);
@@ -585,8 +593,8 @@ fn fizz_picture(d: &mut Drawn, bubbles: f32, t: f32) -> Picture {
     d.draw(view, &look)
 }
 
-/// Test 15: Fizz shows inside a still pool and nowhere in the air, and rises between two water
-/// times.
+/// Test 15: Fizz shows inside a still pool and nowhere in the air, rises between two water times,
+/// and doesn't show in a pool running fast.
 #[test]
 fn fizz_rises_inside_still_water() {
     let Some(gpu) = card() else { return };
@@ -598,7 +606,7 @@ fn fizz_rises_inside_still_water() {
     let deep = |p: Vec2| p.y > 30.0;
     let pixels = 200 * 270;
     let shown = changed(&plain, &at, 10, deep);
-    assert!(shown > pixels / 50, "fizz in the pool: {shown} pixels of {pixels}");
+    assert!(shown > pixels / 200, "fizz in the pool: {shown} pixels of {pixels}");
     assert_eq!(changed(&plain, &at, 0, |p| p.y < -10.0), 0, "none in the air");
     // Each bubble 12 px higher a tenth of a second on (a few born again or fading).
     let fizz = |pic: &Picture, p: Vec2| apart(pic.at(p), plain.at(p)) > 10;
@@ -616,6 +624,14 @@ fn fizz_rises_inside_still_water() {
     };
     let (up, still, down) = (score(12.0), score(0.0), score(-12.0));
     assert!(up > 2 * still && up > 2 * down, "it rose: {up} against {still} still and {down} down");
+    // None where the pool runs fast (the bubbles would ride the flow).
+    let mut running = drops.clone();
+    for d in &mut running {
+        d.v = [900.0 / field.layout.cell, 0.0];
+    }
+    let mut d = Drawn::new(&gpu, &field, &running);
+    let (plain, at) = (fizz_picture(&mut d, 0.0, 1.0), fizz_picture(&mut d, 1.0, 1.0));
+    assert_eq!(changed(&plain, &at, 10, deep), 0, "no fizz in a fast pool");
 }
 
 /// The screen's pool from y 0 down with speeds of `most` world px a second spread every way (a fixed
@@ -625,7 +641,7 @@ fn churning_pool(field: &SolidField, most: f32) -> Vec<Drop> {
     for (k, d) in drops.iter_mut().enumerate() {
         let h = (k as u32).wrapping_mul(0x9e37_79b9).rotate_left(13).wrapping_mul(0x85eb_ca6b);
         let a = (h >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
-        d.v = (Vec2::new(a.cos(), a.sin()) * most / field.layout.cell).to_array();
+        d.v = (turn(a) * most / field.layout.cell).to_array();
     }
     drops
 }
@@ -664,7 +680,7 @@ fn lone_drops(field: &SolidField, speed: f32) -> Vec<Drop> {
 }
 
 /// Test 17: Fast lone drops draw mist round them and sparks streaking behind them; slow ones draw
-/// neither.
+/// neither, and nor do the edges of a fast band moving along itself.
 #[test]
 fn fast_lone_drops_draw_mist_and_sparks() {
     let Some(gpu) = card() else { return };
@@ -688,6 +704,19 @@ fn fast_lone_drops_draw_mist_and_sparks() {
     assert!(luma(sparks.at(head + Vec2::new(40.0, 0.0))) < luma(fast_none.at(head)) + 10.0, "nothing ahead");
     let (slow_none, slow) = (extras(100.0, 0.0, 0.0), extras(100.0, 1.0, 1.0));
     assert!(slow_none.pixels == slow.pixels, "slow drops draw neither");
+    // A fast band's edges, whose drops move along it, don't spark.
+    let mut band = sets::lattice(&field, Vec2::new(-500.0, -330.0), Vec2::new(500.0, -270.0), 0);
+    for d in &mut band {
+        d.v = [1500.0 / field.layout.cell, 0.0];
+    }
+    let band_look = |sparks: f32| {
+        let mut look = extras_look(LiquidLook { sparks, ..blue() });
+        look.back = BackLook::Colour([0.01; 3]);
+        look.light.ambient = 0.5;
+        draw(&gpu, &field, &band, view, &look)
+    };
+    let edged = changed(&band_look(0.0), &band_look(1.0), 8, |_| true);
+    assert!(edged == 0, "a fast band's edges: {edged} pixels sparked");
 }
 
 /// Test 18: Every extra at once (a bubble, fizz, foam, mist and sparks) draws the same picture to
