@@ -49,8 +49,16 @@ struct Drawn {
     generation: u64,
     frame: u32,
     size: (u32, u32),
+    /// The part of the world shown (its corner and scale, as bits): the Shot view moves with the
+    /// camera at the same size.
+    place: [u32; 3],
     look: Look,
     rock: u64,
+}
+
+/// A view's corner and scale as bits, to tell views apart.
+pub fn place_of(v: &View) -> [u32; 3] {
+    [v.lo.x.to_bits(), v.lo.y.to_bits(), v.scale.to_bits()]
 }
 
 /// The stage's picture of the water.
@@ -90,6 +98,7 @@ impl StagePicture {
                 generation: live.generation,
                 frame: live.water.frames(),
                 size: (v.width, v.height),
+                place: place_of(&v),
                 look: look.clone(),
                 rock: rock.version,
             };

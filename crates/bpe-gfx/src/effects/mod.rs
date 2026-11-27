@@ -955,10 +955,20 @@ impl Builtin {
     }
 }
 
-/// The built-in effects over the picture that are made of the balls, their hits or the things
-/// (a Water scene has none, so they would change nothing or next to nothing there).
-const NEEDS_BALLS: [&str; 7] =
-    ["ball_worlds", "fractal", "gravity_lens", "hue_storm", "op_art", "shockwave", "light_ripples"];
+/// The built-in effects over the picture that are made of the balls, their hits, the beat or the
+/// things (a Water scene has none, so they would change nothing or next to nothing there: Glitch
+/// waits for hits at its defaults, and Breathing space for beats or hits).
+const NEEDS_BALLS: [&str; 9] = [
+    "ball_worlds",
+    "fractal",
+    "gravity_lens",
+    "hue_storm",
+    "op_art",
+    "shockwave",
+    "light_ripples",
+    "glitch",
+    "breathing",
+];
 
 #[cfg(test)]
 mod tests {
@@ -976,7 +986,7 @@ mod tests {
     #[test]
     fn a_water_scene_is_offered_the_effects_that_need_no_balls() {
         let ok: Vec<&str> = BUILTINS.iter().filter(|b| b.water_ok()).map(|b| b.id).collect();
-        assert_eq!(ok.len(), 19, "{ok:?}");
+        assert_eq!(ok.len(), 17, "{ok:?}");
         for id in NEEDS_BALLS {
             assert!(Builtin::find(id).is_some_and(|b| b.header().stage == Stage::Picture && !b.water_ok()), "{id}");
         }

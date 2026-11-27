@@ -364,7 +364,9 @@ fn update_preview(studio: &mut Studio) {
 fn look_menu(bar: &mut Ui, studio: &mut Studio) {
     let mut picked = None;
     let keep = &mut studio.water_stage.keep;
-    bar.menu_button("Use a look…", |ui| {
+    // (The switches leave it open; a look closes it.)
+    let stay = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let menu = egui::containers::menu::MenuButton::new("Use a look…").config(stay).ui(bar, |ui| {
         for look in ReadyLook::ALL {
             if ui.button(look.title()).on_hover_text(look.words()).clicked() {
                 picked = Some(look);
@@ -373,11 +375,10 @@ fn look_menu(bar: &mut Ui, studio: &mut Studio) {
         }
         ui.separator();
         ui.checkbox(&mut keep.colours, "Keep my colours")
-            .on_hover_text("Leave every colour and gradient as it is, and change the rest");
+            .on_hover_text("Leave every colour and gradient, and how each liquid's colour is picked, as it is");
         ui.checkbox(&mut keep.lamps, "Keep my lamps").on_hover_text("Leave the lamps as they are, and add none");
-    })
-    .response
-    .on_hover_text("Set the liquids, the rock, the back, the light and the lamps to a ready-made look");
+    });
+    menu.0.on_hover_text("Set the liquids, the rock, the back, the light and the lamps to a ready-made look");
     if let Some(look) = picked {
         use_look(studio, look);
     }

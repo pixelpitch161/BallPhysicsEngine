@@ -690,9 +690,13 @@ Built as planned for decisions 38 to 42 and 44, with these changes:
   pointer (`the_pour_tool_adds_a_pour...` caught it).
 - **The Shot view keeps every tool working**: `CourseView::fit_shot` keeps `rect` as the course's outline, larger
   than the room, and adds the part shown, so the tools map points as they always did. Only the shot takes clicks.
-- **Hidden effects**: the seven over the picture that need balls, hits or things, and the Materials part of the
-  menu (the three materials). Thermal vision stays: it reads the picture's brightness and adds the balls only when
-  there are some.
+- **Hidden effects**: the seven over the picture that need balls, hits or things, Glitch and Breathing space (at
+  their defaults they wait for hits or beats, which a Water scene has none of; found in review), and the Materials
+  part of the menu (the three materials). Thermal vision stays: it reads the picture's brightness and adds the
+  balls only when there are some.
+- **What the review found**: the stage's pictures weren't drawn again when the Shot view's camera moved (the key
+  had the picture's size, not its place); Select took clicks beside the shot; ticking a Keep switch closed the
+  menu; Keep my colours let Neon and Molten turn a one-colour liquid to colour by speed. All fixed.
 - **Light only** in a Water scene changes nothing until 6d, and says so in its row.
 - Tests: `bpe-water/tests/look.rs` 20 (Mirror), the kit's finish test, `water_looks_pinned` (on part 3's pieces
   course: the plan's one hand-built course, with its pool and pieces but no stream), the editor's Add effect,

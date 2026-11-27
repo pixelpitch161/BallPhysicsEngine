@@ -1,6 +1,6 @@
 //! The New scene chooser: Balls or Water, shown when the app opens and by New. A Water scene
-//! then picks one of the six looks or Plain; the looks themselves arrive in a later part, so the
-//! pick is only recorded on the scene's Water card.
+//! then picks one of the six looks or Plain (`ReadyLook`), and starts in it
+//! (`start_water_scene`).
 
 use bpe_core::SimKind;
 use bpe_kit::things::water::{NEW_NAME, ReadyLook};

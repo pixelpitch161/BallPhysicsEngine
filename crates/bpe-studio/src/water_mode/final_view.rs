@@ -176,6 +176,8 @@ struct Drawn {
     take: u64,
     tau: u64,
     size: (u32, u32),
+    /// The part of the world shown (`picture::place_of`).
+    place: [u32; 3],
     look: Look,
 }
 
@@ -258,7 +260,13 @@ impl FinalPicture {
         if let (Some((_, drawing)), Some(stored), Some((held, at, ahead))) = (&mut self.look, &self.stored, self.holds)
             && held == take
         {
-            let want = Drawn { take, tau: at.to_bits(), size: (v.width, v.height), look: look.clone() };
+            let want = Drawn {
+                take,
+                tau: at.to_bits(),
+                size: (v.width, v.height),
+                place: super::picture::place_of(&v),
+                look: look.clone(),
+            };
             if self.drawn.as_ref() != Some(&want) {
                 let layout = drawing.layout();
                 self.held_wet.give(&render.device, &render.queue, layout, self.wet.as_ref(), drawing);

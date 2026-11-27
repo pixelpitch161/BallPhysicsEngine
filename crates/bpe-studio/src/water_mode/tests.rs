@@ -139,6 +139,32 @@ fn the_shot_view_shows_the_finish_and_the_whole_course_none() {
 }
 
 #[test]
+fn in_the_shot_view_select_takes_clicks_only_on_the_shot() {
+    use super::stage::Seen;
+    use bpe_core::{Address, SlotId, ThingId, Value};
+    let mut studio = water_studio();
+    let kit = studio.kit.clone();
+    // Two screens wide: the camera's shot is the middle screen, and the course reaches past it.
+    let wide = Address::on(ThingId::ROOT, SlotId::Water, "screens_wide");
+    studio.scene.set_at(&kit.registry, &wide, Value::Int(2)).unwrap();
+    let beside = bpe_kit::add_thing(&mut studio.scene, &kit.registry, water::POUR, ThingId::ROOT).unwrap();
+    studio.scene.things.get_mut(&beside).unwrap().transform.position = Vec2::new(600.0, 0.0);
+    let inside = bpe_kit::add_thing(&mut studio.scene, &kit.registry, water::POUR, ThingId::ROOT).unwrap();
+    studio.scene.things.get_mut(&inside).unwrap().transform.position = Vec2::new(200.0, 0.0);
+    studio.scene_changed();
+    studio.water_stage.seen = Seen::Shot;
+    let mut h = harness(studio);
+    h.run();
+    let v = view(&h);
+    let (room, at) = (rooms_for_tests(Rect::from_min_size(Pos2::ZERO, SIZE)).2, v.to_screen(Vec2::new(600.0, 0.0)));
+    assert!(room.contains(at) && !v.seen_rect().contains(at), "the Pour beside the shot is in the room, off the shot");
+    click_at(&mut h, at);
+    assert_eq!(h.state().selection.primary, None, "a marker beside the shot isn't picked");
+    click_at(&mut h, v.to_screen(Vec2::new(200.0, 0.0)));
+    assert_eq!(h.state().selection.primary, Some(inside), "one on the shot is");
+}
+
+#[test]
 fn the_stage_follows_the_courses_size_on_the_water_card() {
     let mut studio = water_studio();
     let before = studio.scene.clone();

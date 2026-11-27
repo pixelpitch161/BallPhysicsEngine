@@ -232,12 +232,17 @@ impl ReadyLook {
     }
 }
 
+/// The settings that say how a colour is picked, kept with the colours: a liquid of one colour
+/// stays one colour (Neon and Molten colour theirs by speed).
+const COLOUR_WAYS: [&str; 1] = ["colour_from"];
+
 /// Sets `params` to `card`: each of its settings to the card's value (left out where that is the
-/// default), but none in [`NEVER`], and no colour or gradient when `keep_colours`.
+/// default), but none in [`NEVER`], and no colour, gradient or [`COLOUR_WAYS`] when `keep_colours`.
 fn write<T: Settings>(params: &mut Params, card: &T, keep_colours: bool) {
     let set = card.to_params();
     for def in T::defs() {
-        if NEVER.contains(&def.key) || (keep_colours && matches!(def.ty, ValueType::Color | ValueType::Gradient)) {
+        let colour = matches!(def.ty, ValueType::Color | ValueType::Gradient) || COLOUR_WAYS.contains(&def.key);
+        if NEVER.contains(&def.key) || (keep_colours && colour) {
             continue;
         }
         match set.get(def.key) {
@@ -411,7 +416,8 @@ mod tests {
         let l: WaterLook = card(&r, liquid, SlotId::Look);
         assert_eq!((l.colour, l.glow_colour), (mine, mine), "my colours stay");
         assert_eq!(l.colour_gradient, WaterLook::default().colour_gradient, "and so does the gradient");
-        assert_eq!((l.glow, l.sparks, l.colour_from), (2.0, 0.5, ColourFrom::Speed), "the rest is the look's");
+        assert_eq!(l.colour_from, WaterLook::default().colour_from, "and how the colour is picked");
+        assert_eq!((l.glow, l.sparks), (2.0, 0.5), "the rest is the look's");
         let rock: MaterialCard = card(&r, ids(&scene, COURSE)[0], SlotId::Material);
         assert_eq!((rock.colour, rock.material), (MaterialCard::default().colour, MaterialKind::Basalt));
         assert_eq!(ids(&scene, LAMP), [lamp], "my lamp stays, and none is added");

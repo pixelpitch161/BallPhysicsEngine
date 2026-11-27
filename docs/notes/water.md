@@ -1110,7 +1110,9 @@ went to 6d.
     keeps what the first set. A missing card is added.
   - It never writes Wetting (physics: a look never changes the take) or Quality (`NEVER`). A setting with keyframes
     keeps them.
-  - `Keep { colours, lamps }`: Keep my colours skips every Color and Gradient setting. Keep my lamps leaves the lamps
+  - `Keep { colours, lamps }`: Keep my colours skips every Color and Gradient setting, and Colour from
+    (`COLOUR_WAYS`: Neon and Molten colour theirs by speed, which replaced a one-colour liquid's colour with the
+    default gradient). Keep my lamps leaves the lamps
     as they are; otherwise every Lamp goes, and the look's are added ("Lamp", or "Lamp 1", "Lamp 2"…) in the camera's
     shot at the start.
 - **New scenes start in a look**: the Water card's Starting look setting is gone. `new_water_scene` is the bare
@@ -1134,8 +1136,9 @@ went to 6d.
   time (`modules::effects::draw::calls`, shared with `EffectsDraw`), keeping only calls at `Stage::Picture`, and the
   Grade card (`grade::stack(card, None)`; nothing offers it yet).
 - **What a Water scene is offered** (`Builtin::water_ok`, `modules::effects::water_ok`): own code, and every
-  built-in over the picture but Ball worlds, Fractal light, Gravity lens, Hue storm, Op-art lens, Shockwaves and
-  Light ripples, which are made of the balls, their hits or the things. The materials paint things, so the
+  built-in over the picture but Ball worlds, Fractal light, Gravity lens, Hue storm, Op-art lens, Shockwaves,
+  Light ripples, Glitch and Breathing space, which are made of the balls, their hits, the beat or the things
+  (Glitch waits for hits at its defaults, and Breathing space for beats or hits). The materials paint things, so the
   "Materials" part of "+ Add effect" is left out. An effect pasted in anyway draws as it can: the ball list is
   empty and no hits come.
 - **Light only** changes nothing in a Water scene until 6d gives it the water's light, and its row says so.
@@ -1149,11 +1152,18 @@ went to 6d.
 - **`CourseView::fit_shot(room, course, centre, shot)`**: the camera's shot at the playhead
   (`bpe_cli::water::shot_at`, shared with the export's `shot_view`) fitted into the room. `rect` is still the
   course's outline (larger than the room), so every tool maps the same way; `shot` holds the part shown,
-  `seen_rect()` is it on screen, `holds()` takes clicks only there, and `clip(pad)` keeps the tools' drawing to it.
+  `seen_rect()` is it on screen, `holds()` takes clicks only there (every tool, Select too), and `clip(pad)` keeps
+  the tools' drawing to it.
+- **The pictures are drawn again when the part shown moves** (`picture::place_of` in both `Drawn` keys): in the
+  Shot view a camera moved or zoomed gives a picture of the same size over another part of the world.
 - **The picture** (`picture_view`) is drawn for the part shown (`seen()`), so the Shot view is drawn at the
   stage's own pixels over the shot. The camera's outline isn't drawn in it.
 - **Whole course** draws with Bloom and Exposure but no Effects or Grade (`FinishLook::without_shot_finish`): they
   are made for the shot's shape.
+- **Known, left for later**: an effect that remembers its frames (Feedback tunnel, Rainbow echoes, Thermal vision)
+  starts fresh when the Shot view is moved to another moment, where the export has built it up from the start
+  (Balls has `preview/warm.rs` for this). While the draft starts over, the stage keeps the look it last drew, so
+  for that moment a switch to Whole course still shows the Effects.
 
 ### Pinned looks (`bpe-kit/tests/water_looks_pinned.rs`)
 
