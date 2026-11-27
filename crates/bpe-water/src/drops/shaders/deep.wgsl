@@ -146,7 +146,9 @@ fn cs_deep_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !finite2(v) {
         return;
     }
-    let mass = fr.feels[u32(was.z) & 15u].b.w * VOL;
+    // (Air is gathered as water: a pocket of it is full to the grid, and moves.)
+    let kind = u32(was.z);
+    let mass = select(fr.feels[kind & 15u].b.w, 1.0, is_air(kind)) * VOL;
     // How full it was (its own density by its neighbours and the solids, as its sweeps see it).
     let full = clamp(was.w, 0.0, 4.0);
     // Speed across, on left faces (at whole x, y + a half).

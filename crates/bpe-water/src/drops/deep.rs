@@ -86,6 +86,9 @@ impl Deep {
     pub(super) fn copy_kept(&self, encoder: &mut wgpu::CommandEncoder, to: &Deep) {
         encoder.copy_buffer_to_buffer(&self.cellp, 0, &to.cellp, 0, self.cellp.size());
         encoder.copy_buffer_to_buffer(&self.wallc, 0, &to.wallc, 0, self.wallc.size());
+        // (The depth share too: a frame that only measures the deep part reads the last frame's on
+        // every step before its last, for where trapped air bursts.)
+        encoder.copy_buffer_to_buffer(&self.dfa, 0, &to.dfa, 0, self.dfa.size());
     }
 }
 

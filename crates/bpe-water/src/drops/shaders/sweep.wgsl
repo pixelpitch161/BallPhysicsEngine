@@ -11,7 +11,12 @@ fn lambda_at(i: u32, first: bool) {
     }
     let h = fr.k.x;
     let c = cell_of(xi);
+    // (Air is pushed only by air and the solids: the liquid makes way for it, so it rises through
+    // the liquid as a bubble does, and a pocket of it keeps its room. Its fullness counts every
+    // drop.)
+    let air = is_air(u32(velb[i].z));
     var rho = 0.0;
+    var all = 0.0;
     var sum = vec2<f32>(0.0);
     var sq = 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
@@ -30,7 +35,12 @@ fn lambda_at(i: u32, first: bool) {
                 continue;
             }
             let far = sqrt(r2);
-            rho = rho + weight(far);
+            let wj = weight(far);
+            all = all + wj;
+            if air && j != i && !is_air(u32(velb[j].z)) {
+                continue;
+            }
+            rho = rho + wj;
             if j == i {
                 continue;
             }
@@ -46,6 +56,7 @@ fn lambda_at(i: u32, first: bool) {
     }
     let wall = wall_density(xi);
     rho = rho + wall.z;
+    all = all + wall.z;
     sum = sum + wall.xy;
     let rho0 = fr.k.y;
     let over = rho / rho0 - 1.0;
@@ -59,7 +70,35 @@ fn lambda_at(i: u32, first: bool) {
     if !(abs(now) < 1e30) {
         now = 0.0;
     }
-    lamb[i] = vec4<f32>(now - was, now, rho / rho0, 0.0);
+    // (Whether air bursts is looked at for air alone: `select` would look for every drop.)
+    var burst = 0.0;
+    if air {
+        burst = select(1.0, 2.0, bursts(xi, all / rho0));
+    }
+    lamb[i] = vec4<f32>(now - was, now, all / rho0, burst);
+}
+
+// Whether an air drop at `x`, `full` full, bursts: it has open air beside it (it is less full than
+// `air.y`), or it is out of the deep water, within the band under the water's open top that the
+// drops alone hold (`deep_d`, the same pixels at every detail; the deep part counts air as water, so
+// a pocket is deep and a foam under the top is not). A real bubble that comes up under the top
+// pushes it up into a cap that drains and breaks within a moment; in this water the liquid rests on
+// air (it makes way for it), so a cap or a foam's films would stand. Air thrown out of the water
+// against a ceiling bursts too, and air held under a solid deep in the water stays.
+fn bursts(x: vec2<f32>, full: f32) -> bool {
+    if full < fr.air.y {
+        return true;
+    }
+    let off = vec2<f32>(0.5, 0.5);
+    let b = base2(x, off);
+    let f = clamp(x - off - vec2<f32>(b), vec2<f32>(0.0), vec2<f32>(1.0));
+    var w = 0.0;
+    for (var a = 0; a < 2; a = a + 1) {
+        for (var c = 0; c < 2; c = c + 1) {
+            w = w + bilinear(f, a, c) * dfa[node(b.x + a, b.y + c)];
+        }
+    }
+    return !(w > 0.0);
 }
 
 // The first sweep, which also empties the bins' counts for the next step (the scatter is done
@@ -98,6 +137,7 @@ fn apply_at(i: u32, last: bool) {
     let h = fr.k.x;
     let c = cell_of(xi);
     let mine = lamb[i].x;
+    let air = lamb[i].w > 0.5;
     var shift = vec2<f32>(0.0);
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         let y = c.y + dy;
@@ -109,7 +149,7 @@ fn apply_at(i: u32, last: bool) {
         let first_j = starts[u32(y) * fr.cells.x + x0];
         let last_j = starts[u32(y) * fr.cells.x + x1 + 1u];
         for (var j = first_j; j < last_j; j = j + 1u) {
-            if j == i {
+            if j == i || (air && lamb[j].w < 0.5) {
                 continue;
             }
             let r = xi - y_in[j].xy;

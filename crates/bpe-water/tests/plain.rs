@@ -151,6 +151,24 @@ fn drops_that_left_are_not_drawn() {
     assert!(with.pixels == without.pixels);
 }
 
+/// Air (part 2c) is not drawn: a pool with a pocket of air in it draws as the same pool with the
+/// pocket empty, to the bit, and the pocket shows as a hole.
+#[test]
+fn air_is_not_drawn() {
+    let Some(gpu) = card() else { return };
+    let field = open(8.0);
+    let (lo, hi) = (Vec2::new(-200.0, -100.0), Vec2::new(200.0, 100.0));
+    let pool = sets::lattice(&field, lo, hi, 0);
+    let in_pocket = |d: &Drop| field.layout.to_world(Vec2::from(d.x)).length() < 48.0;
+    let with_air: Vec<Drop> =
+        pool.iter().map(|d| if in_pocket(d) { Drop { kind: d.kind | bpe_water::AIR, ..*d } } else { *d }).collect();
+    let without: Vec<Drop> = pool.iter().filter(|d| !in_pocket(d)).copied().collect();
+    let a = draw(&gpu, &field, &with_air, View::screen(0.5));
+    let b = draw(&gpu, &field, &without, View::screen(0.5));
+    assert!(a.pixels == b.pixels, "air draws nothing");
+    assert!(apart(a.at(Vec2::ZERO), BACK()) <= 1, "the pocket is a hole: {:?}", a.at(Vec2::ZERO));
+}
+
 /// Pictures of odd, tiny and full sizes draw.
 #[test]
 fn odd_and_tiny_pictures_draw() {

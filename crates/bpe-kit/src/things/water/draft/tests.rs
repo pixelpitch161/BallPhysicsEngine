@@ -263,6 +263,28 @@ fn keyframed_physics_is_read_each_frame() {
     assert_eq!(s.inputs_at(0).pours[0].width, 40.0);
     assert_eq!(s.inputs_at(60).pours[0].width, 0.0);
     assert_eq!(s.inputs_at(90).pours.len(), 1, "the tap stays in the list, so its place in it never changes");
+    assert_eq!(s.inputs_at(0).air_lift, 1.0);
+    let rise = Address { thing: ThingId::ROOT, slot: Some(SlotId::Water), key: "bubble_rise".into() };
+    scene.set_key(&reg, &rise, 0.0, Value::Number(0.0)).unwrap();
+    scene.set_key(&reg, &rise, 1.0, Value::Number(2.0)).unwrap();
+    let s = setup(&scene, &reg);
+    assert!((s.inputs_at(30).air_lift - 1.0).abs() < 0.01, "{}", s.inputs_at(30).air_lift);
+}
+
+/// The Course's Rock gives the field its Wetting, and Trapped air turns the engine's air on and off.
+#[test]
+fn the_rock_wets_and_trapped_air_switches() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let s = setup(&scene, &reg);
+    assert_eq!(s.numbers().air, 1, "trapped air is on in a new scene");
+    assert_eq!(s.field().wetting_at(Vec2::ZERO), bpe_water::DEFAULT_WETTING);
+    let course = crate::things::water::course_of(&scene).unwrap();
+    set(&mut scene, course, SlotId::Material, "wetting", Value::Number(0.9));
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "trapped_air", Value::Bool(false));
+    let s = setup(&scene, &reg);
+    assert!((s.field().wetting_at(Vec2::ZERO) - 0.9).abs() < 1e-6);
+    assert_eq!(s.numbers().air, 0);
 }
 
 #[test]
@@ -327,8 +349,12 @@ fn what_restarts_the_draft() {
     let liquid = scene.order.iter().copied().find(|id| scene.things[id].kind == LIQUID).unwrap();
     crate::fill_slot(&mut scene, &reg, liquid, SlotId::Heat).unwrap();
     let base = setup(&scene, &reg).print;
-    let physics = |card: &str, key: &str| match card {
-        cards::WORLD => ["gravity", "screens_wide", "screens_tall", "draft_detail"].contains(&key),
+    // (A Piece's or a Wall's Material plays no part until pieces and walls are in the water.)
+    let physics = |thing: &str, card: &str, key: &str| match card {
+        cards::WORLD => {
+            ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"].contains(&key)
+        }
+        cards::MATERIAL => thing == COURSE && key == "wetting",
         cards::CARVE | cards::FEEL | cards::POUR => true,
         _ => false,
     };
@@ -344,7 +370,7 @@ fn what_restarts_the_draft() {
                 let mut edited = scene.clone();
                 set(&mut edited, id, *slot, def.key, v);
                 let restarts = setup(&edited, &reg).print != base;
-                if restarts != physics(&card.kind, def.key) {
+                if restarts != physics(&thing.kind, &card.kind, def.key) {
                     wrong.push(format!("{} {}: restarts {restarts}", card.kind, def.key));
                 }
                 checked += 1;
@@ -376,6 +402,7 @@ fn what_restarts_the_draft() {
         (liquid, SlotId::Feel, "thickness", Value::Number(0.5), true),
         (liquid, SlotId::Look, "colour", Value::Color(Color::rgb(1, 2, 3)), false),
         (ThingId::ROOT, SlotId::Water, "gravity", Value::Vec2([0.0, 10.0]), true),
+        (ThingId::ROOT, SlotId::Water, "bubble_rise", Value::Number(2.0), true),
         (ThingId::ROOT, SlotId::Back, "darker", Value::Number(0.1), false),
         (pour, SlotId::Main, "speed", Value::Number(10.0), true),
     ] {

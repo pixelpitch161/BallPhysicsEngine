@@ -50,6 +50,10 @@ pub struct MaterialCard {
     /// How much it darkens where liquid has touched it.
     #[setting(label = "Wet marks", range(0, 1), span(0, 1), group = "Material")]
     pub wet_marks: f32,
+    /// How much liquid clings to it: at 0 it is waxy and water beads up on it and rolls off, at 1
+    /// it is soaked and water spreads over it in a film.
+    #[setting(label = "Wetting", range(0, 1), span(0, 1), simple, group = "Material")]
+    pub wetting: f32,
 }
 
 impl Default for MaterialCard {
@@ -64,6 +68,7 @@ impl Default for MaterialCard {
             outline: 0.0,
             outline_colour: Color::rgb(0, 0, 0),
             wet_marks: 0.5,
+            wetting: bpe_water::DEFAULT_WETTING,
         }
     }
 }

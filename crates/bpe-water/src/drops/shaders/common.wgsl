@@ -32,13 +32,18 @@ struct Fr {
     time: vec4<f32>,
     // the reach (cells), the density at rest, the softening of a correction, its share taken
     k: vec4<f32>,
-    // 0, how far off a face a drop stays, a sub-move's length, the solids' share of the density
+    // the share of the drag every liquid has that a waxy face keeps, how far off a face a drop
+    // stays, a sub-move's length, the solids' share of the density
     w: vec4<f32>,
-    // a cell's pixels, how far from a face drag reaches, the most a sweep moves a drop, 0
+    // a cell's pixels, how far from a face drag reaches, the most a sweep moves a drop, the drag
+    // along a face every liquid has (a second)
     s: vec4<f32>,
     feels: array<Feel, 16>,
     // the solids' share of a drop's neighbourhood by its distance from the face (`wall_table`)
     wall: array<vec4<f32>, 17>,
+    // what a wetted face adds to a drop's skin by its distance from the face (`wet_table`): the
+    // pull toward the face, and how far the liquid lies toward it
+    wet: array<vec4<f32>, 17>,
     // where each pour judges the room for its drops (grid units: a reach behind its spout), two
     // to an entry
     spouts: array<vec4<f32>, 32>,
@@ -57,8 +62,13 @@ struct Fr {
     // speed, the liquid's edge off a solid's face (cells), the course's own liquid's edge from the
     // grid's edge (cells)
     mg2: vec4<f32>,
-    // the pressure's levels, how far the depth is looked for (cells), 0, 0
+    // the pressure's levels, how far the depth is looked for (cells), the serial the frame's first
+    // air drop takes, the slots kept for air drops after the frame's drops (air.wgsl)
     dgrid: vec4<u32>,
+    // trapped air (air.wgsl): how many gravities an air drop falls upward at, the fullness under
+    // which it bursts, how far round a cell that is not full the water over it is looked for
+    // (cells), the share of the evening and the closing loss air and liquid have between them
+    air: vec4<f32>,
     // each level of the pressure: where it starts in `cellp` and `coef`, its columns, its rows, 0
     lv: array<vec4<u32>, 12>,
 };
@@ -91,6 +101,9 @@ struct DropOut {
 };
 
 const STOPS: u32 = 256u;
+// An air drop (drop.rs `AIR`): it takes up room as the liquid does, falls upward and bursts at the
+// top; it has no skin of its own, and the liquid's skin leaves it out.
+const AIR: u32 = 128u;
 const EDGE: f32 = 2.0;
 const BLOCK: u32 = 512u;
 const PI: f32 = 3.14159265;
@@ -116,11 +129,12 @@ const PI: f32 = 3.14159265;
 // in and out of a sweep.
 @group(0) @binding(11) var<storage, read_write> y_in: array<vec4<f32>>;
 @group(0) @binding(12) var<storage, read_write> y_out: array<vec4<f32>>;
-// Per drop, sorted: this sweep's change of its multiplier, the multiplier, how full, 0.
+// Per drop, sorted: this sweep's change of its multiplier, the multiplier, how full, 1 when it is air.
 @group(0) @binding(13) var<storage, read_write> lamb: array<vec4<f32>>;
 // Per drop, sorted: where it was (until the last sweep, then its new speed), its kind, 0.
 @group(0) @binding(14) var<storage, read_write> velb: array<vec4<f32>>;
-// Per layout node: how far it is from the nearest solid's face, in cells (below 0 inside).
+// Per layout node: how far it is from the nearest solid's face, in cells (below 0 inside); then per
+// node, how wet that face is (0 to 1).
 @group(0) @binding(15) var<storage, read_write> solid: array<f32>;
 @group(0) @binding(16) var<storage, read_write> births: array<Born>;
 @group(0) @binding(17) var<storage, read_write> outd: array<DropOut>;
@@ -201,6 +215,10 @@ fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
     return Kept(x, v);
 }
 
+fn is_air(kind: u32) -> bool {
+    return (kind & AIR) != 0u;
+}
+
 fn stops_at_edge(kind: u32) -> bool {
     return (kind & STOPS) != 0u && (fr.grid.w & 1u) != 0u;
 }
@@ -240,6 +258,30 @@ fn wall_table(qin: f32) -> vec2<f32> {
     let k1 = k + 1u;
     let b = select(fr.wall[k1 / 2u].xy, fr.wall[k1 / 2u].zw, (k1 & 1u) == 1u);
     return mix(a, b, f);
+}
+
+// What a wetted face `q` reaches away adds to a drop's skin, times the face's outward way: (the
+// pull toward it, how far the liquid lies toward it). From the host's table.
+fn wet_table(qin: f32) -> vec2<f32> {
+    let q = clamp(qin, 0.0, 1.0) * 32.0;
+    let k = min(u32(floor(q)), 31u);
+    let f = q - f32(k);
+    let a = select(fr.wet[k / 2u].xy, fr.wet[k / 2u].zw, (k & 1u) == 1u);
+    let k1 = k + 1u;
+    let b = select(fr.wet[k1 / 2u].xy, fr.wet[k1 / 2u].zw, (k1 & 1u) == 1u);
+    return mix(a, b, f);
+}
+
+// How wet the face nearest `q` is (0 to 1), between the nodes round it.
+fn wet_at(q: vec2<f32>) -> f32 {
+    let lo = clamp(vec2<i32>(floor(q)), vec2<i32>(0), vec2<i32>(i32(fr.grid.x) - 2, i32(fr.grid.y) - 2));
+    let f = clamp(q - vec2<f32>(lo), vec2<f32>(0.0), vec2<f32>(1.0));
+    let at = fr.grid.x * fr.grid.y;
+    let w00 = solid[at + node(lo.x, lo.y)];
+    let w10 = solid[at + node(lo.x + 1, lo.y)];
+    let w01 = solid[at + node(lo.x, lo.y + 1)];
+    let w11 = solid[at + node(lo.x + 1, lo.y + 1)];
+    return clamp(mix(mix(w00, w10, f.x), mix(w01, w11, f.x), f.y), 0.0, 1.0);
 }
 
 // What the solids add to a drop at `x`: (the slope of the density x and y, the density).

@@ -16,7 +16,7 @@ pub mod probe;
 pub mod scenes;
 pub mod solid;
 
-pub use drop::{Drop, Pour, Poured, STOPS, WATER, fill, fill_stacked};
+pub use drop::{AIR, Drop, Pour, Poured, STOPS, WATER, fill, fill_stacked};
 pub use drops::numbers::{Feel, Numbers};
 pub use drops::{DropBuffers, MOST_DROPS, Water, WaterGpu};
-pub use solid::{Layout, Solid, SolidField};
+pub use solid::{DEFAULT_WETTING, Layout, Solid, SolidField};

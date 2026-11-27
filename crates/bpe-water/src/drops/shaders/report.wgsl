@@ -3,14 +3,19 @@
 
 // The fastest drop's speed in pixels a second (the bits of a float above nothing compare as whole
 // numbers do, so the largest is the same however the card schedules the threads), how many drops
-// are in the course after the frame's last sort, how many cells were deep, and each pour's
-// fullness at its spout.
+// are in the course after the frame's last sort and the air born after it, how many cells were
+// deep, how many spots of trapped air were found, how many of the drops in the course at the
+// frame's end are liquid (a whole-number count, the same in any order), and each pour's fullness
+// at its spout.
 struct Report {
     fastest: atomic<u32>,
     live: u32,
     // the cells deep at the frame's last step (deep.wgsl)
     deep: u32,
-    spare: u32,
+    // the spots of trapped air found at the frame's last step (air.wgsl), born or not
+    air: u32,
+    // the liquid's drops in the course at the frame's end (air left out)
+    liquid: atomic<u32>,
     spout: array<f32, 64>,
 };
 
@@ -46,8 +51,10 @@ fn fullness_at(q: vec2<f32>) -> f32 {
 fn cs_report(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if i == 0u {
-        report.live = starts[fr.cells.z];
+        let found = airb[air_blocks()];
+        report.live = starts[fr.cells.z] + min(found, fr.dgrid.w);
         report.deep = atomicLoad(&deep_count[0]);
+        report.air = found;
     }
     if i < fr.grid.z {
         let both = fr.spouts[i / 2u];
@@ -64,6 +71,9 @@ fn cs_report(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = xv[i];
     if !alive(p.xy) {
         return;
+    }
+    if !is_air(id_nxt[i].x) {
+        atomicAdd(&report.liquid, 1u);
     }
     let speed = length(p.zw) * fr.s.x;
     if speed > 0.0 && speed < 1e30 {

@@ -135,6 +135,21 @@ pub struct WaterWorld {
     /// How finely the water is worked out for the finished video: finer takes longer to make.
     #[setting(label = "Final detail", simple, group = "Detail")]
     pub final_detail: FinalDetail,
+    /// Air caught under the water (by a pour plunging in, or a hole carved under it) rises out as
+    /// bubbles and bursts at the top. Off, it stays a hole until the water closes it.
+    #[setting(label = "Trapped air", simple, group = "Trapped air")]
+    pub trapped_air: bool,
+    /// How fast trapped air rises: 1 is real air in water, more rises faster, 0 leaves it hanging.
+    #[setting(
+        label = "Bubbles rise",
+        when = "trapped_air",
+        range(0, 1e3),
+        span(0, 4),
+        unit = "×",
+        keyframe,
+        group = "Trapped air"
+    )]
+    pub bubble_rise: f32,
 }
 
 impl Default for WaterWorld {
@@ -146,6 +161,8 @@ impl Default for WaterWorld {
             look: StartingLook::Plain,
             draft_detail: DraftDetail::Normal,
             final_detail: FinalDetail::Normal,
+            trapped_air: true,
+            bubble_rise: 1.0,
         }
     }
 }

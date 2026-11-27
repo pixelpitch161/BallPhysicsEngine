@@ -59,6 +59,7 @@ fn play_to(water: &mut Water, setup: &WaterSetup, frame: u32) {
     while water.frames() < frame {
         let inputs = setup.inputs_at(water.frames());
         water.set_gravity(inputs.gravity);
+        water.set_air_lift(inputs.air_lift);
         if !inputs.feels.is_empty() {
             water.set_feels(&inputs.feels);
         }
