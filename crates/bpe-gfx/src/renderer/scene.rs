@@ -377,9 +377,61 @@ impl Renderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        encoder: wgpu::CommandEncoder,
+        frame: &Frame,
+        scened: Scened,
+    ) {
+        // Effects on the light read the picture before lighting and the lit colour.
+        let light = self.light_pictures(frame, scened.moved);
+        self.finish_with(device, queue, encoder, frame, scened, FinishInputs { light, things: Things::Frame });
+    }
+
+    /// Finishes a picture drawn elsewhere (Water mode part 6): `frame`'s effects, bloom and grade over
+    /// what was drawn into [`Renderer::hdr_target`] (linear light, this renderer's size), into the
+    /// output, as a Balls frame's picture is finished. Only `frame`'s size, time, bloom, exposure,
+    /// effects and grade are read; `given` holds the pictures a Balls frame's lighting and things would
+    /// give the effects and the grade's masks.
+    pub fn finish_picture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: wgpu::CommandEncoder,
+        frame: &Frame,
+        given: GivenPicture,
+    ) {
+        queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::bytes_of(&Globals::new(frame, &frame.camera, self.targets.width)),
+        );
+        self.grade.sync(device, queue, &frame.grade);
+        self.chain.begin_frame();
+        let scened = Scened { wants_objects: false, material: false, moved: false, timed: false };
+        self.finish_with(
+            device,
+            queue,
+            encoder,
+            frame,
+            scened,
+            FinishInputs { light: given.light, things: Things::None },
+        );
+    }
+
+    /// The HDR picture a frame is drawn into before it is finished (`HDR_FORMAT`, this renderer's
+    /// size): where a picture drawn elsewhere goes before [`Renderer::finish_picture`].
+    pub fn hdr_target(&self) -> &wgpu::TextureView {
+        &self.targets.hdr
+    }
+
+    /// [`Renderer::finish`] with what the effects and the masks read beside the picture.
+    fn finish_with(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         mut encoder: wgpu::CommandEncoder,
         frame: &Frame,
         scened: Scened,
+        inputs: FinishInputs,
     ) {
         let Scened { wants_objects, material, moved, timed } = scened;
         let above = BlendLayer::above;
@@ -402,9 +454,7 @@ impl Renderer {
             }
             (_, view) => view,
         };
-        // Effects on the light read the picture before lighting and the lit colour.
-        let light_pictures = self.light_pictures(frame, moved);
-        self.chain.set_light(light_pictures);
+        self.chain.set_light(inputs.light);
         self.chain.run(
             device,
             queue,
@@ -446,7 +496,10 @@ impl Renderer {
             self.bloom_black = true;
         }
         // Things masks read the things' silhouettes and how far each pixel is from them.
-        let things = self.draw_silhouettes(device, queue, &mut encoder, frame, moved);
+        let things = match inputs.things {
+            Things::Frame => self.draw_silhouettes(device, queue, &mut encoder, frame, moved),
+            Things::None => None,
+        };
         self.grade.set_things(device, things.as_ref());
         {
             // A grade with area steps runs all its passes but the last first; the composite runs

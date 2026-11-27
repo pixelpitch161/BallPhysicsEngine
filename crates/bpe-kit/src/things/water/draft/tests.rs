@@ -1,7 +1,8 @@
 use super::*;
 use crate::modules::water::{self as cards, SCREEN};
 use crate::things::water::{COURSE, DRAIN, FORCE, KINDS, LAMP, PIECE, StartingLook, WALL, new_water_scene};
-use bpe_core::{Address, Registry, SettingDef, Stroke, Value, ValueType};
+use bpe_core::{Address, Color, Registry, SettingDef, Stroke, Value, ValueType};
+use bpe_water::draw::{PlainLiquid, PlainLook};
 
 fn water_scene(reg: &Registry) -> Scene {
     new_water_scene(reg, StartingLook::Plain, "")
@@ -775,4 +776,75 @@ fn slow_motion_lengthens_the_video_and_keeps_more_moments() {
         let back = r.water_time(r.video_time(t));
         assert!((back - t).abs() < 1e-6, "water time {t} came back as {back}");
     }
+}
+
+#[test]
+fn the_look_reads_every_card() {
+    use bpe_water::draw::look::{self, BackLook, Lamp, LightLook, LiquidLook, MaterialLook, Quality};
+    let reg = crate::registry();
+    let look_at =
+        |scene: &Scene, t: f64| crate::things::water::look::look_of(scene, &bpe_core::resolve(scene, &reg), t);
+    // The defaults are the look drawing's own.
+    let mut scene = water_scene(&reg);
+    let got = look_at(&scene, 0.0);
+    assert!(got.liquids.is_empty() && got.solids.is_empty() && got.lamps.is_empty());
+    assert_eq!((got.rock, got.back), (MaterialLook::default(), BackLook::default()));
+    assert_eq!((got.light.ambient, got.light), (1.0, LightLook::default()));
+    assert_eq!(got.finish, look::FinishLook::default());
+    let a = add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let lamp = add(&mut scene, &reg, LAMP, Vec2::new(-200.0, -300.0));
+    let got = look_at(&scene, 0.0);
+    assert_eq!(got.liquids, [LiquidLook::default()]);
+    assert_eq!(got.lamps, [Lamp { place: Vec2::new(-200.0, -300.0), ..Lamp::default() }]);
+
+    // Every card, and keyframes read at the time asked for.
+    let b = add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    set(&mut scene, a, SlotId::Look, "shine", Value::Number(0.9));
+    set(&mut scene, b, SlotId::Look, "colour_from", Value::Choice("speed".into()));
+    set(&mut scene, b, SlotId::Look, "bands", Value::Int(3));
+    let piece = block(&mut scene, &reg, Vec2::ZERO, 100.0, 1.0);
+    let wall = add(&mut scene, &reg, WALL, Vec2::ZERO);
+    set(&mut scene, piece, SlotId::Material, "material", Value::Choice("glass".into()));
+    set(&mut scene, wall, SlotId::Material, "outline", Value::Number(3.0));
+    set(&mut scene, lamp, SlotId::Main, "kind", Value::Choice("strip".into()));
+    set(&mut scene, ThingId::ROOT, SlotId::WaterLight, "quality", Value::Choice("best".into()));
+    set(&mut scene, ThingId::ROOT, SlotId::Back, "shows", Value::Choice("gradient".into()));
+    let key = |scene: &mut Scene, a: Address, t: f64, v: f64| scene.set_key(&reg, &a, t, Value::Number(v)).unwrap();
+    key(&mut scene, Address::on(lamp, SlotId::Main, "brightness"), 0.0, 1.0);
+    key(&mut scene, Address::on(lamp, SlotId::Main, "brightness"), 2.0, 3.0);
+    key(&mut scene, Address::on(ThingId::ROOT, SlotId::WaterLight, "ambient"), 2.0, 0.25);
+    key(&mut scene, Address::own(ThingId::ROOT, "bloom"), 0.0, 0.0);
+    key(&mut scene, Address::own(ThingId::ROOT, "bloom"), 2.0, 0.5);
+    let (start, later) = (look_at(&scene, 0.0), look_at(&scene, 2.0));
+    assert_eq!(start.liquids.iter().map(|l| l.shine).collect::<Vec<_>>(), [0.9, 0.5]);
+    assert_eq!((start.liquids[1].colour_from, start.liquids[1].bands), (look::ColourFrom::Speed, 3));
+    // A gradient is sent only when the colour is read from it, as linear samples.
+    assert!(start.liquids[0].gradient.is_empty());
+    let g = &start.liquids[1].gradient;
+    assert_eq!(g.len(), look::GRADIENT_SAMPLES);
+    let blue = Color::rgb(0x2f, 0x9b, 0xff).to_linear();
+    assert!((0..3).all(|k| (g[0][k] - blue[k]).abs() < 1e-4 && (g[g.len() - 1][k] - 1.0).abs() < 1e-4), "{g:?}");
+    // The solids in the order the field numbers them.
+    assert_eq!(
+        start.solids.iter().map(|s| (s.kind, s.outline)).collect::<Vec<_>>(),
+        [(look::MaterialKind::Glass, 0.0), (look::MaterialKind::Rock, 3.0)]
+    );
+    assert!(matches!(&start.back, BackLook::Gradient { samples, angle } if samples.len() == 64 && *angle == 90.0));
+    assert_eq!((start.light.quality, start.lamps[0].kind), (Quality::Best, look::LampKind::Strip));
+    assert_eq!((start.lamps[0].brightness, later.lamps[0].brightness), (1.0, 3.0));
+    assert_eq!((start.light.ambient, later.light.ambient), (0.25, 0.25), "one key holds all along");
+    assert_eq!((start.finish.bloom, later.finish.bloom, later.time), (0.0, 0.5, 2.0));
+    // Off, a thing is left out.
+    scene.things.get_mut(&piece).unwrap().enabled = false;
+    scene.things.get_mut(&a).unwrap().enabled = false;
+    let got = look_at(&scene, 0.0);
+    assert_eq!((got.solids.len(), got.solids[0].outline, got.liquids.len()), (1, 3.0, 1));
+    // A picture behind is its path (the drawing reads it), or the picture the scene keeps under its name.
+    set(&mut scene, ThingId::ROOT, SlotId::Back, "shows", Value::Choice("picture".into()));
+    set(&mut scene, ThingId::ROOT, SlotId::Back, "picture", Value::Text("C:/pictures/sky.png".into()));
+    assert_eq!(look_at(&scene, 0.0).back, BackLook::Picture(look::BackPicture::file("C:/pictures/sky.png")));
+    let bytes: std::sync::Arc<[u8]> = vec![1, 2, 3].into();
+    let name = scene.add_picture("Sky", bytes.clone());
+    set(&mut scene, ThingId::ROOT, SlotId::Back, "picture", Value::Text(name.clone()));
+    assert_eq!(look_at(&scene, 0.0).back, BackLook::Picture(look::BackPicture { name, kept: Some(bytes) }));
 }

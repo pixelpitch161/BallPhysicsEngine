@@ -1,5 +1,5 @@
 //! The Final view (Water mode part 8): the stage shows the take's moment nearest the playhead,
-//! its drops moved on by their speed to the playhead's time, in the plain look. A worker thread
+//! its drops moved on by their speed to the playhead's time, in the scene's look. A worker thread
 //! opens the take, reads and unpacks the newest moment asked for (and lays out the course at the
 //! Final cell once a scene); the window's thread only hands the drops to the card and draws them.
 
@@ -12,7 +12,7 @@ use bpe_gfx::wgpu;
 use bpe_kit::things::water::draft::WaterSetup;
 use bpe_kit::things::water::finals::{Finals, Status};
 use bpe_water::SolidField;
-use bpe_water::draw::{Plain, PlainGpu, PlainLook, StoredDrops};
+use bpe_water::draw::{Look, LookDraw, LookGpu, StoredDrops};
 use bpe_water::take::TakeFrame;
 use eframe::egui::{self, Painter, Rect, pos2};
 
@@ -173,7 +173,7 @@ struct Drawn {
     take: u64,
     tau: u64,
     size: (u32, u32),
-    look: PlainLook,
+    look: Look,
 }
 
 /// The Final view's picture.
@@ -181,9 +181,9 @@ struct Drawn {
 pub struct FinalPicture {
     worker: Option<Worker>,
     asked: Option<Asked>,
-    gpu: Option<Arc<PlainGpu>>,
+    gpu: Option<Arc<LookGpu>>,
     /// The drawing, for the setup of this print.
-    plain: Option<(u64, Plain)>,
+    look: Option<(u64, LookDraw)>,
     stored: Option<StoredDrops>,
     /// The drops on the card: the take and time they are for, and how far that is past them.
     holds: Option<(u64, f64, f32)>,
@@ -201,7 +201,7 @@ impl FinalPicture {
         render: &egui_wgpu::RenderState,
         found: &Found,
         finals: &Finals,
-        look: &PlainLook,
+        look: &Look,
         view: &CourseView,
         tau: f64,
     ) -> bool {
@@ -217,14 +217,22 @@ impl FinalPicture {
             worker.ask(asked.clone());
             self.asked = Some(asked);
         }
-        let gpu = self.gpu.get_or_insert_with(|| PlainGpu::new(&render.device, &render.queue)).clone();
+        let gpu = self.gpu.get_or_insert_with(|| LookGpu::new(&render.device, &render.queue)).clone();
         let setup = &found.make.setup;
         let field = worker.shared.field.lock().ok().and_then(|f| f.clone());
         if let Some((print, field)) = field
             && print == setup.print
-            && self.plain.as_ref().is_none_or(|p| p.0 != print)
+            && self.look.as_ref().is_none_or(|p| p.0 != print)
         {
-            self.plain = Some((print, Plain::new(gpu, &field, setup.numbers().wall_off)));
+            let rest = setup.numbers().wall_off;
+            let drawing = match self.look.take() {
+                Some((_, mut drawing)) => {
+                    drawing.renew(&field, rest);
+                    drawing
+                }
+                None => LookDraw::new(gpu, &field, rest),
+            };
+            self.look = Some((print, drawing));
             self.drawn = None;
         }
         if let Some(got) = worker.shared.got.lock().ok().and_then(|mut g| g.take()) {
@@ -240,13 +248,13 @@ impl FinalPicture {
             }
         }
         let v = picture_view(view, painter.ctx().pixels_per_point());
-        if let (Some((_, plain)), Some(stored), Some((held, at, ahead))) = (&mut self.plain, &self.stored, self.holds)
+        if let (Some((_, drawing)), Some(stored), Some((held, at, ahead))) = (&mut self.look, &self.stored, self.holds)
             && held == take
         {
             let want = Drawn { take, tau: at.to_bits(), size: (v.width, v.height), look: look.clone() };
             if self.drawn.as_ref() != Some(&want) {
-                plain.draw_at(&stored.buffers(), &v, look, ahead);
-                if let Some(output) = plain.output() {
+                drawing.draw_at(&stored.buffers(), &v, look, ahead);
+                if let Some(output) = drawing.output() {
                     let output = output.create_view(&wgpu::TextureViewDescriptor::default());
                     let mut renderer = render.renderer.write();
                     let id = match self.texture {

@@ -1,6 +1,6 @@
-//! The cards on a Water scene's settings: **Water**, **Light** and **Back**.
+//! The Water card on a Water scene's settings (its **Light** and **Back** cards are in [`super::look`]).
 
-use bpe_core::{Choice, Color, Gradient, Settings};
+use bpe_core::{Choice, Color, Settings};
 use glam::Vec2;
 
 /// One screen of course, in pixels, whatever size the video is.
@@ -186,84 +186,5 @@ impl WaterWorld {
     pub fn course_size(&self) -> Vec2 {
         let (wide, tall) = self.screens();
         Vec2::new(SCREEN.x * wide as f32, SCREEN.y * tall as f32)
-    }
-}
-
-/// How carefully the water's light is worked out.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
-pub enum LightQuality {
-    Draft,
-    #[default]
-    Good,
-    Best,
-}
-
-/// The Light card: the light the lamps don't give.
-#[derive(Clone, Debug, PartialEq, Settings)]
-pub struct WaterLightCard {
-    /// Light that is everywhere, lamp or no lamp.
-    #[setting(label = "Ambient", range(0, 1e9), span(0, 2), simple, keyframe, group = "Light")]
-    pub ambient: f32,
-    /// How much light bounces off the rock and the water onto what is near.
-    #[setting(label = "Bounce", range(0, 1e9), span(0, 1), keyframe, group = "Light")]
-    pub bounce: f32,
-    /// The bright rippling patterns water throws on what is under it.
-    #[setting(label = "Caustics", range(0, 1e9), span(0, 2), simple, keyframe, group = "Light")]
-    pub caustics: f32,
-    /// Beams of light showing in the water and the air.
-    #[setting(label = "Shafts", range(0, 1e9), span(0, 1), keyframe, group = "Light")]
-    pub shafts: f32,
-    /// How carefully the light is worked out: Draft is quickest, Best is for the finished video.
-    #[setting(label = "Quality", group = "Quality")]
-    pub quality: LightQuality,
-}
-
-impl Default for WaterLightCard {
-    fn default() -> Self {
-        Self { ambient: 0.3, bounce: 0.3, caustics: 1.0, shafts: 0.0, quality: LightQuality::Good }
-    }
-}
-
-/// What shows where the course is carved away.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
-pub enum BackShows {
-    /// The course's own rock, darker, as if further back.
-    #[default]
-    DarkerRock,
-    Colour,
-    Gradient,
-    Picture,
-}
-
-/// The Back card: what is behind the water.
-#[derive(Clone, Debug, PartialEq, Settings)]
-pub struct BackCard {
-    #[setting(label = "Shows", simple, group = "Back")]
-    pub shows: BackShows,
-    /// How much darker than the rock in front: 0 the same, 1 black.
-    #[setting(label = "Darker", when = "shows=darker_rock", range(0, 1), span(0, 1), keyframe, group = "Back")]
-    pub darker: f32,
-    #[setting(label = "Colour", when = "shows=colour", keyframe, group = "Back")]
-    pub colour: Color,
-    #[setting(label = "Gradient", when = "shows=gradient", keyframe, group = "Back")]
-    pub gradient: Gradient,
-    /// Which way the gradient runs.
-    #[setting(label = "Direction", when = "shows=gradient", span(-180, 180), unit = "°", group = "Back")]
-    pub angle: f32,
-    /// A PNG picture shown behind the course.
-    #[setting(label = "Picture", when = "shows=picture", unit = "picture", group = "Back")]
-    pub picture: String,
-}
-
-impl Default for BackCard {
-    fn default() -> Self {
-        Self {
-            shows: BackShows::DarkerRock,
-            darker: 0.5,
-            colour: Color::rgb(0x14, 0x18, 0x1e),
-            gradient: Gradient::even(&[Color::rgb(0x0e, 0x1c, 0x33), Color::rgb(0x05, 0x07, 0x0b)]),
-            angle: 90.0,
-            picture: String::new(),
-        }
     }
 }

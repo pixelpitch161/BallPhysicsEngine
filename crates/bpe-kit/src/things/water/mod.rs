@@ -7,6 +7,7 @@ use bpe_core::{Registry, Scene, SettingDef, SimKind, SlotId, ThingId, ThingKind,
 
 pub mod draft;
 pub mod finals;
+pub mod look;
 pub mod make;
 
 pub use crate::modules::water::StartingLook;

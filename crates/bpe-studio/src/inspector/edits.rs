@@ -79,6 +79,21 @@ pub(crate) enum Edit {
     LoadPicture(String, std::sync::Arc<[u8]>),
 }
 
+/// Where thing `id`'s Picture setting is: `None` for its own, else the first of its cards that has
+/// one.
+fn picture_slot(scene: &Scene, reg: &bpe_core::Registry, id: ThingId) -> Option<SlotId> {
+    let is_picture = |defs: &[SettingDef]| defs.iter().any(|d| d.key == bpe_core::PICTURE_KEY && d.unit == "picture");
+    let thing = scene.things.get(&id)?;
+    if reg.thing(&thing.kind).is_some_and(|k| is_picture(k.settings())) {
+        return None;
+    }
+    thing
+        .slots
+        .iter()
+        .find(|(_, card)| reg.module(&card.kind).is_some_and(|m| is_picture(m.settings())))
+        .map(|(s, _)| *s)
+}
+
 /// Whether `a` is a part of a vary (its To, spread or easing) on a setting that doesn't vary
 /// there: an edit to one thing's varied setting leaves the other selected things' alone.
 pub(super) fn no_vary_here(scene: &Scene, a: &Address) -> bool {
@@ -187,8 +202,10 @@ pub(super) fn apply(
             Edit::LoadPicture(name, bytes) => {
                 let name = scene.add_picture(&name, bytes);
                 let key = bpe_core::PICTURE_KEY;
-                for t in reached_key(scene, selected, id, None, key) {
-                    let a = Address::own(t, key);
+                // The thing's own Picture, or else the card's that has one (a Water scene's Back).
+                let slot = picture_slot(scene, reg, id);
+                for t in reached_key(scene, selected, id, slot, key) {
+                    let a = Address { thing: t, slot, key: key.into() };
                     set_or_key(scene, reg, &a, Value::Text(name.clone()), time, &mut inspector.keyed_edit);
                 }
                 true

@@ -112,14 +112,14 @@ fn linear(c: f32) -> f32 {
     if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).det_powf(2.4) }
 }
 
-fn linear3(c: [f32; 3]) -> [f32; 3] {
+pub(crate) fn linear3(c: [f32; 3]) -> [f32; 3] {
     c.map(linear)
 }
 
 /// The drawing's numbers on the card. Matches `U` in plain.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct PlainU {
+pub(crate) struct PlainU {
     view: [f32; 4],
     size: [u32; 4],
     layout: [f32; 4],
@@ -329,13 +329,38 @@ impl PlainGpu {
 }
 
 /// A picture drawn afresh (cleared first).
-fn attach(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+pub(crate) fn attach(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_>> {
     Some(wgpu::RenderPassColorAttachment {
         view,
         depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
     })
+}
+
+/// One render pass drawing `vertices` x `instances` with `pipeline` (nothing drawn with no instances).
+pub(crate) fn run_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    label: &str,
+    targets: &[Option<wgpu::RenderPassColorAttachment>],
+    pipeline: &wgpu::RenderPipeline,
+    group: &wgpu::BindGroup,
+    vertices: u32,
+    instances: u32,
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: targets,
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    if instances > 0 {
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, group, &[]);
+        pass.draw(0..vertices, 0..instances);
+    }
 }
 
 /// One picture size's textures.
@@ -348,19 +373,19 @@ struct Pictures {
 }
 
 /// The course's depth ladder: the splats summed at its nodes, and the ladder of the air's share.
-struct Depth {
+pub(crate) struct Depth {
     width: u32,
     height: u32,
     levels: u32,
     nodes: wgpu::TextureView,
     /// Each level alone (to draw into, and to read the one before), and all of them.
     ladder_levels: Vec<wgpu::TextureView>,
-    ladder_all: wgpu::TextureView,
+    pub(crate) ladder_all: wgpu::TextureView,
     /// `down[k]` reads level k (and draws level k + 1).
     down: Vec<wgpu::BindGroup>,
 }
 
-fn texture(
+pub(crate) fn texture(
     device: &wgpu::Device,
     label: &str,
     (width, height): (u32, u32),
@@ -414,16 +439,16 @@ impl Depth {
 /// A plain drawing of one body's drops on one course.
 pub struct Plain {
     gpu: Arc<PlainGpu>,
-    layout: Layout,
+    pub(crate) layout: Layout,
     rest: f32,
-    field: wgpu::Buffer,
-    depth: Depth,
-    uniform: wgpu::Buffer,
+    pub(crate) field: wgpu::Buffer,
+    pub(crate) depth: Depth,
+    pub(crate) uniform: wgpu::Buffer,
     pictures: Option<Pictures>,
     /// The last picture size told to be past the card's most (told once).
     told: Option<(u32, u32)>,
     /// Seconds every drop is moved on by its speed in the next picture ([`Plain::draw_at`]).
-    ahead: f32,
+    pub(crate) ahead: f32,
 }
 
 impl std::fmt::Debug for Plain {
@@ -515,7 +540,7 @@ impl Plain {
     }
 
     /// The numbers for drawing `view` of this layout's drops with `look`.
-    fn numbers(&self, view: &View, width: u32, height: u32, look: &PlainLook) -> PlainU {
+    pub(crate) fn numbers(&self, view: &View, width: u32, height: u32, look: &PlainLook) -> PlainU {
         let l = &self.layout;
         let (r, peak) = splat_for(l.cell, view.scale);
         let mut liquids = [[0.0f32; 8]; MOST_LIQUIDS];
@@ -566,6 +591,37 @@ impl Plain {
                 entry(2, drops.id.as_entire_binding()),
             ],
         });
+        // (Every drop in the buffers' order: blending adds in that order, so the sums repeat.)
+        run_pass(
+            encoder,
+            "water plain splats",
+            &[attach(&p.amount[0]), attach(&p.amount[1])],
+            &gpu.splat.0,
+            &splat_group,
+            6,
+            drops.count,
+        );
+        self.record_ladder(encoder, drops);
+        let d = &self.depth;
+        let show_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water plain show"),
+            layout: &gpu.show.1,
+            entries: &[
+                entry(0, self.uniform.as_entire_binding()),
+                entry(3, wgpu::BindingResource::TextureView(&p.amount[0])),
+                entry(4, wgpu::BindingResource::TextureView(&p.amount[1])),
+                entry(5, self.field.as_entire_binding()),
+                entry(6, wgpu::BindingResource::TextureView(&d.ladder_all)),
+            ],
+        });
+        run_pass(encoder, "water plain show", &[attach(&p.output_view)], &gpu.show.0, &show_group, 3, 1);
+    }
+
+    /// Records the depth ladder of `drops` over the whole course (the part 6 look drawing reads it as
+    /// the plain drawing does), with the numbers last written.
+    pub(crate) fn record_ladder(&self, encoder: &mut wgpu::CommandEncoder, drops: &DropBuffers) {
+        let gpu = &self.gpu;
+        let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
         let d = &self.depth;
         let world_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("water plain nodes"),
@@ -585,59 +641,17 @@ impl Plain {
                 entry(5, self.field.as_entire_binding()),
             ],
         });
-        let show_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("water plain show"),
-            layout: &gpu.show.1,
-            entries: &[
-                entry(0, self.uniform.as_entire_binding()),
-                entry(3, wgpu::BindingResource::TextureView(&p.amount[0])),
-                entry(4, wgpu::BindingResource::TextureView(&p.amount[1])),
-                entry(5, self.field.as_entire_binding()),
-                entry(6, wgpu::BindingResource::TextureView(&d.ladder_all)),
-            ],
-        });
-        let pass = |encoder: &mut wgpu::CommandEncoder,
-                    label: &str,
-                    targets: &[Option<wgpu::RenderPassColorAttachment>],
-                    pipeline: &wgpu::RenderPipeline,
-                    group: &wgpu::BindGroup,
-                    vertices: u32,
-                    instances: u32| {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(label),
-                color_attachments: targets,
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if instances > 0 {
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, group, &[]);
-                pass.draw(0..vertices, 0..instances);
-            }
-        };
-        // (Every drop in the buffers' order: blending adds in that order, so the sums repeat.)
-        pass(
-            encoder,
-            "water plain splats",
-            &[attach(&p.amount[0]), attach(&p.amount[1])],
-            &gpu.splat.0,
-            &splat_group,
-            6,
-            drops.count,
-        );
         // The depth ladder, over the whole course.
-        pass(encoder, "water plain nodes", &[attach(&d.nodes)], &gpu.world.0, &world_group, 6, drops.count);
-        pass(encoder, "water plain ladder base", &[attach(&d.ladder_levels[0])], &gpu.base.0, &base_group, 3, 1);
+        run_pass(encoder, "water plain nodes", &[attach(&d.nodes)], &gpu.world.0, &world_group, 6, drops.count);
+        run_pass(encoder, "water plain ladder base", &[attach(&d.ladder_levels[0])], &gpu.base.0, &base_group, 3, 1);
         for k in 1..d.levels as usize {
-            pass(encoder, "water plain ladder down", &[attach(&d.ladder_levels[k])], &gpu.down.0, &d.down[k - 1], 3, 1);
+            let target = [attach(&d.ladder_levels[k])];
+            run_pass(encoder, "water plain ladder down", &target, &gpu.down.0, &d.down[k - 1], 3, 1);
         }
-        pass(encoder, "water plain show", &[attach(&p.output_view)], &gpu.show.0, &show_group, 3, 1);
     }
 
     /// The picture size `view` asks for, within the card's largest texture (said once a size).
-    fn size_of(&mut self, view: &View) -> (u32, u32) {
+    pub(crate) fn size_of(&mut self, view: &View) -> (u32, u32) {
         let most = self.gpu.device.limits().max_texture_dimension_2d;
         let asked = (view.width, view.height);
         if (asked.0 > most || asked.1 > most) && self.told != Some(asked) {

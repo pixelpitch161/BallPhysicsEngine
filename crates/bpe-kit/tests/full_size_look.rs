@@ -17,8 +17,8 @@
 //! - `LOOK_SET`: `key=value;key=value` written onto every Lighting card (a number, or a choice).
 //! - `LOOK_FILE`: a saved scene file drawn as well (pictures named `file-...`), at `LOOK_TIMES` (a comma list of
 //!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
-//! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with a final made and drawn from
-//!   its take (`LOOK_ONLY=water-final`).
+//! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with the look drawing's pictures
+//!   (`LOOK_ONLY=water-look`) and a final made and drawn from its take (`LOOK_ONLY=water-final`).
 
 use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
@@ -1213,14 +1213,188 @@ fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// Water mode part 6a's look drawing at full size (`LOOK_ONLY=water-look`), of drops laid out by hand: the bench and
+/// the pieces at 3 px under two warm Spots, each Material on the pieces, the Back's four kinds, caustics under a
+/// waved pool lit by a Sun, and glow in the dark with bloom.
+fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_water::draw::look::{
+        BackLook, BackPicture, FinishLook, GlowFrom, Lamp, LampKind, LightLook, LiquidLook, Look, MaterialKind,
+        MaterialLook,
+    };
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View, sets};
+    // (`LOOK_ONLY=water-look-pieces` picks one of them.)
+    if !wanted("water-look", only) && !only.as_deref().is_some_and(|o| o.contains("water-look")) {
+        return Vec::new();
+    }
+    let warm = [1.0, 0.82, 0.63];
+    let spot = |x: f32, aim: f32| Lamp {
+        kind: LampKind::Spot,
+        place: Vec2::new(x, -820.0),
+        aim,
+        colour: warm,
+        brightness: 1.6,
+        spread: 70.0,
+        softness: 0.4,
+        ..Lamp::default()
+    };
+    let water = LiquidLook {
+        colour: [0.31, 0.71, 0.91],
+        deep: [0.02, 0.13, 0.23],
+        clarity: 320.0,
+        bend: 16.0,
+        shine: 0.6,
+        edge_sheen: 0.4,
+        ripples: 0.5,
+        ..LiquidLook::default()
+    };
+    let orange = LiquidLook { colour: [1.0, 0.54, 0.24], deep: [0.35, 0.1, 0.02], clarity: 120.0, ..water.clone() };
+    let rock = MaterialLook {
+        colour: [0.48, 0.36, 0.27],
+        second: [0.29, 0.21, 0.15],
+        texture: 160.0,
+        depth: 14.0,
+        roughness: 0.7,
+        ..MaterialLook::default()
+    };
+    let lit = Look {
+        liquids: vec![water.clone(), orange.clone()],
+        rock: rock.clone(),
+        back: BackLook::DarkerRock(0.65),
+        light: LightLook { ambient: 0.12, bounce: 0.4, caustics: 1.2, shafts: 0.3, ..LightLook::default() },
+        lamps: vec![spot(-350.0, 70.0), spot(350.0, 110.0)],
+        time: 1.0,
+        finish: FinishLook { bloom: 0.25, exposure: 1.0 },
+        ..Look::default()
+    };
+    let material = |kind: MaterialKind, colour: [f32; 3], second: [f32; 3]| MaterialLook {
+        kind,
+        colour,
+        second,
+        texture: 90.0,
+        depth: 10.0,
+        roughness: 0.4,
+        ..MaterialLook::default()
+    };
+    let pieces = Look {
+        solids: vec![
+            material(MaterialKind::Rock, [0.6, 0.45, 0.35], [0.35, 0.25, 0.2]),
+            material(MaterialKind::Glass, [0.79, 0.84, 0.89], [0.5, 0.6, 0.7]),
+            material(MaterialKind::Paper, [0.93, 0.9, 0.84], [0.8, 0.76, 0.7]),
+            material(MaterialKind::Basalt, [0.14, 0.11, 0.1], [0.05, 0.04, 0.04]),
+            material(MaterialKind::Flat, [0.92, 0.78, 0.25], [0.0; 3]),
+            MaterialLook {
+                outline: 4.0,
+                outline_colour: [0.05, 0.05, 0.08],
+                ..material(MaterialKind::Flat, [0.4, 0.7, 0.5], [0.0; 3])
+            },
+        ],
+        ..lit.clone()
+    };
+    // A picture behind: stripes and a sun, written for the run.
+    let picture = std::env::temp_dir().join(format!("bpe-look-back-{}.png", std::process::id()));
+    let (pw, ph) = (540u32, 960u32);
+    let mut pixels = Vec::with_capacity((pw * ph * 4) as usize);
+    for y in 0..ph {
+        for x in 0..pw {
+            let d = Vec2::new(x as f32 - 270.0, y as f32 - 300.0).length();
+            let band = ((y / 60) % 2) as u8;
+            let c = if d < 90.0 { [255, 210, 90] } else { [40 + 60 * band, 70 + 40 * band, 140 + 50 * band] };
+            pixels.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+    save(&picture, pw, ph, &pixels);
+    let gradient: Vec<[f32; 3]> = (0..64)
+        .map(|i| {
+            let t = i as f32 / 63.0;
+            [0.02 + 0.3 * t, 0.03 + 0.05 * t, 0.12 * (1.0 - t) + 0.02]
+        })
+        .collect();
+    let back = |b: BackLook| Look { back: b, ..lit.clone() };
+    let glow = Look {
+        liquids: vec![
+            LiquidLook {
+                colour: [0.42, 0.11, 1.0],
+                clarity: 120.0,
+                glow: 2.5,
+                glow_colour: [1.0, 0.24, 0.78],
+                glow_from: GlowFrom::Always,
+                ..water.clone()
+            },
+            LiquidLook { glow: 2.0, glow_colour: [1.0, 0.54, 0.19], ..orange.clone() },
+        ],
+        rock: material(MaterialKind::Flat, [0.07, 0.06, 0.12], [0.0; 3]),
+        back: BackLook::Colour([0.03, 0.02, 0.05]),
+        light: LightLook { ambient: 0.05, bounce: 0.5, ..LightLook::default() },
+        lamps: vec![],
+        finish: FinishLook { bloom: 0.8, exposure: 1.0 },
+        ..lit.clone()
+    };
+    let sun = Look {
+        liquids: vec![LiquidLook { clarity: 600.0, ripples: 1.0, ..water.clone() }],
+        rock: MaterialLook { colour: [0.85, 0.8, 0.7], second: [0.7, 0.62, 0.5], ..rock.clone() },
+        back: BackLook::Colour([0.55, 0.75, 0.9]),
+        light: LightLook { ambient: 0.35, caustics: 1.5, shafts: 0.4, ..LightLook::default() },
+        lamps: vec![Lamp {
+            kind: LampKind::Sun,
+            aim: 80.0,
+            colour: [1.0, 0.97, 0.9],
+            brightness: 1.2,
+            softness: 0.3,
+            ..Lamp::default()
+        }],
+        ..lit.clone()
+    };
+    type Make = Box<dyn Fn() -> sets::Bench>;
+    let all: Vec<(&str, Make, Look)> = vec![
+        ("water-look-bench-c3", Box::new(|| sets::bench(3.0)), lit.clone()),
+        ("water-look-bench-c8", Box::new(|| sets::bench(8.0)), lit.clone()),
+        ("water-look-pieces-c3", Box::new(|| sets::pieces(3.0)), pieces),
+        ("water-look-back-darker", Box::new(|| sets::bench(3.0)), back(BackLook::DarkerRock(0.3))),
+        ("water-look-back-colour", Box::new(|| sets::bench(3.0)), back(BackLook::Colour([0.1, 0.12, 0.2]))),
+        (
+            "water-look-back-gradient",
+            Box::new(|| sets::bench(3.0)),
+            back(BackLook::Gradient { samples: gradient, angle: 90.0 }),
+        ),
+        (
+            "water-look-back-picture",
+            Box::new(|| sets::bench(3.0)),
+            back(BackLook::Picture(BackPicture::file(picture.display().to_string()))),
+        ),
+        ("water-look-caustics", Box::new(|| sets::wavy_pool(3.0, 500.0, 14.0, 110.0)), sun),
+        ("water-look-glow", Box::new(|| sets::bench(3.0)), glow),
+    ];
+    let card = LookGpu::new(&gpu.device, &gpu.queue);
+    let mut out = Vec::new();
+    for (name, make, look) in all.into_iter().filter(|(name, ..)| wanted(name, only)) {
+        let set = make();
+        let stored = StoredDrops::new(&gpu.device, &gpu.queue, &set.drops);
+        let mut drawing = LookDraw::new(card.clone(), &set.field, sets::REST);
+        let view = View::screen(1.0);
+        let started = std::time::Instant::now();
+        drawing.draw(&stored.buffers(), &view, &look);
+        let pixels = drawing.read();
+        eprintln!(
+            "{name}: {} drops, {:.0} ms {:?}",
+            set.drops.len(),
+            started.elapsed().as_secs_f64() * 1000.0,
+            drawing.notes()
+        );
+        out.push((name.to_string(), pixels));
+    }
+    std::fs::remove_file(&picture).ok();
+    out
+}
+
 /// Water mode part 8: a final made at Coarse detail (3 px) of one screen with a pool a third full
-/// and a tap pouring into it, its moment at 1 s drawn from the take as the export draws it, and the
+/// and a tap pouring into it, its moment at 1 s drawn from the take as the export draws it (in a new scene's look,
+/// part 6), and the
 /// same moment moved on half a frame by the drops' speeds (`water-final`, `water-final-ahead`).
 fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     use bpe_kit::things::water::finals::Finals;
     use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
     use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
-    use bpe_water::draw::{Plain, PlainGpu, StoredDrops, View};
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
     use bpe_water::take::{Chunk, FrameCodec};
     if !wanted("water-final", only) {
         return Vec::new();
@@ -1260,13 +1434,14 @@ fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
     stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
     let field = make.setup.field();
-    let mut plain = Plain::new(PlainGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
-    let look = bpe_kit::things::water::draft::plain_look(&scene, &resolved, 1.0);
+    let mut drawing = LookDraw::new(LookGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
+    // (A new scene's look: the cards' defaults, no lamps.)
+    let look = bpe_kit::things::water::look::look_of(&scene, &resolved, 1.0);
     let view = View::screen(1.0);
     let mut out = Vec::new();
     for (name, ahead) in [("water-final", 0.0), ("water-final-ahead", 0.5 / 60.0)] {
-        plain.draw_at(&stored.buffers(), &view, &look, ahead);
-        out.push((name.to_string(), plain.read()));
+        drawing.draw_at(&stored.buffers(), &view, &look, ahead);
+        out.push((name.to_string(), drawing.read()));
     }
     eprintln!("water-final: {} drops at {} px", head.drops, make.setup.cell);
     std::fs::remove_dir_all(finals.dir()).ok();
@@ -1326,7 +1501,8 @@ fn render_at_full_size() {
         save_sheet(&dir, group, &thumbs);
     }
     let mut thumbs = Vec::new();
-    for (name, pixels) in water_pictures(&gpu, &only).into_iter().chain(water_final_pictures(&gpu, &only)) {
+    let water = water_pictures(&gpu, &only).into_iter().chain(water_look_pictures(&gpu, &only));
+    for (name, pixels) in water.chain(water_final_pictures(&gpu, &only)) {
         thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
         count += 1;
     }

@@ -1,5 +1,5 @@
 //! A Water scene's video (Water mode part 8): the camera's shot at each video frame's water time,
-//! drawn in the plain look (until the looks arrive) from the scene's final take, its drops moved on
+//! drawn in the scene's look (part 6) from the scene's final take, its drops moved on
 //! to the exact moment, with a silent track. The final is never worked out again here, only read;
 //! a missing final is made first when asked (the command line), and the draft is exported only when
 //! asked for by name.
@@ -11,11 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context;
 use bpe_core::{Address, Registry, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Readback, wgpu};
-use bpe_kit::things::water::draft::{DRAFT_MOST, Speeds, WaterSetup, plain_look};
+use bpe_kit::things::water::draft::{DRAFT_MOST, Speeds, WaterSetup};
 use bpe_kit::things::water::finals::{Finals, Status};
+use bpe_kit::things::water::look::look_of;
 use bpe_kit::things::water::make::{MakeFinal, MakeProgress, this_card};
 use bpe_kit::{Kit, SceneSettings};
-use bpe_water::draw::{Plain, PlainGpu, StoredDrops, View};
+use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
 use bpe_water::take::{Chunk, FrameCodec, TakeFrame};
 use bpe_water::{SolidField, WaterGpu};
 use glam::Vec2;
@@ -181,16 +182,16 @@ impl TakeReader {
     }
 }
 
-/// The plain drawing of a course, at the export's size.
+/// The look drawing of a course, at the export's size.
 struct Drawing {
-    plain: Plain,
+    look: LookDraw,
     stored: StoredDrops,
 }
 
 impl Drawing {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, field: &SolidField, rest: f32) -> Drawing {
-        let gpu = PlainGpu::new(device, queue);
-        Drawing { plain: Plain::new(gpu, field, rest), stored: StoredDrops::new(device, queue, &[]) }
+        let gpu = LookGpu::new(device, queue);
+        Drawing { look: LookDraw::new(gpu, field, rest), stored: StoredDrops::new(device, queue, &[]) }
     }
 }
 
@@ -314,7 +315,7 @@ fn export_water(
         for index in 0..total {
             let tau = video.speeds.water_time(f64::from(index) / f64::from(fps));
             draw_moment(device, queue, scene, kit, &video.resolved, &mut source, &mut drawing, tau, (width, height))?;
-            let (Some(texture), Some(view)) = (drawing.plain.output(), drawing.plain.output_view()) else {
+            let (Some(texture), Some(view)) = (drawing.look.output(), drawing.look.output_view()) else {
                 anyhow::bail!("the water was not drawn");
             };
             if let Some(pixels) = readback.push_texture(device, queue, texture, view)?
@@ -361,12 +362,12 @@ fn draw_moment(
     (width, height): (u32, u32),
 ) -> anyhow::Result<()> {
     let view = shot_view(scene, &kit.registry, tau, width, height);
-    let look = plain_look(scene, resolved, tau);
+    let look = look_of(scene, resolved, tau);
     match source {
         Source::Final { reader } => {
             let (frame, ahead) = reader.near(tau)?.context(FRAME_NOT_MADE)?;
             drawing.stored.set(device, queue, &frame.xv, &frame.kinds);
-            drawing.plain.draw_at(&drawing.stored.buffers(), &view, &look, ahead as f32);
+            drawing.look.draw_at(&drawing.stored.buffers(), &view, &look, ahead as f32);
         }
         Source::Draft { setup, water, field } => {
             let k = (tau.max(0.0) * 60.0).round() as u32;
@@ -375,7 +376,7 @@ fn draw_moment(
                 water.frame();
             }
             let ahead = tau - f64::from(water.frames()) / 60.0;
-            drawing.plain.draw_at(&water.drop_buffers(), &view, &look, ahead as f32);
+            drawing.look.draw_at(&water.drop_buffers(), &view, &look, ahead as f32);
         }
     }
     Ok(())
@@ -402,6 +403,6 @@ pub fn final_frame(
     let mut source = Source::Final { reader };
     let mut drawing = Drawing::new(device, queue, &fin.setup.field(), fin.setup.numbers().wall_off);
     draw_moment(device, queue, scene, kit, &video.resolved, &mut source, &mut drawing, time, (width, height))?;
-    let pixels = drawing.plain.read();
+    let pixels = drawing.look.read();
     Ok((pixels, (width, height), started.elapsed().as_secs_f32()))
 }

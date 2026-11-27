@@ -93,7 +93,8 @@ use bpe_runtime::{CameraView, step_at};
 use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The linear picture a frame is drawn into before it is finished ([`Renderer::hdr_target`]).
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The object picture shader effects on things read: own position, thing code, coverage.
 pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 

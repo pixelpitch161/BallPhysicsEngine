@@ -17,6 +17,7 @@ use bpe_core::{Address, Settings, SlotId, ThingId, Value};
 use bpe_kit::modules::water::{SCREEN, WaterWorld};
 use bpe_kit::things::water;
 use bpe_water::SolidField;
+use bpe_water::draw::look::{Look, Quality};
 use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use glam::Vec2;
 
@@ -226,7 +227,7 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
         && shown != FinalShown::NotMade
         && let Some(found) = &wf.found
     {
-        let look = bpe_kit::things::water::draft::plain_look(&studio.scene, &studio.resolved, studio.time);
+        let look = look_now(studio.hold_runs, &studio.scene, &studio.resolved, studio.time);
         let drawn = wf.picture.show(&painter, &render, found, &wf.finals, &look, view, studio.time);
         if let FinalShown::OutOfDate { restart } = shown {
             pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), final_view::out_of_date(restart));
@@ -240,7 +241,7 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     job.follow(target);
     let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
     // (Until the new body comes, the old one keeps the look its liquids were numbered for.)
-    let fresh = || bpe_kit::things::water::draft::plain_look(&studio.scene, &studio.resolved, studio.time);
+    let fresh = || look_now(studio.hold_runs, &studio.scene, &studio.resolved, studio.time);
     let look = match (restarting, studio.water_draft.picture.last_look()) {
         (true, Some(last)) => last.clone(),
         _ => fresh(),
@@ -264,8 +265,20 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     }
     if final_shown == Some(FinalShown::NotMade) {
         pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), final_view::NOT_MADE.to_owned());
+    } else if let Some(note) = studio.water_draft.picture.notes().first() {
+        pill(ui, &painter, view.rect.center_bottom() - vec2(0.0, 14.0), note.clone());
     }
     shown
+}
+
+/// The scene's look at `time`, with Draft light while a drag holds the runs (`hold`), so the stage
+/// keeps up with it.
+fn look_now(hold: bool, scene: &bpe_core::Scene, resolved: &bpe_core::Resolved, time: f64) -> Look {
+    let mut look = water::look::look_of(scene, resolved, time);
+    if hold {
+        look.light.quality = Quality::Draft;
+    }
+    look
 }
 
 /// A line of words in a pill centred at `at`.
@@ -372,6 +385,65 @@ fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
         painter.text(name, Align2::LEFT_CENTER, &thing.name, small.clone(), style::TEXT);
         if thing.kind == water::POUR {
             pour_marks(&painter, studio, view, id, place, ink);
+        }
+        if thing.kind == water::LAMP {
+            lamp_marks(&painter, studio, view, id, place, ink);
+        }
+    }
+}
+
+/// How far a Spot's cone is drawn from its marker, screen points.
+const CONE_LONG: f32 = 120.0;
+
+/// A lamp's light: a Spot's cone (its Spread), a Strip's line (its Length) with a tick toward its
+/// aim, a Sun's arrows down from the course's top edge.
+fn lamp_marks(
+    painter: &egui::Painter,
+    studio: &Studio,
+    view: &CourseView,
+    id: ThingId,
+    place: Vec2,
+    ink: egui::Color32,
+) {
+    use bpe_kit::modules::water::look::LampKind;
+    // (At the playhead, with its keyframes, as the light is drawn.)
+    let Some(lamp) = water::look::lamp_at(&studio.scene, &studio.resolved, id, studio.time) else { return };
+    let line = Stroke::new(1.0, ink);
+    let at = view.to_screen(place);
+    let aim = lamp.aim.to_radians();
+    let way_at = |angle: f32| {
+        let (sin, cos) = angle.sin_cos();
+        vec2(cos, sin)
+    };
+    let way = way_at(aim);
+    match lamp.kind {
+        LampKind::Spot => {
+            let half = (lamp.spread.clamp(1.0, 360.0) / 2.0).to_radians();
+            if half >= std::f32::consts::PI - 1e-3 {
+                painter.circle_stroke(at, CONE_LONG, line);
+                return;
+            }
+            for side in [-half, half] {
+                let d = way_at(aim + side);
+                painter.line_segment([at + d * MARKER_R, at + d * CONE_LONG], line);
+            }
+        }
+        LampKind::Strip => {
+            let across = way.rot90();
+            let half = (lamp.length.max(0.0) * view.scale() / 2.0).max(MARKER_R);
+            let thick = Stroke::new(2.0, ink);
+            painter.line_segment([at - across * half, at - across * MARKER_R], thick);
+            painter.line_segment([at + across * MARKER_R, at + across * half], thick);
+            painter.line_segment([at + way * MARKER_R, at + way * (MARKER_R + 14.0)], line);
+        }
+        LampKind::Sun => {
+            for i in [-1.0, 0.0, 1.0] {
+                let from = pos2(at.x + 36.0 * i, view.rect.top());
+                let tip = from + way * 40.0;
+                painter.line_segment([from, tip], line);
+                painter.line_segment([tip, tip - way * 7.0 + way.rot90() * 4.0], line);
+                painter.line_segment([tip, tip - way * 7.0 - way.rot90() * 4.0], line);
+            }
         }
     }
 }

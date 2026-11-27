@@ -114,3 +114,50 @@ fn odd_sizes_come_back_as_rgba() {
     let Some((device, _)) = gpu() else { return };
     assert_eq!(crate::Readback::with_layout(&device, 63, 48, 1, PixelLayout::Nv12).layout(), PixelLayout::Rgba);
 }
+
+/// Water mode part 6: a picture drawn elsewhere into the HDR target is finished as a Balls frame's
+/// own picture is (the same grey to the bit), and its frame's Bloom spreads it.
+#[test]
+fn a_picture_drawn_elsewhere_is_finished_as_a_frames_own() {
+    use crate::GivenPicture;
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    renderer.render(&device, &queue, &flat([0.5; 3]));
+    let want = renderer.read_output(&device, &queue).unwrap();
+
+    // Half floats: 0.5 is 0x3800, 8 is 0x4800.
+    let fill = |at: &dyn Fn(u32, u32) -> u16| -> Vec<u8> {
+        let mut out = Vec::with_capacity((N * N * 8) as usize);
+        for y in 0..N {
+            for x in 0..N {
+                let v = at(x, y);
+                for c in [v, v, v, 0x3c00] {
+                    out.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+        }
+        out
+    };
+    let finish = |renderer: &mut Renderer, pixels: &[u8], bloom: f32| -> Vec<u8> {
+        queue.write_texture(
+            renderer.targets.hdr_texture.as_image_copy(),
+            pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(N * 8), rows_per_image: None },
+            wgpu::Extent3d { width: N, height: N, depth_or_array_layers: 1 },
+        );
+        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("given") });
+        let frame = Frame { bloom, ..flat([0.0; 3]) };
+        renderer.finish_picture(&device, &queue, encoder, &frame, GivenPicture::default());
+        renderer.read_output(&device, &queue).unwrap()
+    };
+    let got = finish(&mut renderer, &fill(&|_, _| 0x3800), 0.0);
+    assert_eq!(got, want, "a grey finished from the HDR target is the frame's own grey");
+
+    // A bright dot in the dark: Bloom 0 leaves the dark dark, Bloom 1 spreads the dot.
+    let dot = fill(&|x, y| if (31..33).contains(&x) && (31..33).contains(&y) { 0x4800 } else { 0 });
+    let near = ((32 * N + 37) * 4) as usize;
+    let plain = finish(&mut renderer, &dot, 0.0);
+    assert_eq!(plain[near], 0, "no bloom: the dark beside the dot stays black");
+    let bloomed = finish(&mut renderer, &dot, 1.0);
+    assert!(bloomed[near] > 8, "bloom spreads the dot: {} beside it", bloomed[near]);
+}

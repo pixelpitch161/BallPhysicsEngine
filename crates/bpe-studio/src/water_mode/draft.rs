@@ -2,7 +2,7 @@
 //! card at draft detail and follows the playhead, as the particle playback does for a Balls scene.
 //!
 //! It runs on the window's own device (the stage draws the drops straight from the card's buffers
-//! with the plain drawing), a whole frame at a time under the body's lock. The stage draws
+//! with the look drawing), a whole frame at a time under the body's lock. The stage draws
 //! whenever the thread is between frames; when it hasn't got in for a while it waits for the
 //! frame the thread is on, and the thread lets it in before taking the next ([`DraftJob::body`]). Going back plays from the newest restart copy at or
 //! before the playhead (one at the start and one every [`COPY_EVERY`] frames reached), and a copy
@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use bpe_gfx::wgpu;
 use bpe_kit::things::water::draft::WaterSetup;
-use bpe_water::draw::{Plain, PlainGpu};
+use bpe_water::draw::{LookDraw, LookGpu};
 use bpe_water::{SolidField, Water, WaterGpu};
 
 /// Frames between two restart copies (2 s).
@@ -98,7 +98,8 @@ pub struct Live {
     /// The solid field the body runs on (the drawing's own may differ while a carve stroke is
     /// being painted).
     pub field: SolidField,
-    pub plain: Plain,
+    /// Kept from body to body (its pictures and the renderer that finishes them).
+    pub look: LookDraw,
     /// Goes up with every new body (a new setup).
     pub generation: u64,
 }
@@ -158,7 +159,7 @@ impl DraftJob {
                 let _guard = FailGuard(theirs.clone());
                 let mut run = Run {
                     water_gpu: WaterGpu::new(&device, &queue),
-                    plain_gpu: PlainGpu::new(&device, &queue),
+                    look_gpu: LookGpu::new(&device, &queue),
                     setup: None,
                     copies: Copies::default(),
                     most,
@@ -304,7 +305,7 @@ impl Drop for FailGuard {
 /// The thread's own side.
 struct Run {
     water_gpu: Arc<WaterGpu>,
-    plain_gpu: Arc<PlainGpu>,
+    look_gpu: Arc<LookGpu>,
     setup: Option<Arc<WaterSetup>>,
     copies: Copies<Water>,
     most: u32,
@@ -363,14 +364,22 @@ impl Run {
     fn begin(&mut self, shared: &Shared, setup: Arc<WaterSetup>) {
         let field = setup.field();
         let water = setup.start(self.water_gpu.clone(), &field, self.most);
-        let plain = Plain::new(self.plain_gpu.clone(), &field, setup.numbers().wall_off);
         self.copies = Copies::default();
         self.copies.keep(0, copy_size(&water), water.copy());
         self.generation += 1;
         let (count, generation) = (water.liquid(), self.generation);
         let in_rock = setup.taps_in_rock(&field);
         if let Ok(mut live) = shared.live.lock() {
-            *live = Some(Live { water, field, plain, generation });
+            let rest = setup.numbers().wall_off;
+            let look = match live.take() {
+                Some(old) => {
+                    let mut look = old.look;
+                    look.renew(&field, rest);
+                    look
+                }
+                None => LookDraw::new(self.look_gpu.clone(), &field, rest),
+            };
+            *live = Some(Live { water, field, look, generation });
         }
         if let Ok(mut ids) = shared.in_rock.lock() {
             *ids = in_rock;
