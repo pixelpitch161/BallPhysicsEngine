@@ -573,6 +573,8 @@ mod tests {
         for s in 0..=seconds {
             let path = chunk::chunk_path(&take.dir, s);
             std::fs::write(&path, format!("chunk {s} of {print}")).unwrap();
+            // (Each chunk has its wet marks, part 6b.)
+            std::fs::write(chunk::wet_path(&take.dir, s), format!("wet {s} of {print}")).unwrap();
             let mut keep = vec![1u8; 60];
             if s == seconds {
                 keep = vec![0u8; 60];
@@ -630,7 +632,8 @@ mod tests {
         assert_eq!(take.head.points, vec![120, 240]);
         let new_dir = take.dir.clone();
         assert_eq!(std::fs::read_to_string(chunk::chunk_path(&new_dir, 3)).unwrap(), "chunk 3 of 7");
-        assert!(!chunk::chunk_path(&new_dir, 4).exists());
+        assert_eq!(std::fs::read_to_string(chunk::wet_path(&new_dir, 3)).unwrap(), "wet 3 of 7", "with its marks");
+        assert!(!chunk::chunk_path(&new_dir, 4).exists() && !chunk::wet_path(&new_dir, 4).exists());
         drop(take);
         assert!(finals.find(&wanted(7, &inputs(1), "card A", &speeds)).complete(), "the old take stays whole");
         // (A change before the first point is no help.)
