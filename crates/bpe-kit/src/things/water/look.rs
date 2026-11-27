@@ -252,5 +252,5 @@ fn finish_of(scene: &Scene, resolved: &Resolved, time: f64) -> FinishLook {
         .filter(|e| e.stage == bpe_gfx::Stage::Picture)
         .collect();
     let grade = crate::modules::grade::stack(at_time(SlotId::Grade).as_ref(), None);
-    FinishLook { bloom: s.bloom, exposure: s.exposure, effects, grade }
+    FinishLook { bloom: s.bloom, exposure: s.exposure, effects, grade, video: (s.width.max(1), s.height.max(1)) }
 }

@@ -1134,7 +1134,7 @@ went to 6d.
   `LookDraw` puts them in the frame it hands `Renderer::finish_picture`, which runs them as a Balls frame's.
 - **`finish_of`** (`bpe-kit things/water/look.rs`) reads the root's Effects card with its keyframes at the water
   time (`modules::effects::draw::calls`, shared with `EffectsDraw`), keeping only calls at `Stage::Picture`, and the
-  Grade card (`grade::stack(card, None)`; nothing offers it yet).
+  Grade card (`grade::stack(card, None)`; offered since 6d).
 - **What a Water scene is offered** (`Builtin::water_ok`, `modules::effects::water_ok`): own code, and every
   built-in over the picture but Ball worlds, Fractal light, Gravity lens, Hue storm, Op-art lens, Shockwaves,
   Light ripples, Glitch and Breathing space, which are made of the balls, their hits, the beat or the things
@@ -1188,6 +1188,61 @@ and that no two draw the same.
   each look's scene file, to render with `bpe-render-next --finals <LOOK_TAKES folder>`. It changed four rows
   (the plan's "As built / 6c"): Glass lab was washed out, Neon's still water was dark, Molten's pool blown out, and
   Paint's lamp shaded everything under a line of paint too hard.
-- **Known, for 6d** (6a's light, seen in that check): a Spot beside a falling stream draws a wide striped,
-  stair-stepped caustic pattern on the rock behind (so Lamp-lit rock has Caustics 0 for now), and a small drop in
-  the air casts a dashed shadow.
+- **Fixed in 6d** (6a's light, seen in that check): a Spot beside a falling stream drew a wide striped,
+  stair-stepped caustic pattern on the rock behind, and a small drop in the air cast a dashed shadow.
+
+## Part 6d: Grade mode on a Water scene, and two light fixes (as built)
+
+The fourth of part 6's pull requests: decision 44's first half and the Grade card of decision 42. The Things masks
+for water (decision 43) and the Light only and Glow only takes (decision 42's last sentence) are 6e.
+
+### Two light fixes (`bpe-water shaders/look.wgsl`, `lamp_light`)
+
+- **A lone drop's whole shadow**: the march through the air skipped a coarse texel (level 4, and level 5 round it)
+  whose amount was under a thousandth. A lone drop is a few thousandths of a coarse texel, so on some rays it was
+  stepped over and on others not, and its shadow came out dashed. Now only a texel with none in it is skipped. The
+  shadow is deep near the drop and softens further down, as the coarser levels average the drop over more room.
+- **No caustics behind a stream**: a point in the air was lit through the liquid's lens wherever its lamp's light
+  had gone through liquid. Light that came out of the liquid again (through a falling stream, onto the rock behind)
+  isn't focused by one surface, so the march drew the stream's two sides as one wide striped lens. Now the lens
+  only counts when the light went into the liquid within `LENS_REACH` (32 world px, a bubble's size) of the point.
+  Lamp-lit rock has its Caustics 1.2 back.
+
+### The finish measures in the video's pixels (`FinishLook.video`)
+
+- `finish_of` gives the finish the scene's Width and Height; `LookDraw` makes the frame it hands
+  `finish_picture` that size over the picture's own (`(0, 0)`: the picture's, as Whole course and the tests use).
+  The Effects (`base.scale`) and the Grade (`GradeAt.scale`) measure in the video's pixels, as in a Balls frame, so
+  the editor's Shot view (drawn at the stage's own pixels) and an export at a lower `--scale` look like the video
+  scaled down. Before this the Shot view's blurs and masks were sized for its smaller picture.
+
+### Grade mode (`bpe-studio water_mode/graded.rs`)
+
+- **It opens on a Water scene** (the D key, the toolbar, "Open in Grade mode"): `keep_out_of_grade` and
+  `NO_WATER_GRADE` are gone, and the scene settings show the Grade card's summary as a Balls scene's do.
+- **The stage in Grade mode is the shot**: `water_mode::stage` hands over to `graded::stage`, which fits the
+  camera's shot at the playhead into the room (`graded::shot_view`) and draws it with the same `stage::water` as
+  the Shot view (the draft, or the final's moment in the Final view). No tool rail or strip: the course is built in
+  Build mode. The toolbar's Whole course | Shot is greyed (`GRADES_THE_SHOT`).
+- **`look_now`** shows the grade as Grade mode does (`GradeMode::show_on`: Before, Split, the overlay, a stroke
+  being painted) and draws a hovered snapshot from its own copy of the scene (`preview::peeked`).
+- **What Grade mode's tools read**: each picture keeps the texture it last drew in a `picture::Shown` (a clone of
+  `LookDraw::output()`, its size, and a drawing number that differs for every drawing, the draft's and the
+  final's). `Graded` keeps its own `Scopes` and `Clipping` and runs them on it when the drawing changes (or the
+  scope or clipping view does); the eyedropper and the targeted tool read it back (`bpe_gfx::read_rgba8`, now
+  public). The Split line, the compare switch, the corner pill and the colour pick are the ball preview's
+  (`preview::{compare_switch, split_line, corner_pill, pick_colour}`; `pick_colour` now takes a reader). The
+  masks' handles and brush get screen points per video pixel, as in the ball preview.
+- **No Things part in a Water scene yet** (`masks::offered`): Add mask and Add part leave it out until 6e gives
+  it the water's own kinds.
+
+### Tests
+
+- `bpe-water/tests/look.rs` 21 (a lone drop's shadow is deep under it and has no dashes), 22 (a Spot beside a
+  stream lights the rock behind it the same with Caustics 2 as with none), 23 (a Radial mask in the finish grades
+  the same block at a quarter and at half size). 21 and 22 fail on the old shader, 23 without the video's size.
+- `bpe-kit`: `the_look_reads_every_card` (the finish's video size).
+- `bpe-studio`: `grade_mode_shows_the_shot_with_its_grade_as_grade_mode_compares_it`,
+  `a_water_scenes_masks_offer_no_things_part`, `a_water_scenes_toolbar_says_so_and_grade_mode_grades_the_shot`,
+  `a_water_scenes_settings_show_its_own_cards_and_none_of_the_balls` (the Grade card now shows),
+  `a_water_scene_cannot_go_in_a_video`.

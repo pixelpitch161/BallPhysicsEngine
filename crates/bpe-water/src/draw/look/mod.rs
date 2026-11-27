@@ -381,10 +381,15 @@ impl LookDraw {
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         queue.write_buffer(&self.grads, 0, bytemuck::cast_slice(&numbers::gradients(look)));
 
+        // (The finish measures in the video's pixels when the picture is its shot.)
+        let video = match look.finish.video {
+            (w, h) if w > 0 && h > 0 => (w, h),
+            _ => (width, height),
+        };
         let frame = bpe_gfx::Frame {
-            width,
-            height,
-            video: (width, height),
+            width: video.0,
+            height: video.1,
+            video,
             time: look.time,
             bloom: if look.finish.bloom.is_finite() { look.finish.bloom.max(0.0) } else { 0.0 },
             exposure: if look.finish.exposure.is_finite() { look.finish.exposure.max(0.0) } else { 1.0 },

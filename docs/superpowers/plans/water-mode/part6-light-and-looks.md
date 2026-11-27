@@ -714,3 +714,22 @@ Built as planned for decisions 38 to 42 and 44, with these changes:
 - Tests: `bpe-water/tests/look.rs` 20 (Mirror), the kit's finish test, `water_looks_pinned` (on part 3's pieces
   course: the plan's one hand-built course, with its pool and pieces but no stream), the editor's Add effect,
   Shot view and toolbar tests; the full-size look check `water-looks`.
+
+### 6d
+
+Grade mode on a Water scene and the Grade card offered (decision 44's first half, decision 42's Grade), and the two
+6a light faults the 6c check found. The Things masks for water (decision 43) and the Light only and Glow only takes
+went to a fifth pull request, 6e, so this one stays a size that can be reviewed. Built as planned, with these
+changes:
+
+- **Grade mode's picture is the stage's own**, not a second drawing: `graded::stage` fits the shot and draws it
+  through `stage::water` (the draft, or the final's moment), and the scopes, clipping and picks read the texture
+  that drawing made (`picture::Shown`). A second `LookDraw` would have doubled the fields and light maps on the
+  card.
+- **The finish measures in the video's pixels** (`FinishLook.video`, not in the plan): the Effects and the Grade
+  were sized for the picture drawn, so in the Shot view (and an export at a lower scale) a mask at a place in the
+  video landed elsewhere. Found while working out where the handles go.
+- **The two light faults**: the march's coarse skip took a lone drop for empty (thresholds of a thousandth, now
+  none), and the lens counted light that left the liquid again (now only within 32 px of where it went in).
+  Lamp-lit rock's Caustics are 1.2 again.
+- **No Things part on a Water scene** until 6e (`masks::offered`).

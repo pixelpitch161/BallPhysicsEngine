@@ -9,7 +9,7 @@ use super::course_view::CourseView;
 use super::draft::frame_of;
 use super::final_job::WaterView;
 use super::final_view::{self, FinalShown};
-use super::picture::Rock;
+use super::picture::{Rock, Shown};
 use super::rail::{self, RAIL_W, Tool};
 use crate::app::Studio;
 use crate::style;
@@ -61,6 +61,8 @@ pub struct WaterStage {
     pub keep: Keep,
     /// What the stage shows: the whole course, or the camera's shot with its whole finish.
     pub seen: Seen,
+    /// Grade mode's scopes and clipping picture of the shot.
+    pub graded: super::graded::Graded,
 }
 
 /// What the Water stage shows (decision 44).
@@ -115,8 +117,13 @@ pub(super) fn marker_at(view: &CourseView, things: &[(ThingId, Vec2)], at: Pos2)
     things.iter().rev().copied().find(|(_, p)| view.to_screen(*p).distance(at) <= MARKER_R + 1.0)
 }
 
-/// Draws the Water stage and applies what was clicked and dragged.
+/// Draws the Water stage and applies what was clicked and dragged (in Grade mode, the shot under
+/// Grade mode's tools: `graded`).
 pub fn stage(ui: &mut Ui, studio: &mut Studio) {
+    if studio.mode == crate::grade_mode::EditorMode::Grade {
+        super::graded::stage(ui, studio);
+        return;
+    }
     let (strip, rail, room) = rooms(ui.available_rect_before_wrap(), studio.water_stage.strip_h);
     let tool = studio.water_stage.tool;
     // The strip: the tool and what it does, on more rows when they don't fit on one.
@@ -218,7 +225,7 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     if tool != Tool::Pen {
         super::pen_tool::drop_line(studio);
     }
-    let shown = water(ui, studio, &view, room);
+    let shown = water(ui, studio, &view, room).is_some();
     paint(ui, studio, &view, room, shown);
     super::solid_edit::paint(ui, studio, &view, room, tool == Tool::Select);
     let hover = response.hover_pos().filter(|p| view.holds(*p));
@@ -246,9 +253,9 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
 }
 
 /// Plays the draft to the playhead and draws its water over the course, or in the Final view the
-/// final's moment where it is made. Returns whether a picture of the water is on the stage.
-fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
-    let Some(render) = studio.panels.inspector.render.clone() else { return false };
+/// final's moment where it is made. Returns the picture of the water on the stage, if one is.
+pub(super) fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> Option<Shown> {
+    let render = studio.panels.inspector.render.clone()?;
     studio.water_draft.start_on(&render);
     update_preview(studio);
     let painter = ui.painter_at(room);
@@ -268,10 +275,10 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
             pill(ui, &painter, view.seen_rect().center_bottom() - vec2(0.0, 14.0), final_view::out_of_date(restart));
         }
         if drawn {
-            return true;
+            return wf.picture.shown().cloned();
         }
     }
-    let Some(job) = studio.water_draft.job.as_ref() else { return false };
+    let job = studio.water_draft.job.as_ref()?;
     let target = frame_of(studio.time);
     job.follow(target);
     let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
@@ -302,18 +309,29 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     } else if let Some(note) = studio.water_draft.picture.notes().first() {
         pill(ui, &painter, view.seen_rect().center_bottom() - vec2(0.0, 14.0), note.clone());
     }
-    shown
+    if shown { studio.water_draft.picture.shown().cloned() } else { None }
 }
 
 /// The scene's look at the playhead, with Draft light while a drag holds the runs, so the stage
-/// keeps up with it; the whole course has no Effects or Grade (they are made for the shot).
+/// keeps up with it; the whole course has no Effects or Grade (they are made for the shot). In
+/// Grade mode the grade is shown as Grade mode shows it (Before, Split, the overlay, a stroke being
+/// painted), and with the snapshot the pointer is over put on.
 pub(super) fn look_now(studio: &Studio, view: &CourseView) -> Look {
-    let mut look = water::look::look_of(&studio.scene, &studio.resolved, studio.time);
+    let grading = studio.mode == crate::grade_mode::EditorMode::Grade && view.shot.is_some();
+    let peeked = grading.then(|| crate::preview::peeked(studio)).flatten();
+    let (scene, resolved) = match peeked.as_ref().and_then(|p| p.as_ref()) {
+        Some(p) => (&p.scene, &p.resolved),
+        None => (&studio.scene, &studio.resolved),
+    };
+    let mut look = water::look::look_of(scene, resolved, studio.time);
+    drop(peeked);
     if studio.hold_runs {
         look.light.quality = Quality::Draft;
     }
     if view.shot.is_none() {
         look.finish = look.finish.without_shot_finish();
+    } else if grading {
+        studio.grade.show_on(&mut look.finish.grade);
     }
     look
 }

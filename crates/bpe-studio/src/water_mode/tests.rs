@@ -531,3 +531,54 @@ fn use_a_look_sets_the_scene_to_it_as_one_undo_step() {
     h.run();
     assert_eq!(h.state().scene, before, "one undo puts it all back");
 }
+
+#[test]
+fn grade_mode_shows_the_shot_with_its_grade_as_grade_mode_compares_it() {
+    use crate::grade_mode::{Compare, EditorMode};
+    use bpe_kit::modules::grade;
+    use bpe_kit::modules::water::SCREEN;
+    let mut studio = water_studio();
+    let kit = studio.kit.clone();
+    grade::ensure_grade(&mut studio.scene, &kit.registry);
+    let card = studio.scene.card(bpe_core::ThingId::ROOT, bpe_core::SlotId::Grade).unwrap();
+    let panels = grade::panels_of(card, grade::whole_of(card).unwrap());
+    let exposure = format!("{}/exposure", panels.iter().find(|l| l.kind == grade::BASIC).unwrap().id);
+    crate::grade_mode::apply(
+        &mut studio,
+        vec![crate::grade_mode::cx::GradeEdit::Set(exposure, bpe_core::Value::Number(1.0))],
+    );
+    studio.scene_changed();
+    studio.mode = EditorMode::Grade;
+    let mut h = harness(studio);
+    h.run();
+    assert!(h.query_by_label("After").is_some() && h.query_by_label("Split").is_some(), "Grade mode's compare");
+    assert!(h.query_by_label("Carve").is_none(), "no tool rail: the course is built in Build mode");
+    let studio = h.state();
+    // The shot, whatever the stage showed in Build mode, with its grade and the video's size.
+    let view = studio.water_stage.view.expect("drawn");
+    assert_eq!(view.seen(), (-SCREEN / 2.0, SCREEN));
+    let look = super::stage::look_now(studio, &view);
+    assert!(!look.finish.grade.is_identity(), "the grade shows");
+    assert_eq!(look.finish.video, (1080, 1920));
+    let compared = |h: &mut Harness<Studio>, compare: Compare| {
+        h.state_mut().grade.compare = compare;
+        super::stage::look_now(h.state(), &view).finish.grade
+    };
+    assert!(compared(&mut h, Compare::Before).is_identity(), "Before: the picture without it");
+    assert!(compared(&mut h, Compare::Split).split.is_some(), "Split: its line");
+    // Build mode's Shot view shows the grade as it is, and the whole course none.
+    h.state_mut().mode = EditorMode::Build;
+    assert!(super::stage::look_now(h.state(), &view).finish.grade.split.is_none());
+    let course = CourseView::fit(view.rect, SCREEN);
+    assert!(super::stage::look_now(h.state(), &course).finish.grade.is_identity());
+}
+
+#[test]
+fn a_water_scenes_masks_offer_no_things_part() {
+    use bpe_kit::modules::grade;
+    let water = water_studio();
+    let offered = crate::grade_mode::masks::offered(&water.scene);
+    assert!(!offered.contains(&grade::THINGS) && offered.contains(&grade::LINEAR) && offered.len() == 5);
+    let balls = Studio::headless();
+    assert!(crate::grade_mode::masks::offered(&balls.scene).contains(&grade::THINGS));
+}

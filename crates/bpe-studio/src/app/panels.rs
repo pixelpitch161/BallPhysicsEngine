@@ -71,8 +71,7 @@ impl Studio {
                     self.clicked = Some(ToolbarClick::Export);
                 }
                 ui.add_space(6.0);
-                let grade_ok = !self.water();
-                crate::grade_mode::mode_switch(ui, &mut self.mode, grade_ok);
+                crate::grade_mode::mode_switch(ui, &mut self.mode);
             });
             // The gap before Export counts as part of the right side.
             let width = right.response.rect.width() + ui.spacing().item_spacing.x;

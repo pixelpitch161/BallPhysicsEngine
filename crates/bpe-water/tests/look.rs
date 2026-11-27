@@ -900,3 +900,47 @@ fn bench_look_pictures() {
     };
     Drawn::new(&gpu, &pool.field, &pool.drops).draw(View::screen(1.0), &sun);
 }
+
+/// Test 23: The finish's Grade measures in the video's pixels: a Radial mask on a block of the shot
+/// grades the same block in a quarter-size picture and a half-size one, and leaves the block under it
+/// as it was.
+#[test]
+fn the_grade_measures_in_the_videos_pixels() {
+    use bpe_gfx::{GradeArea, GradeBasic, GradeCombine, GradeMask, GradePanel, GradePart, GradePlace, GradeRadial};
+    let Some(gpu) = card() else { return };
+    let (field, plain) = materials(&[MaterialKind::Flat]);
+    let radial = GradeRadial {
+        x: 250.0,
+        y: -600.0,
+        width: 200.0,
+        height: 200.0,
+        angle: 0.0,
+        roundness: 0.0,
+        feather: 10.0,
+        places: vec![GradePlace::SCREEN],
+    };
+    let mut graded = plain.clone();
+    graded.finish.video = (1080, 1920);
+    graded.finish.grade.masks = vec![GradeMask {
+        amount: 1.0,
+        area: Some(GradeArea {
+            parts: vec![GradePart {
+                combine: GradeCombine::Add,
+                invert: false,
+                shape: bpe_gfx::GradeShape::Radial(radial),
+                id: 0,
+            }],
+            invert: false,
+        }),
+        panels: vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() })],
+        ..GradeMask::default()
+    }];
+    let (inside, below) = (Vec2::new(250.0, -600.0), Vec2::new(250.0, -50.0));
+    for scale in [0.25, 0.5] {
+        let before = draw(&gpu, &field, &[], View::screen(scale), &plain);
+        let after = draw(&gpu, &field, &[], View::screen(scale), &graded);
+        let (a, b) = (luma(after.at(inside)), luma(before.at(inside)));
+        assert!(a > b + 20.0, "at {scale}: the mask's middle is a stop brighter: {a} vs {b}");
+        assert!(apart(after.at(below), before.at(below)) <= 1, "at {scale}: the block under it as it was");
+    }
+}

@@ -9,6 +9,7 @@ pub mod draft;
 pub mod final_job;
 pub mod final_ui;
 pub mod final_view;
+pub mod graded;
 pub mod pen_tool;
 pub mod picture;
 pub mod piece_tool;

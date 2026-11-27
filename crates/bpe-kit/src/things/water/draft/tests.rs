@@ -821,7 +821,8 @@ fn the_look_reads_every_card() {
     assert!(got.liquids.is_empty() && got.solids.is_empty() && got.lamps.is_empty());
     assert_eq!((got.rock, got.back), (MaterialLook::default(), BackLook::default()));
     assert_eq!((got.light.ambient, got.light), (1.0, LightLook::default()));
-    assert_eq!(got.finish, look::FinishLook::default());
+    // (The finish measures in the video's pixels: the scene's size.)
+    assert_eq!(got.finish, look::FinishLook { video: (1080, 1920), ..look::FinishLook::default() });
     let a = add(&mut scene, &reg, LIQUID, Vec2::ZERO);
     let lamp = add(&mut scene, &reg, LAMP, Vec2::new(-200.0, -300.0));
     let got = look_at(&scene, 0.0);

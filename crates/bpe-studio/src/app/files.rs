@@ -49,6 +49,7 @@ impl Studio {
         self.water_final.stop_make();
         if !self.water() {
             self.water_final.picture.free(self.panels.inspector.render.as_ref());
+            self.water_stage.graded.free(self.panels.inspector.render.as_ref());
         }
         self.follow = follow_of(ball, ball_resolved);
         self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);
