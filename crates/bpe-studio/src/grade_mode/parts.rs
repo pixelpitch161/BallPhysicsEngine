@@ -13,7 +13,7 @@ use crate::style;
 use bpe_core::{Choice, Color, Layer, LayerId, SettingDef, Settings, Value};
 use bpe_kit::modules::grade::{
     self, BRUSH, BrushPart, COLOUR_RANGE, ColourRangePart, Combine, LINEAR, LUMINANCE_RANGE, LinearPart,
-    LuminanceRangePart, RADIAL, RadialPart, THINGS, ThingsPart, masks::RANGE_PICKS, masks::range_key,
+    LuminanceRangePart, PART_KINDS, RADIAL, RadialPart, THINGS, ThingsPart, masks::RANGE_PICKS, masks::range_key,
 };
 use eframe::egui::{self, RichText, Sense, Stroke, Ui};
 
@@ -22,9 +22,7 @@ pub fn section(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, mask: LayerId, e
     let parts = grade::parts_of(gx.card, mask);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Parts").font(style::semibold(13.0)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            add_part(ui, mask, super::masks::offered(gx.scene), edits)
-        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| add_part(ui, mask, edits));
     });
     ui.add_space(4.0);
     if parts.is_empty() {
@@ -41,11 +39,11 @@ pub fn section(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, mask: LayerId, e
 }
 
 /// Add part: Add, Subtract or Intersect, then the kind.
-fn add_part(ui: &mut Ui, mask: LayerId, kinds: Vec<&'static str>, edits: &mut Vec<GradeEdit>) {
+fn add_part(ui: &mut Ui, mask: LayerId, edits: &mut Vec<GradeEdit>) {
     ui.menu_button("Add part", |ui| {
         for combine in Combine::ALL {
             ui.menu_button(combine.word(), |ui| {
-                for kind in &kinds {
+                for kind in PART_KINDS {
                     if ui.button(part_name(kind)).clicked() {
                         edits.push(GradeEdit::AddPart(mask, kind, combine));
                         ui.close();
