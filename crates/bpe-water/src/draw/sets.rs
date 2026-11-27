@@ -211,6 +211,33 @@ pub fn screen_pool(cell: f32, share: f32) -> Bench {
     Bench { drops: lay.drops, field }
 }
 
+/// The screen's box open at the top: rock under y 900 and past x -500 and 500, the sky above.
+pub fn open_top(cell: f32) -> SolidField {
+    const FAR: f32 = 1.0e4;
+    let solids = [
+        Solid::rect(Vec2::new(-FAR, -FAR), Vec2::new(-500.0, FAR), true, 0.0),
+        Solid::rect(Vec2::new(500.0, -FAR), Vec2::new(FAR, FAR), true, 0.0),
+        Solid::rect(Vec2::new(-FAR, 900.0), Vec2::new(FAR, FAR), true, 0.0),
+    ];
+    SolidField::build_least(screen_layout(cell), &solids, LEAST_WALL * cell)
+}
+
+/// A pool on the floor of the box [`open_top`] with a top waved `amplitude` px over `wavelength` px
+/// (its floor at y 900, its top round y 900 - `depth`), for the look's caustics.
+pub fn wavy_pool(cell: f32, depth: f32, amplitude: f32, wavelength: f32) -> Bench {
+    let field = open_top(cell);
+    let mut lay = Laying { field: &field, drops: Vec::new() };
+    let k = std::f32::consts::TAU / wavelength.max(1.0);
+    let top = |x: f32| 900.0 - depth + amplitude * (k * x).det_sin();
+    lay.lattice(
+        Vec2::new(-500.0, 900.0 - depth - amplitude - 8.0),
+        Vec2::new(500.0, 900.0),
+        |p| p.y >= top(p.x),
+        |_| 0,
+    );
+    Bench { drops: lay.drops, field }
+}
+
 /// The resting lattice over the rectangle `lo` to `hi` (world pixels) on `field`'s layout, every
 /// drop of liquid `kind`, none nearer a face than [`REST`] cells.
 pub fn lattice(field: &SolidField, lo: Vec2, hi: Vec2, kind: u32) -> Vec<Drop> {
