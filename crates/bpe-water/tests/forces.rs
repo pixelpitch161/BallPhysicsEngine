@@ -321,7 +321,8 @@ fn strong_spikes_measured() {
     let env = |key: &str, or: f32| std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
     let (cell, strength, size, secs) = (env("CELL", 6.0), env("S", 4.0), env("SIZE", 1.0), env("SECS", 4.0) as u32);
     let (layout, field) = open_box(cell);
-    let mut water = Water::new(gpu, &field, GRAVITY, Numbers::for_cell(cell), &[Feel::default()]);
+    // (`BPE_WATER_MOST_STEPS` and the rest of `Numbers::from_env_for` try other numbers.)
+    let mut water = Water::new(gpu, &field, GRAVITY, Numbers::from_env_for(cell), &[Feel::default()]);
     let pool = bpe_water::fill_stacked(&layout, &field, Vec2::new(-200.0, 380.0), Vec2::new(200.0, 448.0), STOPS, 0.25);
     water.add(&pool);
     let middle = Vec2::new(0.0, 490.0);
@@ -349,11 +350,15 @@ fn strong_spikes_measured() {
             let drops = read(&water);
             let fastest = drops.iter().map(|(_, v)| v.length()).fold(0.0, f32::max);
             let rms = (drops.iter().map(|(_, v)| v.length_squared()).sum::<f32>() / drops.len() as f32).sqrt();
-            let past = drops.iter().filter(|(p, _)| p.distance(middle) > 300.0).count();
+            // (Past the reach: in the box's corners too; flying: faster than 150 px/s there.)
+            let past: Vec<_> = drops.iter().filter(|(p, _)| p.distance(middle) > 300.0).collect();
+            let flying = past.iter().filter(|(_, v)| v.length() > 150.0).count();
             eprintln!(
-                "{:.1} s: {} steps, fastest {fastest:.0} px/s, rms {rms:.1} px/s, {past} past the reach ({:.0} s)",
+                "{:.1} s: {} steps, fastest {fastest:.0} px/s, rms {rms:.1} px/s, {} past the reach, {flying} flying \
+                 ({:.0} s)",
                 (frame + 1) as f32 / 60.0,
                 water.steps_last_frame(),
+                past.len(),
                 started.elapsed().as_secs_f32()
             );
             if frame + 1 == (secs - 1) * 60 {
@@ -366,5 +371,8 @@ fn strong_spikes_measured() {
     let rms = (moved.iter().map(|m| m * m).sum::<f32>() / moved.len() as f32).sqrt();
     eprintln!("{} drops at {cell} px, at most {most_steps} steps a frame", pool.len());
     eprintln!("tips (px from the magnet): {:?}", after.iter().map(|t| t.round()).collect::<Vec<_>>());
-    eprintln!("tips moved over the last second: rms {rms:.2} px, at most {:.1} px", moved.iter().map(|m| m.abs()).fold(0.0, f32::max));
+    eprintln!(
+        "tips moved over the last second: rms {rms:.2} px, at most {:.1} px",
+        moved.iter().map(|m| m.abs()).fold(0.0, f32::max)
+    );
 }

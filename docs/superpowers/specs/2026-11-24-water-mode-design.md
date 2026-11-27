@@ -438,7 +438,12 @@ part adds its own tools to the rail.
    - **4b. Forces and ferrofluid.** Wind, whirlpool and magnet (heater and cooler wait for heat). **Ferrofluid**:
      a black glossy liquid that a magnet pulls into rows of spikes, the magnet's strength on keyframes (water has
      no sound). If strong forces need more than 32 steps a frame, the skin that stays calm at any step count
-     (C2's `most_steps` hand-on) is built here.
+     (C2's `most_steps` hand-on) is built here. **Built** (this part's pull request): Force cards (Wind with
+     Gusts, Whirlpool, Magnet with Spikes, Spike size, Spikes point and Spike spread; a Liquid to move) and
+     spinning Drains push the water each frame; a magnet's pull is the slope of a star-shaped well, so the liquid
+     rests in sharp cones with round valleys at every detail; the eighth look, Ferrofluid. Strong magnets need
+     no more than the usual steps (more stir the mound), so the calm skin was not built
+     (`docs/notes/water.md`, Part 4b).
 5. **Moving parts.** Keyframed and Driven, joints, floats, wheels, buckets, gates. Part 8 comes first, so part 5
    adds the driven parts' state to the take's restart points.
 6. **Light and the six looks.** The whole renderer of section 6, materials drawn, Back, Lamps, the looks table,

@@ -723,8 +723,8 @@ impl Water {
         }
         // (The strongest of the liquids' Gravity, and never less than the course's.)
         let pull = self.feels.iter().map(|f| f.gravity.abs()).filter(|g| g.is_finite()).fold(1.0f32, f32::max);
-        // (And the forces' strongest pushes, as for gravity.)
-        let pushed: f32 = self.forces.iter().map(Force::strongest).sum();
+        // (And the forces' pushes, as for gravity.)
+        let pushed: f32 = self.forces.iter().map(Force::headroom).sum();
         let fastest = fastest + (self.gravity.length() * pull + pushed) * 2.0 * FRAME;
         self.numbers.steps_for(fastest, &self.feels, self.layout.cell).min(MOST_STEPS)
     }

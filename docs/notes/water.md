@@ -1459,8 +1459,12 @@ ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and
   full, so depth is measured from it): the deep water rests no fuller than the drops just above it (C2), a magnet
   presses them fuller, and the deep pressure stirred the mound at about 100 px/s. Without it the mound comes to
   rest. The water there is a little more pressed than elsewhere (Known).
-- **Steps**: `steps_now` adds each force's strongest push over two frames (`Force::strongest`: a magnet's worked
-  out over its reach and a tooth), as for gravity. A strong magnet at 3 px runs at the 32 steps' cap.
+- **Steps**: `steps_now` adds each force's push over two frames, as for gravity (`Force::headroom`: a magnet's pull
+  without its spikes, Strength gravities; a whirlpool's and a wind's draw on a drop at rest). Counting a spike's
+  sharper slopes took a 6 px frame to 32 steps, where the skin's bend (calm only at the trial's pace, C1) stirred a
+  Strength 4 mound; at the floor's steps it holds still. **Strong magnets** (`strong_spikes_measured`, Strength 4,
+  Spike size 1): at 6 px 16 steps, tips moving 0.65 px a second; at 3 px 32 steps, 0.27; no drop thrown past the
+  reach. So the skin calm at any step count was not needed here (still Known for fast water at fine detail).
 
 ### Force cards (`bpe-kit modules/water/places.rs`, `things/water/draft/forces.rs`)
 
@@ -1491,7 +1495,31 @@ ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and
 
 ### The Ferrofluid look (`bpe-kit modules/water/looks.rs`)
 
-- The eighth `ReadyLook` (title "Ferrofluid", Liquid "Ferrofluid"): ink black (`#08080b`), Solid 1, Clarity 0, no
-  Bend or Streaks, Smoothing 0.15 (spikes keep their points), Shine 0.95 of size 0.1, Edge sheen 0.55; a pale Flat
-  plate (`#e6e3dd`) on a pale Back (`#d4d1cb`); Ambient 0.6, Bounce 0.2, no caustics or shafts; two soft white
-  Spots from above at ±0.32 of the shot (aims 65° and 115°, Spread 80°, Softness 0.7, Brightness 1.2); Bloom 0.1.
+- The eighth `ReadyLook` (title "Ferrofluid", Liquid "Ferrofluid", "Black glossy ferrofluid on a pale plate, in soft
+  even light."): ink black (`#08080b`), Solid 1, Clarity 0, no Bend or Streaks, Smoothing 0.15 (spikes keep their
+  points), Shine 1 of size 0.6 (its gloss is the sky's highlight along the rims that face up), Edge sheen 0.12; a
+  pale Flat plate (`#e6e3dd`) on a pale Back (`#d4d1cb`); Ambient 1, Bounce 0.2, no caustics or shafts, no lamps;
+  Bloom 0.1.
+- Why no lamps: an opaque liquid stops a lamp's light, so it throws its shadow on the back. Spots placed by their
+  share of the shot sat in the rock above a carved chamber and lit nothing; two shadowless Suns from 55° and 125°
+  filled the valleys between the spikes with grey; from 72° and 108° the spikes were fine, but in the shared looks
+  scene every drop stuck on the ceiling, the tap's stream and the slope's film threw long stripes across the pale
+  back, with the light map's steps on their edges. With no lamps nothing throws a shadow. Why little sheen: a thin
+  spike is all edge to the surface rounding, and at Edge sheen 0.55 the spikes read grey.
+- Full-size look check: `LOOK_ONLY=water-ferrofluid` (a carved chamber 700 wide, a 380 x 70 pool on its floor, a
+  Magnet 40 px under the floor in the rock, Strength keyed 0 to 3 over 1.5 s, Spikes 9 over 160°; Normal detail,
+  4 s, about 33 000 drops, made in about 400 s on the cloud's software card): the whole screen at 3 s, the frame
+  after it, and the spikes at twice the size. Its final is kept with `LOOK_TAKES`.
+
+### Known (part 4b)
+
+- Wind blows everywhere in the course: solids don't shelter the water behind them. Forces don't move air drops,
+  and nothing moves a force (part 5's place keyframes are on Pieces and Walls only).
+- Inside a magnet's reach there is no deep part, so a deep pool there is a little more pressed than elsewhere.
+- A Magnet's two outer teeth, near the floor, fill to the edge of its Reach.
+- Heaters and Coolers wait for heat.
+- The look drawing's, seen in the Ferrofluid look check: a spike under about 50 px across is drawn tilted across
+  its whole width (the surface rounding reads the smooth surface at 24 px, which calls the spike all edge), with a
+  faint band and a dashed one-pixel highlight where it meets the body; the liquid's own shadow on the back has the
+  light map's steps on its edge at Good light (4 px), finer at Best.
+- The skin calm at any step count is still not built (C1, C2): not needed by forces, as measured above.

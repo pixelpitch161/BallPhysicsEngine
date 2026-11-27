@@ -116,29 +116,15 @@ impl Force {
         numbers && reaches && finite(&[self.place.x, self.place.y]) && self.liquids != 0
     }
 
-    /// About the strongest push it gives a drop, pixels a second squared (for the frame's steps), at most
-    /// [`MOST_PUSH`] gravities.
-    pub fn strongest(&self) -> f32 {
+    /// The push the frame's steps make room for, pixels a second squared, as they do for gravity: a magnet's
+    /// pull without its spikes (Strength gravities; a spike's sharper slopes are thin bands the liquid rests
+    /// across, and counting them took a 6 px frame to 32 steps, where the skin's bend stirred a Strength 4
+    /// mound: its tips moved 3.1 px a second against 0.65 at the 16 steps of the floor), a whirlpool's and a
+    /// wind's draw on a drop at rest. At most [`MOST_PUSH`] gravities.
+    pub fn headroom(&self) -> f32 {
         let most = MOST_PUSH * GRAVITY_UNIT;
         let a = match self.push {
-            Push::Magnet { pull, .. } => {
-                // (The push is `A |Ψ'(u/s)|` times the size of `u/s`'s slope: the most of that over the reach
-                // and a tooth.)
-                let mut most_slope = 0.0f32;
-                for i in 0..=32 {
-                    for k in 0..=32 {
-                        let u = i as f32 / 32.0;
-                        let (share, along, round) = self.shape(u, k as f32 / 32.0);
-                        let v = u / share;
-                        if v < 1.0 {
-                            let q = 1.0 - v * v;
-                            let size = Vec2::new(1.0 / share - u * along / (share * share), round / (share * share));
-                            most_slope = most_slope.max(6.0 * v * q * q * size.length());
-                        }
-                    }
-                }
-                pull.abs() * most_slope.max(PSI_SLOPE_MOST)
-            }
+            Push::Magnet { pull, .. } => pull.abs() * PSI_SLOPE_MOST,
             Push::Whirlpool { speed, rate } => speed.abs() * rate.max(0.0),
             Push::Wind { velocity, rate } => velocity.length() * rate.max(0.0),
         };
@@ -395,7 +381,7 @@ mod tests {
         let huge = Force { liquids: 1, ..huge };
         let p = huge.magnet_push(at);
         assert!(p.is_finite() && p.length() <= MOST_PUSH * GRAVITY_UNIT * 1.0001, "{p}");
-        assert!(huge.strongest() <= MOST_PUSH * GRAVITY_UNIT);
+        assert!(huge.headroom() <= MOST_PUSH * GRAVITY_UNIT);
     }
 
     #[test]

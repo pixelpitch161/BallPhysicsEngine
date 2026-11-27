@@ -83,17 +83,21 @@ every detail", Parts 4b). Hand-over: `/mnt/project-files/ballphysics/water-mode/
 9. **Limits.** At most `MOST_FORCES` = 16 forces (more: `TOO_MANY_FORCES` on the stage). Each force's push on a
    drop is held to `MOST_PUSH` = 256 gravities (a guard only: held pushes are no longer down a slope, and a
    magnet that meets it churns, so Strength 4 with Spike size 1 stays well under it).
-10. **Steps.** The frame's headroom (`steps_now`) adds each force's largest push over two frames, as it does for
-    gravity, so strong forces get their steps. Up to `most_steps` = 32.
+10. **Steps.** The frame's headroom (`steps_now`) adds each force's push over two frames, as it does for gravity
+    (`Force::headroom`: a magnet's pull without its spikes, Strength gravities; a whirlpool's and a wind's draw on a
+    drop at rest). Up to `most_steps` = 32. *Measured in Task 6:* counting a spike's sharper slopes (about 9 ×
+    Strength gravities in a thin band) took a 6 px frame to 32 steps, and there the skin's bend stirred the mound
+    (C1's limit: the skin is calm only at the trial's pace); more steps stirred it more, fewer calmed it.
 11. **The calm skin past 32 steps** is built only if a strong magnet needs it: Task 6 measures Strength 4, Spike
     size 1 at 6 and 3 px (and 2 px on the card if the container can't), and the mark is "the spikes stand still
     (tips move under 2 px/s rms over the last second) and no drop is thrown past the reach". If the mark is met at
-    32 steps the skin is left as it is and the notes say so.
+    32 steps the skin is left as it is and the notes say so. *Met* (Task 6, with decision 10's headroom): a strong
+    magnet needs no more than the floor's steps, and more make it worse, so the calm skin is not built here.
 12. **Ferrofluid's look** is an eighth ready-made look, **Ferrofluid** (Black glossy liquid, high shine with a
     small highlight, edge sheen, a little Smoothing so spikes stay sharp; pale flat plate and back; two soft spots
-    from above), set with `apply_look` and offered on the chooser and in Use a look. Its liquid's values also go
-    to part 4's `ReadyLiquid` table as a Ferrofluid row when that lands (whoever merges second adds it; values in
-    "As built").
+    from above; *as built*: no lamps, Task 5), set with `apply_look` and offered on the chooser and in Use a look.
+    Its liquid's values also go to part 4's `ReadyLiquid` table as a Ferrofluid row when that lands (whoever merges
+    second adds it; values in "As built").
 13. **The stage shows a force** with its marker as today plus: Magnet and Whirlpool a ring at their Reach; a
     Magnet's spikes as short ticks on the ring; a Whirlpool's spin as an arrow head on the ring; Wind three arrows
     along its Aim (as a Sun's). At the playhead, with keyframes (`force_card_at`).
@@ -219,7 +223,7 @@ every detail", Parts 4b). Hand-over: `/mnt/project-files/ballphysics/water-mode/
 ### Task 4: the Ferrofluid look (`bpe-kit modules/water/looks.rs`)
 
 **Files:** Modify `looks.rs` (`ReadyLook::Ferrofluid`, `ALL` of 8, title "Ferrofluid", words "Black glossy
-ferrofluid on a pale plate, under two soft studio lamps.", liquid name "Ferrofluid", its row);
+ferrofluid on a pale plate, in soft even light." as built, liquid name "Ferrofluid", its row);
 `modules/water/mod.rs` tests if they count looks; `crates/bpe-studio/src/water_mode/chooser.rs` only if its
 layout needs it (two rows of four).
 
@@ -270,4 +274,39 @@ Coarse final 4 s; drawn in the Ferrofluid look at 1, 2.5 and 4 s: `water-ferrofl
 
 ## As built and measured
 
-(Filled in as the tasks land.)
+- **Task 1 (engine)** as planned, but for the magnet's shape (decision 5, the star: the first shape's deepest place
+  was out in the teeth and its pushes met their guard) and one thing found on the way: **no deep part inside a
+  magnet's reach** (decision 5b, `in_magnet` in `deep.wgsl`): with it the mound stirred at about 100 px/s
+  (`a_magnet_holds_its_mound_still` fails without it at 105). With it: the mound at Strength 3, Spike size 0.75,
+  Spikes 9 over 160° holds still (rms 22 px/s at 6 px, 13 at 3 px; under 5 px/s inside), sharp cones with round
+  valleys at both details.
+- **Task 2 (cards)** as planned. Merged with part 4.1 (drains): a Drain's whole card is in its drain's print and
+  parts now, so a spinning Drain's whirlpool restarts what part 4.1's drain does; the restart tests list DRAIN with
+  FORCE. `WaterRun::renote` (the stage's held setup takes notes that change with no physics) was added for the
+  Heater's note.
+- **Task 3 (stage)** as planned (`force_marks`, beside part 4.1's `drain_marks`).
+- **Tasks 4 and 5 (the look and its check).** The first row (two Spots, Edge sheen 0.55, Shine 0.95 of size 0.1)
+  failed the full-size look: the Spots, placed by their share of the shot, were in the rock above the carved
+  chamber and lit nothing, so the spikes had no highlight, and the sheen made every thin spike grey (a spike under
+  about 50 px across is all edge to the surface rounding: it is tilted across its width, with a faint line where it
+  meets the body). Two shadowless Suns from 55° and 125°: the opaque liquid's own shadow on the back filled the
+  valleys between the spikes. From 72° and 108°: the spikes were right, but in the shared looks scene every drop on
+  the ceiling, the stream and the slope's film threw long stripes across the pale back, stepped at the light map's
+  4 px. As built: **no lamps**, Ambient 1, Shine 1 of size 0.6 (the gloss is the sky's highlight on the rims that
+  face up), Edge sheen 0.12 (values in `docs/notes/water.md`); the words "in soft even light". The look check is
+  Normal detail (2 px) for 4 s, drawn at 3 s, the frame after and twice as near (not Coarse at 1, 2.5 and 4 s: 2 px
+  is where the spikes' points show). The faint band and a dashed one-pixel line where a thin spike meets the body
+  are the look drawing's (Known).
+- **Task 6 (strong forces)**, `strong_spikes_measured` (Strength 4, Spike size 1, Spikes 9 over 160°, 4 s, the
+  strength rising over the first second), with decision 10's headroom:
+
+  | Detail | Steps a frame | rms speed, 1.5 to 4 s | Tips moved over the last second | Flying past the reach after 1 s |
+  | --- | --- | --- | --- | --- |
+  | 6 px | 16 | 36 to 49 px/s | 0.65 px rms (most 1.1) | none |
+  | 3 px | 32 | 15 to 20 px/s | 0.27 px rms (most 0.5) | none |
+
+  Before (the headroom counting the spikes): 6 px took 32 steps, rms 75 to 93 px/s, the tips moved 3.1 px. At 6 px
+  with the steps held to 16, 20, 24, 32, 41 (`BPE_WATER_MOST_STEPS`) the tips moved 0.65, 1.2, 1.3, 3.1, 3.3 px;
+  Strength 4 with Spike size 0.75 forced to 48 steps churned at 107 to 140 px/s. The drops flying past the reach in
+  the first half second are the pool spreading to the box's corners, as it does with no magnet. The two outer teeth
+  reach the reach's edge (a tooth lying near the floor fills to it).

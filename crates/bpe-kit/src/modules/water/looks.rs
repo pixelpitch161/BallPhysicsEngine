@@ -106,7 +106,7 @@ impl ReadyLook {
             ReadyLook::PaintOnPaper => "Thick glossy paint on paper cut-outs.",
             ReadyLook::Molten => "Lava that glows and throws sparks, lighting the dark rock round it.",
             ReadyLook::Cartoon => "Flat colours with outlines and banded shading.",
-            ReadyLook::Ferrofluid => "Black glossy ferrofluid on a pale plate, under two soft studio lamps.",
+            ReadyLook::Ferrofluid => "Black glossy ferrofluid on a pale plate, in soft even light.",
         }
     }
 
@@ -234,26 +234,15 @@ impl ReadyLook {
                 (light.ambient, light.caustics, light.shafts) = (1.0, 0.0, 0.0);
             }
             ReadyLook::Ferrofluid => {
-                // (Ink black and opaque, a small sharp highlight and a sheen at its edges; little
-                // smoothing, so its spikes keep their points.)
+                // (Ink black and opaque, glossy from the soft light above it, and only a little sheen: a
+                // thin spike is all edge, and more greys it; little smoothing, so the spikes keep their
+                // points. No lamps: the liquid stops a lamp's light, so every drop on a ceiling or a stream
+                // threw a long shadow across the pale back.)
                 (l.colour, l.solid, l.clarity, l.bend, l.streaks) = (rgb(0x08080b), 1.0, 0.0, 0.0, 0.0);
-                (l.smoothing, l.shine, l.shine_size, l.edge_sheen) = (0.15, 0.95, 0.1, 0.55);
+                (l.smoothing, l.shine, l.shine_size, l.edge_sheen) = (0.15, 1.0, 0.6, 0.12);
                 (m.material, m.colour) = (MaterialKind::Flat, rgb(0xe6e3dd));
                 (b.shows, b.colour) = (BackShows::Colour, rgb(0xd4d1cb));
-                (light.ambient, light.bounce, light.caustics, light.shafts) = (0.6, 0.2, 0.0, 0.0);
-                let spot = |aim: f32, x: f32| LampRow {
-                    card: LampCard {
-                        kind: LampKind::Spot,
-                        colour: rgb(0xfff8f0),
-                        brightness: 1.2,
-                        aim,
-                        spread: 80.0,
-                        softness: 0.7,
-                        ..LampCard::default()
-                    },
-                    share: Vec2::new(x, -0.42),
-                };
-                row.lamps = vec![spot(65.0, -0.32), spot(115.0, 0.32)];
+                (light.ambient, light.bounce, light.caustics, light.shafts) = (1.0, 0.2, 0.0, 0.0);
                 row.bloom = 0.1;
             }
         }
