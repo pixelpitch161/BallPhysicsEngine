@@ -545,4 +545,21 @@ speed); `Captured.poses: Vec<(Pose, Pose)>`; `TAKE_FORMAT = 3`.
 
 ## As built
 
-(Filled in as each part lands.)
+### 5a (moving solids and Keyframed parts)
+
+Built as planned (decisions 1 to 18; `docs/notes/water.md` "Part 5a" has the detail). Where it differs:
+
+- **The take keeps each part's speed as well as its pose** (32 bytes a part, not 16), and a restart point keeps the
+  speed each part moved at over its last frame (`Moving.speeds`, `WaterState.speeds`, `Water::resume_movers`): a
+  moment captured just after a restart moves its parts on by the same speed as one captured on a body that played
+  through, so a final remade from a key is the same byte for byte (`water_final.rs`
+  `a_final_with_a_moving_paddle_remakes_from_the_key_before` failed at its second chunk without it).
+- **A moving part's texture goes with it** (not in the plan): the look drawing read every material's texture at the
+  world point, so a moving rock-textured block slid under its own veins. Each material now has a `texture` map, set
+  for a moving part from its start pose (`Mover.start`, `Movers::textures`); `LookDraw::set_movers(movers, poses)` and
+  `set_posed(field, textures)` replace the plan's "compose and `set_field`" in each drawing place, and the plan's
+  `Live.movers` / `Live::field_now` weren't needed (the body keeps its movers: `Water::movers()`, `poses()`).
+- **The stage path's colours**: the design system has no `TEXT_SOFT` or `ACCENT`, so the path is `MUTED` over
+  `OUTLINE`, the key dots `TEXT_STRONG`, the part at its place `FAINT` and at the playhead `TEXT_STRONG`.
+- **Timing**: `water_moving_speed` makes the one-screen chamber twice with a paddle, still and Keyframed, and prints
+  the moving paddle's share of a scene second (its lines start `water final:`, so the card job's summary keeps them).

@@ -360,3 +360,48 @@ fn water_final_speed() {
         ms[2]
     );
 }
+
+/// Times moving parts (by hand, and in the card job's timing step): the one-screen chamber of
+/// [`water_final_speed`] with a paddle 40 x 600 standing in its pool, made at Normal final detail
+/// (2 px) for `WATER_SECONDS` (3) seconds twice, the paddle Fixed and then Keyframed across the pool
+/// and back, and the extra the moving paddle costs a scene second (the card laying it over the course
+/// each step, the deep water's solids where it moved, and the finer steps it asks for).
+#[test]
+#[ignore]
+fn water_moving_speed() {
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let seconds: f64 = std::env::var("WATER_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(3.0);
+    let detail = std::env::var("WATER_FINAL_DETAIL").unwrap_or_else(|_| "normal".into());
+    let reg = bpe_kit::registry();
+    let gpu = WaterGpu::new(&device, &queue);
+    let mut walls = Vec::new();
+    for moving in [false, true] {
+        let mut scene = screen_chamber(&reg, &detail);
+        let paddle = add(&mut scene, &reg, PIECE, Vec2::new(-300.0, 600.0));
+        set(&mut scene, paddle, SlotId::Form, "piece", Value::Choice("pillar".into()));
+        set(&mut scene, paddle, SlotId::Form, "size", Value::Vec2([40.0, 600.0]));
+        if moving {
+            set(&mut scene, paddle, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+            let offset = Address { thing: paddle, slot: Some(SlotId::Moves), key: "offset".into() };
+            for (t, x) in [(0.0, 0.0), (0.5 * seconds, 600.0), (seconds, 0.0)] {
+                scene.set_key(&reg, &offset, t, Value::Vec2([x, 0.0])).unwrap();
+            }
+        }
+        let resolved = bpe_core::resolve(&scene, &reg);
+        let make = MakeFinal::of(&scene, &resolved, seconds);
+        let finals = folder(if moving { "moving-speed" } else { "still-speed" });
+        let started = std::time::Instant::now();
+        let head = make.make(&gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+        walls.push(started.elapsed().as_secs_f64() / seconds);
+        std::fs::remove_dir_all(finals.dir()).ok();
+        if moving {
+            println!(
+                "# scene\tone screen two thirds full and a tap, a paddle across it and back, {detail} final detail ({} px), {seconds} s, {} drops",
+                make.setup.cell, head.drops
+            );
+        }
+    }
+    println!("water final: wall seconds a scene second, the paddle still\t{:.1}", walls[0]);
+    println!("water final: wall seconds a scene second, the paddle moving\t{:.1}", walls[1]);
+    println!("water final: the moving paddle's share\t{:.0}%", 100.0 * (walls[1] - walls[0]) / walls[1].max(1e-9));
+}

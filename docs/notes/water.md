@@ -1312,3 +1312,105 @@ what the water's drawing draws, and an effect on the Light only reads the water'
   Only covers, a new part on Liquids reaching the finish), `the_look_reads_every_card` (the course's code).
 - `bpe-studio`: `a_water_scenes_things_part_starts_on_liquids_and_offers_the_waters_things` (Grade mode's Only
   menu), `a_water_scenes_things_part_offers_the_waters_things`.
+
+## Part 5a: moving solids and Keyframed parts (as built)
+
+Plan: `docs/superpowers/plans/water-mode/part5-moving-parts.md` (decisions 1 to 18 and "As built 5a"). A Piece or
+Wall whose Moves card says **Keyframed** now moves through the water as its Position, Turn and Scale keys say,
+pushes the water as it goes, and is drawn where it is in the draft, the Final view, the export and Preview final
+frame. **Driven** parts are part 5b; buckets are 5c.
+
+### The parts (`bpe-water parts/`)
+
+- **`Pose { at, turn, scale }`** (`pose.rs`): the own frame's origin in the world, its turn (radians, clockwise on
+  screen) and its scale, with `to_world`, `to_own`, `lerp`, `sane` (scale kept to `SCALE_RANGE` 0.01 to 100),
+  `speed_to` and `moved_on`. Its turn uses `det_sin_cos` (it is physics).
+- **`MoverShape`** (`shape.rs`): a moving part's solid sampled once on its own grid at the course's cell, aligned so
+  its nodes lie on the course's at its start (`align = layout.origin - start.at`), its thin walls made at least
+  `LEAST_WALL` cells thick at the smallest Scale it is keyed to (`least / least_scale`).
+- **`Mover { shape, wetting, owner, start }`** and **`Movers { still, movers }`** (`movers.rs`): the still field (the
+  carved rock and every part that stays) and each moving part. `field_at(poses)` composes the field on the processor
+  as the card does (only the nodes round each part change; the nearer face wins, a node inside a part is the part's);
+  `moved_box(from, to)` is the box the parts sweep; `fastest(from, to, seconds)` the fastest point's speed;
+  `textures(poses)` where the drawing reads each part's texture (below). At most `MOST_MOVERS` = 64.
+
+### On the card (`bpe-water drops/movers.rs`, `shaders/movers.wgsl`, `common.wgsl`, `deep.wgsl`)
+
+- The solid buffer has a third section: at each node, which moving part's face is nearest (`k + 1` as f32, 0 still).
+  The still field's distance and Wetting are kept in `still_buf`; each part's own grid (in cells, clamped to ±64) in
+  `shapes_buf`; the frame's numbers carry each part's pose at the frame's start and end, and the moved box.
+- Each step of a frame in which parts move runs **`cs_movers`** over the moved box at the step's end
+  (`st.t = (j + 1) / n`, `mover_pose(m, t)` returning the end pose exactly at `t >= 1`) and then
+  **`cs_deep_walls_moved`** over the box grown by 2 nodes, before Predict. A frame in which nothing moves composes
+  nothing.
+- `solid_speed(q)` gives the nearest moving face's point speed; **`keep_off`** keeps none of a drop's speed into a
+  face relative to the face's speed, and the drag acts on the speed along the face relative to the face's. With no
+  part moving the arithmetic is as before (the goldens of still courses don't move).
+- The **joined passes are off** while parts move, and `steps_now` takes the fastest part point's speed with the
+  fastest water's, so no point of a part moves more than `most_move` spacings a step.
+- `Water::set_movers(movers, poses)` gives a body its parts (uploads the still field and the shapes, lays them over
+  the whole layout on the card, `lay_movers_everywhere`); `resume_movers(movers, state)` the same from a restart
+  point; `move_to(poses)` sets where they are at the next frame's end; `poses()`, `move_speeds()` (each part's speed
+  over the last frame played) and `movers()` read them back.
+
+### What a take and a restart point keep (`take/frame.rs`, `drops/state.rs`, `drops/capture.rs`)
+
+- Every kept moment stores each part's pose and speed (`FrameCodec` magic **BPF2**, 32 bytes a part after the
+  drops; `TAKE_FORMAT` 3). A moment inside a frame keeps the poses at its cut (`poses_at_share`, linear between the
+  frame's start and end, as the physics moved them). `TakeFrame::poses_at(ahead)` moves each on by its speed.
+- A restart point (`WaterState`, magic **BPESTAT2**) keeps each part's pose and its speed over the last frame. A
+  moment captured on a body made from a restart point then matches one captured on a body that played through, so a
+  final remade from a key matches one made from the start byte for byte.
+
+### The kit (`bpe-kit things/water/draft/{movers,course}.rs`, `draft.rs`, `inputs.rs`, `make.rs`)
+
+- `WaterSetup.movers`: the course's Pieces and Walls that move (each Keyframed one with something to it, at most 64,
+  in order). A **Driven** one stays where it is and the stage says `DRIVEN_LATER`; a moving part with **Cuts** on
+  doesn't cut and says `MOVING_CUTS`; the 65th says `TOO_MANY_MOVERS`.
+- `SolidSetup::pose_at(time)`: its place plus Position, its turn plus Turn, and Scale, at water time.
+  `still_with(mask)`, `movers_on(still)`, `poses_at(time)`, `movers()`; `field()` is the still field with every part
+  at its start pose (fills, taps' room and spouts are judged on it).
+- **`set_inputs`** moves the parts to where they are at the frame's end (`poses_at((frames + 1) / 60)`) before the
+  other inputs; the draft, the final and a draft's export all play a frame through it. `start` and `resume` give a
+  body its parts.
+- The print hashes each Piece's and Wall's Moves kind, and for a moving one its `offset`, `turn` and `scale` and
+  their keys; `WaterInputs` has a part `mover:<k>` per moving part, so a moved key remakes the final only from the
+  key before it.
+
+### The drawing (`bpe-water draw/look/`, `shaders/look.wgsl`; `bpe-studio water_mode/{draft,picture,final_view}.rs`,
+`bpe-cli water.rs`)
+
+- **`LookDraw::set_movers(movers, poses)`** composes `field_at(poses)` on the processor and lays it (the light maps
+  are drawn every picture, so shadows follow); `set_posed(field, textures)` does the same from a field worked out
+  elsewhere (the Final view's worker). `set_field` and `renew` put every texture back on the world.
+- **A moving part's texture goes with it**: each material has a `texture` map (`a, b, c, d`: `p` to
+  `(a p.x - b p.y + c, b p.x + a p.y + d)`, the point the part had at its start), read by `material_albedo`. Still
+  parts and the rock keep `(1, 0, 0, 0)`. (Without it a moving rock-textured block slid under its own veins.)
+- The **stage** lays the body's parts where they are now (`StagePicture::set_poses`, when the poses changed and no
+  preview is shown); the preview of a carve stroke or a dragged piece shows the parts at their start (decision 18).
+- The **Final view**'s worker composes the field at the moment's poses (`frame.poses_at(ahead)`; a take of another
+  course: the setup's keys at that time) and sends it with the moment.
+- The **export** and Preview final frame draw a final's moment at its poses moved on by `ahead`, and a draft at the
+  body's poses moved on by its speeds.
+
+### The stage path (`bpe-studio water_mode/solid_edit.rs`)
+
+- A picked moving part shows its **path** (`path_of`: where it is every 1/30 s over the scene's Length, at most ten
+  minutes' worth) as a thin `MUTED` line over `OUTLINE`, a `TEXT_STRONG` dot at each Position key
+  (`SolidSetup::position_keys`), its outline at its place (where the handles are, dragging moves the whole path) in
+  `FAINT`, and its outline where it is at the playhead (`outline_at`) in `TEXT_STRONG`. (The plan named
+  `TEXT_SOFT` and `ACCENT`, which the design system doesn't have.)
+
+### Tests
+
+- `bpe-water`: `parts/` unit tests (pose maths, the shape, `field_at`, the moved box, the fastest point, a part's
+  texture going with it); `tests/movers.rs` (the field on the card matching the processor's at a pose and as a part
+  moves, a paddle pushing a pool, a lifted gate, a fast turning bar, a plate pushed into the rock, a lid on a full
+  cup, a moment inside a frame keeping the parts between, moving water repeating from the start and from a copy);
+  `tests/look.rs` `a_moving_parts_texture_goes_with_it` (fails without the texture map); `take/frame.rs`
+  `a_frame_keeps_its_parts_poses`.
+- `bpe-kit`: the draft tests on which parts move and what the stage says, the print and inputs reading the keys, a
+  keyframed piece moving in the draft; `tests/water_final.rs` `a_final_with_a_moving_paddle_remakes_from_the_key_before`.
+- `bpe-cli`: `a_final_frame_draws_a_moving_part_where_it_was`.
+- `bpe-studio`: `a_keyframed_piece_moves_as_the_draft_plays_and_goes_back`, `a_picked_keyframed_piece_shows_its_path`,
+  `a_piece_edit_restarts_the_draft_and_a_colour_edit_does_not` (a moving piece and each Position key restart it).
