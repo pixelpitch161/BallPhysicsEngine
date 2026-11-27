@@ -188,6 +188,11 @@ Ubuntu 24.04 to match the containers.
   sometimes aborts the program as it closes (`docs/notes/checks.md`). (egui's default for the editor's window opens
   OpenGL too; left as it is, no editor crash has been seen.)
 
+- A shader never reads a texture at a mip level worked out per pixel (`textureLoad` or `textureDimensions(t, k)` with
+  a `k` that varies across the picture): the cloud's software card takes one level for a block of pixels. Loop over
+  the level numbers with each one's share and work a level's size out from level 0's (`look.wgsl`'s `level_share`,
+  `size_at`).
+
 - Card sim states are `MotionState { settings }` and `BounceState { settings }` (in
   `bpe-kit/src/modules/{motion,bounce}/sim.rs`). `downcast_ref::<BasicBounce>()` compiles but silently returns
   `None`.

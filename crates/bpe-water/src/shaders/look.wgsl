@@ -145,6 +145,11 @@ const TANK: f32 = 100.0;
 const ROUND: f32 = 6.0;
 // Water's index of refraction (caustics).
 const ETA: f32 = 1.33;
+// How far from a solid's face the field's distances hold (world px; `SolidField::BAND`, less a
+// little): a shadow's soft edge reaches no further.
+const SHADOW_REACH: f32 = 44.0;
+// The nearest a caustic's focusing reads 1 / |1 - t / f| at: its brightest is 1 over it.
+const CAUSTIC_NEAREST: f32 = 1.0 / 6.0;
 // The liquid's surface in the coarse amount (the node fields' level 1).
 const COARSE_LEVEL: f32 = 0.5;
 // How far the back's contact shadow reaches from a solid (world px) and how dark it gets.
@@ -233,8 +238,14 @@ fn luma(c: vec3<f32>) -> f32 {
 
 // ---- reading textures texel by texel ----
 
+// Level `k`'s size, from level 0's (a size asked for at a level that differs from pixel to pixel
+// comes back wrong on the cloud's software card).
+fn size_at(t: texture_2d<f32>, k: i32) -> vec2<i32> {
+    return max(vec2<i32>(textureDimensions(t, 0)) >> vec2<u32>(u32(k)), vec2<i32>(1));
+}
+
 fn load0(t: texture_2d<f32>, at: vec2<i32>, k: i32) -> vec4<f32> {
-    let size = vec2<i32>(textureDimensions(t, k));
+    let size = size_at(t, k);
     if any(at < vec2<i32>(0)) || any(at >= size) {
         return vec4<f32>(0.0);
     }
@@ -242,7 +253,7 @@ fn load0(t: texture_2d<f32>, at: vec2<i32>, k: i32) -> vec4<f32> {
 }
 
 fn load_clamped(t: texture_2d<f32>, at: vec2<i32>, k: i32) -> vec4<f32> {
-    let size = vec2<i32>(textureDimensions(t, k));
+    let size = size_at(t, k);
     return textureLoad(t, clamp(at, vec2<i32>(0), size - 1), k);
 }
 
@@ -272,6 +283,14 @@ fn node_t(p: vec2<f32>, k: i32) -> vec2<f32> {
 
 fn density_at(p: vec2<f32>, k: i32) -> vec4<f32> {
     return bilinear0(dens, node_t(p, k), k);
+}
+
+// Level `k`'s share of a read between levels at `level`. A level that differs from pixel to pixel is
+// read as a loop over the level numbers with each level's share, never as one read at a level
+// worked out per pixel: some cards (the cloud's software one) take one level for a whole block of
+// pixels, sampled or loaded (`docs/notes/water.md`, part 2b).
+fn level_share(level: f32, k: i32) -> f32 {
+    return max(0.0, 1.0 - abs(level - f32(k)));
 }
 
 // The field's outward way at world point `p` (unit; up where it is flat).
@@ -537,6 +556,21 @@ fn ripple(x: f32, t: f32) -> vec3<f32> {
     return out;
 }
 
+// The ripples' curvature at `x` (as `ripple(x, t).z`), each wave's blurred over `w` world px: seen
+// from deep under it, a lamp's size smooths away the small waves' caustics.
+fn ripple_kappa(x: f32, t: f32, w: f32) -> f32 {
+    let lengths = array<f32, 5>(18.0, 27.0, 38.0, 52.0, 70.0);
+    var out = 0.0;
+    for (var i = 0; i < 5; i++) {
+        let k = 2.0 * PI / lengths[i];
+        let wk = sqrt(2000.0 * k) * select(1.0, -1.0, (i & 1) == 1);
+        let phase = 2.0 * PI * hash2(vec2<i32>(i, 7));
+        let a = 0.012 * lengths[i];
+        out += -a * k * k * sin(k * x - wk * t + phase) * exp(-0.5 * (k * w) * (k * w));
+    }
+    return out;
+}
+
 // ---- 4. the light map ----
 
 struct LightOut {
@@ -568,28 +602,91 @@ fn to_edge(p: vec2<f32>, way: vec2<f32>) -> f32 {
     return max(t, 0.0);
 }
 
-// The caustics' brightening at a surface crossed `t` world px from the lit point, at world point `q`
-// on it: a curved surface focuses the light under it as a lens of focal length η R / (η - 1).
-fn caustic_at(q: vec2<f32>, t: f32) -> f32 {
-    let h = 2.0 * u.grid.z;
-    let a = density_at(q, 1).a;
-    let ax = (density_at(q + vec2<f32>(h, 0.0), 1).a - density_at(q - vec2<f32>(h, 0.0), 1).a) / (2.0 * h);
-    let ay = (density_at(q + vec2<f32>(0.0, h), 1).a - density_at(q - vec2<f32>(0.0, h), 1).a) / (2.0 * h);
-    let axx = (density_at(q + vec2<f32>(h, 0.0), 1).a - 2.0 * a + density_at(q - vec2<f32>(h, 0.0), 1).a) / (h * h);
-    let ayy = (density_at(q + vec2<f32>(0.0, h), 1).a - 2.0 * a + density_at(q - vec2<f32>(0.0, h), 1).a) / (h * h);
-    let axy = (density_at(q + vec2<f32>(h, h), 1).a - density_at(q + vec2<f32>(h, -h), 1).a
-        - density_at(q + vec2<f32>(-h, h), 1).a + density_at(q + vec2<f32>(-h, -h), 1).a) / (4.0 * h * h);
+// The surface's curvature at `q` read from the amount's level `k` (the outward way's divergence:
+// above 0 where the liquid bulges out), and its outward way (unit); zero where it is flat.
+fn surface_bend(q: vec2<f32>, k: i32) -> vec3<f32> {
+    let h = u.grid.z * exp2(f32(k));
+    let a = density_at(q, k).a;
+    let ax = (density_at(q + vec2<f32>(h, 0.0), k).a - density_at(q - vec2<f32>(h, 0.0), k).a) / (2.0 * h);
+    let ay = (density_at(q + vec2<f32>(0.0, h), k).a - density_at(q - vec2<f32>(0.0, h), k).a) / (2.0 * h);
+    let axx = (density_at(q + vec2<f32>(h, 0.0), k).a - 2.0 * a + density_at(q - vec2<f32>(h, 0.0), k).a) / (h * h);
+    let ayy = (density_at(q + vec2<f32>(0.0, h), k).a - 2.0 * a + density_at(q - vec2<f32>(0.0, h), k).a) / (h * h);
+    let axy = (density_at(q + vec2<f32>(h, h), k).a - density_at(q + vec2<f32>(h, -h), k).a
+        - density_at(q + vec2<f32>(-h, h), k).a + density_at(q + vec2<f32>(-h, -h), k).a) / (4.0 * h * h);
     let g2 = ax * ax + ay * ay;
     if g2 < 1e-8 {
-        return 1.0;
+        return vec3<f32>(0.0);
     }
-    // The outward way's divergence: above 0 where the liquid bulges out.
-    var kappa = -(axx * ay * ay - 2.0 * axy * ax * ay + ayy * ax * ax) / (g2 * sqrt(g2));
-    // Ripples on a surface that faces up or down.
-    let up = abs(ay) / sqrt(g2);
-    kappa += lu.time.y * smoothstep(0.5, 0.9, up) * ripple(q.x, lu.time.x).z;
-    let c = 1.0 / max(abs(1.0 - t * kappa * (ETA - 1.0) / ETA), 1.0 / 6.0);
-    return clamp(mix(1.0, c, lu.light.z), 0.0, 8.0);
+    let kappa = -(axx * ay * ay - 2.0 * axy * ax * ay + ayy * ax * ax) / (g2 * sqrt(g2));
+    return vec3<f32>(kappa, -vec2<f32>(ax, ay) / sqrt(g2));
+}
+
+// The surface's curvature at `q` (with the ripples on a surface that faces up or down) and its
+// outward way, read from the amount at the level a blur of `blur` world px spans, at least level 1,
+// mixed between the two nearest levels, so the drops' grain and a deep point's wide view of the
+// surface neither speckle it nor step it. (Never finer than 12 world px: the drops' own jagged
+// outline is no lens.)
+fn bend_at(q: vec2<f32>, blur: f32) -> vec3<f32> {
+    let level = clamp(log2(max(blur, 12.0) / u.grid.z), 1.0, 4.0);
+    var b = vec3<f32>(0.0);
+    for (var k = 1; k <= 4; k++) {
+        let w = level_share(level, k);
+        if w > 0.0 {
+            b += w * surface_bend(q, k);
+        }
+    }
+    let n = b.yz / max(length(b.yz), 1e-6);
+    let kappa = b.x + lu.time.y * smoothstep(0.5, 0.9, abs(n.y)) * ripple_kappa(q.x, lu.time.x, blur);
+    return vec3<f32>(kappa, n);
+}
+
+// The antiderivative of 1 / max(|x|, CAUSTIC_NEAREST): the focusing's sum over a stretch of x.
+fn focus_sum(x: f32) -> f32 {
+    let a = abs(x) / CAUSTIC_NEAREST;
+    return sign(x) * select(a, 1.0 + log(a), a > 1.0);
+}
+
+// How much the surface crossed at `q` focuses light `t` px under it, seen blurred over `blur` px,
+// the light coming in along `towards` reversed, as the light texel of `texel` world px sees it.
+fn caustic_at(q: vec2<f32>, t: f32, blur: f32, towards: vec2<f32>, texel: f32) -> f32 {
+    let here = bend_at(q, blur);
+    let n = here.yz;
+    // A curved surface focuses as a lens: 1 / |1 - t / f|, f = η / ((η - 1) κ). Its bright lines are
+    // much thinner than a light texel where they come to a focus, so the texel takes the focusing
+    // over all of itself (from the curvature a texel along the surface, and its own depth across
+    // it), not at its middle alone: a line read at texel middles only beads where it slants across
+    // them.
+    let along = bend_at(q + vec2<f32>(-n.y, n.x) * texel, blur).x;
+    let lens = (ETA - 1.0) / ETA;
+    let x = 1.0 - t * here.x * lens;
+    let spans = lens * (texel * abs(here.x) + t * abs(along - here.x));
+    var c = 1.0 / max(abs(x), CAUSTIC_NEAREST);
+    if spans > 1e-4 {
+        c = (focus_sum(x + 0.5 * spans) - focus_sum(x - 0.5 * spans)) / spans;
+    }
+    // Light grazing the surface is mostly thrown off it, and what gets in isn't focused.
+    let facing = smoothstep(0.15, 0.5, abs(dot(n, towards)));
+    return clamp(mix(1.0, c, lu.light.z * facing), 0.0, 8.0);
+}
+
+// The amount's level the light finds the surface it comes in through on: about 12 world px, so a
+// drop flying just over the water, or one a lamp's ray barely grazes, is not taken for the surface
+// (its tiny curve would focus the light at random).
+fn surface_level() -> i32 {
+    return clamp(i32(round(log2(12.0 / u.grid.z))), 1, 3);
+}
+
+// Where along `towards` from `p`, between `lo` (in the liquid) and `hi` (out of it), the surface is.
+fn crossing(p: vec2<f32>, towards: vec2<f32>, lo: f32, hi: f32) -> f32 {
+    var a = lo;
+    var b = hi;
+    for (var i = 0; i < 5; i++) {
+        let mid = 0.5 * (a + b);
+        let out_of_it = density_at(p + towards * mid, surface_level()).a < COARSE_LEVEL;
+        a = select(mid, a, out_of_it);
+        b = select(b, mid, out_of_it);
+    }
+    return 0.5 * (a + b);
 }
 
 // A lamp's light at a point: through the liquid, and as if there were none.
@@ -647,9 +744,15 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
     var tau = vec3<f32>(0.0);
     var tint = vec3<f32>(1.0);
     var caustic = 1.0;
-    let in_liquid = density_at(p, 1).a > COARSE_LEVEL;
-    var surface = !in_liquid;
+    // Whether the march has been in the liquid yet (a point in a bubble deep under the surface is
+    // lit through the surface too), and has come out of it.
+    var been_in = density_at(p, surface_level()).a > COARSE_LEVEL;
+    var surface = false;
+    // How wide the lamp looks from a point (radians): a deep point sees the surface's caustics blurred
+    // over this times its depth.
+    let seen = 0.02 + 0.2 * softness;
     var t = 0.5 * texel;
+    var last_t = 0.0;
     for (var step_n = 0; step_n < MOST_STEPS; step_n++) {
         if t >= dist {
             break;
@@ -668,24 +771,45 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
                     break;
                 }
             } else {
-                vis = min(vis, k_soft * d / t);
+                // (Never softer than the field's reach allows: past SHADOW_REACH it says only
+                // "far", and a penumbra cut off there would end in a hard edge. Glass, which the light
+                // goes through, casts no soft edge.)
+                let soft = max(k_soft * d / t, d / SHADOW_REACH);
+                if soft < vis && !glass_at(q) {
+                    vis = soft;
+                }
                 stride = max(d, texel);
             }
         }
         // The liquid: a coarse texel with none in it is skipped whole.
-        let coarse = density_at(q, 4).a;
-        if coarse > 1e-3 {
+        let any_here = density_at(q, 4).a > 1e-3;
+        if any_here {
             let s = max(texel, 0.04 * t);
-            let k = clamp(i32(round(log2(max(s / u.grid.z, 1.0)))), 0, 5);
-            tau += density_at(q, k).rgb * s;
-            stride = min(stride, s);
-            if !surface && density_at(q, 1).a < COARSE_LEVEL {
-                surface = true;
-                caustic = caustic_at(q, t);
+            // (Level 1 at least: the drops' own grain would speckle the light texel by texel.)
+            let level = clamp(log2(max(s / u.grid.z, 1.0)), 1.0, 5.0);
+            var sigma = vec3<f32>(0.0);
+            for (var k = 1; k <= 5; k++) {
+                let w = level_share(level, k);
+                if w > 0.0 {
+                    sigma += w * density_at(q, k).rgb;
+                }
             }
+            tau += sigma * s;
+            stride = min(stride, s);
         } else {
             stride = min(stride, max(8.0 * u.grid.z, texel));
         }
+        // Where the light came into the liquid: the first point out of it on the way to the lamp,
+        // found exactly between it and the last point in it. (Into a coarse texel with none in it
+        // is out of it too.)
+        let out_of_it = !any_here || density_at(q, surface_level()).a < COARSE_LEVEL;
+        if !surface && been_in && out_of_it {
+            surface = true;
+            let tc = crossing(p, towards, last_t, t);
+            caustic = caustic_at(p + towards * tc, tc, tc * seen, towards, texel);
+        }
+        been_in = been_in || !out_of_it;
+        last_t = t;
         t += stride;
     }
     let free = lamp.colour.rgb * shine * clamp(vis, 0.0, 1.0) * tint;
@@ -1128,9 +1252,12 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             let go = length(grad_o);
             let smooth_out = select(vec2<f32>(0.0, -1.0), grad_o / max(go, 1e-8), go > 1e-6);
             let smooth_in = select(1e4, max(0.5 - o, 0.0) / go, go > 1e-6);
-            // How far inside its outline (world px): the picture's own near the outline, else the
-            // smooth surface's.
-            let inside_w = select(inside / scale, min(inside / scale, smooth_in), inside > 0.0);
+            // How far inside its outline (world px): the picture's own within a splat of the outline,
+            // where its slope says it; past two splats the smooth surface's (but no nearer), as the
+            // amount's slope between the drops deep in a body would make up an outline at every pixel.
+            let near = inside / scale;
+            let past = smoothstep(r_world, 2.0 * r_world, near);
+            let inside_w = mix(near, max(smooth_in, 2.0 * r_world), past);
             // The outward way: the amount's slope over 2 px near the outline, else the smooth one.
             let g2x = look_amount_at(px + vec2<i32>(2, 0), r_world) - look_amount_at(px - vec2<i32>(2, 0), r_world);
             let g2y = look_amount_at(px + vec2<i32>(0, 2), r_world) - look_amount_at(px - vec2<i32>(0, 2), r_world);
@@ -1247,7 +1374,9 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         let deep_in = max(-far, 0.0);
         let n = field_normal(w);
         let spill = 2.0 * max(depth, 8.0);
-        let fade = exp(-deep_in / spill);
+        // (Falling off fast past the spill: the light on a face changes sharply where its own
+        // shadow starts, and carried deep in it would draw lines out from the solid's middle.)
+        let fade = exp(-(deep_in / spill) * (deep_in / spill));
         let at_face = w + n * (deep_in + 1.5 * max(lu.shot.z, u.grid.z));
         let lit = light_at(at_face) * fade;
         let spread_lit = spread_at(w + n * (deep_in + 1.5 * lu.spread.z)) * fade;

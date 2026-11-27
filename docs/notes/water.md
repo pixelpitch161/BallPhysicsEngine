@@ -942,6 +942,21 @@ and each liquid's Look card, finished by the same bloom, exposure and composite 
   ceiling stops it unless Shadows is off). Falloff `600 / (600 + d)`. Shadows are a soft sphere-traced march of the
   solid field; Glass tints; liquid dims by its extinction; the first surface crossed focuses the light into
   **caustics** by its curvature (level-1 amount plus Ripples), `mix(1, C, Caustics)` clamped to 0 to 8.
+- **Caustics in detail**: the curvature is read where the march first comes out of the liquid at about 12 px
+  (`surface_level`, the crossing bisected), at the level a deep point's blurred view spans (depth times `0.02 + 0.2 ×
+  Softness`, at least 12 px, mixed between levels), plus the Ripples' curvature blurred per wave; each light texel
+  takes the focusing's average over its own span (`focus_sum`), so a focus line thinner than a texel neither beads nor
+  vanishes. A march that starts in a bubble deep down is lit through the surface above it (`been_in`). A soft shadow's
+  edge reaches at most 44 px (`SHADOW_REACH`), where the field stops saying distances, and glass casts none.
+- **Solids lit at their face**: each solid pixel takes the light just outside its nearest face, falling off as
+  `exp(−(depth in / spill)²)` (spill twice Depth, at least 16 px), so the rim is lit and the light is gone before the
+  lines where the nearest face changes would show.
+- **Pitfall: a level worked out per pixel.** The cloud's software card (lavapipe) reads `textureDimensions(t, k)` and
+  `textureLoad(t, .., k)` with a per-pixel `k` as one level for a block of pixels, so `look.wgsl` works out a level's
+  size from level 0's (`size_at`) and reads across levels as a loop over the level numbers (`level_share`).
+- **The surface rounding** (Shine, Edge sheen, Ripples' tilt) takes how far inside the outline a pixel is from the
+  amount's slope within a splat of the outline, and from the smooth surface past two splats: deep in a body the
+  amount's slope between the drops would make a grain under bright light.
 - **Nothing remembered**: no float atomics, no frame-to-frame state, noise hashed from the world point, so a moment
   draws the same picture every time and the light at a world point doesn't depend on the view.
 - **Drawn** back to front: the back (Darker rock, Colour, Gradient, Picture cover-fitted, with a soft contact shadow

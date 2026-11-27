@@ -381,15 +381,12 @@ fn bend_moves_what_is_seen_through_the_liquid() {
         })
         .count();
     assert!(moved >= 5, "the stripes move near its edge: {moved} of 40");
-    let far = (0..40)
-        .filter(|k| {
-            apart(
-                flat.at(Vec2::new(-140.0 + 7.0 * *k as f32, 400.0)),
-                bent.at(Vec2::new(-140.0 + 7.0 * *k as f32, 400.0)),
-            ) > 0
-        })
-        .count();
-    assert_eq!(far, 0, "nothing moves away from the liquid");
+    let far: Vec<_> = (0..40)
+        .map(|k| Vec2::new(-140.0 + 7.0 * k as f32, 400.0))
+        .filter(|&p| apart(flat.at(p), bent.at(p)) > 0)
+        .map(|p| (p.x, flat.at(p), bent.at(p)))
+        .collect();
+    assert!(far.is_empty(), "nothing moves away from the liquid: {far:?}");
 }
 
 /// Test 10: Shine: a lamp gives the surface facing it a highlight brighter than the body below it.
@@ -482,4 +479,55 @@ fn draft_and_good_differ_little() {
     let close = mean(&pics[0], &pics[1]);
     assert!(close < 6.0, "Draft is near Good: {close}");
     assert!(mean(&pics[0], &pics[2]) > 3.0 * close.max(0.5), "lamps change the picture");
+}
+
+/// The bench at 3 px under two warm Spots and a waved pool under a Sun, at full size, for looking at
+/// (by hand): `LOOK_DEBUG_DIR=<folder>` (`bpe-kit`'s full-size look check draws more of the same).
+#[test]
+#[ignore = "pictures to look at: by hand"]
+fn bench_look_pictures() {
+    let gpu = card().expect("a graphics device");
+    assert!(std::env::var("LOOK_DEBUG_DIR").is_ok(), "LOOK_DEBUG_DIR, a folder");
+    let water = LiquidLook {
+        colour: [0.31, 0.71, 0.91],
+        deep: [0.02, 0.13, 0.23],
+        clarity: 320.0,
+        bend: 16.0,
+        shine: 0.6,
+        edge_sheen: 0.4,
+        ripples: 0.5,
+        ..LiquidLook::default()
+    };
+    let orange = LiquidLook { colour: [1.0, 0.54, 0.24], deep: [0.35, 0.1, 0.02], clarity: 120.0, ..water.clone() };
+    let warm = |x: f32, aim: f32| Lamp {
+        place: Vec2::new(x, -820.0),
+        colour: [1.0, 0.82, 0.63],
+        brightness: 1.6,
+        softness: 0.4,
+        ..spot(Vec2::ZERO, aim, 70.0)
+    };
+    let lit = Look {
+        liquids: vec![water.clone(), orange],
+        back: BackLook::DarkerRock(0.65),
+        light: bpe_water::draw::look::LightLook {
+            ambient: 0.12,
+            bounce: 0.4,
+            caustics: 1.2,
+            shafts: 0.3,
+            ..Default::default()
+        },
+        lamps: vec![warm(-350.0, 70.0), warm(350.0, 110.0)],
+        time: 1.0,
+        ..Look::default()
+    };
+    let bench = sets::bench(3.0);
+    Drawn::new(&gpu, &bench.field, &bench.drops).draw(View::screen(1.0), &lit);
+    let pool = sets::wavy_pool(3.0, 500.0, 14.0, 110.0);
+    let sun = Look {
+        liquids: vec![LiquidLook { clarity: 600.0, ripples: 1.0, ..water }],
+        back: BackLook::Colour([0.55, 0.75, 0.9]),
+        lamps: vec![Lamp { kind: LampKind::Sun, aim: 80.0, brightness: 1.2, ..Lamp::default() }],
+        ..lit
+    };
+    Drawn::new(&gpu, &pool.field, &pool.drops).draw(View::screen(1.0), &sun);
 }

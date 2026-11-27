@@ -1221,7 +1221,8 @@ fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>
         BackLook, FinishLook, GlowFrom, Lamp, LampKind, LightLook, LiquidLook, Look, MaterialKind, MaterialLook,
     };
     use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View, sets};
-    if !wanted("water-look", only) {
+    // (`LOOK_ONLY=water-look-pieces` picks one of them.)
+    if !wanted("water-look", only) && !only.as_deref().is_some_and(|o| o.contains("water-look")) {
         return Vec::new();
     }
     let warm = [1.0, 0.82, 0.63];

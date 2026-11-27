@@ -396,31 +396,31 @@ mode on a Water scene, Shot only), Parts 6, "The water checkpoint". Hand-over:
 (new), liquid.rs, scene.rs, places.rs, mod.rs}`, `crates/bpe-kit/src/things/water/{look.rs (new), draft.rs,
 mod.rs}`.
 
-- [ ] `bpe-water/build.rs`: `ROOTS` = `src/drops`, `src/take`, `src/drop.rs`, `src/solid.rs`, `src/lib.rs` (a
+- [x] `bpe-water/build.rs`: `ROOTS` = `src/drops`, `src/take`, `src/drop.rs`, `src/solid.rs`, `src/lib.rs` (a
   file root prints the file). `bpe-kit/build.rs`: skip files named `look.rs` or `looks.rs`.
-- [ ] Move `WaterLook`, `ColourFrom`, `GlowFrom` (and drop `MixShows`), `WaterLightCard`, `LightQuality`,
+- [x] Move `WaterLook`, `ColourFrom`, `GlowFrom` (and drop `MixShows`), `WaterLightCard`, `LightQuality`,
   `BackCard`, `BackShows`, `LampCard`, `LampKind` into `modules/water/look.rs`; re-export in `mod.rs` as before.
   Remove the Crust group, Mixing shows group, `ColourFrom::{Heat, Age}`, `GlowFrom::Heat` (decision 27); Light
   card Ambient default 1 (decision 4). Remove Foam lasts and Mist lasts now (decision 32), so 6b doesn't touch the
   card again. Fix the tests that name them.
-- [ ] Move `plain_look` to `things/water/look.rs` (re-exported from `draft` for its callers).
-- [ ] Verify: `cargo test -p bpe-kit --lib things::water modules::water` pass; a print test: change a comment in
+- [x] Move `plain_look` to `things/water/look.rs` (re-exported from `draft` for its callers).
+- [x] Verify: `cargo test -p bpe-kit --lib things::water modules::water` pass; a print test: change a comment in
   `look.rs` in a scratch build and the engine print is unchanged (by hand once, not a test).
 
 ### Task 2: `bpe-gfx`: finish a picture drawn elsewhere
 
 **Files:** `crates/bpe-gfx/src/renderer/{scene.rs, mod.rs}`, test in `crates/bpe-gfx/src/output_tests.rs`.
 
-- [ ] `Renderer::hdr_target(&self) -> &wgpu::TextureView` (the HDR picture; `HDR_FORMAT`).
-- [ ] Split `finish` into `finish_with(device, queue, encoder, frame, scened, inputs: FinishInputs)` with
+- [x] `Renderer::hdr_target(&self) -> &wgpu::TextureView` (the HDR picture; `HDR_FORMAT`).
+- [x] Split `finish` into `finish_with(device, queue, encoder, frame, scened, inputs: FinishInputs)` with
   `FinishInputs { light: Option<(TextureView, TextureView)>, things: Things }` (`Things::Frame` draws the frame's
   silhouettes as today, `Things::None`, and in 6c `Things::Given(..)`); `finish` computes the Balls inputs exactly
   as today and calls it.
-- [ ] `pub struct GivenPicture { pub light: Option<(TextureView, TextureView)> }` and `Renderer::finish_picture(
+- [x] `pub struct GivenPicture { pub light: Option<(TextureView, TextureView)> }` and `Renderer::finish_picture(
   device, queue, encoder, frame, given)`: writes the globals for `frame` (`Globals::new(frame, &frame.camera,
   width)`), forgets effect history when the frame's time goes back (as `render` does through the chain), runs
   `finish_with(.., Scened::default(), ..)`.
-- [ ] Test: a flat HDR picture of linear 0.5 grey drawn into `hdr_target` and finished with no effects, Bloom 0,
+- [x] Test: a flat HDR picture of linear 0.5 grey drawn into `hdr_target` and finished with no effects, Bloom 0,
   Exposure 1 reads back as the same grey a Balls frame of that background reads (the composite's roll-off), and
   Bloom 1 spreads a bright dot. The Balls goldens run in CI unchanged.
 
@@ -429,7 +429,7 @@ mod.rs}`.
 **Files:** `crates/bpe-water/src/draw/{mod.rs, plain.rs, look/mod.rs (new), look/inputs.rs (new),
 look/passes.rs (new)}`, `crates/bpe-water/src/shaders/look.wgsl (new)`.
 
-- [ ] `look/inputs.rs`: `Look { liquids: Vec<LiquidLook>, rock: MaterialLook, solids: Vec<MaterialLook>, back:
+- [x] `look/inputs.rs`: `Look { liquids: Vec<LiquidLook>, rock: MaterialLook, solids: Vec<MaterialLook>, back:
   BackLook, light: LightLook, lamps: Vec<Lamp>, time: f32, finish: FinishLook }` and the parts (`LiquidLook` every
   Look card setting the drawing reads, colours sRGB 0..1 and gradients as 64 linear samples; `MaterialLook { kind:
   MaterialKind (own copy: Rock, Glass, Paper, Basalt, Flat), colour, second, texture, depth, roughness, outline,
@@ -438,18 +438,18 @@ look/passes.rs (new)}`, `crates/bpe-water/src/shaders/look.wgsl (new)`.
   aim, colour, brightness, spread, length, softness, shadows }`; `FinishLook { bloom, exposure, effects:
   Vec<EffectCall>, grade: GradeStack }`), all `Clone + PartialEq + Debug`, `Default` the cards' defaults with Ambient
   1. `Look::plain(&PlainLook)` maps the plain inputs (for tests).
-- [ ] `look/mod.rs`: `LookGpu::new(device, queue) -> Arc<LookGpu>` (its `PlainGpu`, the module `plain.wgsl +
+- [x] `look/mod.rs`: `LookGpu::new(device, queue) -> Arc<LookGpu>` (its `PlainGpu`, the module `plain.wgsl +
   look.wgsl`, pipelines: look splats, look nodes, half, light, spread (inject, down, up, smooth), compose; one
   gradient texture 64 x 16 `Rgba16Float`, one owner-material uniform), `LookDraw::new(gpu, field, rest)`,
   `set_field`, `draw`, `draw_at`, `output`, `output_view`, `read`, `draw_many` (timing). It holds its `Plain`, a
   `bpe_gfx::Renderer` sized to the last picture (made again on a size change), the six look pictures, the node
   pictures and their mips, the light maps (shot and whole course), the spread pyramid, the back picture's texture
   and path.
-- [ ] `shaders/look.wgsl`: `LU` (binding 10: liquids' look rows, lamps, light, materials by owner, back, the light
+- [x] `shaders/look.wgsl`: `LU` (binding 10: liquids' look rows, lamps, light, materials by owner, back, the light
   map's box and texel, time), bindings 11 to 30 as the passes need; entry points `vs_look_splat`/`fs_look_splat`,
   `vs_look_nodes`/`fs_look_nodes`, `fs_half`, `cs_light`, `fs_spread_*`, `fs_look`. Hash noise (`hash2`, `vnoise`,
   `fbm`, `cells`) world-anchored.
-- [ ] Verify (`crates/bpe-water/tests/look.rs`, new, GPU, 270 x 480 at `View::screen(0.25)` unless said):
+- [x] Verify (`crates/bpe-water/tests/look.rs`, new, GPU, 270 x 480 at `View::screen(0.25)` unless said):
   1. the same drops draw the same picture to the bit, twice and from a second `LookDraw`;
   2. with the plain inputs (`Look::plain`) a pool is drawn where its drops are and the back and rock where they are
      (as plain's own test: pixel colours by region);
@@ -477,10 +477,10 @@ look/passes.rs (new)}`, `crates/bpe-water/src/shaders/look.wgsl (new)`.
 **Files:** `crates/bpe-kit/src/things/water/look.rs`, tests in `things/water/draft/tests.rs` (or `look.rs`'s own
 `mod tests`).
 
-- [ ] `look_of(scene, resolved, time) -> Look` (decision 29); materials in the field's owner order (the same
+- [x] `look_of(scene, resolved, time) -> Look` (decision 29); materials in the field's owner order (the same
   `scene.order` filter `SolidSetup` uses); lamps from `position` and `rotation`-free cards; gradients sampled 64
   times (`Gradient::sample`).
-- [ ] Tests: the Look reads every card (a scene with two liquids, a piece, a lamp, keyed Brightness: values at 0 and
+- [x] Tests: the Look reads every card (a scene with two liquids, a piece, a lamp, keyed Brightness: values at 0 and
   at 2 s); a lamp's keyed place; materials follow the solids' order; the Back's picture path; no look setting
   restarts the draft (`what_restarts_the_draft` extended with the Lamp, Light, Back and Look settings, which it
   already walks: check its counts); Ambient default 1.
@@ -490,25 +490,25 @@ look/passes.rs (new)}`, `crates/bpe-water/src/shaders/look.wgsl (new)`.
 **Files:** `crates/bpe-studio/src/water_mode/{picture.rs, draft.rs, final_view.rs, stage.rs}`, `crates/bpe-cli/
 src/water.rs`, `crates/bpe-kit/tests/water_draft.rs`, `water_final.rs`.
 
-- [ ] `Live.plain: Plain` becomes `Live.look: LookDraw` (draft job builds it with a `LookGpu`); `StagePicture::show`
+- [x] `Live.plain: Plain` becomes `Live.look: LookDraw` (draft job builds it with a `LookGpu`); `StagePicture::show`
   takes `&Look`; `Drawn.look: Look`; `FinalPicture` the same; `stage.rs` builds `look_of` (with Draft quality while
   `studio.hold_runs`).
-- [ ] `bpe-cli`: `Drawing { look: LookDraw, stored }`; `draw_moment` builds `look_of(scene, resolved, tau)`; export
+- [x] `bpe-cli`: `Drawing { look: LookDraw, stored }`; `draw_moment` builds `look_of(scene, resolved, tau)`; export
   reads `drawing.look.output()`; `final_frame` reads `drawing.look.read()`.
-- [ ] Lamp markers (decision 30) in `stage.rs`'s `paint`.
-- [ ] `water_final_speed`'s neighbour `water_look_speed` (`#[ignore]`, release): one screen at 2 px, 1.4M drops
+- [x] Lamp markers (decision 30) in `stage.rs`'s `paint`.
+- [x] `water_final_speed`'s neighbour `water_look_speed` (`#[ignore]`, release): one screen at 2 px, 1.4M drops
   from the take, Good, two lamps, prints `water final: look N ms a frame at 1080 x 1920 (Draft A ms, Best B ms)`.
-- [ ] Verify: `cargo test -p bpe-studio water_mode`, `cargo test -p bpe-cli water`, `cargo test -p bpe-kit --test
+- [x] Verify: `cargo test -p bpe-studio water_mode`, `cargo test -p bpe-cli water`, `cargo test -p bpe-kit --test
   water_draft --test water_final` (the tests that compare the take's drawing with the live body's draw both with
   the look now).
 
 ### Task 6: look at it, notes, review, merge
 
-- [ ] Full-size look check: `water-look-*` scenes in `full_size_look.rs` (the bench and the pieces set at 3 px
+- [x] Full-size look check: `water-look-*` scenes in `full_size_look.rs` (the bench and the pieces set at 3 px
   under two lamps; each Material; the Back's four kinds; caustics in a wavy pool; glow in the dark), run with
   `LOOK_ONLY=water-look`, open every picture and its 1:1 crops: no jagged edges, light leaks, banding, seams, or
   anything that doesn't make sense. Fix and look again.
-- [ ] `docs/notes/water.md` "Part 6a (as built)"; this plan's "As built" for 6a.
+- [x] `docs/notes/water.md` "Part 6a (as built)"; this plan's "As built" for 6a.
 - [ ] fmt, clippy, the focused tests; PR (draft), CI, one Opus review, fixes, merge.
 
 ## 6b: extras and wet marks
@@ -581,4 +581,48 @@ offered, Grade mode opens, `a_water_scenes_toolbar_says_so_and_greys_grade` turn
 
 ## As built
 
-(Filled in as each sub-part lands.)
+### 6a
+
+Built as planned (decisions 1 to 31), with these changes found while building against the tests:
+
+- **Spread light is cone traced, not the pyramid of decision 17.** The 3 x 3 passes either spread too little or,
+  with growth, leaked through thin rock into sealed chambers. Now the emission (glow, plus Bounce of the lit faces
+  and body) is put on a grid over the whole course at 4 times the light texel with 6 mips, and each texel gathers
+  it along 24 cones (48 steps, tan 0.13), reading coarser mips further out, each step stopped by the solid field
+  (Glass passes 70 %). Gain 2. A liquid's glow doesn't light itself (it is added once, in the body).
+- **The light map has three targets**: the light through the liquid, the mean lamp way, and the light with no
+  liquid in the way. Paint and the faces in front of the water are lit by the third (paint under a lamp was black).
+- **The body is lit by `albedo × (Ambient + L + S)`** where the plan said `Ambient × light left`: Ambient 1 keeps
+  every colour as it is however deep, and depth darkens through Deep colour and the light map.
+- **Bend moves the back by world px** (`(−slope × edge + ripple slope) × Bend`) along the slope of a surface smoothed
+  from the depth ladder over 24 px; the amount's own slope was too grainy to bend anything visible.
+- **Sun**: marched to the course's edge, so a closed course's rock ceiling stops it unless Shadows is off (6c's
+  Glass lab turns Shadows off).
+- **Lamps have no place keyframes** (Water things have no place settings yet): `look_of` reads `transform.position`.
+- **Speed**: `water_look_speed` is folded into `water_final_speed` (the same take; it prints `water final: look ..`
+  for Good, Draft and Best under two Spots), so the card job's timing step measures it.
+- `LookDraw::renew` keeps the renderer and pictures across bodies (a new `Renderer` per physics edit would rebuild
+  every Balls pipeline); `bpe-water/tests/look.rs` holds the 13 tests.
+- **What the full-size look check found** (all in `look.wgsl`):
+  - *The cloud's card reads a texture's size wrong when the level differs from pixel to pixel*
+    (`textureDimensions(t, k)` with `k` worked out per pixel returned another level's size for some pixels, so
+    `load0` read nothing there and the underwater light had dark ticks). Every level's size is now worked out from
+    level 0's (`size_at`), and every read across levels is a loop over the level numbers with each one's share
+    (`level_share`), as plain's ladder does.
+  - *Caustics speckled and beaded.* The curvature is read at the level a deep point's blurred view spans (its depth
+    times `0.02 + 0.2 × Softness`, never under 12 px), mixed between levels, the ripples' curvature blurred per wave;
+    extinction is read at level 1 at least; the surface is the first point out of the liquid at about 12 px
+    (`surface_level`), found by bisection, and a march that starts in a bubble deep down is still lit through the
+    surface (`been_in`). A focus line much thinner than a light texel beaded where it slanted across the texels, so
+    each texel takes the focusing's average over its own span of `1 − t κ (η − 1)/η` (the closed form of
+    `1/max(|x|, 1/6)`'s sum), from the curvature one texel along the surface and its own depth.
+  - *A grain in brightly lit water*: the surface rounding read how far inside the outline a pixel is from the
+    amount's slope, which between the drops makes up an outline at every pixel; past two splats the smooth surface's
+    distance is used.
+  - *A soft lamp's shadow edge ended hard* where the solid field stops saying distances (48 px from a face): a
+    penumbra never reaches past 44 px (`SHADOW_REACH`). Glass casts no soft edge (the march near glass took it for
+    rock and left a grainy band beside it).
+  - *Lines out from a solid's middle*: the light on a face, carried in from the nearest face, changes sharply where the
+    solid's own shadow starts; it now falls off as `exp(−(depth in / spill)²)`, so it lights the rim and fades before
+    the lines show. (Taking it along the face over the depth was tried: it drew dotted lines where the nearest face
+    changes.)
