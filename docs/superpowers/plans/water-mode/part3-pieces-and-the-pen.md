@@ -385,8 +385,9 @@ water, air), only the skin's bend changed it: with the bend off Wetting 1 spread
 - The full-size look check gains `water-pieces-c8` and `-c3` (each piece in its colour, a ramp under a pillar, a
   basin of orange liquid, a wheel, a cutting pipe through the rock, a square-ended pen wall in the pool). Looked at
   full size and in 1:1 crops: colours right, no light leaks or seams, the pillar drawn over the ramp, the pipe's
-  tunnel open through the rock and lined with the pipe's colour (2 cells into the rock, so the pipe's walls look a
-  little thicker where they enter it). At 8 px two colours meet over one cell (bilinear owners) and inner corners
+  tunnel open through the rock and lined with the pipe's colour. After the review the set cuts only the bore, as the
+  kit does: at 3 px the walls go into the rock at their own thickness; at 8 px the 2-cell lining is 16 px, a few px
+  more than the 12 px walls, so they step out a little where they enter it. At 8 px two colours meet over one cell (bilinear owners) and inner corners
   are rounded by the field's sampling, as the rock's are; at 3 px both are a pixel or two.
 - Tests: the editor's 16 new (`solid_tests.rs`) and the rail's ready list, `a_piece_edit_restarts_the_draft_and_a_
   colour_edit_does_not` (app), the kit's (pieces, the course, the draft) and the engine's (solid, plain, wetting).

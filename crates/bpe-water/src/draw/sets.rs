@@ -169,7 +169,8 @@ pub fn pieces(cell: f32) -> Bench {
                 line(&[v(300.0, 212.0), v(720.0, 212.0)], 12.0, true),
                 line(&[v(300.0, 288.0), v(720.0, 288.0)], 12.0, true),
             ],
-            vec![line(&[v(300.0, 250.0), v(720.0, 250.0)], 88.0, true)],
+            // Its bore only, as the kit's cutting pipe (`PieceShape::cut`): the walls add after.
+            vec![line(&[v(300.0, 250.0), v(720.0, 250.0)], 64.0, true)],
         ),
         part(vec![line(&[v(-400.0, 640.0), v(-150.0, 700.0), v(100.0, 650.0)], 24.0, true)], vec![]),
     ];
