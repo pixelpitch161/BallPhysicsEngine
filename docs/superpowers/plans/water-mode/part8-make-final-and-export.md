@@ -398,6 +398,12 @@ Built as planned, PR #242. Where it differs from the decisions above:
   shared between takes count twice in the folder's size; viewing a final doesn't count as using it for the 30-day
   clean-up; Preview final frame doesn't say a frame is out of date; the export reads each frame when it draws it
   rather than one ahead; the Speed setting's hover doesn't give the video's length.
+- **The full-size look check** (`water-final`, `water-final-ahead`, coarse, 1080 x 1920): the moment as kept is
+  clean (smooth edges, no banding or seams). Drawn half a frame after it (the most a frame is moved: a frame rate
+  that isn't 60 or 30 at Speed 1; slow motion moves a fraction of that), a tap's stream shows faint lines inside it
+  at the spout and its fastest drops are a little lumpy, as drops moved by their own speeds part a little and the
+  rows the tap adds in that time aren't there. At 60 fps in real time nothing is moved. Handed to part 6, whose
+  renderer replaces this drawing.
 
 ### Measured
 
