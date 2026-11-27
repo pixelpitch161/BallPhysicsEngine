@@ -569,3 +569,50 @@ fn plain_pace() {
         println!("{cell}\t{}\t{}x{}\t{:.2}", set.drops.len(), view.width, view.height, took.as_secs_f64() * 1000.0);
     }
 }
+
+/// Moving the drops on by nothing draws the same picture, to the bit (part 8), and drops set from
+/// a final's moment draw as the same drops stored.
+#[test]
+fn moving_on_by_nothing_draws_the_same() {
+    let Some(gpu) = card() else { return };
+    let bench = sets::bench(8.0);
+    let a = draw(&gpu, &bench.field, &bench.drops, View::screen(0.25));
+    let mut stored = StoredDrops::new(gpu.device(), gpu.queue(), &[]);
+    let xv: Vec<[f32; 4]> = bench.drops.iter().map(|d| [d.x[0], d.x[1], d.v[0], d.v[1]]).collect();
+    let kinds: Vec<u32> = bench.drops.iter().map(|d| d.kind).collect();
+    stored.set(gpu.device(), gpu.queue(), &xv, &kinds);
+    let mut plain = Plain::new(gpu.clone(), &bench.field, REST);
+    plain.draw_at(&stored.buffers(), &View::screen(0.25), &sets::look(), 0.0);
+    assert!(a.pixels == plain.read(), "moved on by nothing, the picture is the same");
+}
+
+/// A lone drop at 100 px/s drawn a tenth of a second on is drawn 10 px on.
+#[test]
+fn a_drop_moved_on_draws_where_it_will_be() {
+    let Some(gpu) = card() else { return };
+    let field = open(2.0);
+    let at = Vec2::new(13.0, 7.0);
+    let speed = Vec2::new(100.0, 0.0) / field.layout.cell;
+    let drops = [Drop::new(field.layout.to_grid(at), speed, 0, 0, WATER)];
+    let view = View { lo: at - Vec2::new(20.0, 20.0), scale: 1.0, width: 60, height: 40 };
+    let stored = StoredDrops::new(gpu.device(), gpu.queue(), &drops);
+    let mut plain = Plain::new(gpu.clone(), &field, REST);
+    let middle = |pixels: &[u8]| {
+        let (mut sum, mut n) = (0.0f32, 0.0f32);
+        for y in 0..40u32 {
+            for x in 0..60u32 {
+                let i = ((y * 60 + x) * 4) as usize;
+                if apart([pixels[i], pixels[i + 1], pixels[i + 2]], BACK()) > 20 {
+                    sum += x as f32 + 0.5;
+                    n += 1.0;
+                }
+            }
+        }
+        sum / n.max(1.0)
+    };
+    plain.draw_at(&stored.buffers(), &view, &sets::look(), 0.0);
+    let now = middle(&plain.read());
+    plain.draw_at(&stored.buffers(), &view, &sets::look(), 0.1);
+    let later = middle(&plain.read());
+    assert!((later - now - 10.0).abs() < 1.0, "drawn {} px on", later - now);
+}

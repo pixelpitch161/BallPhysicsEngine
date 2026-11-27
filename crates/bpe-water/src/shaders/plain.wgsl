@@ -97,9 +97,19 @@ fn alive(g: vec2<f32>) -> bool {
 // pocket of it shows as the hole it is.
 const AIR: u32 = 128u;
 
+// Where drop `i` is drawn: its place, moved on by its speed for `u.view.w` seconds (a final's
+// moment drawn a little after it was kept, part 8; nothing moves when it is 0).
+fn place(i: u32) -> vec2<f32> {
+    let p = xv[i];
+    if u.view.w == 0.0 {
+        return p.xy;
+    }
+    return p.xy + p.zw * u.view.w;
+}
+
 // Whether drop `i` is drawn: liquid, in the course.
 fn drawn(i: u32) -> bool {
-    return alive(xv[i].xy) && (ids[i].x & AIR) == 0u;
+    return alive(place(i)) && (ids[i].x & AIR) == 0u;
 }
 
 // The liquid a drop of `kind` is: past the looks given, the last given.
@@ -127,7 +137,7 @@ fn vs_splat(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> S
     let c = corners[v];
     var out: SplatOut;
     out.off = c;
-    let g = xv[i].xy;
+    let g = place(i);
     // A drop that is not a number, has left the course (the engine's `alive`) or is air is not drawn:
     // all six corners on one point off the picture make nothing.
     if !drawn(i) {
@@ -179,7 +189,7 @@ fn vs_world(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> N
     let c = corners[v];
     var out: NodeOut;
     out.off = c;
-    let g = xv[i].xy;
+    let g = place(i);
     if !drawn(i) {
         out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
         return out;

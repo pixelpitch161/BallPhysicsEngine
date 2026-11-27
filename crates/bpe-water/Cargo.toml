@@ -12,7 +12,10 @@ wgpu.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 pollster.workspace = true
+# The final's take: its frames and restart points compressed (pure Rust).
+lz4_flex = "0.11"
 # Debug pictures of the drops (`probe::save_png`), for the measuring tests.
 png = "0.18"
 
