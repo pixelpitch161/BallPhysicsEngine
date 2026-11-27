@@ -571,7 +571,7 @@ impl Water {
                 if kept.is_finite() { kept.max(0.0) } else { 0.0 },
                 n.meet_share(dt, cell),
                 n.rest_most.max(0.0),
-                0.0,
+                if n.wet_bend.is_finite() { n.wet_bend.max(0.0) } else { 0.0 },
             ],
             mg: [n.omega, n.scale, n.push_out.max(0.0), n.most_out.max(0.0)],
             // (Drops rest `wall_off` off a face and fill the half spacing round them: the liquid's
@@ -882,7 +882,12 @@ impl Water {
     /// card.)
     pub fn copy(&self) -> Water {
         let nodes = self.layout.nodes();
-        let field = SolidField { layout: self.layout, distance: vec![0.0; nodes], wetting: vec![0.0; nodes] };
+        let field = SolidField {
+            layout: self.layout,
+            distance: vec![0.0; nodes],
+            wetting: vec![0.0; nodes],
+            owner: vec![0; nodes],
+        };
         let mut new = Water::new(self.gpu.clone(), &field, self.gravity, self.numbers, &self.feels);
         let device = &self.gpu.device;
         if self.room > new.room {

@@ -19,4 +19,4 @@ pub mod solid;
 pub use drop::{AIR, Drop, Pour, Poured, STOPS, WATER, fill, fill_stacked};
 pub use drops::numbers::{Feel, Numbers};
 pub use drops::{DropBuffers, MOST_DROPS, Water, WaterGpu};
-pub use solid::{DEFAULT_WETTING, Layout, Solid, SolidField};
+pub use solid::{DEFAULT_WETTING, Layout, Part, Solid, SolidField};

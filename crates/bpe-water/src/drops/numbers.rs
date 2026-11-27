@@ -157,6 +157,14 @@ pub struct Numbers {
     /// The share of the drag along a face every liquid has that a waxy face (Wetting 0) keeps; a
     /// soaked one (Wetting 1) keeps it all.
     pub wet_drag: f32,
+    /// How much a wetted face counts in the skin's bend (part 3, hand-over item 0): its resting
+    /// lattice's drops as neighbours with no surface of their own, times this. At 0 (part 2c) a
+    /// wetted face was liquid only to the skin's pull and to the way the liquid lies, so the bend
+    /// held a soaked floor's edge up at about 72° at every detail; at 1 a cap's edge follows Young's
+    /// law (cos θ = 2 Wetting - 1) from Wetting 0.5 on, within 8° at 6, 3 and 2 px under a tenth of
+    /// gravity, Wetting 1 spreads into a film at every detail, and Wetting 0 is as it was (its
+    /// table is not used) (part 3's plan, "As built and measured").
+    pub wet_bend: f32,
 }
 
 impl Default for Numbers {
@@ -212,6 +220,7 @@ impl Default for Numbers {
             air_drag: 0.2,
             air_most: 65_536,
             wet_drag: 1.0,
+            wet_bend: 1.0,
         }
     }
 }
@@ -292,6 +301,7 @@ impl Numbers {
             air_drag: num("AIR_DRAG", d.air_drag),
             air_most: num("AIR_MOST", d.air_most),
             wet_drag: num("WET_DRAG", d.wet_drag),
+            wet_bend: num("WET_BEND", d.wet_bend),
         }
     }
 

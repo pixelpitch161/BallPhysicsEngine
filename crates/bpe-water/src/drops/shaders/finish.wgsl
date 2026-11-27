@@ -105,8 +105,10 @@ fn finish_at(i: u32) -> Finished {
     }
     let s = solid_at(xi);
     // Wetting: a wetted face is liquid to the liquid's skin, as much as it is wet. It pulls the
-    // drops near it as the liquid does (adhesion), and the liquid lies toward it, so a puddle's
-    // foot is no surface for the bend to hold up.
+    // drops near it as the liquid does (adhesion), the liquid lies toward it, so a puddle's foot is
+    // no surface for the bend to hold up, and it counts in the bend as resting liquid with no
+    // surface of its own: else the bend, which the face would not match, holds a soaked floor's
+    // edge up (part 3, item 0).
     var wet = 0.0;
     if s.z < h && !air {
         wet = wet_at(xi);
@@ -115,6 +117,12 @@ fn finish_at(i: u32) -> Finished {
             let thin_w = 2.0 / max(li.z + 1.0, 0.5);
             pull = pull + (wet * thin_w * t.x) * s.xy;
             lies = lies - (wet * t.y) * s.xy;
+            // (The lattice's drops within reach: the disc's part past the face, over a spacing
+            // squared, a quarter of a cell. Each adds the pair's bend with a neighbour whose own
+            // surface way is nothing.)
+            let q = clamp(s.z, 0.0, h);
+            let seg = h * h * acos(q / h) - q * sqrt(max(h * h - q * q, 0.0));
+            bend = bend + (fr.deep2.w * wet * thin_w * 4.0 * seg) * me.zw;
         }
     }
     var v = vi + feel.b.z * even / rho0;
