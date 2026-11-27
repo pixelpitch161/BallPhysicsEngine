@@ -448,9 +448,9 @@ fn a_picture_chosen_for_particles_is_kept_in_the_scene() {
 
 #[test]
 fn a_picture_chosen_for_a_water_back_goes_on_the_back_card() {
-    use bpe_kit::things::water::{StartingLook, new_water_scene};
+    use bpe_kit::things::water::new_water_scene;
     let reg = bpe_kit::registry();
-    let scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let scene = new_water_scene(&reg, "");
     let mut h = harness_of(scene, Some(ThingId::ROOT));
     let png: std::sync::Arc<[u8]> = b"\x89PNG\r\n\x1a\nsky".to_vec().into();
     let ctx = h.ctx.clone();
@@ -1619,9 +1619,8 @@ fn a_text_cannot_add_a_particles_layer() {
 
 /// A new Water scene with one thing of `kind` added and selected (`None`: its settings).
 fn water_harness(kind: Option<&str>) -> Harness<'static, State> {
-    use bpe_kit::modules::water::StartingLook;
     let reg = bpe_kit::registry();
-    let mut scene = bpe_kit::things::water::new_water_scene(&reg, StartingLook::Plain, "");
+    let mut scene = bpe_kit::things::water::new_water_scene(&reg, "");
     let selected = match kind {
         Some(bpe_kit::things::water::COURSE) => bpe_kit::things::water::course_of(&scene).expect("it has a Course"),
         Some(kind) => bpe_kit::add_thing(&mut scene, &reg, kind, ThingId::ROOT).expect("a Water thing"),
@@ -1643,7 +1642,7 @@ fn a_water_scenes_settings_show_its_own_cards_and_none_of_the_balls() {
     for card in ["World", "Background", "Lighting", "Air", "Grade"] {
         assert!(!shown(&h, card), "{card} belongs to a Balls scene");
     }
-    assert!(shown(&h, "Screens wide") && shown(&h, "Starting look"));
+    assert!(shown(&h, "Screens wide") && !shown(&h, "Starting look"));
     // The scene's Water, Light and Back cards are what a Water scene is: they stay.
     for card in ["Water", "Light", "Back"] {
         assert!(!shown(&h, &format!("Remove {card}")), "{card} can't be removed");

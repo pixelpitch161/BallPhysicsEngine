@@ -1,6 +1,6 @@
 use super::*;
 use bpe_core::{Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value};
-use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
 use glam::Vec2;
 
 fn set(scene: &mut Scene, id: ThingId, slot: SlotId, key: &str, v: Value) {
@@ -9,7 +9,7 @@ fn set(scene: &mut Scene, id: ThingId, slot: SlotId, key: &str, v: Value) {
 
 /// A small chamber at coarse detail: a little water filled at the start and a tap pouring in.
 fn chamber(reg: &Registry, detail: &str) -> Scene {
-    let mut scene = new_water_scene(reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(reg, "");
     set(&mut scene, ThingId::ROOT, SlotId::Water, "draft_detail", Value::Choice(detail.into()));
     let course = course_of(&scene).unwrap();
     let hole = Stroke { points: vec![[0.0, 0.0]], size: 200.0, strength: 1.0, square: true, ..Default::default() };

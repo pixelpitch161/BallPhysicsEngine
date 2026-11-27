@@ -3,7 +3,7 @@
 
 use super::*;
 use bpe_core::{SlotId, ThingId, Value};
-use bpe_kit::things::water::{POUR, StartingLook, new_water_scene};
+use bpe_kit::things::water::{POUR, ReadyLook, new_water_scene};
 
 use egui_kittest::{
     Harness,
@@ -82,7 +82,7 @@ fn opening_a_water_scene_stops_the_ball_jobs_and_a_balls_scene_starts_them_again
     studio.sound = Some(SoundJob::recording());
     studio.set_playing(true);
 
-    studio.replace_scene(new_water_scene(&kit.registry, StartingLook::Plain, ""), None);
+    studio.replace_scene(new_water_scene(&kit.registry, ""), None);
     assert!(studio.water() && !studio.playing);
     assert!(studio.aim_job.is_none() && studio.particle_job.is_none(), "no ball job is left running");
     assert!(studio.playback.world().bodies.is_empty());
@@ -208,7 +208,7 @@ fn new_asks_what_kind_then_about_unsaved_work_and_cancel_keeps_the_scene() {
     studio.ask_new_scene();
     assert!(studio.chooser.as_ref().is_some_and(|c| !c.at_start) && !studio.playing);
     assert_eq!(studio.scene, kept, "the open scene stays until the chooser is answered");
-    studio.answer_chooser(ChooserOutcome::Create(NewScene::water(StartingLook::Molten)), &ctx);
+    studio.answer_chooser(ChooserOutcome::Create(NewScene::water(ReadyLook::Molten)), &ctx);
     assert!(studio.chooser.is_none());
     assert!(matches!(studio.confirm, Some(Pending::New(_))), "unsaved work is asked about first");
     assert_eq!(studio.scene, kept);
@@ -219,15 +219,19 @@ fn new_asks_what_kind_then_about_unsaved_work_and_cancel_keeps_the_scene() {
 
     // Again, and this time Don't save.
     studio.ask_new_scene();
-    studio.answer_chooser(ChooserOutcome::Create(NewScene::water(StartingLook::Molten)), &ctx);
+    studio.answer_chooser(ChooserOutcome::Create(NewScene::water(ReadyLook::Molten)), &ctx);
     let action = studio.confirm.take().expect("asked");
     studio.perform(action, &ctx);
     assert!(studio.water() && !studio.unsaved() && !studio.history.can_undo());
     assert_eq!((studio.scene.name.as_str(), studio.path.as_ref()), ("Water course", None));
     assert_eq!(studio.status, "Started a new Water scene.");
-    let water = &studio.resolved.things[&ThingId::ROOT].slots[&SlotId::Water];
-    let world = bpe_kit::modules::water::WaterWorld::from_params(&water.params);
-    assert_eq!(world.look, StartingLook::Molten, "the look picked is remembered");
+    // The look picked is the scene's: its Liquid, named for it, and its row.
+    let lava = studio.scene.order.iter().find(|id| studio.scene.things[*id].kind == bpe_kit::things::water::LIQUID);
+    let lava = *lava.expect("a new Water scene has its Liquid");
+    assert_eq!(studio.scene.things[&lava].name, "Lava");
+    let look =
+        bpe_kit::modules::water::WaterLook::from_params(&studio.resolved.things[&lava].slots[&SlotId::Look].params);
+    assert_eq!(look.sparks, 0.5, "the Molten row's sparks");
 
     // Cancel on the chooser itself changes nothing.
     studio.ask_new_scene();

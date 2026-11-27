@@ -1396,14 +1396,14 @@ fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>
 fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     use bpe_kit::things::water::finals::Finals;
     use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
-    use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+    use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
     use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
     use bpe_water::take::{Chunk, FrameCodec};
     if !wanted("water-final", only) {
         return Vec::new();
     }
     let reg = kit().registry;
-    let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(&reg, "");
     let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
     water.params.set("final_detail", Value::Choice("coarse".into()));
     let course = course_of(&scene).unwrap();
@@ -1460,7 +1460,7 @@ fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
 fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     use bpe_kit::things::water::finals::Finals;
     use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
-    use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+    use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
     use bpe_water::draw::look::{BackLook, Lamp, LampKind};
     use bpe_water::draw::wet::HeldWet;
     use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
@@ -1469,7 +1469,7 @@ fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u
         return Vec::new();
     }
     let reg = kit().registry;
-    let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(&reg, "");
     let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
     water.params.set("final_detail", Value::Choice("coarse".into()));
     let course = course_of(&scene).unwrap();

@@ -3,7 +3,7 @@
 //! pick is only recorded on the scene's Water card.
 
 use bpe_core::SimKind;
-use bpe_kit::things::water::{NEW_NAME, StartingLook};
+use bpe_kit::things::water::{NEW_NAME, ReadyLook};
 use eframe::egui::{self, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use crate::style;
@@ -16,7 +16,7 @@ pub const BALLS_NAME: &str = "New scene";
 pub struct NewScene {
     pub sim: SimKind,
     /// A Water scene's starting look (Plain for a Balls scene).
-    pub look: StartingLook,
+    pub look: ReadyLook,
     pub name: String,
 }
 
@@ -24,12 +24,12 @@ impl NewScene {
     /// The blank Balls project.
     #[cfg(test)]
     pub fn balls() -> Self {
-        Self { sim: SimKind::Balls, look: StartingLook::Plain, name: BALLS_NAME.into() }
+        Self { sim: SimKind::Balls, look: ReadyLook::Plain, name: BALLS_NAME.into() }
     }
 
     /// A Water scene with `look`.
     #[cfg(test)]
-    pub fn water(look: StartingLook) -> Self {
+    pub fn water(look: ReadyLook) -> Self {
         Self { sim: SimKind::Water, look, name: NEW_NAME.into() }
     }
 }
@@ -48,7 +48,7 @@ pub enum Step {
 pub struct Chooser {
     pub step: Step,
     pub sim: SimKind,
-    pub look: StartingLook,
+    pub look: ReadyLook,
     pub name: String,
     /// The name was typed, so picking the other kind leaves it alone.
     pub named: bool,
@@ -62,7 +62,7 @@ impl Chooser {
         Self {
             step: Step::Kind,
             sim: SimKind::Balls,
-            look: StartingLook::Plain,
+            look: ReadyLook::Plain,
             name: BALLS_NAME.into(),
             named: false,
             at_start: true,
@@ -82,7 +82,7 @@ impl Chooser {
     }
 
     fn made(&self) -> NewScene {
-        let look = if self.sim == SimKind::Water { self.look } else { StartingLook::Plain };
+        let look = if self.sim == SimKind::Water { self.look } else { ReadyLook::Plain };
         let name = self.name.trim();
         let name = if name.is_empty() { default_name(self.sim) } else { name };
         NewScene { sim: self.sim, look, name: name.into() }
@@ -148,7 +148,7 @@ fn kind_page(ui: &mut Ui, chooser: &mut Chooser) -> Option<ChooserOutcome> {
             let on = chooser.sim == sim;
             let tile = tile(ui, KIND_TILE, KIND_PICTURE, title, words, on, |ui, rect| match sim {
                 SimKind::Balls => balls_picture(ui, rect),
-                SimKind::Water => water_picture(ui, rect, StartingLook::Plain),
+                SimKind::Water => water_picture(ui, rect, ReadyLook::Plain),
             });
             if tile.clicked() {
                 chooser.pick(sim);
@@ -207,7 +207,7 @@ fn look_page(ui: &mut Ui, chooser: &mut Chooser) -> Option<ChooserOutcome> {
         .color(style::MUTED),
     );
     ui.add_space(10.0);
-    for row in StartingLook::ALL.chunks(4) {
+    for row in ReadyLook::ALL.chunks(4) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for &look in row {
@@ -295,7 +295,7 @@ fn balls_picture(ui: &Ui, rect: Rect) {
 
 /// A Water scene in small, in `look`'s colours: a course carved into a basin, a stream running
 /// into the pool in it.
-fn water_picture(ui: &Ui, rect: Rect, look: StartingLook) {
+fn water_picture(ui: &Ui, rect: Rect, look: ReadyLook) {
     let (liquid, solid) = look.swatch();
     let (liquid, solid) = (style::video_bytes(liquid), style::video_bytes(solid));
     let painter = ui.painter().with_clip_rect(rect);
@@ -367,16 +367,16 @@ mod tests {
         assert!(!has(&h, "Create Balls scene"));
         click(&mut h, "Next");
         assert_eq!(h.state().0.step, Step::Look);
-        for look in StartingLook::ALL {
+        for look in ReadyLook::ALL {
             assert!(has(&h, look.title()), "{}", look.title());
         }
-        assert_eq!(h.state().0.look, StartingLook::Plain, "Plain is picked until another is");
+        assert_eq!(h.state().0.look, ReadyLook::Plain, "Plain is picked until another is");
         click(&mut h, "Back");
         assert_eq!(h.state().0.step, Step::Kind);
         click(&mut h, "Next");
         click(&mut h, "Neon in the dark");
         click(&mut h, "Create Water scene");
-        let want = NewScene { sim: SimKind::Water, look: StartingLook::Neon, name: "Water course".into() };
+        let want = NewScene { sim: SimKind::Water, look: ReadyLook::Neon, name: "Water course".into() };
         assert_eq!(h.state().1, Some(ChooserOutcome::Create(want)));
     }
 
@@ -397,12 +397,12 @@ mod tests {
         assert_eq!((made(&h).sim, made(&h).name.as_str()), (SimKind::Balls, "Cave"));
         // A Water pick's look never rides along on a Balls scene, and a blank name gets the usual one.
         let mut chooser = Chooser::for_new();
-        chooser.look = StartingLook::Molten;
+        chooser.look = ReadyLook::Molten;
         chooser.name = "  ".into();
         chooser.named = true;
         assert_eq!(chooser.made(), NewScene::balls());
         chooser.sim = SimKind::Water;
-        assert_eq!(chooser.made(), NewScene::water(StartingLook::Molten));
+        assert_eq!(chooser.made(), NewScene::water(ReadyLook::Molten));
     }
 
     #[test]

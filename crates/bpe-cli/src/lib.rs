@@ -982,7 +982,7 @@ mod tests {
     fn a_video_with_a_water_scene_is_still_refused() {
         let kit = bpe_kit::kit();
         assert!(check_exportable(&bpe_kit::new_studio_scene(&kit.registry)).is_ok());
-        let water = bpe_kit::things::water::new_water_scene(&kit.registry, Default::default(), "");
+        let water = bpe_kit::things::water::new_water_scene(&kit.registry, "");
         assert!(video_of(&water, &kit).is_ok(), "a Water scene exports on its own");
         // A video that kept one (a hand-edited file: the editor doesn't keep them) is refused.
         let mut video = bpe_core::Video::new();

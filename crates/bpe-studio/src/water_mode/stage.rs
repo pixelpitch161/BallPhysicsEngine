@@ -14,7 +14,7 @@ use super::rail::{self, RAIL_W, Tool};
 use crate::app::Studio;
 use crate::style;
 use bpe_core::{Address, Settings, SlotId, ThingId, Value};
-use bpe_kit::modules::water::{SCREEN, WaterWorld};
+use bpe_kit::modules::water::{Keep, ReadyLook, SCREEN, WaterWorld};
 use bpe_kit::things::water;
 use bpe_water::SolidField;
 use bpe_water::draw::look::{Look, Quality};
@@ -23,6 +23,8 @@ use glam::Vec2;
 
 /// The strip's height.
 const STRIP_H: f32 = 32.0;
+/// The room the Use a look menu takes at the strip's right end.
+const LOOK_MENU_W: f32 = 100.0;
 /// A marker's radius, and how close a click must land to pick it.
 const MARKER_R: f32 = 11.0;
 
@@ -55,6 +57,8 @@ pub struct WaterStage {
     /// move until the draft plays it), and a count that goes up when it changes.
     preview: Option<Preview>,
     preview_version: u64,
+    /// What Use a look leaves as it is.
+    pub keep: Keep,
 }
 
 /// The course as it will be, and what it was made for.
@@ -106,7 +110,12 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     ui.painter().rect_filled(strip, 0.0, style::PANEL);
     ui.painter().hline(strip.x_range(), strip.bottom(), Stroke::new(1.0, style::LINE_SOFT));
     let inside = strip.shrink2(vec2(10.0, 0.0));
-    let first = Rect::from_min_size(inside.min, vec2(inside.width(), STRIP_H));
+    // (Use a look sits at the first row's right end, so the tool's row never wraps for it.)
+    let menu = Rect::from_min_max(
+        pos2(inside.right() - LOOK_MENU_W, inside.top()),
+        pos2(inside.right(), inside.top() + STRIP_H),
+    );
+    let first = Rect::from_min_size(inside.min, vec2(inside.width() - LOOK_MENU_W - 8.0, STRIP_H));
     let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
     let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(first).layout(layout));
     bar.label(RichText::new(tool.name()).font(style::semibold(13.0)));
@@ -143,9 +152,15 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     if let Some(note) = note {
         bar.label(RichText::new(note).color(style::TEXT));
     }
-    // (Each row is a strip's height: the first fills the strip, and the rest wrap below it.)
+    let mut menu_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(menu).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    look_menu(&mut menu_ui, studio);
+    // (Each row is a strip's height: the first fills the strip, and the rest wrap below it. Never
+    // while a button is held: picking a piece adds to the strip, and the course moving under a
+    // drag would move the piece with it.)
     let strip_h = (bar.min_rect().bottom() - strip.top()).max(STRIP_H);
-    if (strip_h - studio.water_stage.strip_h.max(STRIP_H)).abs() > 0.5 {
+    let held = ui.input(|i| i.pointer.any_down());
+    if (strip_h - studio.water_stage.strip_h.max(STRIP_H)).abs() > 0.5 && !held {
         studio.water_stage.strip_h = strip_h;
         ui.ctx().request_repaint();
     }
@@ -321,6 +336,41 @@ fn update_preview(studio: &mut Studio) {
     let moulded = moulding && !painting;
     studio.water_stage.preview = Some(Preview { stroke, print: setup.print, moulded, field });
     studio.water_stage.preview_version += 1;
+}
+
+/// The Use a look menu (decision 40): the seven looks, then the two switches.
+fn look_menu(bar: &mut Ui, studio: &mut Studio) {
+    let mut picked = None;
+    let keep = &mut studio.water_stage.keep;
+    bar.menu_button("Use a look…", |ui| {
+        for look in ReadyLook::ALL {
+            if ui.button(look.title()).on_hover_text(look.words()).clicked() {
+                picked = Some(look);
+                ui.close();
+            }
+        }
+        ui.separator();
+        ui.checkbox(&mut keep.colours, "Keep my colours")
+            .on_hover_text("Leave every colour and gradient as it is, and change the rest");
+        ui.checkbox(&mut keep.lamps, "Keep my lamps").on_hover_text("Leave the lamps as they are, and add none");
+    })
+    .response
+    .on_hover_text("Set the liquids, the rock, the back, the light and the lamps to a ready-made look");
+    if let Some(look) = picked {
+        use_look(studio, look);
+    }
+}
+
+/// Sets the scene to `look`, keeping what the menu's switches say, as one undo step.
+pub(crate) fn use_look(studio: &mut Studio, look: ReadyLook) {
+    let kit = studio.kit.clone();
+    let before: Vec<ThingId> = studio.scene.things.keys().copied().collect();
+    bpe_kit::modules::water::apply_look(&mut studio.scene, &kit.registry, look, studio.water_stage.keep);
+    // (Lamps it took away are no longer picked.)
+    let gone: Vec<ThingId> = before.into_iter().filter(|id| !studio.scene.things.contains_key(id)).collect();
+    studio.selection.remove(&gone);
+    studio.separate_edit = true;
+    studio.status = format!("Using the {} look.", look.title());
 }
 
 /// Adds a thing of `kind` at the world point, selects it, and goes back to Select.

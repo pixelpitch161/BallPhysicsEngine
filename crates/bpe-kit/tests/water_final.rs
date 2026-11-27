@@ -13,7 +13,7 @@ use bpe_core::{Address, Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value
 use bpe_kit::things::water::draft::{FINAL_MOST, Speeds, WaterSetup};
 use bpe_kit::things::water::finals::Finals;
 use bpe_kit::things::water::make::{MakeFinal, MakeProgress, this_card};
-use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
 use bpe_water::WaterGpu;
 use bpe_water::take::{Chunk, FrameCodec, chunk};
 use glam::Vec2;
@@ -35,7 +35,7 @@ fn add(scene: &mut Scene, reg: &Registry, kind: &str, at: Vec2) -> ThingId {
 
 /// A 400 px box carved in the rock, a 160 px fill at its foot and a tap (from `starts` s) above it.
 fn small(reg: &Registry, starts: f64) -> (Scene, ThingId) {
-    let mut scene = new_water_scene(reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(reg, "");
     let course = course_of(&scene).unwrap();
     let hole = Stroke { points: vec![[0.0, 0.0]], size: 200.0, strength: 1.0, square: true, ..Default::default() };
     set(&mut scene, course, SlotId::Form, "carved", Value::Strokes(Strokes { list: vec![hole] }));
@@ -213,7 +213,7 @@ fn a_make_the_disk_has_no_room_for_is_refused() {
 /// One screen carved as a chamber two thirds full, with a tap pouring in from the top (the draft's
 /// `draft_pace` course), its final at `detail`.
 fn screen_chamber(reg: &Registry, detail: &str) -> Scene {
-    let mut scene = new_water_scene(reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(reg, "");
     set(&mut scene, ThingId::ROOT, SlotId::Water, "final_detail", Value::Choice(detail.into()));
     let course = course_of(&scene).unwrap();
     let r = 540.0 - 24.0;

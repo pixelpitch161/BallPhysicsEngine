@@ -11,7 +11,7 @@ use std::time::Instant;
 use bpe_core::{Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value};
 use bpe_kit::things::water::draft::{DRAFT_MOST, WaterSetup};
 use bpe_kit::things::water::look::look_of;
-use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
 use bpe_water::draw::{LookDraw, LookGpu, View};
 use bpe_water::{Water, WaterGpu};
 use glam::Vec2;
@@ -30,7 +30,7 @@ fn add(scene: &mut Scene, reg: &Registry, kind: &str, at: Vec2) -> ThingId {
 /// start, and a tap (Width 40, Rate 1, Speed 300) pouring in from the top: about 86,000 drops at
 /// 8 px. `detail` is the Water card's Draft detail ("coarse", "normal", "fine").
 fn screen_course(reg: &Registry, detail: &str) -> Scene {
-    let mut scene = new_water_scene(reg, StartingLook::Plain, "");
+    let mut scene = new_water_scene(reg, "");
     set(&mut scene, ThingId::ROOT, SlotId::Water, "draft_detail", Value::Choice(detail.into()));
     let course = course_of(&scene).unwrap();
     let r = 540.0 - 24.0;

@@ -429,3 +429,32 @@ fn a_picked_pour_says_what_it_cannot_do_yet() {
     h.run();
     assert!(h.query_by_label(LATER_KINDS).is_some());
 }
+
+#[test]
+fn use_a_look_sets_the_scene_to_it_as_one_undo_step() {
+    use bpe_core::{Settings, SlotId, ThingId};
+    use bpe_kit::modules::water::{ReadyLook, WaterLook};
+    let mut studio = water_studio();
+    let kit = studio.kit.clone();
+    let liquid = bpe_kit::add_thing(&mut studio.scene, &kit.registry, water::LIQUID, ThingId::ROOT).unwrap();
+    studio.scene_changed();
+    let mut h = harness(studio);
+    let before = h.state().scene.clone();
+    h.get_by_label("Use a look…").click();
+    h.run();
+    for look in ReadyLook::ALL {
+        assert!(h.query_all_by_label(look.title()).next().is_some(), "{} is in the menu", look.title());
+    }
+    assert!(h.query_all_by_label("Keep my colours").next().is_some());
+    assert!(h.query_all_by_label("Keep my lamps").next().is_some());
+    h.get_by_label("Lamp-lit rock").click();
+    h.run();
+    let studio = h.state();
+    assert_eq!(studio.status, "Using the Lamp-lit rock look.");
+    let look = WaterLook::from_params(&studio.resolved.things[&liquid].slots[&SlotId::Look].params);
+    assert_eq!(look, ReadyLook::LampLitRock.row().liquid);
+    assert_eq!(of_kind(studio, water::LAMP).len(), 2, "its two lamps");
+    assert!(h.state_mut().undo());
+    h.run();
+    assert_eq!(h.state().scene, before, "one undo puts it all back");
+}

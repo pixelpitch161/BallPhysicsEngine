@@ -462,7 +462,7 @@ impl Studio {
     #[cfg(test)]
     pub fn headless_water() -> Self {
         let kit = Arc::new(bpe_sound::kit());
-        let scene = bpe_kit::things::water::new_water_scene(&kit.registry, Default::default(), "");
+        let scene = bpe_kit::things::water::new_water_scene(&kit.registry, "");
         Self::with_scene(kit, scene)
     }
 

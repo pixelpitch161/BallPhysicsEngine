@@ -1365,7 +1365,7 @@ mod tests {
     fn a_water_scenes_add_menu_lists_water_things_and_no_ball_things() {
         use bpe_kit::things::water;
         let reg = bpe_kit::registry();
-        let scene = water::new_water_scene(&reg, bpe_kit::modules::water::StartingLook::Plain, "");
+        let scene = water::new_water_scene(&reg, "");
         let mut h = harness_of(scene);
         h.get_by_label("+ Add thing").click();
         h.run();
