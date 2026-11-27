@@ -9,7 +9,7 @@
 //! disk can't link), so nothing is made twice and the old take stays whole.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use bpe_water::take::{ChunkInfo, TAKE_FORMAT, chunk};
@@ -21,8 +21,22 @@ use super::draft::{Speeds, WaterInputs};
 pub const PROGRAM: &str = concat!("ball-studio ", env!("CARGO_PKG_VERSION"));
 /// Water frames between restart points (2 s).
 pub const POINT_EVERY: u32 = 120;
+
+/// A print of the kit's water sources (`build.rs`): the setup, the make and the cards.
+const KIT_SOURCES: u64 = include!(concat!(env!("OUT_DIR"), "/sources_print.rs"));
+
+/// The engine a take is made with: the water engine's print and the kit's water sources. A take
+/// made with any other is not used.
+pub fn engine() -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    (bpe_water::take::engine_print(), KIT_SOURCES).hash(&mut h);
+    h.finish()
+}
 /// A make that wrote nothing for this long has stopped (its lock is taken over).
 const STALE: Duration = Duration::from_secs(120);
+/// How often a make writes its lock again (well inside [`STALE`], however long a chunk takes).
+const LOCK_EVERY: Duration = Duration::from_secs(20);
 const HEAD: &str = "head.ron";
 const LOCK: &str = "make.lock";
 
@@ -68,7 +82,7 @@ impl TakeHead {
     ) -> TakeHead {
         TakeHead {
             format: TAKE_FORMAT,
-            engine: bpe_water::take::engine_print(),
+            engine: engine(),
             program: PROGRAM.into(),
             card: card.into(),
             print,
@@ -94,10 +108,7 @@ impl TakeHead {
 
     /// Whether this program can use it on `card`.
     fn usable(&self, card: &str) -> bool {
-        self.format == TAKE_FORMAT
-            && self.engine == bpe_water::take::engine_print()
-            && self.program == PROGRAM
-            && self.card == card
+        self.format == TAKE_FORMAT && self.engine == engine() && self.program == PROGRAM && self.card == card
     }
 
     /// How many moments frame `frame` keeps in its chunks (0: not made).
@@ -270,6 +281,10 @@ impl Finals {
                 if let Some(t) = head.inputs.earliest_change(wanted.inputs) {
                     good = good.min((t * 60.0).floor().max(0.0) as u32);
                 }
+                // (Another take is no help before its first restart point.)
+                if !head.points.iter().any(|p| *p > 0 && *p <= good) {
+                    continue;
+                }
             }
             let better = match &best {
                 None => true,
@@ -282,10 +297,6 @@ impl Finals {
         match best {
             Some((head, own, good)) => {
                 let restart = head.points.iter().copied().filter(|p| *p <= good).max().unwrap_or(0);
-                // (Another take is no help before its first restart point.)
-                if !own && restart == 0 {
-                    return Status { take: None, own: false, good: 0, made: 0, restart: 0, needs };
-                }
                 let made = head.made();
                 Status { take: Some(head), own, good, made, restart, needs }
             }
@@ -337,7 +348,7 @@ impl Finals {
             }
         }
         head.last_used = now();
-        let take = TakeDir { dir, head, from: at };
+        let take = TakeDir { dir, head, from: at, locked: Instant::now() };
         take.write_head()?;
         Ok(take)
     }
@@ -430,6 +441,8 @@ pub struct TakeDir {
     pub head: TakeHead,
     /// The frame this make started from.
     pub from: u32,
+    /// When the lock was last written.
+    locked: Instant,
 }
 
 impl TakeDir {
@@ -447,7 +460,16 @@ impl TakeDir {
         self.head.seconds_making += seconds;
         self.head.frames_made += frames;
         self.write_head()?;
+        self.locked = Instant::now();
         write_whole(&self.dir.join(LOCK), format!("{}", std::process::id()).as_bytes())
+    }
+
+    /// Writes the lock again when it is getting old (each frame of a make asks).
+    pub fn keep_lock(&mut self) {
+        if self.locked.elapsed() >= LOCK_EVERY {
+            self.locked = Instant::now();
+            write_whole(&self.dir.join(LOCK), format!("{}", std::process::id()).as_bytes()).ok();
+        }
     }
 
     /// A restart point is written.

@@ -92,7 +92,8 @@ impl MakeFinal {
     pub fn print(&self) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
         let mut h = DefaultHasher::new();
-        (self.setup.print, bpe_water::take::engine_print(), super::finals::PROGRAM).hash(&mut h);
+        let numbers = format!("{:?}", self.setup.numbers());
+        (self.setup.print, numbers, super::finals::engine(), super::finals::PROGRAM).hash(&mut h);
         h.finish()
     }
 
@@ -241,7 +242,10 @@ impl MakeFinal {
             }
             progress.at.store(k + 1, Ordering::Relaxed);
             progress.drops.store(water.count(), Ordering::Relaxed);
-            progress.bytes.store(take.lock().map(|t| t.head.bytes()).unwrap_or(0), Ordering::Relaxed);
+            if let Ok(mut take) = take.lock() {
+                take.keep_lock();
+                progress.bytes.store(take.head.bytes(), Ordering::Relaxed);
+            }
         }
         let rest = capture.take(gpu.device(), true);
         let frames = progress.at.load(Ordering::Relaxed).saturating_sub(timed);

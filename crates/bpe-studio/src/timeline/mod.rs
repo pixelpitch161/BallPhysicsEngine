@@ -420,12 +420,17 @@ fn final_lane(ui: &mut Ui, studio: &mut Studio, ruler: &Ruler) {
                 parts.push(format!("out of date from {}", clock(f64::from(good) / 60.0)));
             }
         }
-        if let Some(job) = &wf.job {
-            let (from, at, _) = job.frames();
-            if at > from {
-                painter.rect_filled(span(from, at.min(end)), 0.0, style::TEXT.gamma_multiply(0.3));
+        match &wf.job {
+            Some(job) if wf.making_this() => {
+                let (from, at, _) = job.frames();
+                if at > from {
+                    painter.rect_filled(span(from, at.min(end)), 0.0, style::TEXT.gamma_multiply(0.3));
+                }
+                parts.push(format!("being made, at {}", clock(f64::from(at) / 60.0)));
             }
-            parts.push(format!("being made, at {}", clock(f64::from(at) / 60.0)));
+            // (A make of the scene as it was before an edit: none of it is this scene's.)
+            Some(_) => parts.push("the scene as it was being made".into()),
+            None => {}
         }
         // The stretches kept in slow motion, along the foot.
         let foot = strip.bottom() - 1.5;

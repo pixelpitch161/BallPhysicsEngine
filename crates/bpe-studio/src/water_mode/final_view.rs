@@ -118,8 +118,12 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Release);
-        self.shared.wake.notify_one();
+        {
+            // (Under the ask's lock, so the worker can't miss the wake between its look and its wait.)
+            let _ask = self.shared.ask.lock();
+            self.shared.stop.store(true, Ordering::Release);
+            self.shared.wake.notify_one();
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -223,12 +227,17 @@ impl FinalPicture {
             self.plain = Some((print, Plain::new(gpu, &field, setup.numbers().wall_off)));
             self.drawn = None;
         }
-        if let Some(got) = worker.shared.got.lock().ok().and_then(|mut g| g.take())
-            && let Some((frame, ahead)) = got.frame
-        {
-            let stored = self.stored.get_or_insert_with(|| StoredDrops::new(&render.device, &render.queue, &[]));
-            stored.set(&render.device, &render.queue, &frame.xv, &frame.kinds);
-            self.holds = Some((got.take, got.tau, ahead as f32));
+        if let Some(got) = worker.shared.got.lock().ok().and_then(|mut g| g.take()) {
+            match got.frame {
+                Some((frame, ahead)) => {
+                    let stored =
+                        self.stored.get_or_insert_with(|| StoredDrops::new(&render.device, &render.queue, &[]));
+                    stored.set(&render.device, &render.queue, &frame.xv, &frame.kinds);
+                    self.holds = Some((got.take, got.tau, ahead as f32));
+                }
+                // (Not there, or not readable: the stage shows the draft rather than an old moment.)
+                None => (self.holds, self.drawn) = (None, None),
+            }
         }
         let v = picture_view(view, painter.ctx().pixels_per_point());
         if let (Some((_, plain)), Some(stored), Some((held, at, ahead))) = (&mut self.plain, &self.stored, self.holds)

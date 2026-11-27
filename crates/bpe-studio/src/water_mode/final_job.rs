@@ -118,6 +118,8 @@ pub struct WaterFinal {
     pub problem: Option<String>,
     /// The finals folder's size and when it was measured (the Finals menu).
     size: Option<(Instant, u64)>,
+    /// The last estimate of the drops: what it was worked out from, and the drops.
+    estimate: Option<(u64, u32)>,
 }
 
 impl WaterFinal {
@@ -133,6 +135,7 @@ impl WaterFinal {
             export_after: false,
             problem: None,
             size: None,
+            estimate: None,
         }
     }
 
@@ -171,10 +174,21 @@ impl WaterFinal {
         let drops_about = match (&status.take, draft) {
             (Some(take), _) if status.own => take.drops,
             (_, Some(draft)) => {
-                let field = draft.field();
-                let finer = f64::from(draft.cell / make.setup.cell.max(0.5)).powi(2);
-                let about = f64::from(draft.drops_about(&field, length)) * finer;
-                about.min(f64::from(make.most)) as u32
+                // (The course laid out at the draft's cell only when the draft changed.)
+                let mut h = DefaultHasher::new();
+                (draft.print, make.setup.cell.to_bits(), length.to_bits(), make.most).hash(&mut h);
+                let key = h.finish();
+                match self.estimate {
+                    Some((k, drops)) if k == key => drops,
+                    _ => {
+                        let field = draft.field();
+                        let finer = f64::from(draft.cell / make.setup.cell.max(0.5)).powi(2);
+                        let about = f64::from(draft.drops_about(&field, length)) * finer;
+                        let drops = about.min(f64::from(make.most)) as u32;
+                        self.estimate = Some((key, drops));
+                        drops
+                    }
+                }
             }
             _ => 0,
         };
@@ -201,7 +215,7 @@ impl WaterFinal {
     }
 
     /// Follows the make: `Some(true)` the frame it finished, `Some(false)` the frame it stopped
-    /// or failed (the reason in `problem`, unless it was stopped).
+    /// (whatever it had made by then is kept) or failed (the reason in `problem`).
     pub fn follow(&mut self) -> Option<bool> {
         let ended = self.job.as_mut()?.ended()?;
         let stopped = self.job.as_ref().is_some_and(FinalJob::stopping);
@@ -209,6 +223,7 @@ impl WaterFinal {
         self.stale = true;
         self.size = None;
         match ended {
+            Ok(_) if stopped => Some(false),
             Ok(_) => Some(true),
             Err(_) if stopped => Some(false),
             Err(why) => {
@@ -248,13 +263,25 @@ impl WaterFinal {
         size
     }
 
+    /// Whether the make in hand is of the scene as it is now (an edit while it makes leaves it
+    /// making the final of the scene as it was).
+    pub fn making_this(&self) -> bool {
+        match (&self.job, &self.found) {
+            (Some(job), Some(found)) => job.print == found.make.print(),
+            _ => false,
+        }
+    }
+
     /// What the status line says of the final: its words and whether they tell a problem.
     pub fn words(&self) -> Option<(String, bool)> {
         if let Some(job) = &self.job {
             let percent = (job.progress().share() * 100.0).floor() as u32;
             let left = job.seconds_left().map(|s| format!(" · about {} left", crate::export_window::minutes(s)));
-            let doing =
-                if job.building() { "· Making the final: laying out the course" } else { "· Making the final:" };
+            let doing = match (job.building(), self.making_this()) {
+                (true, _) => "· Making the final: laying out the course",
+                (false, true) => "· Making the final:",
+                (false, false) => "· Making the final of the scene as it was:",
+            };
             return Some(match job.building() {
                 true => (doing.to_owned(), false),
                 false => (format!("{doing} {percent} %{}", left.unwrap_or_default()), false),
@@ -311,6 +338,8 @@ fn trim(seconds: f64) -> String {
 
 /// A make on its own thread and graphics device.
 pub struct FinalJob {
+    /// The print of the take it makes.
+    pub print: u64,
     progress: Arc<MakeProgress>,
     stop: Arc<AtomicBool>,
     ended: Receiver<Result<TakeHead, String>>,
@@ -321,6 +350,7 @@ pub struct FinalJob {
 impl FinalJob {
     /// Starts making `make` into `finals`; `ctx` is asked to draw again as it goes.
     pub fn start(make: MakeFinal, finals: Finals, ctx: Option<eframe::egui::Context>) -> FinalJob {
+        let print = make.print();
         let progress = Arc::new(MakeProgress::default());
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, ended) = channel();
@@ -364,19 +394,25 @@ impl FinalJob {
                 }
             })
             .ok();
-        FinalJob { progress, stop, ended, thread, started: Instant::now() }
+        FinalJob { print, progress, stop, ended, thread, started: Instant::now() }
     }
 
-    /// A job that makes nothing and stands at `at` of frames `from` to `to` (tests).
+    /// A job that makes nothing and stands at `at` of frames `from` to `to` of the take `print`
+    /// (tests).
     #[cfg(test)]
-    pub fn pretend(from: u32, at: u32, to: u32) -> (FinalJob, std::sync::mpsc::Sender<Result<TakeHead, String>>) {
+    pub fn pretend(
+        print: u64,
+        from: u32,
+        at: u32,
+        to: u32,
+    ) -> (FinalJob, std::sync::mpsc::Sender<Result<TakeHead, String>>) {
         let progress = Arc::new(MakeProgress::default());
         progress.from.store(from, Ordering::Release);
         progress.at.store(at, Ordering::Release);
         progress.to.store(to, Ordering::Release);
         progress.phase.store(1, Ordering::Release);
         let (sender, ended) = channel();
-        let job = FinalJob { progress, stop: Arc::default(), ended, thread: None, started: Instant::now() };
+        let job = FinalJob { print, progress, stop: Arc::default(), ended, thread: None, started: Instant::now() };
         (job, sender)
     }
 

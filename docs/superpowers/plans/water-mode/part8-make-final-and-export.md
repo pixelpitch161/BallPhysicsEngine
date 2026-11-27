@@ -355,7 +355,7 @@ part8-handover.md`.
   unpack, draw); the take deleted after. The CI card job's timing step runs it and its lines join the summary.
 - [ ] Full-size look check: `water-final` scene in `full_size_look.rs` (a take made at 3 px, its frame drawn at
   1080 × 1920; and the same moment moved on half a frame), looked at in full and 1:1 crops.
-- [ ] Notes: `docs/notes/water.md` "Part 8 (as built)"; this plan's "As built and measured"; the spec's Parts line.
+- [x] Notes: `docs/notes/water.md` "Part 8 (as built)"; this plan's "As built and measured"; the spec's Parts line.
 - [ ] One Opus review; fixes; PR; checks green; merge; part 6 hand-over in `ballphysics/water-mode/`; coordinator
   told; memory line.
 
@@ -371,4 +371,54 @@ part8-handover.md`.
 
 ## As built and measured
 
-(Filled in as the part lands.)
+Built as planned, PR #242. Where it differs from the decisions above:
+
+- **Decision 3:** a frame keeps more moments only when `0.8 / s` asks for them (the least Speed at its start, middle
+  and end), so a frame barely slowed keeps one, as the moment drawn a little after it moves its drops on.
+- **Decision 11:** a take of the scene as it was is used only when it is right past its first restart point (frame
+  120); an edit in the first two seconds makes the final again from the start, and the Final lane then shows it as
+  not made (not hatched).
+- **The video's clock** with one Speed throughout is worked out exactly (`tau / s`), so a Length's frames come out as
+  a Balls scene's do; the table every 1/480 s is built only when Speed is keyed.
+- **The finals folder in tests** is a folder of the test run's own (`app::finals_folder`).
+- **Decision 21's Video card Length row** is not built: the status line ("· video 34.2 s in slow motion") and the
+  Export window's Length row say the video's length instead.
+- **The editor's find** runs at most every 250 ms while the scene keeps changing, and reads the finals folder only
+  when what the final needs changed (its print, frames and each frame's moments).
+- **Preview final frame** of a Water scene is in the Finals menu (a Water scene has no Lighting card).
+- **After the review:** a take's engine is the water engine's sources and the kit's water sources (each crate's
+  `build.rs` prints them), and the make's print holds the step numbers too, so a take made by another build is
+  made again. A make carries its take's print: after an edit the lane and the status line say it makes "the scene
+  as it was", and Make final and export then refuses to export it. A stopped make says so (it ended with what it
+  had made). Opening another scene stops the make. Speed keeps a table of each frame's moments, so the status line
+  and the Export window cost nothing a frame; the drops estimate lays out the course only when the draft changes.
+  A take of the scene as it was with no restart point in its good frames is passed over, not chosen and dropped.
+  The make's lock is written again every 20 s, however long a chunk takes.
+- **Left for later** (the review's minor points): a take ends with no restart point at its last frame; hard links
+  shared between takes count twice in the folder's size; viewing a final doesn't count as using it for the 30-day
+  clean-up; Preview final frame doesn't say a frame is out of date; the export reads each frame when it draws it
+  rather than one ahead; the Speed setting's hover doesn't give the video's length.
+
+### Measured
+
+(The card job's timing step runs `water_final_speed`; its numbers are in the PR and below.)
+
+On the RX 9070 XT (Vulkan, driver 26.11.2), CI run 45951218538: one screen two thirds full with a tap, Normal
+final detail (2 px), 10 s.
+
+| | |
+| --- | --- |
+| Drops | 1,411,909 |
+| Wall seconds a scene second | **10.0** (99.8 s in all) |
+| Disk a scene second | **267 MB** (2.67 GB in all) |
+| Bytes a drop a moment | 3.15 |
+| A restart point | 47 MB |
+| Course laid out at 2 px | 11 ms |
+| A frame read and unpacked | 31 ms |
+| A frame drawn at 1080 x 1920 and read back | 97 ms (the first, with the drawing's set-up) |
+
+That is the C2 estimate (about 10 s a scene second), so the make is not made faster here. A minute of one-screen
+water at 2 px takes about 10 minutes and 16 GB; slow motion multiplies the disk by the moments kept (4 times the
+frames, about 4 times the room for that stretch) and adds only the packing of those moments to the making time, as
+the steps a frame stay the same.
+

@@ -121,13 +121,19 @@ impl Studio {
         }
         match wf.follow() {
             Some(true) => {
-                self.status = "The final is made.".into();
-                if std::mem::take(&mut wf.export_after) {
-                    export.export_final = true;
-                }
                 // (Found again now, so the export reads it whole.)
                 wf.stale = true;
                 wf.find(self.revision, &self.scene, &self.resolved, self.water_draft.setup.as_deref());
+                let complete = wf.found.as_ref().is_some_and(|f| f.status.complete());
+                self.status =
+                    if complete { "The final is made." } else { "The final of the scene as it was is made." }.into();
+                match (std::mem::take(&mut wf.export_after), complete) {
+                    (true, true) => export.export_final = true,
+                    (true, false) => export.water_make_failed(
+                        "the scene changed while it was being made. Press Make final and export again",
+                    ),
+                    _ => {}
+                }
             }
             Some(false) => {
                 let after = std::mem::take(&mut wf.export_after);

@@ -829,9 +829,11 @@ plays it in slow motion.
   kind) compressed with lz4. A drop is 5 bytes before lz4; decoded drops are back in their cells, `| STOPS`.
 - **A take is a folder** in the finals folder named by its print (16 hex digits): `head.ron` (`TakeHead`: format,
   engine print, program, card, Final cell and layout, `WaterInputs`, chunks with the moments each frame kept,
-  restart points, drops, time a frame), `chunk-000012.bin` (water second 12, `BPECHNK1` with an index at its end),
-  `point-000240.bin` (a restart point every 120 frames, lz4 of `WaterState`), `make.lock` while a make writes (stale
-  after 2 minutes). Every file is written as `.part` and renamed, so a crash keeps every whole chunk.
+  restart points, drops, time a frame; the engine print hashes bpe-water's sources and the kit's water
+  sources, which each crate's `build.rs` prints, and the take's print holds the step numbers, so another build's
+  take is made again), `chunk-000012.bin` (water second 12, `BPECHNK1` with an index at its end),
+  `point-000240.bin` (a restart point every 120 frames, lz4 of `WaterState`), `make.lock` while a make writes (written
+  again every 20 s, stale after 2 minutes). Every file is written as `.part` and renamed, so a crash keeps every whole chunk.
 - **The finals folder** (`Finals::default_dir`): `BPE_FINALS`, else `%LOCALAPPDATA%\Ball Studio\Finals` on Windows,
   else `$XDG_CACHE_HOME/ball-studio/finals` or `~/.cache/ball-studio/finals`. `clear`, `clear_all`, `sweep(30)` (the
   editor sweeps at start, on a thread), `size`.
@@ -843,7 +845,7 @@ plays it in slow motion.
   chunks and points before that hard-linked (copied where the disk can't link).
 - **`MakeFinal`** (`of`, `print`, `status`, `make`): refuses a make the disk has no room for (its estimate plus
   2 GB), holds at most 8 million drops (`FINAL_MOST`), packs and writes on its own thread (rayon encodes a
-  second's frames side by side), and stops at the next frame when asked, keeping every whole chunk.
+  frame's moments side by side), and stops at the next frame when asked, keeping every whole chunk.
 
 ### Final detail and slow motion (`bpe-kit things/water/draft/{inputs,slow}.rs`, `modules/water/scene.rs`)
 
@@ -888,3 +890,14 @@ plays it in slow motion.
 - **Export window**: a Water scene shows its FINAL rows, its video length with slow motion, and **Export** when the
   final covers the video, else **Make final and export** (with the time and room it expects; a progress bar while it
   makes, then the export reads the take) and **Export the draft**.
+- **A make and edits**: `FinalJob` carries its take's print. After an edit the lane says "the scene as it was being
+  made" and the status line "· Making the final of the scene as it was: N %"; Make final and export then refuses to
+  export it ("the scene changed while it was being made"). Opening another scene stops the make; a stopped make says
+  "Stopped making the final. What was made is kept."
+
+### Measured (RX 9070 XT)
+
+`water_final_speed` (`bpe-kit tests/water_final.rs`, run by the card job's timing step): one screen two thirds full
+with a tap at Normal final detail (2 px), 10 s, 1.4 million drops: **10.0 wall seconds and 267 MB a scene second**
+(2.67 GB in all, 3.15 bytes a drop a moment, a restart point 47 MB), the C2 estimate. A frame reads and unpacks in
+31 ms.

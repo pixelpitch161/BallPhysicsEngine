@@ -13,13 +13,20 @@ pub use frame::{FrameCodec, TakeFrame, byte_speed, speed_byte};
 
 /// The take's format: what its files hold and how. A take of another format is not used.
 pub const TAKE_FORMAT: u32 = 1;
-/// Bumped by hand when the engine's host code changes what it makes (its shader is hashed).
+/// Bumped by hand when the engine's host code changes what it makes (its sources are hashed too).
 pub const ENGINE_VERSION: u32 = 1;
+/// The most drops a moment or a restart point of a take may hold (a garbled count is refused).
+pub const MOST_DROPS: usize = 1 << 24;
 
-/// The engine's print: its shader, the take's format and the engine's version.
+/// A print of every source file of this crate (`build.rs`), so a program whose engine changed in
+/// any way never takes an older take for its own.
+const SOURCES_PRINT: u64 = include!(concat!(env!("OUT_DIR"), "/sources_print.rs"));
+
+/// The engine's print: its shader and its sources, the take's format and the engine's version.
 pub fn engine_print() -> u64 {
     let mut h = DefaultHasher::new();
     crate::drops::engine_source().hash(&mut h);
+    SOURCES_PRINT.hash(&mut h);
     TAKE_FORMAT.hash(&mut h);
     ENGINE_VERSION.hash(&mut h);
     h.finish()

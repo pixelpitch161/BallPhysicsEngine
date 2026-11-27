@@ -119,6 +119,7 @@ impl FrameCodec {
         ensure!(bytes.len() >= 12 && &bytes[..4] == MAGIC, "this isn't a moment of a take");
         let live = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
         let cells = u32::from_le_bytes(bytes[8..12].try_into()?) as usize;
+        ensure!(live <= super::MOST_DROPS, "the moment is broken");
         let across = layout.cols.saturating_sub(1) as usize;
         ensure!(cells == across * layout.rows.saturating_sub(1) as usize, "the moment is of another course");
         // (A garbled size never asks for more room than a moment of these drops can take.)

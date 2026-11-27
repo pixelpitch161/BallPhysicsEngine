@@ -241,6 +241,14 @@ fn water_final_speed() {
     let resolved = bpe_core::resolve(&scene, &reg);
     let make = MakeFinal::of(&scene, &resolved, seconds);
     let finals = folder("speed");
+    // (The take is removed however the test ends: a 10 s final at 2 px is gigabytes.)
+    struct Removed(std::path::PathBuf);
+    impl Drop for Removed {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+    let _removed = Removed(finals.dir().to_path_buf());
     let gpu = WaterGpu::new(&device, &queue);
     let progress = MakeProgress::default();
     let started = std::time::Instant::now();
@@ -281,5 +289,4 @@ fn water_final_speed() {
     let draw_ms = draw.elapsed().as_secs_f64() * 1000.0;
     println!("water final: a frame read and unpacked (ms)\t{read_ms:.1}");
     println!("water final: a frame drawn at 1080 x 1920 and read back (ms)\t{draw_ms:.1}");
-    std::fs::remove_dir_all(finals.dir()).ok();
 }

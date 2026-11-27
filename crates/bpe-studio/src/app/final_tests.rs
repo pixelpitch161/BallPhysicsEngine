@@ -111,15 +111,22 @@ fn make_final_starts_a_make_and_the_lane_shows_it() {
     let mut h = harness(small("lane"), size, crate::timeline::show);
     h.run();
     assert_eq!(lane(&h), "Final lane, not made yet");
-    let (job, _ended) = FinalJob::pretend(0, 6, 15);
+    let print = h.state().water_final.found.as_ref().unwrap().make.print();
+    let (job, _ended) = FinalJob::pretend(print, 0, 6, 15);
     h.state_mut().water_final.job = Some(job);
     h.run();
     assert_eq!(lane(&h), "Final lane, being made, at 0:00.10");
     let words = h.state().water_final.words().unwrap().0;
     assert_eq!(words, "· Making the final: 40 %");
+    // A make of the scene before an edit is not this scene's.
+    h.state_mut().water_final.job = Some(FinalJob::pretend(print ^ 1, 0, 6, 15).0);
+    h.run();
+    assert_eq!(lane(&h), "Final lane, the scene as it was being made");
+    let words = h.state().water_final.words().unwrap().0;
+    assert_eq!(words, "· Making the final of the scene as it was: 40 %");
     // (The toolbar offers to stop it instead.)
     let mut t = harness(Studio::headless_water(), egui::vec2(1700.0, 80.0), |ui, s| s.toolbar(ui));
-    t.state_mut().water_final.job = Some(FinalJob::pretend(0, 1, 2).0);
+    t.state_mut().water_final.job = Some(FinalJob::pretend(0, 0, 1, 2).0);
     t.run();
     assert!(has(&t, "Stop making") && !has(&t, "Make final"));
 }
@@ -170,6 +177,25 @@ fn a_made_final_shows_on_the_lane_and_an_edit_puts_it_out_of_date_from_its_chang
     find(s);
     let status = &s.water_final.found.as_ref().unwrap().status;
     assert!(status.take.is_none() && status.good == 0, "{status:?}");
+}
+
+#[test]
+fn a_stopped_make_says_so_and_exports_nothing() {
+    let mut studio = small("stopped");
+    let (device, queue) = bpe_gfx::test_device().expect("this test makes a final on the graphics card");
+    let gpu = bpe_water::WaterGpu::new(&device, &queue);
+    let make = studio.water_final.found.as_ref().unwrap().make.clone();
+    // (A make that ended with what it made, as a stopped one does.)
+    let head = make.make(&gpu, &studio.water_final.finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+    let (job, ended) = FinalJob::pretend(make.print(), 0, 3, 15);
+    job.stop();
+    ended.send(Ok(head)).unwrap();
+    studio.water_final.job = Some(job);
+    studio.water_final.export_after = true;
+    studio.follow_water_final(&egui::Context::default());
+    assert!(studio.water_final.job.is_none());
+    assert_eq!(studio.status, "Stopped making the final. What was made is kept.");
+    assert!(!studio.panels.export.export_final, "a stopped make exports nothing");
 }
 
 #[test]

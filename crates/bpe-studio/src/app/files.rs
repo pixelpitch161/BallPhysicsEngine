@@ -45,6 +45,8 @@ impl Studio {
         let water = crate::water_mode::draft::WaterRun::setup_of(&self.scene, &self.resolved);
         self.water_draft.set(water, self.panels.inspector.render.as_ref());
         self.water_final.stale = true;
+        // (A make of the scene before goes no further, and exports nothing.)
+        self.water_final.stop_make();
         if !self.water() {
             self.water_final.picture.free(self.panels.inspector.render.as_ref());
         }

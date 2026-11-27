@@ -182,6 +182,9 @@ pub fn read_point(dir: &Path, frame: u32) -> anyhow::Result<WaterState> {
     let path = point_path(dir, frame);
     let bytes = std::fs::read(&path).with_context(|| format!("no {}", path.display()))?;
     ensure!(bytes.starts_with(POINT_MAGIC), "{} isn't a restart point", path.display());
+    // (A garbled size never asks for more room than a body of the most drops a take holds.)
+    let size = bytes.get(8..12).map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")) as u64);
+    ensure!(size.is_some_and(|s| s <= super::MOST_DROPS as u64 * 200 + (64 << 20)), "the restart point is broken");
     let raw = lz4_flex::decompress_size_prepended(&bytes[8..]).context("the restart point is broken")?;
     WaterState::from_bytes(&raw)
 }

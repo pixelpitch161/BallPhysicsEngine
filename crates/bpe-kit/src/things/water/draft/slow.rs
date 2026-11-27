@@ -21,6 +21,9 @@ pub struct Speeds {
     keyed: bool,
     /// The video's time (seconds) at each `STEP` of water time, from 0 to the length asked for.
     table: Vec<f64>,
+    /// The moments each water frame keeps ([`Speeds::keep_for`]), to the length asked for (one
+    /// for every frame when Speed is not keyframed).
+    keeps: Vec<u32>,
 }
 
 impl Speeds {
@@ -28,14 +31,14 @@ impl Speeds {
     pub fn of(scene: &Scene, resolved: &Resolved, length: f64) -> Speeds {
         let world = Keyed::of(scene, resolved, ThingId::ROOT, SlotId::Water).unwrap_or_default();
         let keyed = world.tracks.iter().any(|(k, _)| k == "speed");
-        let mut speeds = Speeds { world, keyed, table: Vec::new() };
+        let mut speeds = Speeds { world, keyed, table: Vec::new(), keeps: Vec::new() };
         speeds.table_to(length);
         speeds
     }
 
     /// Real time throughout (a scene with no Water card, and the tests).
     pub fn real_time(length: f64) -> Speeds {
-        let mut speeds = Speeds { world: Keyed::default(), keyed: false, table: Vec::new() };
+        let mut speeds = Speeds { world: Keyed::default(), keyed: false, table: Vec::new(), keeps: Vec::new() };
         speeds.table_to(length);
         speeds
     }
@@ -44,8 +47,11 @@ impl Speeds {
         if !self.keyed {
             // (One Speed throughout: the clock is worked out exactly, with no table.)
             self.table = vec![0.0];
+            self.keeps = vec![self.keep_at(0)];
             return;
         }
+        let frames = (length.max(0.0) * 60.0).ceil() as u32;
+        self.keeps = (0..frames).map(|k| self.keep_at(k)).collect();
         let n = (length.max(0.0) / STEP).ceil() as usize + 2;
         let mut table = Vec::with_capacity(n);
         let mut t = 0.0;
@@ -121,6 +127,14 @@ impl Speeds {
     /// one every frame (or every frame and a quarter: a moment drawn a little after it is kept moves
     /// its drops on) where the water plays slowest in it.
     pub fn keep_for(&self, frame: u32) -> u32 {
+        match (self.keyed, self.keeps.get(frame as usize)) {
+            (false, _) => self.keeps.first().copied().unwrap_or(1),
+            (true, Some(keep)) => *keep,
+            (true, None) => self.keep_at(frame),
+        }
+    }
+
+    fn keep_at(&self, frame: u32) -> u32 {
         let start = f64::from(frame) / 60.0;
         let least = [0.0, 0.5, 1.0].iter().map(|f| self.speed_at(start + f / 60.0)).fold(f32::MAX, f32::min);
         let want = 0.8 / least.max(SLOWEST);
@@ -136,7 +150,7 @@ pub(crate) mod tests_support {
     pub(crate) fn constant(speed: f32, length: f64) -> Speeds {
         let mut world = Keyed::default();
         world.params.set("speed", bpe_core::Value::Number(f64::from(speed)));
-        let mut speeds = Speeds { world, keyed: false, table: Vec::new() };
+        let mut speeds = Speeds { world, keyed: false, table: Vec::new(), keeps: Vec::new() };
         speeds.table_to(length);
         speeds
     }

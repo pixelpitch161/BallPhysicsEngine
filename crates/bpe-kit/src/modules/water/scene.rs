@@ -137,7 +137,7 @@ pub struct WaterWorld {
     pub final_detail: FinalDetail,
     /// Air caught under the water (by a pour plunging in, or a hole carved under it) rises out as
     /// bubbles and bursts at the top. Off, it stays a hole until the water closes it.
-    #[setting(label = "Trapped air", simple, group = "Trapped air")]
+    #[setting(label = "Trapped air", group = "Trapped air")]
     pub trapped_air: bool,
     /// How fast trapped air rises: 1 is real air in water, more rises faster, 0 leaves it hanging.
     #[setting(
