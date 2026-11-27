@@ -265,8 +265,7 @@ pub(super) fn grid(
     // A Things part's Only offers the things of the scene's own kind (and One thing).
     let water = scene.sim == bpe_core::SimKind::Water;
     let offers = |d: &SettingDef, choice: &str| {
-        let things_only =
-            matches!(&d.ty, bpe_core::ValueType::Choice(names) if *names == bpe_kit::modules::grade::ThingsOnly::NAMES);
+        let things_only = matches!(&d.ty, bpe_core::ValueType::Choice(names) if *names == <bpe_kit::modules::grade::ThingsOnly as bpe_core::Choice>::NAMES);
         !things_only || bpe_kit::modules::grade::masks::only_offered(water, choice)
     };
     let cx = GridCx {
