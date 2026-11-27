@@ -674,3 +674,26 @@ Built as planned (decisions 32 to 37), with these changes:
   sums' half-float rounding reads a false spread on an even fast stream (about 6.5 % of its speed), so foam now
   starts at no less than 7 % of the mean speed.
 
+
+### 6c
+
+Built as planned for decisions 38 to 42 and 44, with these changes:
+
+- **Split in two**: the Grade card on a Water scene, Grade mode on it (decision 44's first half), the Things masks
+  for water (decision 43) and the Light only and Glow only takes (decision 42's last sentence) went to a fourth
+  pull request, 6d, so 6c could be reviewed as one. `look_of` already reads the Grade card into `Look.finish`, so
+  6d only offers it and shows it.
+- **The Water card's Starting look is gone** (decisions 38 and 39): `start_water_scene` applies a `ReadyLook`, and
+  the chooser's tiles come from the table. A new scene's Liquid is named for its look.
+- **The Whole course | Shot switch is in the toolbar** beside Draft | Final, not the stage's strip. In the strip it
+  narrowed the tool's row so much that the Select hint wrapped, and the strip growing moved the course under the
+  pointer (`the_pour_tool_adds_a_pour...` caught it).
+- **The Shot view keeps every tool working**: `CourseView::fit_shot` keeps `rect` as the course's outline, larger
+  than the room, and adds the part shown, so the tools map points as they always did. Only the shot takes clicks.
+- **Hidden effects**: the seven over the picture that need balls, hits or things, and the Materials part of the
+  menu (the three materials). Thermal vision stays: it reads the picture's brightness and adds the balls only when
+  there are some.
+- **Light only** in a Water scene changes nothing until 6d, and says so in its row.
+- Tests: `bpe-water/tests/look.rs` 20 (Mirror), the kit's finish test, `water_looks_pinned` (on part 3's pieces
+  course: the plan's one hand-built course, with its pool and pieces but no stream), the editor's Add effect,
+  Shot view and toolbar tests; the full-size look check `water-looks`.

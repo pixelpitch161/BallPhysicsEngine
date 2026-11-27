@@ -1087,3 +1087,92 @@ the one part of the look with a memory, so the water keeps them.
 - Wet marks are on the course's grid, so a piece that moves would leave its marks where it was (pieces don't move
   yet).
 - Mist and sparks are drawn over the liquid in front, and over each other in the drops' order.
+
+## Part 6c: the ready-made looks and the Effects (as built)
+
+The plan's decisions 38 to 42 and 44 (`docs/superpowers/plans/water-mode/part6-light-and-looks.md`, its "As built /
+6c"). The Grade card, Grade mode, the Things masks for water (decision 43) and the Light only and Glow only takes
+went to 6d.
+
+### The looks table (`bpe-kit modules/water/looks.rs`)
+
+- **`ReadyLook`**: Plain, Lamp-lit rock, Glass lab, Neon in the dark, Paint on paper, Molten and Cartoon
+  (`ReadyLook::ALL`, in the chooser's and the menu's order). Each has a title, one line of words, a name for a new
+  scene's Liquid and a swatch for its chooser tile. `row()` is its row of the table (`Row`):
+  - the Liquid's Look and the solids' Material (one for the Course's Rock and every Piece and Wall);
+  - the Back and the Light card;
+  - its lamps (`LampRow`: a Lamp card, and where it goes as a share of the camera's shot from its middle);
+  - Bloom and Exposure.
+
+  Plain is the cards' defaults, so adding a look is adding a row.
+- **`apply_look(scene, reg, look, keep)`** writes a row as one edit:
+  - Each card it names is set to the card's defaults with the row's values on top, so one look after another never
+    keeps what the first set. A missing card is added.
+  - It never writes Wetting (physics: a look never changes the take) or Quality (`NEVER`). A setting with keyframes
+    keeps them.
+  - `Keep { colours, lamps }`: Keep my colours skips every Color and Gradient setting. Keep my lamps leaves the lamps
+    as they are; otherwise every Lamp goes, and the look's are added ("Lamp", or "Lamp 1", "Lamp 2"…) in the camera's
+    shot at the start.
+- **New scenes start in a look**: the Water card's Starting look setting is gone. `new_water_scene` is the bare
+  scene, and `start_water_scene(reg, look, name)` adds a Liquid named for the look and applies it. The chooser's
+  tiles and the editor's New Water scene use it.
+
+### Use a look (`bpe-studio water_mode/stage.rs`)
+
+- A menu button at the right end of the stage's strip (`LOOK_MENU_W`, so the tool's row never wraps for it): the
+  seven looks (each with its words on hover), then the Keep my colours and Keep my lamps switches
+  (`WaterStage.keep`). `use_look` applies the look, drops lamps that went from the selection, makes it its own undo
+  step (`separate_edit`) and says "Using the … look.".
+- The strip's height isn't changed while a button is held: picking a piece adds to the strip, and the course moving
+  under a drag moved the piece with it.
+
+### Effects on the shot (decision 42)
+
+- **`FinishLook`** (`bpe-water draw/look/inputs.rs`) carries the effects and the grade beside Bloom and Exposure.
+  `LookDraw` puts them in the frame it hands `Renderer::finish_picture`, which runs them as a Balls frame's.
+- **`finish_of`** (`bpe-kit things/water/look.rs`) reads the root's Effects card with its keyframes at the water
+  time (`modules::effects::draw::calls`, shared with `EffectsDraw`), keeping only calls at `Stage::Picture`, and the
+  Grade card (`grade::stack(card, None)`; nothing offers it yet).
+- **What a Water scene is offered** (`Builtin::water_ok`, `modules::effects::water_ok`): own code, and every
+  built-in over the picture but Ball worlds, Fractal light, Gravity lens, Hue storm, Op-art lens, Shockwaves and
+  Light ripples, which are made of the balls, their hits or the things. The materials paint things, so the
+  "Materials" part of "+ Add effect" is left out. An effect pasted in anyway draws as it can: the ball list is
+  empty and no hits come.
+- **Light only** changes nothing in a Water scene until 6d gives it the water's light, and its row says so.
+- The effects' programs build at once on `LookDraw`'s own renderer (it shares no background store), so a new effect
+  costs one short stall the first time.
+
+### Whole course | Shot (decision 44)
+
+- **`Seen`** (`WaterStage.seen`), switched in the toolbar beside Draft | Final (`final_ui::toolbar`). It is there,
+  not in the strip, because the strip's first row got too narrow and wrapped the Select hint.
+- **`CourseView::fit_shot(room, course, centre, shot)`**: the camera's shot at the playhead
+  (`bpe_cli::water::shot_at`, shared with the export's `shot_view`) fitted into the room. `rect` is still the
+  course's outline (larger than the room), so every tool maps the same way; `shot` holds the part shown,
+  `seen_rect()` is it on screen, `holds()` takes clicks only there, and `clip(pad)` keeps the tools' drawing to it.
+- **The picture** (`picture_view`) is drawn for the part shown (`seen()`), so the Shot view is drawn at the
+  stage's own pixels over the shot. The camera's outline isn't drawn in it.
+- **Whole course** draws with Bloom and Exposure but no Effects or Grade (`FinishLook::without_shot_finish`): they
+  are made for the shot's shape.
+
+### Pinned looks (`bpe-kit/tests/water_looks_pinned.rs`)
+
+Part 3's pieces course (`sets::pieces(8.0)`, hand-laid drops) in a scene of two Liquids, in each of the seven looks
+at water time 0.5 s, at 270 x 480. The tile averages are in `golden-water-looks.txt`, pinned to the owner's card, one
+file for debug and release. "Refresh GPU pictures" makes it. On another card the test checks that each look draws
+and that no two draw the same.
+
+### Tests
+
+- `bpe-kit`: `modules::water::looks` (5: each look writes its row over another look's, lamps in the shot; Keep my
+  colours and Keep my lamps; never Wetting or Quality; a scene started in a look; the words), and
+  `the_finish_reads_the_scenes_effects_over_the_picture_and_its_grade`.
+- `bpe-water/tests/look.rs` 20: Mirror in the finish copies the water picture's left half onto its right.
+- `bpe-gfx`: `a_water_scene_is_offered_the_effects_that_need_no_balls`.
+- `bpe-studio`: `a_water_scene_adds_effects_but_only_the_ones_its_picture_can_feed`,
+  `the_shot_view_fits_the_shot_and_maps_both_ways`, `the_shot_view_shows_the_finish_and_the_whole_course_none`,
+  the toolbar's switch (`the_toolbar_switches_the_view_and_export_is_on`),
+  `use_a_look_sets_the_scene_to_it_as_one_undo_step`.
+- The full-size look check `water-looks` (`LOOK_ONLY=water-looks`): a demo course made once (a chamber, a pool a
+  quarter full, a tap on a Ramp spilling into a Basin), drawn at 2 s in each look. `LOOK_SCENES=<folder>` saves
+  each look's scene file, to render with `bpe-render-next --finals <LOOK_TAKES folder>`.
