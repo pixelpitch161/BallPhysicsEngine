@@ -1202,6 +1202,9 @@ fn air_share(g: vec2<f32>, k: i32) -> f32 {
 // The speeds' spread that starts foam, and that makes the most (world px a second), over FOAM_REACH.
 const FOAM_REACH: f32 = 30.0;
 const FOAM_CHURN: vec2<f32> = vec2<f32>(60.0, 260.0);
+// The share of the mean speed the spread must top before foam starts: the half floats' rounding
+// reads up to about 6.5 % of it on an even stream.
+const FOAM_ROUNDING: f32 = 0.07;
 // The mean speed out through the surface that starts foam along a front, and that makes the most.
 const FOAM_FRONT: vec2<f32> = vec2<f32>(300.0, 900.0);
 // The flow map's cycle (s): foam's pattern is pushed by the water's mean speed for a cycle, two
@@ -1522,7 +1525,10 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             let surface_lit = ambient + mix(lamp_l, free_light_at(w), 0.6) + spread_l;
             if foam.w > 0.0 {
                 let churn = churn_at(w, FOAM_REACH);
-                let churned = smoothstep(FOAM_CHURN.x, FOAM_CHURN.y, churn.spread);
+                // (The motion sums are added in half floats, so an even fast stream reads a
+                // spread that grows with its speed: foam starts higher there.)
+                let starts = max(FOAM_CHURN.x, FOAM_ROUNDING * length(churn.mean));
+                let churned = smoothstep(starts, starts + FOAM_CHURN.y - FOAM_CHURN.x, churn.spread);
                 let air_meets = smoothstep(0.05, 0.4, air / level);
                 let fast_front = smoothstep(FOAM_FRONT.x, FOAM_FRONT.y, dot(churn.mean, out_way))
                     * (1.0 - smoothstep(0.0, 16.0, max(inside_w, 0.0)));

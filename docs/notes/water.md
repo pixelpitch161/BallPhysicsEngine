@@ -914,7 +914,8 @@ and each liquid's Look card, finished by the same bloom, exposure and composite 
 - The Look, Light, Back and Lamp cards live in `modules/water/look.rs`; `plain_look` and **`look_of(scene, resolved,
   time) -> Look`** in `things/water/look.rs`. The kit's `build.rs` prints every file under its roots but those named
   `look.rs` or `looks.rs`, and bpe-water's prints `src/drops`, `src/take`, `src/drop.rs`, `src/solid.rs` and
-  `src/lib.rs` only, so a change to how water looks never makes a final again.
+  `src/lib.rs` only (and, since 6b, the wet marks a take keeps: `src/draw/wet.rs`, `src/shaders/wet.wgsl`), so a
+  change to how water looks never makes a final again.
 - `look_of` reads each enabled Liquid's Look (scene order, at most 16; a gradient as 64 linear samples, sent only when
   the colour is read from it), the Course's Rock and each enabled Piece's and Wall's Material (in the order the solid
   field numbers them), the Back, the Light card, every enabled Lamp (at its `transform.position`; Water things have no
@@ -996,7 +997,8 @@ the one part of the look with a memory, so the water keeps them.
   32 bytes a sample, the default limit. `churn_at(p, size)` reads the mean speed and the spread of the speeds
   (`sqrt(E|v|² − |Ev|²)`) over `size` world px, through the level shares.
 - **Foam** shows where:
-  - the speeds spread by 60 to 260 px/s over 30 px;
+  - the speeds spread by 60 to 260 px/s over 30 px (starting at no less than 7 % of the mean speed: the
+    motion sums are half floats, and an even stream at 3000 px/s reads a spread of up to about 195);
   - trapped air's splats meet the liquid;
   - a front moves out through the surface at 300 to 900 px/s (within 16 px of it).
 

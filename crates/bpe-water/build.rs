@@ -1,13 +1,15 @@
 //! Prints the sources a Water take depends on (an FNV-1a hash of every file under them, in path
 //! order, line ends made alike), so a program whose water changed in any way never takes an older
-//! take for its own. Only the physics and the take are printed: the drawing (`src/draw`,
+//! take for its own. Only the physics and the take are printed, with the wet marks a take keeps
+//! (`src/draw/wet.rs`, `src/shaders/wet.wgsl`, part 6b): the rest of the drawing (`src/draw`,
 //! `src/shaders`) and the test helpers never change what a take holds, so a look change keeps every
 //! final (Water mode part 6).
 
 use std::path::{Path, PathBuf};
 
 /// The folders and files printed.
-const ROOTS: &[&str] = &["src/drops", "src/take", "src/drop.rs", "src/solid.rs", "src/lib.rs"];
+const ROOTS: &[&str] =
+    &["src/drops", "src/take", "src/drop.rs", "src/solid.rs", "src/lib.rs", "src/draw/wet.rs", "src/shaders/wet.wgsl"];
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     if dir.is_file() {

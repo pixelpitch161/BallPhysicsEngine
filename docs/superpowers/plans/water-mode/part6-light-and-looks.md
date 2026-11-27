@@ -669,4 +669,8 @@ Built as planned (decisions 32 to 37), with these changes:
   - A wide cavity the pour opens in the pool stays a hole with Bubbles on: the physics finds trapped air only
     within 48 px of the water round it (part 2c's `air_reach`), so a cavity much wider than that holds none (the
     probe picture of the moment showed air in every small pocket and none in the big ones). Left to the physics.
+- **What the review found:** the take's print left out the wet marks' code (`draw/wet.rs`, `shaders/wet.wgsl`),
+  so a change to how they are marked or packed would have kept old finals; they are printed now. And the motion
+  sums' half-float rounding reads a false spread on an even fast stream (about 6.5 % of its speed), so foam now
+  starts at no less than 7 % of the mean speed.
 
