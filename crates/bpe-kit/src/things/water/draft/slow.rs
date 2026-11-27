@@ -72,6 +72,10 @@ impl Speeds {
     /// The video's time (seconds) at water time `tau`.
     pub fn video_time(&self, tau: f64) -> f64 {
         let tau = tau.max(0.0);
+        if !self.keyed {
+            // (One Speed throughout: exactly, so a Length's frames come out as a Balls scene's do.)
+            return tau / f64::from(self.speed_at(0.0));
+        }
         let at = tau / STEP;
         let k = at.floor() as usize;
         if k + 1 >= self.table.len() {
@@ -91,6 +95,9 @@ impl Speeds {
     /// The water time (seconds) the video shows at video time `t`.
     pub fn water_time(&self, t: f64) -> f64 {
         let t = t.max(0.0);
+        if !self.keyed {
+            return t * f64::from(self.speed_at(0.0));
+        }
         let k = self.table.partition_point(|v| *v <= t);
         if k == 0 {
             return 0.0;

@@ -15,11 +15,13 @@ bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 bpe-kit.workspace = true
 bpe-sound.workspace = true
+# Water scenes: their final takes and the plain drawing (Water mode part 8).
+bpe-water.workspace = true
+glam.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }
 bpe-sound = { workspace = true, features = ["test-tone"] }
-glam.workspace = true
 png = "0.18"

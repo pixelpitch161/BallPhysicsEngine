@@ -226,6 +226,7 @@ dependencies = [
  "bpe-kit",
  "bpe-runtime",
  "bpe-sound",
+ "bpe-water",
  "glam",
  "png",
  "tempfile",
