@@ -1313,6 +1313,118 @@ what the water's drawing draws, and an effect on the Light only reads the water'
 - `bpe-studio`: `a_water_scenes_things_part_starts_on_liquids_and_offers_the_waters_things` (Grade mode's Only
   menu), `a_water_scenes_things_part_offers_the_waters_things`.
 
+## Part 4.1: rain, drips, bursts, drains and fed pours (as built)
+
+Plan `docs/superpowers/plans/water-mode/part4-more-liquids.md` (decisions 1 to 18). Rain, Drip and Burst pour, the
+three Drain kinds take liquid away, and a tap can pour back what the drains took, so a course runs as long as the
+video does.
+
+### Lumps (`bpe-water lumps.rs`)
+
+- **`Lumps`**: a stream of lumps, each a disc of drops on the resting lattice (half a cell apart) born at its own
+  moment: lump `k` at `from + k × every` while before `until` (`every` 0 or not a number above 0: one at `from`).
+  Rain's lumps sit across its width at right angles to its Aim, each turned by a share of its Spread and sized
+  `size × (0.75 + 0.5 h)`; a drip's and a burst's are at the pour's place. `hash01(seed, k, j)` (splitmix64) gives
+  every share, so the drops born in any stretch are worked out from the times alone (no state; splitting a stretch
+  gives the same drops). A burst's drop at `d` from the middle sets off at `Speed × (way × (1 - s) + s × d / r)`,
+  `s` = Spread / 180.
+- The lattice is **offset by the lump's own share of a spacing** (`hash01(.., 3)`, `(.., 4)`): a disc at a random
+  offset holds its area over the spacing squared on average whatever its size, so a fine drizzle pours its amount
+  at every detail (this replaced the plan's floor rule for lumps under one drop). Drops within `clear` of the
+  solids or past `EDGE_CLEAR` (2.1 cells) of the grid's edge are left out. `amount()` counts the area (past
+  100,000 lumps, `count()` from the times alone times a lump's mean area, so heavy rain over a long video is
+  counted whole).
+
+### Timed births (`bpe-water drops/mod.rs`)
+
+- **`Water::set_timed(&[Timed])`**: the next frame's drops born at their own moments (used once; at most
+  `MOST_BIRTHS`). `births()` puts each into the step its moment falls in (one before the frame into step 0, one at
+  or past its end into the last), after that step's tap rows, moved on to the step's end by `x + v t + g t² / 2`
+  (`g` the course's gravity times its liquid's `Feel::gravity`; air has none). Their speeds count in `steps_now`.
+  Not through `add()`, which primes the deep water.
+- The step's number now rides in **bits 8 and up of `St.n.w`** (bits 0 and 1 stay the last and first step; the
+  only readers, in deep.wgsl, mask them).
+
+### Drains (`bpe-water drops/drains.rs`, `common.wgsl`, `finish.wgsl`, `report.wgsl`)
+
+- **`Drain { place, reach, pull, edges, feeds }`** (`Drain::disc`, `Drain::edge`; edges LEFT 1, RIGHT 2, TOP 4,
+  BOTTOM 8), at most `MOST_DRAINS` 32, `Water::set_drains` from the next frame. On the card: `Fr` gains, at its
+  end, `drains` (middle and reach in grid units, chance a step `1 - exp(-pull dt)`, 1 when infinite, 0 when not a
+  number or not above 0), `dedges` (four to an entry) and `dmeta` (count, the frame's code).
+- **`finish_at(i, step)`**, before the neighbour loop, asks `drain_taking`: one share, `share_of(i, frame code,
+  step)`, is rolled for the drop, and the first drain whose reach holds it (a disc's within its reach; an edge's
+  within `EDGE + 0.8` cells of a named edge) and whose chance is above the share takes it. So where drains overlap
+  the strongest decides whatever their order (a Leak over a pool doesn't slow the hole in it), and a Rate of 0 is
+  to the bit the same as no drain, overlapping or not. Liquid is sent to `(-2e6 - k, -1e6 - code)` and dies; **air
+  bursts** there by the same chance (to `(-1e6, -1e6)`) and is never counted. `cs_finish_predict` passes the step
+  before its `st`'s, `cs_finish` its own.
+- **`cs_drained`** (bindings 0, 1, 2, 18; its own bind group per report slot) runs after the frame's last step and
+  before trapped air is born over the drops that left (air is born at the head of the dead drops and would hide
+  them): it adds each dead drop whose place is this frame's code to `Report.drained[k]`. The frame code wraps at
+  2^23 frames, so the place stays a whole number a float holds. No step pass gained a binding
+  (`cs_finish_predict` is at 8).
+- The clock keeps each frame's **feeding drains** (a bit mask, as the drains were when it ran) with its entry;
+  `settle()` returns what they took with the drops to let go, and the body adds it to its **tank**.
+  `Water::drained()` is what each drain took in the frame the last boundary read (two frames back);
+  `Water::tank()` the tank.
+
+### Fed taps (`bpe-water drop.rs`, `drops/mod.rs`)
+
+- **`Pour.fed`**: such a tap pours only from the tank. Each frame (`fed_shares`), in the pours' order, it may pour
+  `min(full, max(tank left / 6, min(a row, tank left)))` drops, `full` its unfed amount for the frame
+  (`Pour::amount`), at most what the tank still holds; its stream is narrowed to that share (`width × share`, so it
+  stays one stream), and its rows stop at its allowance. What the fed taps poured comes out of the tank. Liquid is
+  kept to the drop round a loop (the test drains a pool into a tap above it for 10 s, then lets the tank run dry).
+
+### Restart points (`bpe-water drops/state.rs`)
+
+- `BPESTAT2`: each pour's `fed`, the timed drops still to come, the drains, the tank, the clock's entries with their
+  feeding drains and the reports with `drained`, and the clock's last drained counts and tank feed. `BPESTAT1` no
+  longer reads (no backward compatibility yet).
+
+### The cards and the setup (`bpe-kit modules/water/places.rs`, `things/water/draft.rs`, `draft/inputs.rs`)
+
+- **Pour card**: Rate for taps only; **Drops a second** and **Drop size** (rain and drips), **Burst size** and
+  **Every** (bursts; Every 0 is once at Starts), Width for taps and rain, Spread for taps, rain and bursts, and
+  **Fed by drains** (taps). Drops a second, Drop size, Burst size, Every, Starts and Stops are read at the start
+  (a keyed rate would need the schedule's history); Width at the frame; Aim, Speed and Spread at each lump's moment.
+  Drops a second 0 pours nothing.
+- **Drain card**: **Feeds pours** (default on). A Drain pulls `DRAIN_PULL` (30 a second) × Rate in its Radius, a
+  Leak `LEAK_PULL` (1) × Rate, an Edge of the course `DRAIN_PULL` × Rate along its Edge (or every edge). Whirlpool
+  is left for part 4b's forces.
+- `WaterSetup.drains` (enabled Drains in order, past 32 noted `TOO_MANY_DRAINS`); `FrameInputs.drains` (from
+  `inputs_at`) and `FrameInputs.timed` (from `inputs_on`, `timed_on`: each pour's lumps for the frame on the
+  field, its seed from its thing id); `set_inputs` sets both (no timed drops while the body is full). A fed tap
+  with no drain that feeds pours says `NO_FEEDING_DRAIN`. `LATER_KINDS` is gone. The print hashes the drains;
+  `inputs()` has a `drains` part (from 0) and a `lumps:<id>` part for each rain, drip and burst (from its Starts
+  less `TAP_LEAD`, as a tap). `drops_about` counts the lumps. `start()` sets frame 0's timed drops and drains too.
+- The editor's draft thread (`bpe-studio water_mode/draft.rs`) plays each frame through `set_inputs`, as the final
+  and the export do (it used to set the inputs by hand, and would have left the rain and the drains out).
+
+### The editor (`bpe-studio water_mode/stage.rs`)
+
+- Markers: rain shows its aim and its width across, a drip its aim, a burst its aim and its lump's circle; a Drain
+  or Leak its reach as a circle; an Edge drain a thick line along its edge(s).
+
+### Tests
+
+- `bpe-water/tests/pours.rs` (on the card): a timed drop falls as one added at its moment (within 0.1 cell after 10
+  frames, and the list is used once); rain pours its amount (within 5 %) from its Starts and repeats twice and from
+  a copy; a leak at pull 1 keeps 0.37 of a pool in a second at 12 and 6 px (measured 0.379, 0.375); a drain in a
+  pool's floor leaves under 5 % after 3 s (measured 3.0 % and 2.7 %: a few drops cling to the walls and corners)
+  and its count is exactly what it took; two drains are told apart and air is not counted; an edge drain takes all
+  of a tap's water (what it took plus what is left is what was poured); a drain with no pull is to the bit no
+  drain; a loop keeps every drop (14,541 taken from a pool of 4,266 in 10 s); a fed tap with no feeding drain pours
+  nothing; the tank survives a restart point and a copy to the bit; drains that take nothing change nothing where
+  they overlap another, and overlapping drains take the same whatever their order. Unit tests in `lumps.rs`
+  (heavy long rain is counted whole) and `drops/drains.rs`.
+- `bpe-kit`: `rain_drips_and_bursts_pour_at_their_moments`, `drains_are_read_each_frame`,
+  `a_fed_tap_says_when_no_drain_feeds_it`; `what_restarts_the_draft` now counts the Drain card, moving a Drain and
+  turning one off; `the_earliest_change_is_where_the_water_can_first_differ` (rain from just before its Starts, a
+  drain from 0).
+- `bpe-studio`: `a_picked_pour_says_what_it_cannot_do` (rain pours; a fed tap with no drain says so),
+  `the_draft_plays_rain_and_drains`.
+
 ## Part 4b: forces and ferrofluid (as built)
 
 The plan is `docs/superpowers/plans/water-mode/part4b-forces-and-ferrofluid.md` (its decisions and "As built and
@@ -1366,7 +1478,7 @@ ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and
   (past 16).
 - **What restarts**: every Force card setting, a Force's place and turning it off restart the draft and mark the
   final out of date (the print, and `force:{k}` parts of `WaterInputs` from 0, by place in the list: whirlpools and
-  winds draw in its order); a Drain's Kind, Radius and Whirlpool likewise (its other settings wait for part 4).
+  winds draw in its order); a Drain's whirlpool is in its drain's print and parts already (part 4.1).
   `set_inputs`, `start` and `resume` set the forces.
 - The stage's held setup takes a note that changes with no physics (`WaterRun::renote`): a Force turned into a
   Heater with no Liquid in the scene said nothing before.

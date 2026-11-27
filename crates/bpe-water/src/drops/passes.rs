@@ -46,6 +46,7 @@ pub(super) enum P {
     AirDead,
     AirBorn,
     Report,
+    Drained,
     Export,
     Pack,
 }
@@ -90,6 +91,7 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_air_dead", &[0, 1, 2, 3, 5, 8, 28]),
     ("cs_air_born", &[0, 1, 2, 3, 5, 8, 27, 28]),
     ("cs_report", &[0, 1, 2, 5, 8, 15, 18, 25, 28]),
+    ("cs_drained", &[0, 1, 2, 18]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
     ("cs_pack", &[0, 1, 2, 5, 29]),
 ];
@@ -184,6 +186,7 @@ mod tests {
         assert_eq!(ENTRIES[P::AirFind as usize].0, "cs_air_find");
         assert_eq!(ENTRIES[P::AirBorn as usize].0, "cs_air_born");
         assert_eq!(ENTRIES[P::Report as usize].0, "cs_report");
+        assert_eq!(ENTRIES[P::Drained as usize].0, "cs_drained");
         for (name, bindings) in ENTRIES {
             let storage = bindings.iter().filter(|&&b| b > STEP).count();
             assert!(storage <= MOST_STORAGE, "{name} binds {storage} storage buffers");

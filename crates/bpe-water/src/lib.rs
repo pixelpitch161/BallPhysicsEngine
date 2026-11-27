@@ -11,6 +11,7 @@
 pub mod draw;
 pub mod drop;
 pub mod drops;
+pub mod lumps;
 pub mod probe;
 #[cfg(feature = "test-scenes")]
 pub mod scenes;
@@ -19,5 +20,8 @@ pub mod take;
 
 pub use drop::{AIR, Drop, Pour, Poured, STOPS, WATER, fill, fill_stacked};
 pub use drops::numbers::{Feel, Numbers};
-pub use drops::{DropBuffers, Force, MOST_DROPS, MOST_FORCES, Push, Water, WaterGpu, WaterState};
+pub use drops::{
+    Drain, DropBuffers, Force, MOST_DRAINS, MOST_DROPS, MOST_FORCES, Push, Water, WaterGpu, WaterState,
+};
+pub use lumps::{LumpKind, Lumps, Throw, Timed};
 pub use solid::{DEFAULT_WETTING, Layout, Part, Solid, SolidField};

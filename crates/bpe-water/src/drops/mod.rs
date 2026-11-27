@@ -17,12 +17,14 @@ mod buffers;
 pub mod capture;
 mod clock;
 pub mod deep;
+pub mod drains;
 pub mod forces;
 pub mod numbers;
 mod passes;
 pub mod state;
 
-use crate::drop::{Drop, Pour, Poured};
+use crate::drop::{AIR, Drop, Pour, Poured};
+use crate::lumps::Timed;
 use crate::solid::{Layout, SolidField};
 use air::Air;
 pub use buffers::DropBuffers;
@@ -30,6 +32,7 @@ use buffers::{ByDrop, room_for, storage};
 use clock::Clock;
 pub use clock::{MOST_POURS, Report};
 use deep::{Deep, MOST_LEVELS, TICKS};
+pub use drains::{Drain, MOST_DRAINS};
 use forces::ForceGpu;
 pub use forces::{Force, MOST_FORCES, Push};
 use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
@@ -46,7 +49,7 @@ pub fn engine_source() -> &'static str {
 pub const MOST_DROPS: u32 = 8_388_608;
 /// The most drops born in one frame (the births buffer's binding stays within 128 MiB); any more
 /// are let go.
-const MOST_BIRTHS: u32 = 1 << 22;
+pub(crate) const MOST_BIRTHS: u32 = 1 << 22;
 /// How thick a thin solid is taken to be, in cells, for this engine ([`SolidField::build_least`]).
 ///
 /// A wall exactly a cell thick whose middle line falls half way between two rows of nodes has
@@ -86,6 +89,9 @@ struct FrameGpu {
     dgrid: [u32; 4],
     air: [f32; 4],
     lv: [[u32; 4]; MOST_LEVELS],
+    drains: [[f32; 4]; MOST_DRAINS],
+    dedges: [[u32; 4]; MOST_DRAINS / 4],
+    dmeta: [u32; 4],
     forces_n: [u32; 4],
     forces: [ForceGpu; MOST_FORCES],
 }
@@ -141,6 +147,11 @@ pub struct Water {
     edges_shut: bool,
     /// The pours, and how far each is through its rows.
     pours: Vec<(Pour, Poured)>,
+    /// The drops the next frame is to give birth to at their own moments ([`Water::set_timed`]).
+    timed: Vec<Timed>,
+    /// The drains, and the liquid drops they have taken that fed pours have not poured yet.
+    drains: Vec<Drain>,
+    tank: u64,
     /// The forces (at most [`MOST_FORCES`], each [`Force::is_felt`]).
     forces: Vec<Force>,
     count: u32,
@@ -173,6 +184,8 @@ pub struct Water {
     /// sweeps' places ([`Water::group`]), and the report pass's for each report slot.
     groups: Vec<wgpu::BindGroup>,
     report_groups: Vec<wgpu::BindGroup>,
+    /// The drains' counting pass's, for each report slot.
+    drained_groups: Vec<wgpu::BindGroup>,
     /// What the card reports and the host keeps of it (behind a lock so a copy, made from a shared
     /// body, can read the reports still on their way).
     clock: Mutex<Clock>,
@@ -236,6 +249,9 @@ impl Water {
             gravity,
             edges_shut: true,
             pours: Vec::new(),
+            timed: Vec::new(),
+            drains: Vec::new(),
+            tank: 0,
             forces: Vec::new(),
             count: 0,
             room,
@@ -258,6 +274,7 @@ impl Water {
             now: 0,
             groups: Vec::new(),
             report_groups: Vec::new(),
+            drained_groups: Vec::new(),
             clock: Mutex::new(Clock::new(device)),
             last: None,
             deep: Deep::new(device, &layout),
@@ -344,6 +361,28 @@ impl Water {
                 self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some(name),
                     layout: &self.gpu.pipes.list[P::Report as usize].1,
+                    entries: &entries,
+                })
+            })
+            .collect();
+        let (name, bindings) = ENTRIES[P::Drained as usize];
+        self.drained_groups = (0..clock::SLOTS)
+            .map(|slot| {
+                let entries: Vec<wgpu::BindGroupEntry> = bindings
+                    .iter()
+                    .map(|&b| {
+                        let resource = match b {
+                            0 => self.frame_uniform.as_entire_binding(),
+                            1 => self.step_binding(),
+                            2 => self.by.xv.as_entire_binding(),
+                            _ => clock.on_card(slot).as_entire_binding(),
+                        };
+                        wgpu::BindGroupEntry { binding: b, resource }
+                    })
+                    .collect();
+                self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(name),
+                    layout: &self.gpu.pipes.list[P::Drained as usize].1,
                     entries: &entries,
                 })
             })
@@ -493,6 +532,36 @@ impl Water {
         self.pours.iter().map(|(p, _)| p)
     }
 
+    /// The drops the next frame gives birth to, each at its own moment (rain, drips and bursts:
+    /// [`crate::Lumps`]): each comes in the step its moment falls in, moved on to that step's end by
+    /// its speed and its liquid's fall, as a pour's rows are. Used once: a frame with no call
+    /// before it has none. (Not [`Water::add`], which primes the deep water.) At most a frame's
+    /// births ([`MOST_DROPS`] in all); while the body is full none are born.
+    pub fn set_timed(&mut self, timed: &[Timed]) {
+        self.timed = timed.iter().take(MOST_BIRTHS as usize).copied().collect();
+    }
+
+    /// The drains (at most [`MOST_DRAINS`]), from the next frame.
+    pub fn set_drains(&mut self, drains: &[Drain]) {
+        self.drains = drains.iter().take(MOST_DRAINS).copied().collect();
+    }
+
+    pub fn drains(&self) -> &[Drain] {
+        &self.drains
+    }
+
+    /// The liquid drops the drains that feed pours have taken and fed pours have not poured yet
+    /// (as the reports read back say: two frames behind).
+    pub fn tank(&self) -> u64 {
+        self.tank
+    }
+
+    /// The liquid drops each drain took in the frame whose report the last boundary read (two
+    /// frames before it).
+    pub fn drained(&self) -> [u32; MOST_DRAINS] {
+        self.clock.lock().expect("the clock").drained
+    }
+
     /// The forces, from the next frame: the first [`MOST_FORCES`] that can be felt
     /// ([`Force::is_felt`]), the rest left out.
     pub fn set_forces(&mut self, forces: &[Force]) {
@@ -584,6 +653,7 @@ impl Water {
             spouts[k / 2][2 * (k % 2) + 1] = g.y;
         }
         let (deep_d, deep_b, reach) = n.deep_window(cell);
+        let (drains, dedges, dmeta) = drains::on_card(&self.drains, &self.layout, dt, self.frames);
         let mut forces = [ForceGpu::default(); MOST_FORCES];
         for (k, f) in self.forces.iter().take(MOST_FORCES).enumerate() {
             forces[k] = f.gpu(&self.layout);
@@ -619,6 +689,9 @@ impl Water {
                 if n.air_drag.is_finite() { n.air_drag.clamp(0.0, 1.0) } else { 1.0 },
             ],
             lv: self.deep.ladder(),
+            drains,
+            dedges,
+            dmeta,
             forces_n: [self.forces.len().min(MOST_FORCES) as u32, 0, 0, 0],
             forces,
         }
@@ -627,8 +700,9 @@ impl Water {
     /// Settles the boundary the body is at (the start of frame `frames()`), once: drops that left
     /// the course two frames ago are let go from the end, where the sort put them.
     fn settle(&mut self) {
-        let go = self.clock.get_mut().expect("the clock").settle(&self.gpu.device, self.frames);
+        let (go, fed) = self.clock.get_mut().expect("the clock").settle(&self.gpu.device, self.frames);
         self.count -= go.min(self.count);
+        self.tank = self.tank.saturating_add(fed);
     }
 
     /// The steps frame `frames()` takes: enough for the fastest water two frames ago and what was
@@ -639,6 +713,12 @@ impl Water {
         for (p, _) in &self.pours {
             if p.runs(from, f64::from(FRAME)) && p.speed.is_finite() {
                 fastest = fastest.max(p.speed);
+            }
+        }
+        for t in &self.timed {
+            let v = glam::Vec2::from(t.drop.v).length() * self.layout.cell;
+            if v.is_finite() {
+                fastest = fastest.max(v);
             }
         }
         // (The strongest of the liquids' Gravity, and never less than the course's.)
@@ -674,42 +754,113 @@ impl Water {
     }
 
     /// The pours' births for a frame of `n` steps, each step's own at its end (a pour whose spout
-    /// was full two frames ago owes its rows instead), and each step's numbers: its drops, the
-    /// drops before its births, and where its births start.
+    /// was full two frames ago owes its rows instead), then the timed drops of each step, and each
+    /// step's numbers: its drops, the drops before its births, where its births start, and its
+    /// flags (bit 0 the last step, bit 1 the first, bits 8 and up its number).
     fn births(&mut self, n: u32) -> (Vec<Born>, Vec<[u32; 4]>) {
         let held = self.clock.get_mut().expect("the clock").spouts;
         let dt = f64::from(FRAME) / f64::from(n);
+        let start = f64::from(self.frames) * f64::from(FRAME);
+        let (fed, budget) = self.fed_shares(start);
+        let mut left = budget.clone();
+        // (The timed drops by the step their moment falls in: one before the frame into its first,
+        // one at or past its end into its last; in the order given within a step.)
+        let timed = std::mem::take(&mut self.timed);
+        let step_of = |at: f64| {
+            let j = ((at - start) / dt).floor();
+            if j.is_nan() { 0 } else { j.clamp(0.0, f64::from(n - 1)) as u32 }
+        };
+        let mut order: Vec<(u32, usize)> = timed.iter().enumerate().map(|(i, t)| (step_of(t.at), i)).collect();
+        order.sort_unstable();
+        let mut next = 0;
         let mut born = Vec::new();
         let mut steps = Vec::with_capacity(n as usize);
         let mut count = self.count;
         for j in 0..n {
-            let from = (f64::from(self.frames) + f64::from(j) / f64::from(n)) * f64::from(FRAME);
-            let start = born.len() as u32;
+            let from = start + f64::from(j) * dt;
+            let first = born.len() as u32;
+            let room = |born: &Vec<Born>| {
+                count + (born.len() as u32 - first) < MOST_DROPS && (born.len() as u32) < MOST_BIRTHS
+            };
             for (k, (pour, state)) in self.pours.iter_mut().enumerate() {
                 if held[k] >= self.numbers.full_spout {
                     pour.hold(state, &self.layout, from, dt, self.numbers.held_rows);
                     continue;
                 }
-                for d in pour.rows(state, &self.layout, from, dt) {
-                    if count + (born.len() as u32 - start) >= MOST_DROPS || born.len() as u32 >= MOST_BIRTHS {
+                // (A fed pour's stream narrowed to its share of the tank this frame.)
+                let narrowed = Pour { width: pour.width * fed[k] as f32, ..*pour };
+                for d in narrowed.rows(state, &self.layout, from, dt) {
+                    if !room(&born) || (pour.fed && left[k] == 0) {
                         break;
+                    }
+                    if pour.fed {
+                        left[k] -= 1;
                     }
                     born.push(Born { xv: [d.x[0], d.x[1], d.v[0], d.v[1]], id: [d.kind, self.serial, d.colour, 0] });
                     self.serial = self.serial.wrapping_add(1);
                 }
             }
-            let here = born.len() as u32 - start;
-            let ends = u32::from(j + 1 == n) | (u32::from(j == 0) << 1);
-            steps.push([count + here, count, start, ends]);
+            // (Moved on from its moment to the step's end: `x + v t + g t^2 / 2`, `v + g t`.)
+            let end = from + dt;
+            while let Some(&(_, i)) = order.get(next).filter(|o| o.0 == j) {
+                next += 1;
+                if !room(&born) {
+                    continue;
+                }
+                let d = timed[i].drop;
+                let t = (end - timed[i].at).clamp(0.0, dt) as f32;
+                let g = if d.is_air() {
+                    glam::Vec2::ZERO
+                } else {
+                    let pull = self.feels.get(d.liquid()).map_or(1.0, |f| f.gravity);
+                    self.gravity / self.layout.cell * if pull.is_finite() { pull } else { 0.0 }
+                };
+                let (x, v) = (glam::Vec2::from(d.x), glam::Vec2::from(d.v));
+                let (x, v) = (x + v * t + 0.5 * g * t * t, v + g * t);
+                if !x.is_finite() || !v.is_finite() {
+                    continue;
+                }
+                born.push(Born { xv: [x.x, x.y, v.x, v.y], id: [d.kind, self.serial, d.colour, 0] });
+                self.serial = self.serial.wrapping_add(1);
+            }
+            let here = born.len() as u32 - first;
+            let ends = u32::from(j + 1 == n) | (u32::from(j == 0) << 1) | (j << 8);
+            steps.push([count + here, count, first, ends]);
             count += here;
         }
+        // (What the fed pours poured comes out of the tank.)
+        let poured_fed: u64 = budget.iter().zip(&left).map(|(b, l)| b - l).sum();
+        self.tank = self.tank.saturating_sub(poured_fed);
         // (The reports of the next two frames do not see these drops yet.)
         let fastest = born.iter().map(|b| glam::Vec2::new(b.xv[2], b.xv[3]).length()).fold(0.0f32, f32::max);
         if !born.is_empty() {
             self.clock.get_mut().expect("the clock").added(self.frames, fastest * self.layout.cell);
         }
-        self.poured = self.poured.wrapping_add(born.len() as u32);
+        let liquid = born.iter().filter(|b| b.id[0] & AIR == 0).count() as u32;
+        self.poured = self.poured.wrapping_add(liquid);
         (born, steps)
+    }
+
+    /// Each pour's share of its stream this frame (from `start` seconds) and the most drops it may
+    /// pour: 1 and no limit for a pour that is not fed. A fed pour, in the pours' order, may pour a
+    /// sixth of what the tank still holds (at least a row while it holds one), never more than it
+    /// would unfed; its stream is narrowed to that share, so it stays one stream.
+    fn fed_shares(&self, start: f64) -> (Vec<f64>, Vec<u64>) {
+        let mut left = self.tank;
+        let mut shares = vec![1.0; self.pours.len()];
+        let mut most = vec![u64::MAX; self.pours.len()];
+        for (k, (p, _)) in self.pours.iter().enumerate() {
+            if !p.fed {
+                continue;
+            }
+            let full = p.amount(&self.layout, start, f64::from(FRAME));
+            let tank = left as f64;
+            let may = full.min((tank / 6.0).max(p.row(&self.layout).min(tank)));
+            shares[k] = if full > 0.0 && may > 0.0 { (may / full).clamp(0.0, 1.0) } else { 0.0 };
+            most[k] = (may.ceil() as u64).min(left);
+            left -= most[k];
+        }
+        (shares, most)
     }
 
     /// Makes room in the births buffer for `n`.
@@ -778,6 +929,7 @@ impl Water {
             let top = self.deep.levels.len() - 1;
             let tiles: Vec<(u32, u32)> = (0..=top).map(|l| self.deep.tiles(l)).collect();
             let (pre, post, coarse) = (self.numbers.pre, self.numbers.post, self.numbers.coarse);
+            let drains_on = !self.drains.is_empty();
             let clock = self.clock.get_mut().expect("the clock");
             let slot = clock.slot_of(k);
             let mut encoder =
@@ -798,8 +950,11 @@ impl Water {
                 let mut go2 = |p: P, now: usize, y_in: usize, step: u32, (gx, gy): (u32, u32)| {
                     pass.set_pipeline(&gpu.pipes.list[p as usize].0);
                     let offset = [step * STEP_ROOM as u32];
-                    let group =
-                        if p == P::Pack { &pack_groups[now] } else { &self.groups[(p as usize * 2 + now) * 2 + y_in] };
+                    let group = match p {
+                        P::Pack => &pack_groups[now],
+                        P::Drained => &self.drained_groups[slot],
+                        _ => &self.groups[(p as usize * 2 + now) * 2 + y_in],
+                    };
                     pass.set_bind_group(0, group, &offset);
                     pass.dispatch_workgroups(gx.max(1), gy.max(1), 1);
                 };
@@ -883,6 +1038,11 @@ impl Water {
                     if let Some(k) = packing.as_ref().and_then(|p| p.cuts.iter().position(|&c| c == j)) {
                         go!(P::Pack, k, 0, PACK_SLOT + k as u32, by_drop);
                     }
+                    // (What each drain took this frame, before trapped air is born over the drops
+                    // that left.)
+                    if drains_on && j + 1 == n {
+                        go!(P::Drained, now, 0, j, by_drop);
+                    }
                     // (After the drops in the course, over those that left and into the room kept:
                     // the kinds into the ones the step sorted into.)
                     if slots > 0 && j + 1 == n {
@@ -938,7 +1098,8 @@ impl Water {
             self.serial = self.serial.wrapping_add(slots);
         }
         self.count = end;
-        self.clock.get_mut().expect("the clock").sent(k, end, self.poured, done, n);
+        let feeds = self.drains.iter().enumerate().filter(|(_, d)| d.feeds).fold(0u32, |m, (i, _)| m | (1 << i));
+        self.clock.get_mut().expect("the clock").sent(k, end, self.poured, feeds, done, n);
         self.steps += u64::from(n);
         self.frames += 1;
         self.deep_last = deep_frame;
@@ -989,6 +1150,9 @@ impl Water {
         new.frames = self.frames;
         new.edges_shut = self.edges_shut;
         new.pours = self.pours.clone();
+        new.timed = self.timed.clone();
+        new.drains = self.drains.clone();
+        new.tank = self.tank;
         new.forces = self.forces.clone();
         new.deep_last = self.deep_last;
         new.deep_dt = self.deep_dt;

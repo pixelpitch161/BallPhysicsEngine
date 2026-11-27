@@ -29,11 +29,54 @@ pub struct PourCard {
     #[setting(label = "Kind", simple, group = "Pour")]
     pub kind: PourKind,
     /// How much comes out: 1 is a full stream of its Width.
-    #[setting(label = "Rate", range(0, 1e9), span(0, 4), unit = "×", simple, keyframe, group = "Pour")]
+    #[setting(
+        label = "Rate",
+        when = "kind=tap",
+        range(0, 1e9),
+        span(0, 4),
+        unit = "×",
+        simple,
+        keyframe,
+        group = "Pour"
+    )]
     pub rate: f32,
+    /// How many drops fall a second (rain over its Width, a drip from its point).
+    #[setting(
+        label = "Drops a second",
+        when = "kind=rain or kind=drip",
+        range(0, 10000),
+        span(0, 60),
+        simple,
+        group = "Pour"
+    )]
+    pub drops_a_second: f32,
+    /// How big each drop is across (rain's vary a little either way).
+    #[setting(
+        label = "Drop size",
+        when = "kind=rain or kind=drip",
+        range(1, 400),
+        span(2, 60),
+        unit = "px",
+        group = "Pour"
+    )]
+    pub drop_size: f32,
+    /// How big the lump a burst throws is across.
+    #[setting(
+        label = "Burst size",
+        when = "kind=burst",
+        range(1, 4000),
+        span(10, 600),
+        unit = "px",
+        simple,
+        group = "Pour"
+    )]
+    pub burst_size: f32,
+    /// How long between bursts (0: one burst, at its Starts).
+    #[setting(label = "Every", when = "kind=burst", range(0, 600), span(0, 10), unit = "s", group = "Pour")]
+    pub every: f32,
     #[setting(
         label = "Width",
-        when = "kind!=fill_at_the_start",
+        when = "kind=tap or kind=rain",
         range(0, 1e9),
         span(1, 400),
         unit = "px",
@@ -55,10 +98,10 @@ pub struct PourCard {
     /// Which way it pours: 90 is straight down.
     #[setting(label = "Aim", when = "kind!=fill_at_the_start", span(-180, 180), unit = "°", keyframe, group = "Pour")]
     pub aim: f32,
-    /// How far the stream fans out.
+    /// How far the stream fans out (a burst's lump: 0 is thrown whole, 180 bursts outward).
     #[setting(
         label = "Spread",
-        when = "kind!=fill_at_the_start",
+        when = "kind=tap or kind=rain or kind=burst",
         range(0, 180),
         span(0, 45),
         unit = "°",
@@ -73,6 +116,10 @@ pub struct PourCard {
     pub starts: f32,
     #[setting(label = "Stops at", when = "kind!=fill_at_the_start", range(0, 600), unit = "s", group = "Pour")]
     pub stops: f32,
+    /// It pours only what drains that feed pours have taken, so a course can run as long as the
+    /// video does.
+    #[setting(label = "Fed by drains", when = "kind=tap", group = "Pour")]
+    pub fed_by_drains: bool,
 }
 
 impl Default for PourCard {
@@ -88,6 +135,11 @@ impl Default for PourCard {
             fill_size: Vec2::new(300.0, 200.0),
             starts: 0.0,
             stops: 600.0,
+            drops_a_second: 8.0,
+            drop_size: 12.0,
+            burst_size: 160.0,
+            every: 0.0,
+            fed_by_drains: false,
         }
     }
 }
@@ -139,11 +191,21 @@ pub struct DrainCard {
     pub whirlpool: f32,
     #[setting(label = "Edge", when = "kind=edge_of_the_course", group = "Drain")]
     pub edge: CourseEdge,
+    /// What it takes comes back at the Pours that are Fed by drains.
+    #[setting(label = "Feeds pours", group = "Drain")]
+    pub feeds_pours: bool,
 }
 
 impl Default for DrainCard {
     fn default() -> Self {
-        Self { kind: DrainKind::Drain, radius: 40.0, rate: 1.0, whirlpool: 0.0, edge: CourseEdge::Bottom }
+        Self {
+            kind: DrainKind::Drain,
+            radius: 40.0,
+            rate: 1.0,
+            whirlpool: 0.0,
+            edge: CourseEdge::Bottom,
+            feeds_pours: true,
+        }
     }
 }
 
