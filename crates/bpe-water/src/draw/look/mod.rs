@@ -381,9 +381,14 @@ impl LookDraw {
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         queue.write_buffer(&self.grads, 0, bytemuck::cast_slice(&numbers::gradients(look)));
 
-        // (The finish measures in the video's pixels when the picture is its shot.)
+        // (The finish measures in the video's pixels when the picture is its shot: across, as the
+        // masks' handles do, so a picture of another shape than the video, the editor's 9:16 shot of
+        // a video of another size, is measured the same way both ways.)
         let video = match look.finish.video {
-            (w, h) if w > 0 && h > 0 => (w, h),
+            (w, h) if w > 0 && h > 0 => {
+                let tall = (f64::from(w) * f64::from(height) / f64::from(width.max(1))).round().max(1.0);
+                (w, tall as u32)
+            }
             _ => (width, height),
         };
         let frame = bpe_gfx::Frame {

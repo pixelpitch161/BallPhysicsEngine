@@ -828,25 +828,38 @@ fn a_lone_drop_casts_a_whole_shadow() {
 
 /// Test 22: A Spot just beside a falling stream lights the rock behind the stream the same with
 /// Caustics 2 as with none: the stream's two surfaces aren't one lens over the rock (its caustics
-/// there were wide bright and dark stripes). A pool's floor keeps its caustics (test 5).
+/// there were wide bright and dark stripes). Close behind the stream the lens fades out, with no
+/// line where it ends. A pool's floor keeps its caustics (test 5).
 #[test]
 fn a_stream_throws_no_caustics_on_the_rock_behind_it() {
     let Some(gpu) = card() else { return };
     let field = boxed_fine();
     let drops = sets::lattice(&field, Vec2::new(-6.0, -500.0), Vec2::new(6.0, 300.0), 0);
     let lamp = spot(Vec2::new(40.0, -100.0), 180.0, 150.0);
-    let behind = |caustics: f32| -> Vec<f32> {
+    let rows = [-200.0f32, -100.0, 0.0, 100.0];
+    // Far behind the stream, then close behind it in rows, from where the lens starts to fade (28 px
+    // past the stream's middle, its liquid's edge about 8 px out) to 106 px.
+    let behind = |caustics: f32| -> (Vec<f32>, Vec<Vec<f32>>) {
         let mut look = dark(vec![lamp.clone()], Quality::Good);
         look.light.caustics = caustics;
         look.liquids = vec![LiquidLook { clarity: 4000.0, ..LiquidLook::default() }];
         let mut d = Drawn::new(&gpu, &field, &drops);
         d.draw(View::screen(0.25), &look);
-        (0..40).map(|k| bright(d.look.light_at(Vec2::new(-300.0, -400.0 + 15.0 * k as f32)).unwrap())).collect()
+        let light = |p: Vec2| bright(d.look.light_at(p).unwrap());
+        let far = (0..40).map(|k| light(Vec2::new(-300.0, -400.0 + 15.0 * k as f32))).collect();
+        let near =
+            rows.iter().map(|&y| (0..40).map(|k| light(Vec2::new(-28.0 - 2.0 * k as f32, y))).collect()).collect();
+        (far, near)
     };
-    let (with, without) = (behind(2.0), behind(0.0));
+    let ((with, near_with), (without, near_without)) = (behind(2.0), behind(0.0));
     assert!(without.iter().all(|&l| l > 0.05), "the rock behind is lit: {without:?}");
     for (k, (a, b)) in with.iter().zip(&without).enumerate() {
         assert!((a - b).abs() <= 0.02 * b.max(1e-3), "point {k}: {a} with caustics against {b} without");
+    }
+    for (y, (a, b)) in rows.iter().zip(near_with.iter().zip(&near_without)) {
+        let shares: Vec<f32> = a.iter().zip(b).map(|(a, b)| a / b.max(1e-4)).collect();
+        let jump = shares.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(jump < 0.1, "at y {y} the lens fades out with no line: {shares:?}");
     }
 }
 
@@ -903,7 +916,7 @@ fn bench_look_pictures() {
 
 /// Test 23: The finish's Grade measures in the video's pixels: a Radial mask on a block of the shot
 /// grades the same block in a quarter-size picture and a half-size one, and leaves the block under it
-/// as it was.
+/// as it was; and the same for a video of another shape (measured across, as the masks' handles are).
 #[test]
 fn the_grade_measures_in_the_videos_pixels() {
     use bpe_gfx::{GradeArea, GradeBasic, GradeCombine, GradeMask, GradePanel, GradePart, GradePlace, GradeRadial};
@@ -920,7 +933,6 @@ fn the_grade_measures_in_the_videos_pixels() {
         places: vec![GradePlace::SCREEN],
     };
     let mut graded = plain.clone();
-    graded.finish.video = (1080, 1920);
     graded.finish.grade.masks = vec![GradeMask {
         amount: 1.0,
         area: Some(GradeArea {
@@ -936,11 +948,12 @@ fn the_grade_measures_in_the_videos_pixels() {
         ..GradeMask::default()
     }];
     let (inside, below) = (Vec2::new(250.0, -600.0), Vec2::new(250.0, -50.0));
-    for scale in [0.25, 0.5] {
+    for (scale, video) in [(0.25, (1080, 1920)), (0.5, (1080, 1920)), (0.25, (1080, 1350))] {
+        graded.finish.video = video;
         let before = draw(&gpu, &field, &[], View::screen(scale), &plain);
         let after = draw(&gpu, &field, &[], View::screen(scale), &graded);
         let (a, b) = (luma(after.at(inside)), luma(before.at(inside)));
-        assert!(a > b + 20.0, "at {scale}: the mask's middle is a stop brighter: {a} vs {b}");
-        assert!(apart(after.at(below), before.at(below)) <= 1, "at {scale}: the block under it as it was");
+        assert!(a > b + 20.0, "at {scale}, {video:?}: the mask's middle is a stop brighter: {a} vs {b}");
+        assert!(apart(after.at(below), before.at(below)) <= 1, "at {scale}, {video:?}: the block under it as it was");
     }
 }

@@ -1205,13 +1205,16 @@ for water (decision 43) and the Light only and Glow only takes (decision 42's la
 - **No caustics behind a stream**: a point in the air was lit through the liquid's lens wherever its lamp's light
   had gone through liquid. Light that came out of the liquid again (through a falling stream, onto the rock behind)
   isn't focused by one surface, so the march drew the stream's two sides as one wide striped lens. Now the lens
-  only counts when the light went into the liquid within `LENS_REACH` (32 world px, a bubble's size) of the point.
+  counts in full when the light went into the liquid within 16 world px of the point and fades out by
+  `LENS_REACH` (32 px, a bubble's size; `t_in`, where the march first went in), so no line is drawn where it ends.
   Lamp-lit rock has its Caustics 1.2 back.
 
 ### The finish measures in the video's pixels (`FinishLook.video`)
 
 - `finish_of` gives the finish the scene's Width and Height; `LookDraw` makes the frame it hands
-  `finish_picture` that size over the picture's own (`(0, 0)`: the picture's, as Whole course and the tests use).
+  `finish_picture` the video's width wide and the picture's shape tall (`(0, 0)`: the picture's own, as Whole
+  course and the tests use). Across, because the editor's shot is always 9:16 while the video may not be, and the
+  masks' handles measure across too; the export's picture is the video's shape, so there it is the video's size.
   The Effects (`base.scale`) and the Grade (`GradeAt.scale`) measure in the video's pixels, as in a Balls frame, so
   the editor's Shot view (drawn at the stage's own pixels) and an export at a lower `--scale` look like the video
   scaled down. Before this the Shot view's blurs and masks were sized for its smaller picture.
@@ -1225,22 +1228,32 @@ for water (decision 43) and the Light only and Glow only takes (decision 42's la
   the Shot view (the draft, or the final's moment in the Final view). No tool rail or strip: the course is built in
   Build mode. The toolbar's Whole course | Shot is greyed (`GRADES_THE_SHOT`).
 - **`look_now`** shows the grade as Grade mode does (`GradeMode::show_on`: Before, Split, the overlay, a stroke
-  being painted) and draws a hovered snapshot from its own copy of the scene (`preview::peeked`).
+  being painted) and draws a hovered snapshot from its own copy of the scene (`preview::peeked`). A held press
+  doesn't drop the light to Draft in Grade mode (`hold_runs` is any press for a Water scene): a grade edit never
+  moves the water, and the scopes, clipping and picks must read the picture as the video shows it. While the draft
+  starts over, the stage keeps the last look's liquids but takes the finish as it is now.
 - **What Grade mode's tools read**: each picture keeps the texture it last drew in a `picture::Shown` (a clone of
   `LookDraw::output()`, its size, and a drawing number that differs for every drawing, the draft's and the
   final's). `Graded` keeps its own `Scopes` and `Clipping` and runs them on it when the drawing changes (or the
   scope or clipping view does); the eyedropper and the targeted tool read it back (`bpe_gfx::read_rgba8`, now
-  public). The Split line, the compare switch, the corner pill and the colour pick are the ball preview's
+  public). The clipping picture's egui texture is let go when another scene opens (`Graded::free`, before the
+  stage is reset). The Split line, the compare switch, the corner pill and the colour pick are the ball preview's
   (`preview::{compare_switch, split_line, corner_pill, pick_colour}`; `pick_colour` now takes a reader). The
   masks' handles and brush get screen points per video pixel, as in the ball preview.
 - **No Things part in a Water scene yet** (`masks::offered`): Add mask and Add part leave it out until 6e gives
   it the water's own kinds.
+- **Speed**: the zero thresholds cost nothing measurable on the owner's card (`water_final_speed`'s look a frame
+  at 1080 x 1920 under two Spots, a tap's spray in it: 18.1 ms before, 17.6 ms after). Known: near many lone drops
+  the march steps finely through each coarse texel holding one, so on a very tall course at Fine detail a ray
+  through much spray could reach `MOST_STEPS` (320) before its lamp, and stop taking in the liquid beyond.
 
 ### Tests
 
 - `bpe-water/tests/look.rs` 21 (a lone drop's shadow is deep under it and has no dashes), 22 (a Spot beside a
-  stream lights the rock behind it the same with Caustics 2 as with none), 23 (a Radial mask in the finish grades
-  the same block at a quarter and at half size). 21 and 22 fail on the old shader, 23 without the video's size.
+  stream lights the rock behind it the same with Caustics 2 as with none, and close behind it the lens fades out
+  with no line), 23 (a Radial mask in the finish grades the same block at a quarter and at half size, and for a
+  video of another shape). 21 and 22 fail on the old shader (22's close band on the lens cut off at 32 px), 23
+  without the video's size.
 - `bpe-kit`: `the_look_reads_every_card` (the finish's video size).
 - `bpe-studio`: `grade_mode_shows_the_shot_with_its_grade_as_grade_mode_compares_it`,
   `a_water_scenes_masks_offer_no_things_part`, `a_water_scenes_toolbar_says_so_and_grade_mode_grades_the_shot`,

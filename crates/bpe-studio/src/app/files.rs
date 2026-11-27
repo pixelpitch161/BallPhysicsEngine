@@ -18,7 +18,8 @@ impl Studio {
         self.path = path;
         self.history = History::default();
         self.selection.clear();
-        // A new scene's stage starts on Select, holding nothing.
+        // A new scene's stage starts on Select, holding nothing (its clipping picture let go first).
+        self.water_stage.graded.free(self.panels.inspector.render.as_ref());
         self.water_stage = Default::default();
         // A scene is open: the chooser has its answer, however the scene came (a file dropped
         // on the window, restored work).
@@ -49,7 +50,6 @@ impl Studio {
         self.water_final.stop_make();
         if !self.water() {
             self.water_final.picture.free(self.panels.inspector.render.as_ref());
-            self.water_stage.graded.free(self.panels.inspector.render.as_ref());
         }
         self.follow = follow_of(ball, ball_resolved);
         self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);

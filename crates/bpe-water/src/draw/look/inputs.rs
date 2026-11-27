@@ -307,8 +307,9 @@ pub struct FinishLook {
     pub effects: Vec<bpe_gfx::EffectCall>,
     pub grade: bpe_gfx::GradeStack,
     /// The video's size (the scene's Width and Height) when the picture is the camera's shot: the
-    /// Effects and the Grade measure in the video's pixels, so a smaller picture (the editor's, or
-    /// an export at a lower scale) looks like the video scaled down. `(0, 0)`: the picture's own.
+    /// Effects and the Grade measure in the video's pixels (across: a picture of another shape is
+    /// the video's width wide), so a smaller picture (the editor's, or an export at a lower scale)
+    /// looks like the video scaled down. `(0, 0)`: the picture's own.
     pub video: (u32, u32),
 }
 

@@ -282,9 +282,10 @@ pub(super) fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect)
     let target = frame_of(studio.time);
     job.follow(target);
     let restarting = studio.water_draft.setup.as_ref().is_some_and(|s| s.print != job.plays());
-    // (Until the new body comes, the old one keeps the look its liquids were numbered for.)
+    // (Until the new body comes, the old one keeps the look its liquids were numbered for, with
+    // the finish as it is now, so Grade mode's changes show meanwhile.)
     let look = match (restarting, studio.water_draft.picture.last_look()) {
-        (true, Some(last)) => last.clone(),
+        (true, Some(last)) => Look { finish: look_here.finish.clone(), ..last.clone() },
         _ => look_here,
     };
     let rock = Rock {
@@ -325,7 +326,9 @@ pub(super) fn look_now(studio: &Studio, view: &CourseView) -> Look {
     };
     let mut look = water::look::look_of(scene, resolved, studio.time);
     drop(peeked);
-    if studio.hold_runs {
+    // (Not in Grade mode: a press there is on the grade, which doesn't move the water, and the
+    // scopes, clipping and picks read the picture as the video shows it.)
+    if studio.hold_runs && !grading {
         look.light.quality = Quality::Draft;
     }
     if view.shot.is_none() {

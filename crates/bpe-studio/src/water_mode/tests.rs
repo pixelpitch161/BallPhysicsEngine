@@ -566,8 +566,14 @@ fn grade_mode_shows_the_shot_with_its_grade_as_grade_mode_compares_it() {
     };
     assert!(compared(&mut h, Compare::Before).is_identity(), "Before: the picture without it");
     assert!(compared(&mut h, Compare::Split).split.is_some(), "Split: its line");
+    // A press in Grade mode (a slider, a handle) keeps the light: the scopes and picks read the picture
+    // as the video shows it. In Build mode a held press draws at Draft light.
+    h.state_mut().hold_runs = true;
+    let quality = look.light.quality;
+    assert_eq!(super::stage::look_now(h.state(), &view).light.quality, quality);
     // Build mode's Shot view shows the grade as it is, and the whole course none.
     h.state_mut().mode = EditorMode::Build;
+    assert_eq!(super::stage::look_now(h.state(), &view).light.quality, bpe_water::draw::look::Quality::Draft);
     assert!(super::stage::look_now(h.state(), &view).finish.grade.split.is_none());
     let course = CourseView::fit(view.rect, SCREEN);
     assert!(super::stage::look_now(h.state(), &course).finish.grade.is_identity());

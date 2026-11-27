@@ -730,6 +730,11 @@ changes:
   were sized for the picture drawn, so in the Shot view (and an export at a lower scale) a mask at a place in the
   video landed elsewhere. Found while working out where the handles go.
 - **The two light faults**: the march's coarse skip took a lone drop for empty (thresholds of a thousandth, now
-  none), and the lens counted light that left the liquid again (now only within 32 px of where it went in).
-  Lamp-lit rock's Caustics are 1.2 again.
+  none), and the lens counted light that left the liquid again (now in full within 16 px of where it went in,
+  fading out by 32 px). Lamp-lit rock's Caustics are 1.2 again.
 - **No Things part on a Water scene** until 6e (`masks::offered`).
+- **What the review found** (all fixed): the clipping picture's texture leaked when another scene opened (the
+  stage was reset before it was let go); every press in Grade mode dropped the water's light to Draft, so the
+  scopes, the Alt clipping view and the targeted tool read a Draft picture; the lens cut off at 32 px left a faint
+  line along a lamp-lit stream (now a fade); masks and their handles disagreed on a video that isn't 9:16 (the
+  finish now measures across); and Grade mode's changes didn't show while the draft started over.
