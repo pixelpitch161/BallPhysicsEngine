@@ -901,3 +901,61 @@ plays it in slow motion.
 with a tap at Normal final detail (2 px), 10 s, 1.4 million drops: **10.0 wall seconds and 267 MB a scene second**
 (2.67 GB in all, 3.15 bytes a drop a moment, a restart point 47 MB), the C2 estimate. A frame reads and unpacks in
 31 ms.
+
+## Part 6a: light and the look drawing (as built)
+
+Plan: `docs/superpowers/plans/water-mode/part6-light-and-looks.md` (decisions 1 to 31 and "As built"). A Water
+scene is now drawn in its own look everywhere (the stage, the Final view, Make final's export and Preview final
+frame): lamps with soft shadows, light through the water and its caustics, glow and bounce, each Material, the Back,
+and each liquid's Look card, finished by the same bloom, exposure and composite as a Balls frame.
+
+### The cards and the take's print (`bpe-kit modules/water/look.rs`, `things/water/look.rs`, both `build.rs`)
+
+- The Look, Light, Back and Lamp cards live in `modules/water/look.rs`; `plain_look` and **`look_of(scene, resolved,
+  time) -> Look`** in `things/water/look.rs`. The kit's `build.rs` prints every file under its roots but those named
+  `look.rs` or `looks.rs`, and bpe-water's prints `src/drops`, `src/take`, `src/drop.rs`, `src/solid.rs` and
+  `src/lib.rs` only, so a change to how water looks never makes a final again.
+- `look_of` reads each enabled Liquid's Look (scene order, at most 16; a gradient as 64 linear samples, sent only when
+  the colour is read from it), the Course's Rock and each enabled Piece's and Wall's Material (in the order the solid
+  field numbers them), the Back, the Light card, every enabled Lamp (at its `transform.position`; Water things have no
+  place keyframes yet) and the scene's Bloom and Exposure, all at water time. It reads no file.
+- The Light card's **Ambient defaults to 1**, so a new scene is evenly lit as the plain look was.
+
+### The look drawing (`bpe-water draw/look/`, `shaders/look.wgsl`)
+
+- **`LookDraw`** owns a `Plain` (its field buffer, depth ladder and uniform) and a `bpe_gfx::Renderer` for the
+  finish; `LookGpu` holds its pipelines (one module, `plain.wgsl` then `look.wgsl`). API as `Plain`'s: `draw`,
+  `draw_at(.., ahead)`, `draw_many`, `set_field`, `renew(field, rest)` (another body, keeping the pictures and the
+  renderer), `output()` (the renderer's `Rgba8Unorm` output), `read()`, `notes()` ("The back's picture can't be
+  read", "Only 16 lamps light a Water scene"), and `light_at(p)` for tests.
+- **Passes**, each a full-picture or splat render pass: look splats into `A0 = (k|v|, k|v|², k_air, k)`, `A1 = (k vx,
+  k vy, k_lone, 0)` and the liquids' weights (`W0`, `W1..W3` only past 4 liquids; speeds in 1000 px/s), each liquid's
+  radius from Smoothing and stretched by Streaks; plain's ladder; node fields D (extinction), G (glow) and C (colour)
+  with 6 mips; the **light map** (`fs_light`, three targets: light and openness, mean lamp way and weight, and the
+  light with no liquid in the way, which lights paint and the faces in front) on a world grid fixed to the course
+  (8, 4, 2 px for Draft, Good, Best, at most 2048 a side); the **spread light** (glow plus Bounce of the lit faces
+  and body) over the whole course at 4 times the light texel, **cone traced** (24 cones, 48 steps, from the
+  emission's mips, stopped by the solid field, Glass letting 70 % through); then `fs_look` writes linear light into
+  `Renderer::hdr_target()` and `Renderer::finish_picture` finishes it.
+- **Lamps**: Spot (cone of Spread, edge from Softness), Strip (the nearest point of a line of its Length across its
+  Aim, shining to the Aim's side), Sun (marched against its Aim to the course's edge, so a closed course's rock
+  ceiling stops it unless Shadows is off). Falloff `600 / (600 + d)`. Shadows are a soft sphere-traced march of the
+  solid field; Glass tints; liquid dims by its extinction; the first surface crossed focuses the light into
+  **caustics** by its curvature (level-1 amount plus Ripples), `mix(1, C, Caustics)` clamped to 0 to 8.
+- **Nothing remembered**: no float atomics, no frame-to-frame state, noise hashed from the world point, so a moment
+  draws the same picture every time and the light at a world point doesn't depend on the view.
+- **Drawn** back to front: the back (Darker rock, Colour, Gradient, Picture cover-fitted, with a soft contact shadow
+  near solids and paper's cut-out shadow), the liquid (see-through over the back bent by Bend in world px along the
+  smoothed surface's slope, Rainbow split, Deep colour, Solid paint lit from the front, Shine, Edge sheen, Thin film,
+  Bands, Glow, Outline), shafts, then the solids lit at their face (Rock, Glass frosted over the back, Paper, Basalt,
+  Flat; Depth's bevel, Roughness's highlight, Outline).
+- Tests: `bpe-water tests/look.rs` (13, on lavapipe at 270 x 480; `LOOK_DEBUG_DIR` writes their pictures); the
+  plain drawing's own tests are unchanged.
+
+### The three places (`bpe-studio water_mode/{draft,picture,final_view,stage}.rs`, `bpe-cli water.rs`)
+
+- The draft's `Live.look: LookDraw` is kept from body to body (`renew`); the stage draws `look_of` at the playhead,
+  with **Draft light while a slider or drag is held** (`studio.hold_runs`), and shows the drawing's notes in a pill.
+  The Final view and the export draw the same way; the export reads the renderer's output.
+- **Lamp markers**: a Spot's cone (120 points long), a Strip's line with a tick toward its Aim, a Sun's three arrows
+  down from the course's top edge.

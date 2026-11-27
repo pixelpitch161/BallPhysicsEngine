@@ -228,6 +228,18 @@ impl LookDraw {
         }
     }
 
+    /// Draws another body's drops on `field` (`rest` as [`LookDraw::new`]'s), keeping the pictures,
+    /// the finish and the back's picture (a new body after a physics edit).
+    pub fn renew(&mut self, field: &SolidField, rest: f32) {
+        let layout = self.plain.layout;
+        self.plain = Plain::new(self.gpu.plain.clone(), field, rest);
+        if field.layout != layout {
+            self.nodes = Nodes::new(self.gpu.device(), field.layout.cols, field.layout.rows);
+            self.spread = None;
+            self.shot = None;
+        }
+    }
+
     pub fn gpu(&self) -> &Arc<LookGpu> {
         &self.gpu
     }

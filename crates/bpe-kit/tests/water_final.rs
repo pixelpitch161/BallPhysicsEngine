@@ -225,19 +225,26 @@ fn screen_chamber(reg: &Registry, detail: &str) -> Scene {
 /// Times a one-screen final (by hand, and in the card job's timing step): made at Normal final
 /// detail (2 px) for `WATER_SECONDS` (10) seconds into a temporary finals folder, then a frame of
 /// it read, unpacked and drawn at 1080 x 1920. Prints the wall seconds a scene second, the room a
-/// scene second and a drop takes, a restart point's size and the course's layout time; the take is
-/// removed after. (`WATER_FINAL_DETAIL` picks another detail.)
+/// scene second and a drop takes, a restart point's size and the course's layout time, and the look
+/// drawing's time a frame under two Spots at each light Quality; the take is removed after.
+/// (`WATER_FINAL_DETAIL` picks another detail.)
 #[test]
 #[ignore]
 fn water_final_speed() {
-    use bpe_water::draw::{Plain, PlainGpu, StoredDrops};
+    use bpe_kit::things::water::LAMP;
+    use bpe_water::draw::look::Quality;
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops};
     let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
     let info = device.adapter_info();
     println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
     let seconds: f64 = std::env::var("WATER_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(10.0);
     let detail = std::env::var("WATER_FINAL_DETAIL").unwrap_or_else(|_| "normal".into());
     let reg = bpe_kit::registry();
-    let scene = screen_chamber(&reg, &detail);
+    let mut scene = screen_chamber(&reg, &detail);
+    // (Two lamps: they light the look drawing and never touch the physics.)
+    for x in [-300.0, 300.0] {
+        add(&mut scene, &reg, LAMP, Vec2::new(x, -700.0));
+    }
     let resolved = bpe_core::resolve(&scene, &reg);
     let make = MakeFinal::of(&scene, &resolved, seconds);
     let finals = folder("speed");
@@ -277,16 +284,28 @@ fn water_final_speed() {
     let bytes = chunk.bytes(0).unwrap();
     let frame = FrameCodec::new().decode(&bytes, &head.layout()).unwrap();
     let read_ms = read.elapsed().as_secs_f64() * 1000.0;
-    let plain_gpu = PlainGpu::new(&device, &queue);
     let field = make.setup.field();
-    let mut plain = Plain::new(plain_gpu, &field, make.setup.numbers().wall_off);
-    let look = bpe_kit::things::water::draft::plain_look(&scene, &resolved, seconds / 2.0);
+    let mut drawing = LookDraw::new(LookGpu::new(&device, &queue), &field, make.setup.numbers().wall_off);
+    let mut look = bpe_kit::things::water::look::look_of(&scene, &resolved, seconds / 2.0);
     let draw = std::time::Instant::now();
     let mut stored = StoredDrops::new(&device, &queue, &[]);
     stored.set(&device, &queue, &frame.xv, &frame.kinds);
-    plain.draw_at(&stored.buffers(), &bpe_water::draw::View::screen(1.0), &look, 0.0);
-    let _ = plain.read();
+    let screen = bpe_water::draw::View::screen(1.0);
+    drawing.draw_at(&stored.buffers(), &screen, &look, 0.0);
+    let _ = drawing.read();
     let draw_ms = draw.elapsed().as_secs_f64() * 1000.0;
     println!("water final: a frame read and unpacked (ms)\t{read_ms:.1}");
     println!("water final: a frame drawn at 1080 x 1920 and read back (ms)\t{draw_ms:.1}");
+    let mut ms = Vec::new();
+    for quality in [Quality::Good, Quality::Draft, Quality::Best] {
+        look.light.quality = quality;
+        ms.push(1000.0 * drawing.draw_many(&stored.buffers(), &screen, &look, 20).as_secs_f64());
+    }
+    println!(
+        "water final: look {:.1} ms a frame at 1080 x 1920, {} drops, two Spots (Draft {:.1} ms, Best {:.1} ms)",
+        ms[0],
+        frame.xv.len(),
+        ms[1],
+        ms[2]
+    );
 }

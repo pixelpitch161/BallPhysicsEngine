@@ -1,11 +1,11 @@
-//! The water on the Water stage (Water mode part 2b): the draft's drops drawn in the plain look
-//! straight from the card, at the course's size on screen, into a texture egui shows.
+//! The water on the Water stage (Water mode part 2b): the draft's drops drawn in the scene's look
+//! (part 6) straight from the card, at the course's size on screen, into a texture egui shows.
 
 use std::time::{Duration, Instant};
 
 use bpe_gfx::wgpu;
 use bpe_water::SolidField;
-use bpe_water::draw::{PlainLook, View};
+use bpe_water::draw::{Look, View};
 use eframe::egui::{self, Painter, Rect, pos2};
 use glam::Vec2;
 
@@ -47,7 +47,7 @@ struct Drawn {
     generation: u64,
     frame: u32,
     size: (u32, u32),
-    look: PlainLook,
+    look: Look,
     rock: u64,
 }
 
@@ -62,6 +62,8 @@ pub struct StagePicture {
     /// stroke being painted.
     rock: Option<(u64, u64)>,
     previewing: bool,
+    /// What the drawing told about the last look drawn (a back picture that can't be read).
+    notes: Vec<String>,
 }
 
 impl StagePicture {
@@ -72,7 +74,7 @@ impl StagePicture {
         painter: &Painter,
         render: &egui_wgpu::RenderState,
         job: &DraftJob,
-        look: &PlainLook,
+        look: &Look,
         view: &CourseView,
         rock: Rock,
     ) -> bool {
@@ -90,13 +92,14 @@ impl StagePicture {
                 rock: rock.version,
             };
             if self.drawn.as_ref() != Some(&want) {
-                live.plain.draw(&live.water.drop_buffers(), &v, look);
+                live.look.draw(&live.water.drop_buffers(), &v, look);
+                self.notes = live.look.notes();
                 self.drawn = Some(want);
             }
             self.last = Some(Instant::now());
             let made_for = (live.generation, (v.width, v.height));
             if self.texture.is_none_or(|t| (t.1, t.2) != made_for)
-                && let Some(output) = live.plain.output()
+                && let Some(output) = live.look.output()
             {
                 let output = output.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut renderer = render.renderer.write();
@@ -137,12 +140,12 @@ impl StagePicture {
         match rock.preview {
             Some(field) => {
                 if field.layout == live.field.layout {
-                    live.plain.set_field(field);
+                    live.look.set_field(field);
                     self.previewing = true;
                 }
             }
             None if self.previewing => {
-                live.plain.set_field(&live.field);
+                live.look.set_field(&live.field);
                 self.previewing = false;
             }
             None => {}
@@ -151,8 +154,13 @@ impl StagePicture {
     }
 
     /// The look the picture was last drawn in.
-    pub fn last_look(&self) -> Option<&PlainLook> {
+    pub fn last_look(&self) -> Option<&Look> {
         self.drawn.as_ref().map(|d| &d.look)
+    }
+
+    /// What the drawing told about the last look drawn, in plain words.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
     }
 
     /// Lets the texture go (the scene is no Water scene any more).

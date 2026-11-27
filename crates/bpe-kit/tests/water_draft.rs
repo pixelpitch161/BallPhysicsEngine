@@ -9,9 +9,10 @@
 use std::time::Instant;
 
 use bpe_core::{Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value};
-use bpe_kit::things::water::draft::{DRAFT_MOST, WaterSetup, plain_look};
+use bpe_kit::things::water::draft::{DRAFT_MOST, WaterSetup};
+use bpe_kit::things::water::look::look_of;
 use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
-use bpe_water::draw::{Plain, PlainGpu, View};
+use bpe_water::draw::{LookDraw, LookGpu, View};
 use bpe_water::{Water, WaterGpu};
 use glam::Vec2;
 
@@ -92,11 +93,11 @@ fn drops_stay_out_of_the_rock() {
     let top = -936.0 + 1872.0 / 3.0;
     let low = drops.iter().filter(|d| d.serial >= filled && layout.to_world(Vec2::from(d.x)).y > top).count();
     assert!(low > 0, "none of the tap's {} drops reached the pool", drops.len() as u32 - filled);
-    // And the plain drawing draws it from the card.
-    let mut plain = Plain::new(PlainGpu::new(&device, &queue), &field, s.numbers().wall_off);
-    let look = plain_look(&scene, &bpe_core::resolve(&scene, &reg), 2.0);
-    plain.draw(&water.drop_buffers(), &View::screen(0.25), &look);
-    assert_eq!(plain.read().len(), 270 * 480 * 4);
+    // And the look drawing draws it from the card.
+    let mut drawing = LookDraw::new(LookGpu::new(&device, &queue), &field, s.numbers().wall_off);
+    let look = look_of(&scene, &bpe_core::resolve(&scene, &reg), 2.0);
+    drawing.draw(&water.drop_buffers(), &View::screen(0.25), &look);
+    assert_eq!(drawing.read().len(), 270 * 480 * 4);
 }
 
 /// The 12 ms mark: a frame's physics and one stage-sized drawing together, leaving 4.7 ms of the
@@ -114,7 +115,7 @@ fn draft_pace() {
         "# detail\tcell\tdrops\tsteps a frame (mean, most)\tphysics ms a frame\tdraw ms 600x1067\tdraw ms 1080x1920\tplays live"
     );
     let gpu = WaterGpu::new(&device, &queue);
-    let plain_gpu = PlainGpu::new(&device, &queue);
+    let look_gpu = LookGpu::new(&device, &queue);
     // (`WATER_DRAFT_DETAILS` and `WATER_DRAFT_SECONDS` shorten a check that it runs.)
     let details = std::env::var("WATER_DRAFT_DETAILS").unwrap_or_else(|_| "coarse,normal,fine".into());
     let seconds: u32 = std::env::var("WATER_DRAFT_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
@@ -140,10 +141,11 @@ fn draft_pace() {
         }
         let physics = 1000.0 * took / f64::from(frames);
         let mean = (water.steps() - steps) as f64 / f64::from(frames);
-        let look = plain_look(&scene, &bpe_core::resolve(&scene, &reg), 6.0);
-        let mut plain = Plain::new(plain_gpu.clone(), &field, s.numbers().wall_off);
-        let small = plain.draw_many(&water.drop_buffers(), &View::screen(600.0 / 1080.0), &look, 30);
-        let full = plain.draw_many(&water.drop_buffers(), &View::screen(1.0), &look, 30);
+        // (The stage's look: the scene's, with Draft light while a drag holds the runs.)
+        let look = look_of(&scene, &bpe_core::resolve(&scene, &reg), 6.0);
+        let mut drawing = LookDraw::new(look_gpu.clone(), &field, s.numbers().wall_off);
+        let small = drawing.draw_many(&water.drop_buffers(), &View::screen(600.0 / 1080.0), &look, 30);
+        let full = drawing.draw_many(&water.drop_buffers(), &View::screen(1.0), &look, 30);
         let small = 1000.0 * small.as_secs_f64();
         let full = 1000.0 * full.as_secs_f64();
         let live = if physics + small <= LIVE_MS { "yes" } else { "no" };
