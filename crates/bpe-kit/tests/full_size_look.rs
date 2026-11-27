@@ -17,7 +17,8 @@
 //! - `LOOK_SET`: `key=value;key=value` written onto every Lighting card (a number, or a choice).
 //! - `LOOK_FILE`: a saved scene file drawn as well (pictures named `file-...`), at `LOOK_TIMES` (a comma list of
 //!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
-//! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`).
+//! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with a final made and drawn from
+//!   its take (`LOOK_ONLY=water-final`).
 
 use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
@@ -29,6 +30,7 @@ use bpe_kit::{add_thing, kit, new_scene, scenes};
 use bpe_runtime::Playback;
 use glam::Vec2;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 const W: u32 = 1080;
 const H: u32 = 1920;
@@ -1211,6 +1213,66 @@ fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// Water mode part 8: a final made at Coarse detail (3 px) of one screen with a pool a third full
+/// and a tap pouring into it, its moment at 1 s drawn from the take as the export draws it, and the
+/// same moment moved on half a frame by the drops' speeds (`water-final`, `water-final-ahead`).
+fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_kit::things::water::finals::Finals;
+    use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
+    use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+    use bpe_water::draw::{Plain, PlainGpu, StoredDrops, View};
+    use bpe_water::take::{Chunk, FrameCodec};
+    if !wanted("water-final", only) {
+        return Vec::new();
+    }
+    let reg = kit().registry;
+    let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
+    water.params.set("final_detail", Value::Choice("coarse".into()));
+    let course = course_of(&scene).unwrap();
+    let r = 540.0 - 24.0;
+    let chamber = bpe_core::Stroke {
+        points: vec![[0.0, -960.0 + 24.0 + r], [0.0, 960.0 - 24.0 - r]],
+        size: r,
+        strength: 1.0,
+        square: true,
+        ..Default::default()
+    };
+    let carved = Value::Strokes(bpe_core::Strokes { list: vec![chamber] });
+    scene.card_mut(course, SlotId::Form).unwrap().params.set("carved", carved);
+    bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+    let top = 936.0 - 1872.0 / 3.0;
+    let fill = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&fill).unwrap().transform.position = Vec2::new(0.0, 0.5 * (top + 936.0));
+    let main = &mut scene.card_mut(fill, SlotId::Main).unwrap().params;
+    main.set("kind", Value::Choice("fill_at_the_start".into()));
+    main.set("fill_size", Value::Vec2([2.0 * r, 936.0 - top]));
+    let tap = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&tap).unwrap().transform.position = Vec2::new(-200.0, -800.0);
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let make = MakeFinal::of(&scene, &resolved, 1.0);
+    let finals = Finals::at(std::env::temp_dir().join(format!("bpe-look-final-{}", std::process::id())));
+    std::fs::remove_dir_all(finals.dir()).ok();
+    let water_gpu = bpe_water::WaterGpu::new(&gpu.device, &gpu.queue);
+    let head = make.make(&water_gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+    let mut chunk = Chunk::open(&finals.take_dir(head.print), 1).unwrap();
+    let frame = FrameCodec::new().decode(&chunk.bytes(0).unwrap(), &head.layout()).unwrap();
+    let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
+    stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+    let field = make.setup.field();
+    let mut plain = Plain::new(PlainGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
+    let look = bpe_kit::things::water::draft::plain_look(&scene, &resolved, 1.0);
+    let view = View::screen(1.0);
+    let mut out = Vec::new();
+    for (name, ahead) in [("water-final", 0.0), ("water-final-ahead", 0.5 / 60.0)] {
+        plain.draw_at(&stored.buffers(), &view, &look, ahead);
+        out.push((name.to_string(), plain.read()));
+    }
+    eprintln!("water-final: {} drops at {} px", head.drops, make.setup.cell);
+    std::fs::remove_dir_all(finals.dir()).ok();
+    out
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1264,7 +1326,7 @@ fn render_at_full_size() {
         save_sheet(&dir, group, &thumbs);
     }
     let mut thumbs = Vec::new();
-    for (name, pixels) in water_pictures(&gpu, &only) {
+    for (name, pixels) in water_pictures(&gpu, &only).into_iter().chain(water_final_pictures(&gpu, &only)) {
         thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
         count += 1;
     }

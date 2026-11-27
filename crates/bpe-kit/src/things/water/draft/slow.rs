@@ -41,6 +41,11 @@ impl Speeds {
     }
 
     fn table_to(&mut self, length: f64) {
+        if !self.keyed {
+            // (One Speed throughout: the clock is worked out exactly, with no table.)
+            self.table = vec![0.0];
+            return;
+        }
         let n = (length.max(0.0) / STEP).ceil() as usize + 2;
         let mut table = Vec::with_capacity(n);
         let mut t = 0.0;

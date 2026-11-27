@@ -38,6 +38,8 @@ mod actions;
 mod autosave;
 mod dialogs;
 mod files;
+#[cfg(test)]
+mod final_tests;
 mod panels;
 mod playing;
 mod problems;
@@ -115,7 +117,6 @@ pub struct Offer {
 /// Why a Water scene has no Grade mode yet.
 pub(crate) const NO_WATER_GRADE: &str = "Grading a Water scene arrives with its light and looks.";
 /// Why a Water scene can't be exported yet.
-pub(crate) const NO_WATER_EXPORT: &str = "Exporting a Water scene arrives with Make final.";
 /// Why a Water scene can't go in a video yet.
 pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
 
@@ -249,6 +250,8 @@ pub struct Studio {
     pub water_stage: crate::water_mode::WaterStage,
     /// A Water scene's water, playing at draft detail (Water mode part 2b).
     pub water_draft: crate::water_mode::draft::WaterRun,
+    /// A Water scene's final: Make final, the Draft | Final view, what the finals folder holds of it.
+    pub water_final: crate::water_mode::final_job::WaterFinal,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
@@ -416,6 +419,13 @@ impl Studio {
         studio.inspector_width = settings::load_inspector_width();
         studio.sound_width = settings::load_sound_width();
         studio.persist_settings = true;
+        // Finals not used for 30 days go, and the card finals are made on is looked up, off the
+        // window's thread.
+        let finals = studio.water_final.finals.clone();
+        std::thread::spawn(move || {
+            finals.sweep(30);
+            bpe_kit::things::water::make::this_card();
+        });
         studio.listen = settings::load_listen();
         studio.bottom = settings::load_bottom_view();
         studio.video.still.enabled = true;
@@ -512,6 +522,7 @@ impl Studio {
             chooser: None,
             water_stage: Default::default(),
             water_draft: crate::water_mode::draft::WaterRun { setup: water_setup, ..Default::default() },
+            water_final: crate::water_mode::final_job::WaterFinal::new(finals_folder()),
             panels: Panels::default(),
             grid: Grid::default(),
             preview_mode: Default::default(),
@@ -842,6 +853,7 @@ impl eframe::App for Studio {
         if outcome.catching_up {
             ctx.request_repaint();
         }
+        self.follow_water_final(&ctx);
         let base_dir = self.base_dir();
         let settings = self.settings();
         if video_mode {
@@ -1082,6 +1094,16 @@ fn grouped(count: usize) -> String {
 /// particle step took).
 pub fn particles_readout(count: usize, ms: f32) -> String {
     format!("· Particles: {}, {ms:.1} ms", grouped(count))
+}
+
+/// The finals folder the editor makes Water finals in (in tests, a folder of the run's own).
+pub(crate) fn finals_folder() -> bpe_kit::things::water::finals::Finals {
+    use bpe_kit::things::water::finals::Finals;
+    if cfg!(test) {
+        Finals::at(std::env::temp_dir().join(format!("bpe-studio-finals-{}", std::process::id())))
+    } else {
+        Finals::at(Finals::default_dir())
+    }
 }
 
 /// The status line's water readout in a Water scene: "· Water: 52,300 drops (draft 8 px)", and

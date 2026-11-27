@@ -45,6 +45,8 @@ pub struct FinalFrame {
     /// Whether the frame being drawn bakes, as it was asked.
     bakes: bool,
     shown: Option<Result<Shown, String>>,
+    /// The finals folder a Water scene's frame is read from (the editor's).
+    pub finals: Option<std::path::PathBuf>,
 }
 
 impl FinalFrame {
@@ -55,6 +57,7 @@ impl FinalFrame {
         self.bakes = bpe_cli::bake_for(scene, kit, ask.bake).is_some();
         let (sender, receiver) = channel();
         let (scene, kit, ctx2, stop) = (scene.clone(), kit.clone(), ctx.clone(), self.stop.clone());
+        let finals = self.finals.clone().filter(|_| bpe_cli::is_water(&scene));
         std::thread::spawn(move || {
             // A complaint from the graphics card fails the frame instead of panicking the thread.
             let gpu_error: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
@@ -63,7 +66,13 @@ impl FinalFrame {
                 device.on_uncaptured_error(Arc::new(move |error| {
                     seen.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| error.to_string());
                 }));
-                bpe_cli::final_frame(&device, &queue, &scene, &kit, ask.time, ask.scale, ask.bake, &stop)
+                match &finals {
+                    // (A Water scene's frame is its final's moment, read from the editor's finals.)
+                    Some(finals) => {
+                        bpe_cli::water::final_frame(&device, &queue, &scene, &kit, ask.time, ask.scale, finals)
+                    }
+                    None => bpe_cli::final_frame(&device, &queue, &scene, &kit, ask.time, ask.scale, ask.bake, &stop),
+                }
             });
             let result = match gpu_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 Some(error) => Err(anyhow::anyhow!("the graphics card reported a problem: {error}")),

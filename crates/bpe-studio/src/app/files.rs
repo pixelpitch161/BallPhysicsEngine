@@ -44,6 +44,10 @@ impl Studio {
         // The water starts over for the new scene (and stops for a Balls scene).
         let water = crate::water_mode::draft::WaterRun::setup_of(&self.scene, &self.resolved);
         self.water_draft.set(water, self.panels.inspector.render.as_ref());
+        self.water_final.stale = true;
+        if !self.water() {
+            self.water_final.picture.free(self.panels.inspector.render.as_ref());
+        }
         self.follow = follow_of(ball, ball_resolved);
         self.light_probe = light_probe_of(ball, ball_resolved, &self.follow);
         self.revision += 1;

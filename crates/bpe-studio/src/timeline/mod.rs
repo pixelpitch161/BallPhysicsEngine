@@ -277,6 +277,9 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let mut spots: Vec<(Address, usize, Pos2)> = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
+        if studio.water() {
+            final_lane(ui, studio, &ruler);
+        }
         hits_lane(ui, studio, &ruler, &mut timeline.hit_ticks);
         song_lane(ui, studio, &ruler);
         if !studio.scene.rules.is_empty() {
@@ -374,6 +377,83 @@ fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler, hit_ticks: &mut HitTic
         let tick = Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 2.0), Pos2::new(x + 1.0, strip.bottom() - 2.0));
         painter.rect_filled(tick, 0.0, hit_colour(&studio.scene, thing));
     }
+    playhead(&painter, studio, ruler, rect);
+}
+
+/// The Final lane in a Water scene (Water mode part 8): where the final is made (filled), out of
+/// date (hatched), being made (fainter, up to where the make is) and not made (empty), with the
+/// stretches slow motion keeps more moments of marked along its foot. A click or drag scrubs.
+fn final_lane(ui: &mut Ui, studio: &mut Studio, ruler: &Ruler) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::click_and_drag());
+    let name = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
+    name_cell(ui, name, egui::Label::new(RichText::new("Final").small().color(style::MUTED)).selectable(false));
+    let strip = strip_of(rect, ruler);
+    let painter = ui.painter_at(rect);
+    paint_beats(&painter, ruler, strip);
+    let bar =
+        Rect::from_min_max(Pos2::new(strip.left(), strip.top() + 2.0), Pos2::new(strip.right(), strip.bottom() - 4.0));
+    let x = |frame: u32| ruler.x_of(f64::from(frame) / 60.0);
+    let span = |a: u32, b: u32| Rect::from_min_max(Pos2::new(x(a), bar.top()), Pos2::new(x(b), bar.bottom()));
+    let wf = &studio.water_final;
+    let mut parts = Vec::new();
+    if let Some(found) = &wf.found {
+        let status = &found.status;
+        let end = found.make.frames;
+        if status.take.is_some() {
+            let good = status.good.min(end);
+            if good > 0 {
+                painter.rect_filled(span(0, good), 0.0, style::TEXT.gamma_multiply(0.55));
+                parts.push(format!("made to {}", clock(f64::from(good) / 60.0)));
+            }
+            let made = status.made.min(end);
+            if made > good {
+                let old = span(good, made);
+                painter.rect_stroke(old, 0.0, Stroke::new(1.0, style::MUTED), egui::StrokeKind::Inside);
+                let hatch = painter.with_clip_rect(old);
+                let mut at = old.left() - old.height();
+                while at < old.right() {
+                    let (a, b) = (Pos2::new(at, old.bottom()), Pos2::new(at + old.height(), old.top()));
+                    hatch.line_segment([a, b], Stroke::new(1.0, style::MUTED));
+                    at += 5.0;
+                }
+                parts.push(format!("out of date from {}", clock(f64::from(good) / 60.0)));
+            }
+        }
+        if let Some(job) = &wf.job {
+            let (from, at, _) = job.frames();
+            if at > from {
+                painter.rect_filled(span(from, at.min(end)), 0.0, style::TEXT.gamma_multiply(0.3));
+            }
+            parts.push(format!("being made, at {}", clock(f64::from(at) / 60.0)));
+        }
+        // The stretches kept in slow motion, along the foot.
+        let foot = strip.bottom() - 1.5;
+        for &(a, b) in &found.slow {
+            painter.line_segment([Pos2::new(x(a), foot), Pos2::new(x(b), foot)], Stroke::new(2.0, style::MUTED));
+        }
+    }
+    if parts.is_empty() {
+        parts.push("not made yet".into());
+    }
+    let words = format!("Final lane, {}", parts.join(", "));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &words));
+    if response.drag_started() {
+        studio.resume_after_scrub = studio.playing;
+        studio.set_playing(false);
+    }
+    if (response.clicked() || response.dragged())
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        studio.seek(ruler.time_of(pos.x));
+    }
+    if response.drag_stopped() && std::mem::take(&mut studio.resume_after_scrub) {
+        studio.set_playing(true);
+    }
+    response.on_hover_text(
+        "The final: filled where it is made, hatched where an edit put it out of date, faint where it is being \
+         made. A line along the foot marks slow motion. Click to go there.",
+    );
     playhead(&painter, studio, ruler, rect);
 }
 

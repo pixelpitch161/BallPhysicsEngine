@@ -5,7 +5,7 @@
 //! one-screen final at 2 px:
 //! `cargo test --release -p bpe-kit --test water_final -- --ignored --nocapture water_final_speed`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -62,7 +62,7 @@ fn folder(name: &str) -> Finals {
     Finals::at(d)
 }
 
-fn chunk_bytes(dir: &PathBuf, second: u32) -> Vec<u8> {
+fn chunk_bytes(dir: &Path, second: u32) -> Vec<u8> {
     std::fs::read(chunk::chunk_path(dir, second)).unwrap()
 }
 
@@ -195,5 +195,91 @@ fn a_make_the_disk_has_no_room_for_is_refused() {
     let finals = folder("room");
     let err = make.make(&gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap_err();
     assert!(err.to_string().contains("disk has"), "{err}");
+    std::fs::remove_dir_all(finals.dir()).ok();
+}
+
+/// One screen carved as a chamber two thirds full, with a tap pouring in from the top (the draft's
+/// `draft_pace` course), its final at `detail`.
+fn screen_chamber(reg: &Registry, detail: &str) -> Scene {
+    let mut scene = new_water_scene(reg, StartingLook::Plain, "");
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "final_detail", Value::Choice(detail.into()));
+    let course = course_of(&scene).unwrap();
+    let r = 540.0 - 24.0;
+    let chamber = Stroke {
+        points: vec![[0.0, -960.0 + 24.0 + r], [0.0, 960.0 - 24.0 - r]],
+        size: r,
+        strength: 1.0,
+        square: true,
+        ..Default::default()
+    };
+    set(&mut scene, course, SlotId::Form, "carved", Value::Strokes(Strokes { list: vec![chamber] }));
+    add(&mut scene, reg, LIQUID, Vec2::ZERO);
+    let top = -936.0 + 1872.0 / 3.0;
+    let fill = add(&mut scene, reg, POUR, Vec2::new(0.0, 0.5 * (top + 936.0)));
+    set(&mut scene, fill, SlotId::Main, "kind", Value::Choice("fill_at_the_start".into()));
+    set(&mut scene, fill, SlotId::Main, "fill_size", Value::Vec2([2.0 * r, 936.0 - top]));
+    add(&mut scene, reg, POUR, Vec2::new(0.0, -800.0));
+    scene
+}
+
+/// Times a one-screen final (by hand, and in the card job's timing step): made at Normal final
+/// detail (2 px) for `WATER_SECONDS` (10) seconds into a temporary finals folder, then a frame of
+/// it read, unpacked and drawn at 1080 x 1920. Prints the wall seconds a scene second, the room a
+/// scene second and a drop takes, a restart point's size and the course's layout time; the take is
+/// removed after. (`WATER_FINAL_DETAIL` picks another detail.)
+#[test]
+#[ignore]
+fn water_final_speed() {
+    use bpe_water::draw::{Plain, PlainGpu, StoredDrops};
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let info = device.adapter_info();
+    println!("# card\t{}\t{:?}\t{}", info.name, info.backend, info.driver_info);
+    let seconds: f64 = std::env::var("WATER_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(10.0);
+    let detail = std::env::var("WATER_FINAL_DETAIL").unwrap_or_else(|_| "normal".into());
+    let reg = bpe_kit::registry();
+    let scene = screen_chamber(&reg, &detail);
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let make = MakeFinal::of(&scene, &resolved, seconds);
+    let finals = folder("speed");
+    let gpu = WaterGpu::new(&device, &queue);
+    let progress = MakeProgress::default();
+    let started = std::time::Instant::now();
+    let head = make.make(&gpu, &finals, &progress, &AtomicBool::new(false)).unwrap();
+    let wall = started.elapsed().as_secs_f64();
+    let field_ms = progress.field_ms.load(Ordering::Acquire);
+    let dir = finals.take_dir(head.print);
+    let point = head.points.iter().copied().find(|p| *p > 0).unwrap_or(0);
+    let point_bytes = std::fs::metadata(chunk::point_path(&dir, point)).map_or(0, |m| m.len());
+    let per_second = head.bytes() as f64 / seconds;
+    println!(
+        "# scene\tone screen two thirds full and a tap, {detail} final detail ({} px), {seconds} s",
+        make.setup.cell
+    );
+    println!("water final: drops\t{}", head.drops);
+    println!("water final: wall seconds a scene second\t{:.1}", wall / seconds);
+    println!("water final: wall seconds in all\t{wall:.1}");
+    println!("water final: course laid out (ms)\t{field_ms}");
+    println!("water final: MB a scene second\t{:.0}", per_second / 1e6);
+    println!("water final: GB in all\t{:.2}", head.bytes() as f64 / 1e9);
+    println!("water final: bytes a drop a moment\t{:.2}", head.bytes_a_drop().unwrap_or(0.0));
+    println!("water final: restart point MB\t{:.1}", point_bytes as f64 / 1e6);
+    // A frame read, unpacked and drawn at 1080 x 1920, as the export does.
+    let read = std::time::Instant::now();
+    let mut chunk = Chunk::open(&dir, (seconds as u32 / 2).max(1)).unwrap();
+    let bytes = chunk.bytes(0).unwrap();
+    let frame = FrameCodec::new().decode(&bytes, &head.layout()).unwrap();
+    let read_ms = read.elapsed().as_secs_f64() * 1000.0;
+    let plain_gpu = PlainGpu::new(&device, &queue);
+    let field = make.setup.field();
+    let mut plain = Plain::new(plain_gpu, &field, make.setup.numbers().wall_off);
+    let look = bpe_kit::things::water::draft::plain_look(&scene, &resolved, seconds / 2.0);
+    let draw = std::time::Instant::now();
+    let mut stored = StoredDrops::new(&device, &queue, &[]);
+    stored.set(&device, &queue, &frame.xv, &frame.kinds);
+    plain.draw_at(&stored.buffers(), &bpe_water::draw::View::screen(1.0), &look, 0.0);
+    let _ = plain.read();
+    let draw_ms = draw.elapsed().as_secs_f64() * 1000.0;
+    println!("water final: a frame read and unpacked (ms)\t{read_ms:.1}");
+    println!("water final: a frame drawn at 1080 x 1920 and read back (ms)\t{draw_ms:.1}");
     std::fs::remove_dir_all(finals.dir()).ok();
 }

@@ -2,6 +2,7 @@
 //! thread.
 
 use crate::style;
+use bpe_cli::water::WaterSource;
 use bpe_cli::{
     Encoder, ExportOptions, export_arranged, export_video, find_ffmpeg, frame_count, gpu_encoders, output_size,
 };
@@ -61,6 +62,25 @@ impl Subject<'_> {
 /// The graphics card encoders that work, and the ffmpeg they were checked with.
 type CheckedEncoders = (PathBuf, Vec<Encoder>);
 
+/// A Water scene's export (Water mode part 8): what its final is, as the editor finds it each
+/// frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WaterExport {
+    /// The finals folder.
+    pub finals: PathBuf,
+    /// Whether the final covers the whole video.
+    pub complete: bool,
+    /// What the final is now, and what making it takes, in words.
+    pub words: String,
+    pub making_words: String,
+    /// While a make for the export runs: how far it is (0 to 1) and about how long it has left.
+    pub making: Option<(f32, Option<f32>)>,
+    /// The water seconds, and the video's seconds and frames with slow motion.
+    pub water_seconds: f64,
+    pub video_seconds: f64,
+    pub frames: u32,
+}
+
 pub struct ExportWindow {
     pub open: bool,
     /// The file chosen with "Change…". `None` saves next to the scene, named after it. It is
@@ -95,6 +115,13 @@ pub struct ExportWindow {
     remembered: Option<Remembered>,
     /// Whether a text box had the keyboard as the last frame ended (Escape then leaves the box, no more).
     typing: bool,
+    /// A Water scene's final, while one is open (the editor sets it each frame).
+    pub(crate) water: Option<WaterExport>,
+    /// Make final and export was pressed, or Cancel while it makes (the editor takes them).
+    pub(crate) make_and_export: bool,
+    pub(crate) stop_making: bool,
+    /// The make for Make final and export is done: the window exports from the final.
+    pub(crate) export_final: bool,
 }
 
 /// How an export ended, for the status line.
@@ -175,6 +202,10 @@ impl Default for ExportWindow {
             remember_in: None,
             remembered: None,
             typing: false,
+            water: None,
+            make_and_export: false,
+            stop_making: false,
+            export_final: false,
         }
     }
 }
@@ -361,6 +392,9 @@ impl ExportWindow {
 
     /// The window for `subject`, the scene or the video.
     pub fn show_subject(&mut self, ctx: &egui::Context, subject: &Subject, base_dir: Option<&Path>, kit: &Arc<Kit>) {
+        if std::mem::take(&mut self.export_final) && self.job.is_none() && !subject.is_video() {
+            self.start(ctx, subject, base_dir, kit, Some(WaterSource::Final));
+        }
         if let Some(job) = &self.job {
             let result = match job.receiver.try_recv() {
                 Ok(result) => Some(result),
@@ -469,12 +503,18 @@ impl ExportWindow {
             ui.add(egui::Slider::new(&mut self.crf, CRF)).labelled_by(compression.id);
             ui.end_row();
             ui.label("Length");
-            let frames = subject.frames();
             let fps = subject.picture().2;
-            ui.label(
-                RichText::new(format!("{} s at {fps} fps · {frames} frames", trim_seconds(subject.seconds())))
-                    .color(style::MUTED),
-            );
+            let length = match self.water.as_ref().filter(|_| !subject.is_video()) {
+                Some(w) if (w.video_seconds - w.water_seconds).abs() > 1e-3 => format!(
+                    "{} s at {fps} fps · {} frames ({} s of water, in slow motion)",
+                    trim_seconds(w.video_seconds),
+                    w.frames,
+                    trim_seconds(w.water_seconds)
+                ),
+                Some(w) => format!("{} s at {fps} fps · {} frames", trim_seconds(w.video_seconds), w.frames),
+                None => format!("{} s at {fps} fps · {} frames", trim_seconds(subject.seconds()), subject.frames()),
+            };
+            ui.label(RichText::new(length).color(style::MUTED));
             ui.end_row();
             ui.label("Encoder").on_hover_text(
                 "The graphics card can compress the video much faster than the CPU. The picture going in \
@@ -525,6 +565,11 @@ impl ExportWindow {
                 return;
             }
         };
+        if let Some(water) = &self.water {
+            water_rows(ui, water);
+            self.no_ffmpeg(ui);
+            return;
+        }
         self.lighting(ui, scene, kit);
         ui.add_space(8.0);
         ui.label(RichText::new("SOUND").size(12.0).color(style::MUTED));
@@ -545,6 +590,11 @@ impl ExportWindow {
             ui.end_row();
         });
         ui.add_space(8.0);
+        self.no_ffmpeg(ui);
+    }
+
+    /// What the window says when there is no ffmpeg.
+    fn no_ffmpeg(&self, ui: &mut egui::Ui) {
         if self.ffmpeg.is_none() {
             ui.add_space(6.0);
             ui.label(
@@ -581,14 +631,18 @@ impl ExportWindow {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
-        let export = style::primary_button("Export").fill(style::TEXT).min_size(egui::vec2(120.0, 32.0));
-        let empty = subject.frames() == 0 && subject.is_video();
-        let button = ui.add_enabled(self.ffmpeg.is_some() && !empty, export);
-        if empty {
-            ui.label(RichText::new("Add a clip first").small().color(style::MUTED));
-        }
-        if button.clicked() {
-            self.start(ctx, subject, base_dir, kit);
+        if let Some(water) = self.water.clone().filter(|_| !subject.is_video()) {
+            self.water_buttons(ui, ctx, &water, subject, base_dir, kit);
+        } else {
+            let export = style::primary_button("Export").fill(style::TEXT).min_size(egui::vec2(120.0, 32.0));
+            let empty = subject.frames() == 0 && subject.is_video();
+            let button = ui.add_enabled(self.ffmpeg.is_some() && !empty, export);
+            if empty {
+                ui.label(RichText::new("Add a clip first").small().color(style::MUTED));
+            }
+            if button.clicked() {
+                self.start(ctx, subject, base_dir, kit, None);
+            }
         }
         match &self.finished {
             Some(Ok(done)) => {
@@ -620,7 +674,75 @@ impl ExportWindow {
         }
     }
 
-    fn start(&mut self, ctx: &egui::Context, subject: &Subject, base_dir: Option<&Path>, kit: &Arc<Kit>) {
+    /// A Water scene's buttons: Export from the final when it is made, else Make final and export
+    /// and Export the draft; a progress bar while the final is made for the export.
+    fn water_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        water: &WaterExport,
+        subject: &Subject,
+        base_dir: Option<&Path>,
+        kit: &Arc<Kit>,
+    ) {
+        if let Some((share, left)) = water.making {
+            let percent = (share * 100.0).floor() as u32;
+            let text = match left {
+                Some(left) => format!("Making the final: {percent} % · about {} left", minutes(left)),
+                None => format!("Making the final: {percent} %"),
+            };
+            ui.add(egui::ProgressBar::new(share).text(text));
+            ui.label(RichText::new("The video exports from it once it is made.").small().color(style::MUTED));
+            if ui.button("Cancel").clicked() {
+                self.stop_making = true;
+            }
+            ctx.request_repaint_after(Duration::from_millis(250));
+            return;
+        }
+        let ready = self.ffmpeg.is_some();
+        if water.complete {
+            let export = style::primary_button("Export").fill(style::TEXT).min_size(egui::vec2(120.0, 32.0));
+            let export = ui.add_enabled(ready, export).on_hover_text("Export the video from the scene's final.");
+            if export.clicked() {
+                self.start(ctx, subject, base_dir, kit, Some(WaterSource::Final));
+            }
+            return;
+        }
+        ui.horizontal(|ui| {
+            let make =
+                style::primary_button("Make final and export").fill(style::TEXT).min_size(egui::vec2(180.0, 32.0));
+            let make = ui.add_enabled(ready, make).on_hover_text(format!(
+                "Make the scene's final at Final detail ({}), then export the video from it.",
+                water.making_words
+            ));
+            if make.clicked() {
+                self.make_and_export = true;
+                self.finished = None;
+            }
+            let draft = ui
+                .add_enabled(ready, egui::Button::new("Export the draft").min_size(egui::vec2(0.0, 32.0)))
+                .on_hover_text("Export the quick, coarse draft water now, to check the timing.");
+            if draft.clicked() {
+                self.start(ctx, subject, base_dir, kit, Some(WaterSource::Draft));
+            }
+        });
+        ui.label(RichText::new(format!("Making the final takes {}.", water.making_words)).small().color(style::MUTED));
+    }
+
+    /// Says the final couldn't be made for the export.
+    pub(crate) fn water_make_failed(&mut self, why: &str) {
+        let headline = format!("The final couldn't be made: {why}");
+        self.finish(Err(Failure::Failed(Explained { headline, details: String::new() })));
+    }
+
+    fn start(
+        &mut self,
+        ctx: &egui::Context,
+        subject: &Subject,
+        base_dir: Option<&Path>,
+        kit: &Arc<Kit>,
+        water: Option<WaterSource>,
+    ) {
         let Some(ffmpeg) = self.ffmpeg.clone() else { return };
         let path = self.subject_path(subject, base_dir);
         if let Some(folder) = path.parent() {
@@ -637,6 +759,13 @@ impl ExportWindow {
             return;
         }
         let mut options = self.options(&path, ffmpeg);
+        let mut frames = subject.frames();
+        if let (Some(source), Some(info)) = (water, &self.water) {
+            options.water = source;
+            options.finals = Some(info.finals.clone());
+            (options.stems, options.midi, options.bake) = (false, false, None);
+            frames = info.frames;
+        }
         // Owned copies for the export's thread.
         let work = match subject {
             Subject::Scene { scene, .. } => Work::Scene(Box::new((*scene).clone())),
@@ -648,7 +777,7 @@ impl ExportWindow {
         };
         let (kit, ctx) = (kit.clone(), ctx.clone());
         let (done, total, cancel) =
-            (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(subject.frames())), Arc::new(AtomicBool::new(false)));
+            (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(frames)), Arc::new(AtomicBool::new(false)));
         let (sender, receiver) = channel();
         let (d, t, c) = (done.clone(), total.clone(), cancel.clone());
         std::thread::spawn(move || {
@@ -687,6 +816,24 @@ impl ExportWindow {
 enum Work {
     Scene(Box<Scene>),
     Video(Box<Video>),
+}
+
+/// A Water scene's FINAL rows: what its final is, and its sound.
+fn water_rows(ui: &mut egui::Ui, water: &WaterExport) {
+    ui.add_space(8.0);
+    ui.label(RichText::new("FINAL").size(12.0).color(style::MUTED));
+    egui::Grid::new("export-final").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label("Final").on_hover_text(
+            "A Water scene's video is drawn from its final: the water worked out at Final detail with Make final, \
+             kept on the disk so the export only reads it.",
+        );
+        let words = water.words.trim_start_matches("· ");
+        ui.add(egui::Label::new(RichText::new(words).color(style::MUTED)).wrap());
+        ui.end_row();
+        ui.label("Sound");
+        ui.label(RichText::new("None yet: the video has a silent track").color(style::MUTED));
+        ui.end_row();
+    });
 }
 
 /// "12", "7.5" seconds.
@@ -1095,7 +1242,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bpe-next-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = egui::Context::default();
-        window.start(&ctx, &Subject::Scene { scene: &scene, settings: &settings }, Some(dir.as_path()), &kit);
+        window.start(&ctx, &Subject::Scene { scene: &scene, settings: &settings }, Some(dir.as_path()), &kit, None);
         assert!(window.busy());
         let path = dir.join("New scene.mp4");
         // Let it get going (or fail for want of a graphics card), then close the editor.

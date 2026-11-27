@@ -189,6 +189,8 @@ impl Studio {
         }
         let duration = self.duration();
         let next = match &self.sound {
+            // (A Water scene has no sound yet: its water time goes at its Speed.)
+            _ if self.water() => self.time + dt * self.water_speed(self.time),
             Some(job) => job.clock(),
             None => self.time + dt,
         };

@@ -801,3 +801,90 @@ pictures did not move).
 - A very large Sieve (thousands of bars) is slow to build; the bars are not merged.
 - The preview builds every part again for each change while dragging (about 20 ms for forty pieces at 6 px); only
   the moved part's band would need it.
+
+## Part 8: Make final and export, with slow motion (as built)
+
+Plan: `docs/superpowers/plans/water-mode/part8-make-final-and-export.md` (its decisions 1 to 22 and "As built and
+measured"). A Water scene's water is now worked out once at **Final detail** with **Make final** into a **take** on
+the disk, and its video is drawn from the take, from the editor and the command line. **Speed** on the Water card
+plays it in slow motion.
+
+### Restart points and moments inside a frame (`bpe-water drops/{state,capture}.rs`, `shaders/pack.wgsl`)
+
+- **`WaterState`** (`Water::state`, `Water::from_state`, `to_bytes`/`from_bytes`, magic `BPESTAT1`) is exactly what
+  `Water::copy` carries: the drops' three buffers, the deep pressure, walls and depth share, the clock's host side
+  with every report read back, the pours and their progress, the counters. A body built from it plays on to the bit
+  as the copy and the original do (`tests/take.rs`).
+- **`Water::frame_keeping(keep, &mut Capture)`** keeps `keep` moments of a frame (1, 2, 4 or 8): the frame's end and
+  `keep − 1` cuts after whole steps (`cuts(n, keep)`, every 16, 8 or 4 steps of 32). At a cut the step ends with
+  `cs_finish` and the next starts with `cs_predict` (the plain order), which changes no drop: mixed keep counts play
+  the same water to the bit.
+- **`cs_pack`** (binding 29) writes 8 bytes a drop on the card (its cell and kind's low byte, its place in the cell to
+  1/256 and its speed as a signed log byte, `round(15 ln(1 + |v|/4))`); `Capture` reads two frames' slots in turn, so
+  the card steps the next frame while the host packs.
+
+### Takes (`bpe-water take/`, `bpe-kit things/water/{finals,make}.rs`)
+
+- **Frame codec** (`FrameCodec`, magic `BPF1`): a counting sort by cell, then planes (counts, x, y, speed x, speed y,
+  kind) compressed with lz4. A drop is 5 bytes before lz4; decoded drops are back in their cells, `| STOPS`.
+- **A take is a folder** in the finals folder named by its print (16 hex digits): `head.ron` (`TakeHead`: format,
+  engine print, program, card, Final cell and layout, `WaterInputs`, chunks with the moments each frame kept,
+  restart points, drops, time a frame), `chunk-000012.bin` (water second 12, `BPECHNK1` with an index at its end),
+  `point-000240.bin` (a restart point every 120 frames, lz4 of `WaterState`), `make.lock` while a make writes (stale
+  after 2 minutes). Every file is written as `.part` and renamed, so a crash keeps every whole chunk.
+- **The finals folder** (`Finals::default_dir`): `BPE_FINALS`, else `%LOCALAPPDATA%\Ball Studio\Finals` on Windows,
+  else `$XDG_CACHE_HOME/ball-studio/finals` or `~/.cache/ball-studio/finals`. `clear`, `clear_all`, `sweep(30)` (the
+  editor sweeps at start, on a thread), `size`.
+- **Finding a take** (`Finals::find`): this print's own take, else the take of the scene as it was (same cell, card,
+  engine) right the longest, if that reaches past its first restart point: its frames are right up to the
+  **earliest change** (`WaterInputs::earliest_change`: each part the physics reads with the time it can first change
+  the water: 0, a tap's Starts less three frames, a keyframed setting from the key before the first that differs;
+  taps by their place in the list). A make then starts a new take from the restart point at or before it, its
+  chunks and points before that hard-linked (copied where the disk can't link).
+- **`MakeFinal`** (`of`, `print`, `status`, `make`): refuses a make the disk has no room for (its estimate plus
+  2 GB), holds at most 8 million drops (`FINAL_MOST`), packs and writes on its own thread (rayon encodes a
+  second's frames side by side), and stops at the next frame when asked, keeping every whole chunk.
+
+### Final detail and slow motion (`bpe-kit things/water/draft/{inputs,slow}.rs`, `modules/water/scene.rs`)
+
+- `WaterSetup::final_of` is the scene at its Final detail (Coarse 3, Normal 2, Fine 1.5 px); the draft's print never
+  hashes Final detail and the take's print never hashes Speed.
+- **Speed** (Water card, group Slow motion, 0.125 to 4, keyframed): the timeline stays the water's time, so every
+  keyframe and pour time stays where it is; a water second at Speed `s` plays for `1/s` video seconds (`Speeds`:
+  `video_time`, `water_time`, `video_length`, exact for one Speed, a table every 1/480 s when keyed). A frame keeps
+  the smallest of 1, 2, 4, 8 moments at least `0.8 / s` (the least Speed at its start, middle and end).
+- The plain drawing moves each drop on by its speed (`Plain::draw_at(.., ahead)`, `view.w`), so a moment drawn a
+  little after the one kept is in its place.
+
+### Export and Preview final frame (`bpe-cli water.rs`, `lib.rs`, `main.rs`)
+
+- `bpe_cli::water::export` draws the camera's 9:16 shot at each video frame's water time from the take
+  (`TakeReader::near`: the kept moment nearest, and how far past it) in the plain look, with a silent track
+  (`WaterSource::Final`; `MakeFinal` makes a missing final first; `Draft` plays the draft). `export_video` sends a
+  Water scene there; a video holding a Water scene is still refused (part 10).
+- The command line makes a missing final itself (`--finals DIR` picks the folder, "making the final: N %"), or with
+  `--draft` exports the draft.
+- `water::final_frame`: the take's moment at the playhead, or `FRAME_NOT_MADE` in plain words.
+
+### The editor (`bpe-studio water_mode/{final_job,final_view,final_ui}.rs`, toolbar, timeline, export window)
+
+- **`WaterFinal`** (`Studio.water_final`): what the scene's final is (`Found`: the make, its `Status`, the water and
+  video lengths, the drops estimate, the slow stretches), found again at most every 250 ms while the scene changes and
+  in the finals folder only when what it needs changes (the print, the frames, each frame's moments).
+- **`FinalJob`**: the make on a "water final" thread at low priority with its own `headless_device`; Stop making
+  keeps the whole chunks.
+- **Toolbar** (Water scenes): **Draft | Final**, **Make final** (greyed once made) or **Stop making**, and a
+  **Finals** menu (Clear this scene's final, Clear every final (its size), Show the finals folder, Preview final
+  frame).
+- **Final view** (`FinalPicture`): a worker opens the take, reads and unpacks the newest moment asked for and lays
+  the course out at the Final cell; the window's thread hands the drops to the card and draws them moved on to the
+  playhead. Not made: the draft shows, with "Not made yet: showing the draft". Out of date: the old final, with
+  "Out of date: Make final remakes from N s".
+- **Final lane** (above Hits, named "Final lane, …"): filled where made, hatched where out of date, fainter where it
+  is being made, a line along its foot where slow motion keeps more moments; a click or drag scrubs.
+- **Status line**: "· Final: 1.4M drops, 10 s of 10 made, 6.2 GB", "· Making the final: 40 % · about 3:00 min left",
+  or "· Final: about 1.4M drops, about 7.0 GB (estimate)", with "· video 34.2 s in slow motion" when slowed.
+- **Playhead**: in a Water scene it moves at the Speed (`Studio::water_speed`).
+- **Export window**: a Water scene shows its FINAL rows, its video length with slow motion, and **Export** when the
+  final covers the video, else **Make final and export** (with the time and room it expects; a progress bar while it
+  makes, then the export reads the take) and **Export the draft**.

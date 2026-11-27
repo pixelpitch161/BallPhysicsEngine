@@ -275,11 +275,11 @@ jobs:
         continue-on-error: true
         run: |
           # Through cmd, so the timings printed to stderr join the output without PowerShell treating them as errors.
-          $out = cmd /c "cargo test --release -p bpe-kit --test liquid_speed --test light_speed -- --ignored --nocapture --test-threads=1 2>&1"
+          $out = cmd /c "cargo test --release -p bpe-kit --test liquid_speed --test light_speed --test water_final -- --ignored --nocapture --test-threads=1 2>&1"
           $out
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Timings on the owner's graphics card"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-          $out | Where-Object { "$_" -match '# card|# scene|\t(Normal|Fine)\t|card:|ms a frame' } | ForEach-Object { "$_" } |
+          $out | Where-Object { "$_" -match '# card|# scene|\t(Normal|Fine)\t|card:|ms a frame|water final:' } | ForEach-Object { "$_" } |
             Add-Content -Path $env:GITHUB_STEP_SUMMARY
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
 
