@@ -19,7 +19,7 @@ use bpe_kit::{Kit, SceneSettings};
 use bpe_water::draw::wet::HeldWet;
 use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View, WetField};
 use bpe_water::take::{Chunk, FrameCodec, TakeFrame, chunk};
-use bpe_water::{SolidField, WaterGpu};
+use bpe_water::{Movers, Pose, SolidField, WaterGpu};
 use glam::Vec2;
 
 use crate::{CANCELLED, ExportOptions, FRAMES_IN_FLIGHT, Picture, output_size};
@@ -206,20 +206,35 @@ impl TakeReader {
     }
 }
 
-/// The look drawing of a course, at the export's size.
+/// The look drawing of a course, at the export's size, with its moving parts (part 5) and where
+/// they were last drawn.
 struct Drawing {
     look: LookDraw,
     stored: StoredDrops,
     wet: HeldWet,
+    movers: Option<Movers>,
+    posed: Option<Vec<Pose>>,
 }
 
 impl Drawing {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, field: &SolidField, rest: f32) -> Drawing {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, setup: &WaterSetup) -> Drawing {
         let gpu = LookGpu::new(device, queue);
-        Drawing {
-            look: LookDraw::new(gpu, field, rest),
-            stored: StoredDrops::new(device, queue, &[]),
-            wet: HeldWet::default(),
+        let movers = setup.movers();
+        let mut look = LookDraw::new(gpu, &setup.field(), setup.numbers().wall_off);
+        let posed = movers.as_ref().map(|m| {
+            let poses = setup.poses_at(0.0);
+            look.set_movers(m, &poses);
+            poses
+        });
+        Drawing { look, stored: StoredDrops::new(device, queue, &[]), wet: HeldWet::default(), movers, posed }
+    }
+
+    /// Shows the moving parts at `poses` (when they moved since they were last drawn).
+    fn pose(&mut self, poses: Vec<Pose>) {
+        let Some(movers) = &self.movers else { return };
+        if poses.len() == movers.len() && self.posed.as_ref() != Some(&poses) {
+            self.look.set_movers(movers, &poses);
+            self.posed = Some(poses);
         }
     }
 }
@@ -336,8 +351,8 @@ fn export_water(
     };
     let fin = video.final_of(scene);
     let mut drawing = match &source {
-        Source::Final { .. } => Drawing::new(device, queue, &fin.setup.field(), fin.setup.numbers().wall_off),
-        Source::Draft { setup, field, .. } => Drawing::new(device, queue, field, setup.numbers().wall_off),
+        Source::Final { .. } => Drawing::new(device, queue, &fin.setup),
+        Source::Draft { setup, .. } => Drawing::new(device, queue, setup),
     };
     let picture = Picture { width, height, fps, total, encoder };
     let output = output_path(options);
@@ -397,6 +412,7 @@ fn draw_moment(
     match source {
         Source::Final { reader } => {
             let (frame, ahead) = reader.near(tau)?.context(FRAME_NOT_MADE)?;
+            drawing.pose(frame.poses_at(ahead));
             drawing.stored.set(device, queue, &frame.xv, &frame.kinds);
             let wet = reader.wet(tau);
             drawing.wet.give(device, queue, reader.layout(), wet.as_ref(), &mut drawing.look);
@@ -410,6 +426,8 @@ fn draw_moment(
                 wet.mark(&water.drop_buffers(), water.frames());
             }
             let ahead = tau - f64::from(water.frames()) / 60.0;
+            let poses = water.poses().iter().zip(water.move_speeds()).map(|(p, v)| p.moved_on(*v, ahead as f32));
+            drawing.pose(poses.collect());
             drawing.look.set_wet(Some(wet), water.frames());
             drawing.look.draw_at(&water.drop_buffers(), &view, &look, ahead as f32);
         }
@@ -436,7 +454,7 @@ pub fn final_frame(
     let status = fin.status(&finals, this_card());
     let reader = TakeReader::open(&finals, &status).context(FRAME_NOT_MADE)?;
     let mut source = Source::Final { reader };
-    let mut drawing = Drawing::new(device, queue, &fin.setup.field(), fin.setup.numbers().wall_off);
+    let mut drawing = Drawing::new(device, queue, &fin.setup);
     draw_moment(device, queue, scene, kit, &video.resolved, &mut source, &mut drawing, time, (width, height))?;
     let pixels = drawing.look.read();
     Ok((pixels, (width, height), started.elapsed().as_secs_f32()))

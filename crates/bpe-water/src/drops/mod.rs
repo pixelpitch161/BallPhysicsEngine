@@ -18,12 +18,14 @@ pub mod capture;
 mod clock;
 pub mod deep;
 pub mod drains;
+mod movers;
 pub mod numbers;
 mod passes;
 pub mod state;
 
 use crate::drop::{AIR, Drop, Pour, Poured};
 use crate::lumps::Timed;
+use crate::parts::MOST_MOVERS;
 use crate::solid::{Layout, SolidField};
 use air::Air;
 pub use buffers::DropBuffers;
@@ -32,6 +34,7 @@ use clock::Clock;
 pub use clock::{MOST_POURS, Report};
 use deep::{Deep, MOST_LEVELS, TICKS};
 pub use drains::{Drain, MOST_DRAINS};
+use movers::{MoverGpu, Moving};
 use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
 use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
 pub use state::WaterState;
@@ -89,6 +92,9 @@ struct FrameGpu {
     drains: [[f32; 4]; MOST_DRAINS],
     dedges: [[u32; 4]; MOST_DRAINS / 4],
     dmeta: [u32; 4],
+    mv: [u32; 4],
+    mbox: [u32; 4],
+    movers: [MoverGpu; MOST_MOVERS],
 }
 
 /// Where the deep water's pressure passes' numbers start among the step numbers' slots (after
@@ -196,6 +202,11 @@ pub struct Water {
     prime_next: bool,
     deep_hold: u32,
     deep_frames: u32,
+    /// The still field and the moving parts' grids for `movers.wgsl` (placeholders when the course
+    /// has no moving parts), and the parts with where they are ([`Water::set_movers`]).
+    still_buf: wgpu::Buffer,
+    shapes_buf: wgpu::Buffer,
+    moving: Option<Moving>,
 }
 
 impl std::fmt::Debug for Water {
@@ -229,9 +240,12 @@ impl Water {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // (The distances, the Wettings, and a third section for each node's moving part: none.)
+        let mut card = field.for_card();
+        card.resize(3 * layout.nodes(), 0.0);
         let solid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water solid field"),
-            contents: bytemuck::cast_slice(&field.for_card()),
+            contents: bytemuck::cast_slice(&card),
             usage: buffers::STORE,
         });
         let room = room_for(0);
@@ -276,6 +290,9 @@ impl Water {
             prime_next: false,
             deep_hold: 0,
             deep_frames: 0,
+            still_buf: movers::empty(device, "water still field"),
+            shapes_buf: movers::empty(device, "water moving parts"),
+            moving: None,
             gpu,
         };
         water.set_feels(feels);
@@ -386,7 +403,7 @@ impl Water {
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &self.step_uniform,
             offset: 0,
-            size: wgpu::BufferSize::new(16),
+            size: wgpu::BufferSize::new(passes::STEP_BYTES),
         })
     }
 
@@ -422,6 +439,8 @@ impl Water {
                     26 => self.deep.rest.as_entire_binding(),
                     27 => self.air.cells.as_entire_binding(),
                     28 => self.air.blocks.as_entire_binding(),
+                    30 => self.still_buf.as_entire_binding(),
+                    31 => self.shapes_buf.as_entire_binding(),
                     _ => self.deep.count.as_entire_binding(),
                 };
                 wgpu::BindGroupEntry { binding: b, resource }
@@ -635,6 +654,10 @@ impl Water {
         }
         let (deep_d, deep_b, reach) = n.deep_window(cell);
         let (drains, dedges, dmeta) = drains::on_card(&self.drains, &self.layout, dt, self.frames);
+        let (mv, mbox, movers) = self
+            .moving
+            .as_ref()
+            .map_or(([0; 4], [0; 4], [MoverGpu::default(); MOST_MOVERS]), |m| m.numbers(&self.layout));
         FrameGpu {
             grid: [self.layout.cols, self.layout.rows, self.pours.len() as u32, u32::from(self.edges_shut)],
             cells: [self.cells.0, self.cells.1, self.cells.0 * self.cells.1, self.bins().div_ceil(BLOCK)],
@@ -669,6 +692,9 @@ impl Water {
             drains,
             dedges,
             dmeta,
+            mv,
+            mbox,
+            movers,
         }
     }
 
@@ -699,6 +725,8 @@ impl Water {
         // (The strongest of the liquids' Gravity, and never less than the course's.)
         let pull = self.feels.iter().map(|f| f.gravity.abs()).filter(|g| g.is_finite()).fold(1.0f32, f32::max);
         let fastest = fastest + self.gravity.length() * pull * 2.0 * FRAME;
+        // (No point of a moving part goes further in a step than the water's fastest drop may.)
+        let fastest = fastest.max(self.moving.as_ref().map_or(0.0, Moving::fastest));
         self.numbers.steps_for(fastest, &self.feels, self.layout.cell).min(MOST_STEPS)
     }
 
@@ -892,13 +920,23 @@ impl Water {
             for (j, r) in records.iter().enumerate() {
                 let at = j * STEP_ROOM as usize;
                 steps[at..at + 16].copy_from_slice(bytemuck::cast_slice(r));
+                // (Where the moving parts are at the step's end, as a share of the frame.)
+                let t = (j + 1) as f32 / n as f32;
+                steps[at + 16..at + 20].copy_from_slice(&t.to_le_bytes());
             }
             queue.write_buffer(&self.step_uniform, 0, &steps);
             let by_bin = self.bins().div_ceil(WORKGROUP);
             let by_block = self.bins().div_ceil(BLOCK);
             let by_cell = (self.layout.nodes() as u32).div_ceil(WORKGROUP);
             let iters = self.numbers.iters.clamp(1, 16) as usize;
-            let joined = self.numbers.join != 0;
+            // (While parts move, each step lays them over the still field before its drops fall, so
+            // a step's fall is never joined with the last one's end.)
+            let moved = self.moving.as_ref().and_then(Moving::moved_box);
+            let joined = self.numbers.join != 0 && moved.is_none();
+            let (by_moved, by_walls_moved) = moved.map_or(((0, 0), (0, 0)), |(lo, hi)| {
+                let (w, h) = (hi.x - lo.x + 1, hi.y - lo.y + 1);
+                ((w.div_ceil(16), h.div_ceil(16)), ((w + 4).div_ceil(16), (h + 4).div_ceil(16)))
+            });
             let top = self.deep.levels.len() - 1;
             let tiles: Vec<(u32, u32)> = (0..=top).map(|l| self.deep.tiles(l)).collect();
             let (pre, post, coarse) = (self.numbers.pre, self.numbers.post, self.numbers.coarse);
@@ -950,6 +988,10 @@ impl Water {
                     let now = self.now ^ (j as usize & 1);
                     let [count, before, _, _] = records[j as usize];
                     let by_drop = count.div_ceil(WORKGROUP);
+                    if moved.is_some() {
+                        go2(P::Movers, now, 0, j, by_moved);
+                        go2(P::DeepWallsMoved, now, 0, j, by_walls_moved);
+                    }
                     // (The first step falls from the kept places; the others' fall was joined with
                     // the last step's end, and only their births come in here.)
                     if j == 0 || !joined || cut_after(j - 1) {
@@ -1035,14 +1077,15 @@ impl Water {
                 pass.dispatch_workgroups(end.div_ceil(WORKGROUP).max(1), 1, 1);
             }
             clock.copy_back(&mut encoder, k);
-            let moments: Vec<(capture::Moment, u32)> = packing
+            let moments: Vec<capture::Kept> = packing
                 .as_ref()
                 .map(|p| {
-                    let inside =
-                        p.cuts.iter().map(|&j| (capture::Moment { frame: k, steps: j + 1, of: n }, counts[j as usize]));
-                    inside
-                        .chain(std::iter::once((capture::Moment { frame: k + 1, steps: 0, of: 1 }, end + slots)))
-                        .collect()
+                    let inside = p.cuts.iter().map(|&j| {
+                        let moment = capture::Moment { frame: k, steps: j + 1, of: n };
+                        (moment, counts[j as usize], self.poses_at_share((j + 1) as f32 / n as f32))
+                    });
+                    let end_moment = capture::Moment { frame: k + 1, steps: 0, of: 1 };
+                    inside.chain(std::iter::once((end_moment, end + slots, self.poses_at_share(1.0)))).collect()
                 })
                 .unwrap_or_default();
             if let (Some(p), Some((c, _))) = (&packing, keep.as_ref()) {
@@ -1061,18 +1104,29 @@ impl Water {
         if done.is_none()
             && let Some((c, f)) = keep.as_mut()
         {
-            let inside = capture::cuts(n, *f).into_iter().map(|j| capture::Moment { frame: k, steps: j + 1, of: n });
-            let all: Vec<capture::Moment> =
-                inside.chain(std::iter::once(capture::Moment { frame: k + 1, steps: 0, of: 1 })).collect();
-            c.none(&all);
+            let inside = capture::cuts(n, *f).into_iter().map(|j| {
+                (capture::Moment { frame: k, steps: j + 1, of: n }, self.poses_at_share((j + 1) as f32 / n as f32))
+            });
+            let end_moment = (capture::Moment { frame: k + 1, steps: 0, of: 1 }, self.poses_at_share(1.0));
+            c.none(inside.chain(std::iter::once(end_moment)).collect());
         }
         let end = if done.is_some() { end + slots } else { end };
         if done.is_some() {
             self.serial = self.serial.wrapping_add(slots);
         }
         self.count = end;
+        let ran = done.is_some();
         let feeds = self.drains.iter().enumerate().filter(|(_, d)| d.feeds).fold(0u32, |m, (i, _)| m | (1 << i));
         self.clock.get_mut().expect("the clock").sent(k, end, self.poured, feeds, done, n);
+        // (The parts are at the frame's end; with no drops, nothing laid them there on the card.)
+        if let Some(m) = &mut self.moving {
+            let moved = m.moved_box().is_some();
+            m.speeds = m.poses.iter().zip(&m.ends).map(|(a, b)| a.speed_to(*b, FRAME)).collect();
+            m.poses.clone_from(&m.ends);
+            if moved && !ran {
+                self.lay_movers_everywhere();
+            }
+        }
         self.steps += u64::from(n);
         self.frames += 1;
         self.deep_last = deep_frame;
@@ -1108,6 +1162,9 @@ impl Water {
             new.room = self.room;
         }
         new.now = self.now;
+        new.still_buf = self.still_buf.clone();
+        new.shapes_buf = self.shapes_buf.clone();
+        new.moving = self.moving.clone();
         self.clock.lock().expect("the clock").copy_into(device, new.clock.get_mut().expect("the clock"));
         new.bind();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water copy") });

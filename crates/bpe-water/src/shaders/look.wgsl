@@ -63,6 +63,9 @@ struct MaterialL {
     shape: vec4<f32>,
     // linear Outline colour, 0
     edge: vec4<f32>,
+    // where its texture is read: (a, b, c, d) takes p to (a p.x - b p.y + c, b p.x + a p.y + d)
+    // (a moving part's goes with it; every other's is (1, 0, 0, 0))
+    texture: vec4<f32>,
 };
 
 struct LampL {
@@ -1083,8 +1086,10 @@ fn gradient_at(row: u32, t: f32) -> vec3<f32> {
 }
 
 // Material `m`'s own colour at world point `p` (its texture; glass and flat: its Colour).
-fn material_albedo(m: u32, p: vec2<f32>) -> vec3<f32> {
+fn material_albedo(m: u32, world: vec2<f32>) -> vec3<f32> {
     let mat = lu.materials[m];
+    let t = mat.texture;
+    let p = vec2<f32>(t.x * world.x - t.y * world.y + t.z, t.y * world.x + t.x * world.y + t.w);
     let kind = u32(mat.colour.w + 0.5);
     let colour = mat.colour.rgb;
     let second = mat.second.rgb;

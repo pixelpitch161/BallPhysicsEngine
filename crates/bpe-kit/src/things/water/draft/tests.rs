@@ -434,12 +434,13 @@ fn what_restarts_the_draft() {
     let liquid = scene.order.iter().copied().find(|id| scene.things[id].kind == LIQUID).unwrap();
     crate::fill_slot(&mut scene, &reg, liquid, SlotId::Heat).unwrap();
     let base = setup(&scene, &reg).print;
-    // (A solid's Material is felt only by its Wetting; Moves waits for moving pieces.)
+    // (A solid's Material is felt only by its Wetting; a Fixed one's Moves only by how it moves.)
     let physics = |_thing: &str, card: &str, key: &str| match card {
         cards::WORLD => {
             ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"].contains(&key)
         }
         cards::MATERIAL => key == "wetting",
+        cards::MOVES => key == "moves",
         cards::CARVE | cards::FEEL | cards::POUR | cards::DRAIN | cards::SHAPE | cards::LINE => true,
         _ => false,
     };
@@ -660,10 +661,51 @@ fn thin_and_moving_pieces_say_so() {
     let s = setup(&scene, &reg);
     assert_eq!(s.note_for(wall), Some(THIN), "14 px is under two 8 px cells");
     assert_eq!(s.note_for(thick), None, "24 px is not");
-    assert_eq!(s.note_for(wheel), Some(MOVES_LATER));
+    assert_eq!(s.note_for(wheel), Some(DRIVEN_LATER));
+    assert!(s.movers.is_empty(), "a Driven part stays where it is for now");
+    // A 24 px wall keyed to half its size is 12 px at its smallest.
+    set(&mut scene, thick, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    let scale = Address { thing: thick, slot: Some(SlotId::Moves), key: "scale".into() };
+    scene.set_key(&reg, &scale, 1.0, Value::Number(0.5)).unwrap();
+    assert_eq!(setup(&scene, &reg).note_for(thick), Some(THIN));
     // At a finer draft (6 px), 14 px is thick enough.
     set(&mut scene, ThingId::ROOT, SlotId::Water, "draft_detail", Value::Choice("fine".into()));
     assert_eq!(setup(&scene, &reg).note_for(wall), None);
+}
+
+/// A thin part keyed to move faster than the water's steps can hold it says so, a thick one as fast
+/// and a thin slow one don't, and a Keyframed part too big for the card stays where it is.
+#[test]
+fn a_part_too_fast_for_how_thin_it_is_or_too_big_says_so() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let dash = |x: f32| [("offset", 0.0, Value::Vec2([0.0, 0.0])), ("offset", 0.05, Value::Vec2([x, 0.0]))];
+    let thin = add(&mut scene, &reg, WALL, Vec2::new(0.0, -200.0));
+    set(&mut scene, thin, SlotId::Form, "thickness", Value::Number(4.0));
+    keyframed(&mut scene, &reg, thin, &dash(1000.0));
+    let slow = add(&mut scene, &reg, WALL, Vec2::new(0.0, -100.0));
+    set(&mut scene, slow, SlotId::Form, "thickness", Value::Number(4.0));
+    keyframed(
+        &mut scene,
+        &reg,
+        slow,
+        &[("offset", 0.0, Value::Vec2([0.0, 0.0])), ("offset", 2.0, Value::Vec2([100.0, 0.0]))],
+    );
+    let thick = block(&mut scene, &reg, Vec2::new(0.0, 100.0), 100.0, 1.0);
+    keyframed(&mut scene, &reg, thick, &dash(1000.0));
+    let huge = block(&mut scene, &reg, Vec2::new(0.0, 300.0), 1e6, 1.0);
+    keyframed(&mut scene, &reg, huge, &dash(10.0));
+    let started = std::time::Instant::now();
+    let s = setup(&scene, &reg);
+    assert!(started.elapsed().as_secs_f32() < 1.0, "{:?}", started.elapsed());
+    let has = |id: ThingId, note: &str| s.notes.iter().any(|(i, n)| *i == id && *n == note);
+    assert!(has(thin, TOO_FAST), "1000 px in a twentieth of a second is past half its least thickness a step");
+    assert!(!has(slow, TOO_FAST) && !has(thick, TOO_FAST));
+    assert_eq!(s.note_for(huge), Some(TOO_BIG_TO_MOVE));
+    let k = |id: ThingId| s.solids.iter().position(|x| x.id == id).unwrap();
+    assert!(!s.movers.contains(&k(huge)) && s.movers.contains(&k(thin)), "{:?}", s.movers);
+    assert!(s.field().at(Vec2::new(0.0, 380.0)) < 0.0, "the huge one stays where it is, as rock");
 }
 
 #[test]
@@ -1034,4 +1076,139 @@ fn a_water_scenes_things_parts_name_what_the_water_draws() {
         bpe_gfx::GradeShape::Things(t) => assert_eq!(t.things.as_deref(), Some(&[code(a), code(b)][..])),
         other => panic!("{other:?}"),
     }
+}
+
+/// Makes Piece or Wall `id` Keyframed, with `keys` (setting, time, value) on its Moves card.
+fn keyframed(scene: &mut Scene, reg: &Registry, id: ThingId, keys: &[(&str, f64, Value)]) {
+    set(scene, id, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    for (key, time, v) in keys {
+        let a = Address { thing: id, slot: Some(SlotId::Moves), key: (*key).into() };
+        scene.set_key(reg, &a, *time, v.clone()).unwrap();
+    }
+}
+
+#[test]
+fn a_keyframed_piece_follows_its_keys() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let id = block(&mut scene, &reg, Vec2::new(10.0, 20.0), 80.0, 1.0);
+    scene.things.get_mut(&id).unwrap().transform.rotation = 0.25;
+    let keys = [
+        ("offset", 0.0, Value::Vec2([0.0, 0.0])),
+        ("offset", 1.0, Value::Vec2([100.0, 0.0])),
+        ("turn", 0.0, Value::Number(0.0)),
+        ("turn", 1.0, Value::Number(90.0)),
+    ];
+    keyframed(&mut scene, &reg, id, &keys);
+    let s = setup(&scene, &reg);
+    assert_eq!(s.movers, [0]);
+    assert_eq!(s.poses_at(0.0), [bpe_water::Pose::new(Vec2::new(10.0, 20.0), 0.25, 1.0)]);
+    let half = s.poses_at(0.5)[0];
+    assert!((half.at - Vec2::new(60.0, 20.0)).length() < 1e-3, "{half:?}");
+    assert!((half.turn - (0.25 + std::f32::consts::FRAC_PI_4)).abs() < 1e-3, "{half:?}");
+    assert_eq!(half.scale, 1.0);
+}
+
+#[test]
+fn a_moving_piece_is_not_in_the_still_field() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    block(&mut scene, &reg, Vec2::new(-200.0, 100.0), 80.0, 1.0);
+    let id = block(&mut scene, &reg, Vec2::new(0.0, 100.0), 80.0, 0.25);
+    let keys = [("offset", 0.0, Value::Vec2([0.0, 0.0])), ("offset", 1.0, Value::Vec2([0.0, -50.0]))];
+    keyframed(&mut scene, &reg, id, &keys);
+    let s = setup(&scene, &reg);
+    let open = s.still_with(&s.mask());
+    assert!(open.at(Vec2::new(0.0, 100.0)) > 20.0, "open where it moves from");
+    assert!(open.at(Vec2::new(-200.0, 100.0)) < -20.0, "the still piece stays");
+    let field = s.field();
+    assert!(field.at(Vec2::new(0.0, 100.0)) < -20.0, "it starts where it is");
+    assert!((field.wetting_at(Vec2::new(0.0, 56.0)) - 0.25).abs() < 1e-6, "as wet as its Material");
+    let movers = s.movers().unwrap();
+    assert_eq!(movers.movers.iter().map(|m| m.owner).collect::<Vec<_>>(), [2], "marked as the course's second part");
+    let later = movers.field_at(&s.poses_at(1.0));
+    assert!(later.at(Vec2::new(0.0, 50.0)) < -20.0 && later.at(Vec2::new(0.0, 125.0)) > 0.0, "and moves");
+}
+
+#[test]
+fn the_moves_card_restarts_the_draft() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let id = block(&mut scene, &reg, Vec2::ZERO, 80.0, 1.0);
+    let print = |scene: &Scene| setup(scene, &reg).print;
+    let fixed = print(&scene);
+    let edited = |scene: &Scene, key: &str, v: Value| {
+        let mut s = scene.clone();
+        set(&mut s, id, SlotId::Moves, key, v);
+        print(&s)
+    };
+    assert_eq!(edited(&scene, "offset", Value::Vec2([5.0, 0.0])), fixed, "a Fixed part's Position is no physics");
+    let mut moving = scene.clone();
+    keyframed(&mut moving, &reg, id, &[("offset", 1.0, Value::Vec2([50.0, 0.0]))]);
+    let keyed = print(&moving);
+    assert_ne!(keyed, fixed, "Fixed to Keyframed");
+    for (key, v) in [("offset", Value::Vec2([5.0, 0.0])), ("turn", Value::Number(20.0)), ("scale", Value::Number(2.0))]
+    {
+        assert_ne!(edited(&moving, key, v), keyed, "{key} moves a Keyframed part");
+    }
+    for (key, v) in
+        [("weight", Value::Number(3.0)), ("joint", Value::Choice("pin".into())), ("motor", Value::Number(1.0))]
+    {
+        assert_eq!(edited(&moving, key, v), keyed, "{key} is a Driven part's");
+    }
+    let mut moved = moving.clone();
+    keyframed(&mut moved, &reg, id, &[("offset", 1.0, Value::Vec2([60.0, 0.0]))]);
+    assert_ne!(print(&moved), keyed, "a key moved");
+    keyframed(&mut moved, &reg, id, &[("offset", 2.0, Value::Vec2([0.0, 0.0]))]);
+    assert_ne!(print(&moved), keyed, "a key added");
+}
+
+#[test]
+fn a_moved_key_changes_the_water_from_the_key_before() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 300.0)]);
+    let id = block(&mut scene, &reg, Vec2::ZERO, 80.0, 1.0);
+    let keys: Vec<(&str, f64, Value)> =
+        [1.0, 2.0, 3.0].iter().map(|t| ("offset", *t, Value::Vec2([*t as f32 * 10.0, 0.0]))).collect();
+    keyframed(&mut scene, &reg, id, &keys);
+    let inputs = |scene: &Scene| WaterSetup::final_of(scene, &bpe_core::resolve(scene, &reg)).inputs();
+    let base = inputs(&scene);
+    assert!(base.parts.iter().any(|p| p.name == "mover:0"));
+    let change = |keys: &[(&str, f64, Value)]| {
+        let mut s = scene.clone();
+        keyframed(&mut s, &reg, id, keys);
+        base.earliest_change(&inputs(&s))
+    };
+    assert_eq!(change(&[("offset", 3.0, Value::Vec2([99.0, 0.0]))]), Some(2.0), "from the key before the one moved");
+    assert_eq!(change(&[("offset", 0.5, Value::Vec2([5.0, 0.0]))]), Some(0.0), "a key before every other");
+    assert_eq!(change(&[("turn", 2.5, Value::Number(30.0))]), Some(0.0), "the first key of a setting");
+    assert_eq!(change(&[]), None);
+}
+
+#[test]
+fn notes_for_moving_parts() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 500.0)]);
+    let cutter = block(&mut scene, &reg, Vec2::new(0.0, -300.0), 60.0, 1.0);
+    set(&mut scene, cutter, SlotId::Form, "cuts", Value::Bool(true));
+    keyframed(&mut scene, &reg, cutter, &[]);
+    let mut last = cutter;
+    for k in 0..bpe_water::MOST_MOVERS {
+        last = block(&mut scene, &reg, Vec2::new(-400.0 + (k % 8) as f32 * 100.0, (k / 8) as f32 * 50.0), 20.0, 1.0);
+        keyframed(&mut scene, &reg, last, &[]);
+    }
+    let s = setup(&scene, &reg);
+    assert_eq!(s.note_for(cutter), Some(MOVING_CUTS));
+    assert_eq!(s.movers.len(), bpe_water::MOST_MOVERS);
+    assert_eq!(s.note_for(last), Some(TOO_MANY_MOVERS), "the 65th");
+    let place = scene.things[&last].transform.position;
+    assert!(s.still_with(&s.mask()).at(place) < 0.0, "and stays where it is");
+    // A moving part never cuts: it moves as the solid it is.
+    let start = s.field();
+    assert!(start.at(Vec2::new(0.0, -300.0)) < 0.0, "{}", start.at(Vec2::new(0.0, -300.0)));
 }

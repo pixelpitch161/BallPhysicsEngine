@@ -10,9 +10,10 @@ use super::drains::{Drain, MOST_DRAINS};
 use crate::drop::{Drop, Pour, Poured};
 use crate::drops::numbers::{Feel, Numbers};
 use crate::lumps::Timed;
+use crate::parts::{MOST_MOVERS, Pose};
 use crate::solid::SolidField;
 
-const MAGIC: &[u8; 8] = b"BPESTAT2";
+const MAGIC: &[u8; 8] = b"BPESTAT3";
 
 /// A body's state at a frame boundary (before frame `frames` starts).
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +38,10 @@ pub struct WaterState {
     pub timed: Vec<Timed>,
     pub drains: Vec<Drain>,
     pub tank: u64,
+    /// Where each moving part is (part 5) and how fast it moved over the frame before: a body made
+    /// from the state is given its parts there ([`Water::resume_movers`]).
+    pub poses: Vec<Pose>,
+    pub speeds: Vec<Pose>,
     pub(super) clock: ClockState,
     /// The kept drops' buffers (`count` x 16 bytes each) and the deep water's kept cells (whole).
     pub xv: Vec<u8>,
@@ -136,6 +141,13 @@ impl WaterState {
             o.u32(u32::from(d.feeds));
         }
         o.u64(self.tank);
+        o.u32(self.poses.len() as u32);
+        let speeds = self.speeds.iter().chain(std::iter::repeat(&super::movers::STILL));
+        for (p, s) in self.poses.iter().zip(speeds) {
+            for v in [p.at.x, p.at.y, p.turn, p.scale, s.at.x, s.at.y, s.turn, s.scale] {
+                o.f32(v);
+            }
+        }
         self.clock.write(&mut o);
         for b in [&self.xv, &self.nf, &self.id, &self.cellp, &self.wallc, &self.dfa] {
             o.bytes(b);
@@ -200,6 +212,18 @@ impl WaterState {
             drains.push(Drain { place: glam::Vec2::new(x, y), reach, pull, edges, feeds: i.u32()? != 0 });
         }
         let tank = i.u64()?;
+        let n = i.u32()? as usize;
+        if n > MOST_MOVERS {
+            bail!("the state has too many moving parts");
+        }
+        let mut poses = Vec::with_capacity(n);
+        let mut speeds = Vec::with_capacity(n);
+        for _ in 0..n {
+            for list in [&mut poses, &mut speeds] {
+                let (x, y, turn, scale) = (i.f32()?, i.f32()?, i.f32()?, i.f32()?);
+                list.push(Pose::new(glam::Vec2::new(x, y), turn, scale));
+            }
+        }
         let clock = ClockState::read(&mut i)?;
         let (xv, nf, id) = (i.bytes()?, i.bytes()?, i.bytes()?);
         let (cellp, wallc, dfa) = (i.bytes()?, i.bytes()?, i.bytes()?);
@@ -227,6 +251,8 @@ impl WaterState {
             timed,
             drains,
             tank,
+            poses,
+            speeds,
             clock,
             xv,
             nf,
@@ -265,6 +291,8 @@ impl Water {
             timed: self.timed.clone(),
             drains: self.drains.clone(),
             tank: self.tank,
+            poses: self.poses().to_vec(),
+            speeds: self.move_speeds().to_vec(),
             clock,
             xv: read(&self.by.xv, drops),
             nf: read(&self.by.nf, drops),
@@ -275,8 +303,8 @@ impl Water {
         }
     }
 
-    /// A body on `field` (the one the state's body was made on) that plays on exactly as the body
-    /// whose state `state` is did, given the same inputs each frame. `gravity`, `numbers` and
+    /// A body on `field` (the one the state's body was made on; when parts move, give it them with
+    /// [`Water::resume_movers`]) that plays on exactly as the body whose state `state` is did, given the same inputs each frame. `gravity`, `numbers` and
     /// `feels` are as [`Water::new`] takes them (the frame's inputs set them again before it plays).
     pub fn from_state(
         gpu: std::sync::Arc<super::WaterGpu>,

@@ -13,8 +13,9 @@ pub use chunk::{Chunk, ChunkInfo, ChunkWriter, read_point, read_wet, write_point
 pub use frame::{FrameCodec, TakeFrame, byte_speed, speed_byte};
 
 /// The take's format: what its files hold and how. A take of another format is not used. (2: each
-/// chunk has its wet marks, part 6b.)
-pub const TAKE_FORMAT: u32 = 2;
+/// chunk has its wet marks, part 6b; 3: each moment and restart point keeps where the moving parts
+/// are, part 5.)
+pub const TAKE_FORMAT: u32 = 3;
 /// Bumped by hand when the engine's host code changes what it makes (its sources are hashed too).
 pub const ENGINE_VERSION: u32 = 1;
 /// The most drops a moment or a restart point of a take may hold (a garbled count is refused).

@@ -13,7 +13,7 @@ use bpe_core::{Address, Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value
 use bpe_kit::things::water::draft::{FINAL_MOST, Speeds, WaterSetup};
 use bpe_kit::things::water::finals::Finals;
 use bpe_kit::things::water::make::{MakeFinal, MakeProgress, this_card};
-use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, PIECE, POUR, course_of, new_water_scene};
 use bpe_water::WaterGpu;
 use bpe_water::take::{Chunk, FrameCodec, chunk};
 use glam::Vec2;
@@ -139,6 +139,45 @@ fn a_final_remade_from_a_restart_point_equals_one_made_in_one_go() {
     }
     assert!(chunk_bytes(&a, 0) == chunk_bytes(&finals.take_dir(first.print), 0), "the first chunks are shared");
     assert!(chunk_bytes(&a, 3) != chunk_bytes(&finals.take_dir(first.print), 3), "the tail is remade");
+    std::fs::remove_dir_all(finals.dir()).ok();
+    std::fs::remove_dir_all(fresh.dir()).ok();
+}
+
+/// A final with a Keyframed paddle: a key moved after the restart point remakes only from it, the
+/// remade chunks (their moments keep where the paddle is) byte for byte those made in one go.
+#[test]
+fn a_final_with_a_moving_paddle_remakes_from_the_key_before() {
+    let Some(gpu) = card() else { return };
+    let reg = bpe_kit::registry();
+    let (mut scene, _) = small(&reg, 9.0);
+    let paddle = add(&mut scene, &reg, PIECE, Vec2::new(-120.0, 120.0));
+    set(&mut scene, paddle, SlotId::Form, "piece", Value::Choice("pillar".into()));
+    set(&mut scene, paddle, SlotId::Form, "size", Value::Vec2([20.0, 140.0]));
+    set(&mut scene, paddle, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    let offset = Address { thing: paddle, slot: Some(SlotId::Moves), key: "offset".into() };
+    for (t, x) in [(0.0, 0.0), (1.0, 200.0), (2.5, 60.0), (3.5, 160.0)] {
+        scene.set_key(&reg, &offset, t, Value::Vec2([x, 0.0])).unwrap();
+    }
+    let finals = folder("paddle");
+    let stop = AtomicBool::new(false);
+    let first = final_of(&scene, &reg, 4.0).make(&gpu, &finals, &MakeProgress::default(), &stop).unwrap();
+    assert_eq!(first.points, vec![120]);
+    scene.set_key(&reg, &offset, 3.5, Value::Vec2([100.0, 0.0])).unwrap();
+    let changed = final_of(&scene, &reg, 4.0);
+    let status = changed.status(&finals, this_card());
+    assert!(!status.own && status.restart == 120, "{status:?}");
+    let second = changed.make(&gpu, &finals, &MakeProgress::default(), &stop).unwrap();
+    let fresh = folder("paddle-fresh");
+    let whole = changed.make(&gpu, &fresh, &MakeProgress::default(), &stop).unwrap();
+    let (a, b) = (finals.take_dir(second.print), fresh.take_dir(whole.print));
+    for s in 0..=4 {
+        assert!(chunk_bytes(&a, s) == chunk_bytes(&b, s), "chunk {s} is the same");
+    }
+    let mut c = Chunk::open(&b, 3).unwrap();
+    let frame = FrameCodec::new().decode(&c.bytes(30).unwrap(), &whole.layout()).unwrap();
+    let want = changed.setup.poses_at(c.moments().nth(30).unwrap().time());
+    assert_eq!(frame.poses.len(), 1);
+    assert!((frame.poses[0].0.at - want[0].at).length() < 1e-3, "{:?} is not {want:?}", frame.poses);
     std::fs::remove_dir_all(finals.dir()).ok();
     std::fs::remove_dir_all(fresh.dir()).ok();
 }
@@ -320,4 +359,49 @@ fn water_final_speed() {
         ms[1],
         ms[2]
     );
+}
+
+/// Times moving parts (by hand, and in the card job's timing step): the one-screen chamber of
+/// [`water_final_speed`] with a paddle 40 x 600 standing in its pool, made at Normal final detail
+/// (2 px) for `WATER_SECONDS` (3) seconds twice, the paddle Fixed and then Keyframed across the pool
+/// and back, and the extra the moving paddle costs a scene second (the card laying it over the course
+/// each step, the deep water's solids where it moved, and the finer steps it asks for).
+#[test]
+#[ignore]
+fn water_moving_speed() {
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let seconds: f64 = std::env::var("WATER_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(3.0);
+    let detail = std::env::var("WATER_FINAL_DETAIL").unwrap_or_else(|_| "normal".into());
+    let reg = bpe_kit::registry();
+    let gpu = WaterGpu::new(&device, &queue);
+    let mut walls = Vec::new();
+    for moving in [false, true] {
+        let mut scene = screen_chamber(&reg, &detail);
+        let paddle = add(&mut scene, &reg, PIECE, Vec2::new(-300.0, 600.0));
+        set(&mut scene, paddle, SlotId::Form, "piece", Value::Choice("pillar".into()));
+        set(&mut scene, paddle, SlotId::Form, "size", Value::Vec2([40.0, 600.0]));
+        if moving {
+            set(&mut scene, paddle, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+            let offset = Address { thing: paddle, slot: Some(SlotId::Moves), key: "offset".into() };
+            for (t, x) in [(0.0, 0.0), (0.5 * seconds, 600.0), (seconds, 0.0)] {
+                scene.set_key(&reg, &offset, t, Value::Vec2([x, 0.0])).unwrap();
+            }
+        }
+        let resolved = bpe_core::resolve(&scene, &reg);
+        let make = MakeFinal::of(&scene, &resolved, seconds);
+        let finals = folder(if moving { "moving-speed" } else { "still-speed" });
+        let started = std::time::Instant::now();
+        let head = make.make(&gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+        walls.push(started.elapsed().as_secs_f64() / seconds);
+        std::fs::remove_dir_all(finals.dir()).ok();
+        if moving {
+            println!(
+                "# scene\tone screen two thirds full and a tap, a paddle across it and back, {detail} final detail ({} px), {seconds} s, {} drops",
+                make.setup.cell, head.drops
+            );
+        }
+    }
+    println!("water final: wall seconds a scene second, the paddle still\t{:.1}", walls[0]);
+    println!("water final: wall seconds a scene second, the paddle moving\t{:.1}", walls[1]);
+    println!("water final: the moving paddle's share\t{:.0}%", 100.0 * (walls[1] - walls[0]) / walls[1].max(1e-9));
 }

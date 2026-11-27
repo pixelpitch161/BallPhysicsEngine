@@ -2,8 +2,9 @@
 //! Line, its place and turn, and its Material's Wetting, laid over the carved rock in the scene's
 //! order ([`super::WaterSetup::field_with`]).
 
-use bpe_core::{Scene, SlotId, ThingId};
-use bpe_water::{Part, Solid};
+use bpe_core::{Scene, SlotId, ThingId, Value};
+use bpe_water::parts::SCALE_RANGE;
+use bpe_water::{Part, Pose, Solid};
 use glam::Vec2;
 
 use bpe_core::maths::Maths;
@@ -70,9 +71,50 @@ impl SolidSetup {
         self.material.card(time)
     }
 
-    /// Whether its Moves card asks for it to move (which a later part does).
-    pub fn moves(&self) -> bool {
-        self.moves.card::<MovesCard>(0.0).moves != MovesKind::Fixed
+    /// How its Moves card says it moves.
+    pub fn motion(&self) -> MovesKind {
+        self.moves.card::<MovesCard>(0.0).moves
+    }
+
+    /// Whether it cuts the course (its Shape's or Line's Cuts).
+    pub fn cuts(&self) -> bool {
+        match self.form() {
+            Form::Piece(shape) => shape.cuts,
+            Form::Wall(line) => line.cuts,
+        }
+    }
+
+    /// Where a Keyframed part is at water time `time` (seconds): its place plus its Position, its
+    /// turn plus its Turn, and its Scale (decision 5 of the part 5 plan).
+    pub fn pose_at(&self, time: f64) -> Pose {
+        let c: MovesCard = self.moves.card(time);
+        let offset = if c.offset.is_finite() { c.offset } else { Vec2::ZERO };
+        let turn = if c.turn.is_finite() { c.turn.to_radians() } else { 0.0 };
+        Pose::new(self.place() + offset, self.turn() + turn, c.scale).sane()
+    }
+
+    /// What it is as a moving part, in its own frame (its place at the middle, not turned, Scale 1):
+    /// a Piece's walls or its filled shape, a Wall's line, its Cuts left out (a moving part never cuts).
+    /// `None` when it has nothing to it.
+    pub fn moving_part(&self) -> Option<Vec<Solid>> {
+        let solids = match self.form() {
+            Form::Piece(shape) => shape.parts(),
+            Form::Wall(line) => line.solid().into_iter().collect(),
+        };
+        let solids: Vec<Solid> = solids.into_iter().filter(Solid::is_sound).collect();
+        (!solids.is_empty()).then_some(solids)
+    }
+
+    /// The smallest Scale its Moves card takes, its base value's and every key's, at most 1 (a part
+    /// keyed small has its thin walls taken as thicker in its own frame, so they stay thick enough).
+    pub fn least_scale(&self) -> f32 {
+        let base = self.moves.card::<MovesCard>(0.0).scale;
+        let keys = self.moves.tracks.iter().filter(|(k, _)| k == "scale").flat_map(|(_, t)| &t.keys);
+        let keyed = keys.filter_map(|k| match k.value {
+            Value::Number(v) => Some(v as f32),
+            _ => None,
+        });
+        std::iter::once(base).chain(keyed).filter(|v| v.is_finite()).fold(1.0f32, f32::min).clamp(SCALE_RANGE.0, 1.0)
     }
 
     /// What it adds and what it cuts, in its own frame: `(solids, cut)`.
@@ -123,6 +165,30 @@ impl SolidSetup {
     /// Its outlines to draw on the stage, in world pixels ([`outlines`]).
     pub fn outline(&self) -> Vec<Vec<Vec2>> {
         outlines(&self.body())
+    }
+
+    /// The same where it is at water time `time`: a Keyframed part with something to it where its
+    /// keys put it then, anything else at its place.
+    pub fn outline_at(&self, time: f64) -> Vec<Vec<Vec2>> {
+        match self.moving_part() {
+            Some(own) if self.motion() == MovesKind::Keyframed => {
+                let pose = self.pose_at(time);
+                outlines(&own).into_iter().map(|line| line.into_iter().map(|p| pose.to_world(p)).collect()).collect()
+            }
+            _ => self.outline(),
+        }
+    }
+
+    /// Where its Position keys put it (world pixels: its place plus each key's Position), in the
+    /// keys' order.
+    pub fn position_keys(&self) -> Vec<Vec2> {
+        let keys = self.moves.tracks.iter().filter(|(k, _)| k == "offset").flat_map(|(_, t)| &t.keys);
+        keys.filter_map(|k| match k.value {
+            Value::Vec2(v) => Some(self.place() + Vec2::from(v)),
+            _ => None,
+        })
+        .filter(|p| p.is_finite())
+        .collect()
     }
 
     /// Where other solids and pen points snap to it (world pixels): a piece's hull's corners (a

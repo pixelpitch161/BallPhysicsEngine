@@ -27,10 +27,12 @@ use crate::modules::water::{
 
 pub mod course;
 pub mod inputs;
+pub mod movers;
 pub mod slow;
 
 pub use course::{Form, SolidSetup};
 pub use inputs::{InputPart, WaterInputs};
+pub use movers::{DRIVEN_LATER, MOVING_CUTS, TOO_BIG_TO_MOVE, TOO_FAST, TOO_MANY_MOVERS};
 pub use slow::Speeds;
 
 pub use super::look::plain_look;
@@ -73,8 +75,6 @@ pub const NO_FEEDING_DRAIN: &str = "This tap is fed by drains, but no Drain feed
 pub const DRAIN_PULL: f32 = 30.0;
 /// How fast a Leak takes it at Rate 1: about two thirds of what sits in it in a second.
 pub const LEAK_PULL: f32 = 1.0;
-/// What the stage says about a Piece or Wall whose Moves card asks it to move.
-pub const MOVES_LATER: &str = "Moving pieces arrive in a later part of Water mode: this one stays where it is for now.";
 
 /// A card's settings at the start and the keyframes that move them.
 #[derive(Clone, Debug, Default)]
@@ -179,6 +179,9 @@ pub struct WaterSetup {
     pub drains: Vec<DrainSetup>,
     /// The enabled Pieces and Walls, in the scene's order: the order they are laid over the rock.
     pub solids: Vec<SolidSetup>,
+    /// Which of `solids` move (their places in the list, at most [`bpe_water::MOST_MOVERS`]): laid
+    /// over the still field after everything that stays where it is (part 5).
+    pub movers: Vec<usize>,
     /// What the stage says about a pour that can't pour, or a piece or wall that is not as it will be.
     pub notes: Vec<(ThingId, &'static str)>,
     /// Changes exactly when what the physics reads changes.
@@ -274,12 +277,12 @@ impl WaterSetup {
             .filter(|id| matches!(scene.things[*id].kind.as_str(), PIECE | WALL) && on(id))
             .filter_map(|id| SolidSetup::of(scene, resolved, *id))
             .collect();
-        for s in &solids {
-            if s.thinnest() < 2.0 * cell {
+        let movers = movers::moving(&solids, cell, &mut notes);
+        for (k, s) in solids.iter().enumerate() {
+            // (A moving part keyed small is as thin as its smallest.)
+            let scale = if movers.contains(&k) { s.least_scale() } else { 1.0 };
+            if s.thinnest() * scale < 2.0 * cell {
                 notes.push((s.id, THIN));
-            }
-            if s.moves() {
-                notes.push((s.id, MOVES_LATER));
             }
         }
         let mut h = DefaultHasher::new();
@@ -302,13 +305,35 @@ impl WaterSetup {
             (d.id, d.place.x.to_bits(), d.place.y.to_bits()).hash(&mut h);
             d.card.hash_into(None, &mut h);
         }
-        for s in &solids {
-            (s.id, s.kind, s.at.x.to_bits(), s.at.y.to_bits(), s.turn.to_bits()).hash(&mut h);
+        for (k, s) in solids.iter().enumerate() {
+            (s.id, s.kind, s.at.x.to_bits(), s.at.y.to_bits(), s.turn.to_bits(), s.motion()).hash(&mut h);
             s.form.hash_into(None, &mut h);
             s.material.hash_into(Some(&["wetting"]), &mut h);
+            if movers.contains(&k) {
+                s.moves.hash_into(Some(&MOVES_KEYS), &mut h);
+            }
         }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, drains, solids, notes, print, detail, world, rock }
+        let mut setup = WaterSetup {
+            size,
+            cell,
+            strokes,
+            liquids,
+            pours,
+            drains,
+            solids,
+            movers,
+            notes,
+            print,
+            detail,
+            world,
+            rock,
+        };
+        let root = resolved.things.get(&ThingId::ROOT);
+        let length = root.map_or(0.0, |r| <crate::SceneSettings as Settings>::from_params(&r.params).duration);
+        let fast = setup.fast_notes(f64::from(length));
+        setup.notes.extend(fast);
+        setup
     }
 
     /// The grid the water runs on.
@@ -321,22 +346,20 @@ impl WaterSetup {
         mask_for(self.size, &self.strokes)
     }
 
-    /// The solid field the water feels and the drawing shows: the carved rock, as wet as the
-    /// Course's Rock, with every Piece and Wall laid over it in order, each as wet as its Material.
+    /// The solid field the water feels and the drawing shows at the start: the carved rock, as wet
+    /// as the Course's Rock, with every Piece and Wall laid over it in order, each as wet as its
+    /// Material, and the moving parts over that where they start.
     pub fn field(&self) -> SolidField {
         self.field_with(&self.mask())
     }
 
     /// The same with the rock carved as `mask` says (the Carve tool's stroke being painted).
     pub fn field_with(&self, mask: &CarveMask) -> SolidField {
-        let mut field = mask.field(self.cell).with_wetting(self.wetting());
-        let least = bpe_water::drops::LEAST_WALL * self.cell;
-        for (k, s) in self.solids.iter().enumerate() {
-            if let Some(part) = s.part() {
-                field.add_part(&part, u16::try_from(k + 1).unwrap_or(u16::MAX), least);
-            }
+        let still = self.still_with(mask);
+        match self.movers_on(still.clone()) {
+            Some(movers) => movers.field_at(&self.poses_at(0.0)),
+            None => still,
         }
-        field
     }
 
     /// The top-most Piece or Wall whose body is within `reach` pixels of world point `p`.
@@ -482,6 +505,9 @@ impl WaterSetup {
     /// and would stop and start the pours). The draft, the final and a draft's export all play a
     /// frame this way.
     pub fn set_inputs(&self, water: &mut Water, field: &SolidField, most: u32) {
+        if self.has_movers() {
+            water.move_to(&self.poses_at(f64::from(water.frames() + 1) / 60.0));
+        }
         let inputs = self.inputs_on(water.frames(), field);
         water.set_gravity(inputs.gravity);
         water.set_air_lift(inputs.air_lift);
@@ -505,7 +531,9 @@ impl WaterSetup {
         let inputs = self.inputs_on(state.frames, field);
         let feels = if inputs.feels.is_empty() { vec![Feel::default()] } else { inputs.feels.clone() };
         let numbers = Numbers { air_lift: inputs.air_lift, ..self.numbers() };
-        Water::from_state(gpu, field, inputs.gravity, numbers, &feels, state)
+        let mut water = Water::from_state(gpu, field, inputs.gravity, numbers, &feels, state)?;
+        self.give_movers_from(&mut water, state);
+        Ok(water)
     }
 
     /// About how many drops the final holds at most: its fills and what its taps pour in `seconds`
@@ -583,6 +611,7 @@ impl WaterSetup {
         let feels = if inputs.feels.is_empty() { vec![Feel::default()] } else { inputs.feels.clone() };
         let numbers = Numbers { air_lift: inputs.air_lift, ..self.numbers() };
         let mut water = Water::new(gpu, field, inputs.gravity, numbers, &feels);
+        self.give_movers(&mut water);
         let mut fills = self.fills(&field.layout, field);
         fills.truncate(most as usize);
         if !fills.is_empty() {
@@ -594,6 +623,9 @@ impl WaterSetup {
         water
     }
 }
+
+/// The Moves card's settings a Keyframed part's physics reads (5b adds the Driven ones).
+const MOVES_KEYS: [&str; 3] = ["offset", "turn", "scale"];
 
 /// Drain `d` as the water takes it, its card `c` as it is in the frame.
 fn drain_of(d: &DrainSetup, c: DrainCard) -> Drain {

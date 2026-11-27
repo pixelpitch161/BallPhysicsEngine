@@ -20,7 +20,8 @@
 //! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with the look drawing's pictures
 //!   (`LOOK_ONLY=water-look`), a final made and drawn from its take (`LOOK_ONLY=water-final`), and
 //!   the extras and wet marks on a final (`LOOK_ONLY=water-extras`), and the seven ready-made looks on a final
-//!   (`LOOK_ONLY=water-looks`; `LOOK_SCENES=<folder>` saves each look's scene file there, to render).
+//!   (`LOOK_ONLY=water-looks`; `LOOK_SCENES=<folder>` saves each look's scene file there, to render), and moving
+//!   parts on a final (`LOOK_ONLY=water-moving`).
 //! - `LOOK_TAKES`: a folder the extras' and the looks' finals are kept in, so a change to the look draws again
 //!   without making it again (about 20 minutes on the cloud's software card).
 
@@ -1555,6 +1556,125 @@ fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u
     out
 }
 
+/// Water mode part 5a's moving parts at full size (`LOOK_ONLY=water-moving`): a final made at Coarse detail (3 px)
+/// for 2 s of a carved chamber a quarter full, a shelf of water held by a Keyframed gate that lifts at 0.5 s, a
+/// Keyframed bar turning under it and a Keyframed paddle sweeping the pool, under a Spot, drawn from the take at
+/// 1 s and 2 s with each part where the take kept it and its wet marks (`water-moving-1s`, `water-moving-2s`).
+/// Look for seams where a part meets the rock or the water, a part's texture staying put while it moves, and
+/// light leaking under a moved part.
+fn water_moving_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_core::Address;
+    use bpe_kit::modules::water::{LineEnds, WallLine};
+    use bpe_kit::things::water::finals::Finals;
+    use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
+    use bpe_kit::things::water::{LIQUID, PIECE, POUR, WALL, course_of, new_water_scene};
+    use bpe_water::draw::look::{Lamp, LampKind};
+    use bpe_water::draw::wet::HeldWet;
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
+    use bpe_water::take::{Chunk, FrameCodec, chunk};
+    if !wanted("water-moving", only) {
+        return Vec::new();
+    }
+    let reg = kit().registry;
+    let mut scene = new_water_scene(&reg, "Moving parts");
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(2.0));
+    let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
+    water.params.set("final_detail", Value::Choice("coarse".into()));
+    let course = course_of(&scene).unwrap();
+    let r = 540.0 - 24.0;
+    let chamber = bpe_core::Stroke {
+        points: vec![[0.0, -960.0 + 24.0 + r], [0.0, 960.0 - 24.0 - r]],
+        size: r,
+        strength: 1.0,
+        square: true,
+        ..Default::default()
+    };
+    let carved = Value::Strokes(bpe_core::Strokes { list: vec![chamber] });
+    scene.card_mut(course, SlotId::Form).unwrap().params.set("carved", carved);
+    bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+    let mut add = |scene: &mut Scene, kind: &str, at: Vec2| {
+        let id = bpe_kit::add_thing(scene, &reg, kind, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&id).unwrap().transform.position = at;
+        id
+    };
+    let fill_at = |scene: &mut Scene, add: &mut dyn FnMut(&mut Scene, &str, Vec2) -> ThingId, lo: Vec2, hi: Vec2| {
+        let fill = add(scene, POUR, 0.5 * (lo + hi));
+        let main = &mut scene.card_mut(fill, SlotId::Main).unwrap().params;
+        main.set("kind", Value::Choice("fill_at_the_start".into()));
+        main.set("fill_size", Value::Vec2((hi - lo).to_array()));
+    };
+    // (The pool a quarter full, and the shelf's water held by the gate.)
+    fill_at(&mut scene, &mut add, Vec2::new(-r, 936.0 - 1872.0 / 4.0), Vec2::new(r, 936.0));
+    fill_at(&mut scene, &mut add, Vec2::new(-500.0, -520.0), Vec2::new(-20.0, -320.0));
+    let shelf = add(&mut scene, WALL, Vec2::new(-258.0, -300.0));
+    let line = WallLine {
+        points: vec![[-258.0, 0.0], [258.0, 0.0]],
+        thickness: 24.0,
+        curved: false,
+        ends: LineEnds::Round,
+        cuts: false,
+    };
+    scene.card_mut(shelf, SlotId::Form).unwrap().params = line.to_params();
+    let piece = |scene: &mut Scene, at: Vec2, size: [f32; 2], colour: [u8; 3], keys: &[(&str, f64, Value)]| {
+        let id = add(scene, PIECE, at);
+        let form = &mut scene.card_mut(id, SlotId::Form).unwrap().params;
+        form.set("piece", Value::Choice("pillar".into()));
+        form.set("size", Value::Vec2(size));
+        let [r, g, b] = colour;
+        scene.card_mut(id, SlotId::Material).unwrap().params.set("colour", Value::Color(bpe_core::Color::rgb(r, g, b)));
+        scene.card_mut(id, SlotId::Moves).unwrap().params.set("moves", Value::Choice("keyframed".into()));
+        for (key, time, v) in keys {
+            let a = Address { thing: id, slot: Some(SlotId::Moves), key: (*key).into() };
+            scene.set_key(&reg, &a, *time, v.clone()).unwrap();
+        }
+    };
+    let up = [("offset", 0.5, Value::Vec2([0.0, 0.0])), ("offset", 1.0, Value::Vec2([0.0, -300.0]))];
+    piece(&mut scene, Vec2::new(15.0, -430.0), [30.0, 260.0], [120, 140, 170], &up);
+    let turning = [("turn", 0.0, Value::Number(0.0)), ("turn", 2.0, Value::Number(180.0))];
+    piece(&mut scene, Vec2::new(150.0, 100.0), [360.0, 24.0], [200, 60, 50], &turning);
+    let sweep = [("offset", 0.0, Value::Vec2([0.0, 0.0])), ("offset", 2.0, Value::Vec2([650.0, 0.0]))];
+    piece(&mut scene, Vec2::new(-350.0, 700.0), [40.0, 380.0], [220, 150, 60], &sweep);
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let make = MakeFinal::of(&scene, &resolved, 2.0);
+    let kept = std::env::var_os("LOOK_TAKES").map(std::path::PathBuf::from);
+    let finals = Finals::at(
+        kept.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("bpe-look-moving-{}", std::process::id()))),
+    );
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
+    let water_gpu = bpe_water::WaterGpu::new(&gpu.device, &gpu.queue);
+    let head = make.make(&water_gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+    let dir = finals.take_dir(head.print);
+    let layout = head.layout();
+    let movers = make.setup.movers().expect("three parts move");
+    let mut drawing =
+        LookDraw::new(LookGpu::new(&gpu.device, &gpu.queue), &make.setup.field(), make.setup.numbers().wall_off);
+    let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
+    let mut wet = HeldWet::default();
+    let spot = Lamp { kind: LampKind::Spot, place: Vec2::new(100.0, -900.0), spread: 90.0, ..Lamp::default() };
+    let view = View::screen(1.0);
+    let mut out = Vec::new();
+    for second in [1u32, 2] {
+        let mut c = Chunk::open(&dir, second).unwrap();
+        let frame = FrameCodec::new().decode(&c.bytes(0).unwrap(), &layout).unwrap();
+        stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+        drawing.set_movers(&movers, &frame.poses_at(0.0));
+        let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
+        let mut look = bpe_kit::things::water::look::look_of(&scene, &resolved, f64::from(second));
+        look.lamps = vec![spot.clone()];
+        look.light.ambient = 0.35;
+        wet.give(&gpu.device, &gpu.queue, layout, Some(&(marks, 60 * second)), &mut drawing);
+        drawing.draw(&stored.buffers(), &view, &look);
+        out.push((format!("water-moving-{second}s"), drawing.read()));
+    }
+    eprintln!("water-moving: {} drops at {} px", head.drops, make.setup.cell);
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
+    out
+}
+
 /// Water mode part 6c's ready-made looks at full size (`LOOK_ONLY=water-looks`): one demo course (a carved chamber,
 /// a pool a quarter full, a tap pouring onto a Ramp that spills into a Basin over the pool), made once at Coarse
 /// detail for 3 s and drawn at 2 s from its take in each look, set with `apply_look` (`water-looks-<look>`).
@@ -1739,7 +1859,8 @@ fn render_at_full_size() {
     let finals = water_final_pictures(&gpu, &only)
         .into_iter()
         .chain(water_extras_pictures(&gpu, &only))
-        .chain(water_looks_pictures(&gpu, &only));
+        .chain(water_looks_pictures(&gpu, &only))
+        .chain(water_moving_pictures(&gpu, &only));
     for (name, pixels) in water.chain(finals) {
         thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
         count += 1;

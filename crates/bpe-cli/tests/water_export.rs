@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use bpe_cli::water::{self, FINAL_MISSING, FRAME_NOT_MADE, WaterSource};
 use bpe_cli::{ExportOptions, export_video, find_ffmpeg};
 use bpe_core::{Address, Scene, SlotId, Stroke, Strokes, ThingId, Value};
-use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
+use bpe_kit::things::water::{LIQUID, PIECE, POUR, course_of, new_water_scene};
 use bpe_kit::{Kit, kit};
 use glam::Vec2;
 
@@ -117,5 +117,57 @@ fn a_water_scene_exports_its_draft() {
     export_video(&device, &queue, &scene, &kit, &options(&dir, WaterSource::Draft), |_, _| true).unwrap();
     assert!((seconds(&dir.join("water.mp4")) - 0.25).abs() < 0.05);
     assert!(!dir.join("finals").exists(), "the draft makes no final");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A Keyframed block crossing the shot is drawn where it was at each moment of the final.
+#[test]
+fn a_final_frame_draws_a_moving_part_where_it_was() {
+    let (device, queue) = gpu();
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut scene = small(&kit);
+    let root = &mut scene.things.get_mut(&ThingId::ROOT).unwrap().params;
+    root.set("duration", Value::Number(1.0));
+    let block = bpe_kit::add_thing(&mut scene, reg, PIECE, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&block).unwrap().transform.position = Vec2::new(0.0, -100.0);
+    set(&mut scene, block, SlotId::Form, "piece", Value::Choice("pillar".into()));
+    set(&mut scene, block, SlotId::Form, "size", Value::Vec2([100.0, 100.0]));
+    set(&mut scene, block, SlotId::Material, "colour", Value::Color(bpe_core::Color::rgb(255, 0, 0)));
+    set(&mut scene, block, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    let offset = Address { thing: block, slot: Some(SlotId::Moves), key: "offset".into() };
+    scene.set_key(reg, &offset, 0.0, Value::Vec2([-120.0, 0.0])).unwrap();
+    scene.set_key(reg, &offset, 1.0, Value::Vec2([120.0, 0.0])).unwrap();
+    let dir = temp_dir("moving");
+    let video = water::WaterVideo::of(&scene, &kit).unwrap();
+    let finals = bpe_kit::things::water::finals::Finals::at(dir.join("finals"));
+    let gpu = bpe_water::WaterGpu::new(&device, &queue);
+    let progress = bpe_kit::things::water::make::MakeProgress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    video.final_of(&scene).make(&gpu, &finals, &progress, &stop).unwrap();
+    let frame = |t: f64| water::final_frame(&device, &queue, &scene, &kit, t, 0.5, &dir.join("finals")).unwrap();
+    let (early, (w, h), _) = frame(0.2);
+    let (late, _, _) = frame(0.8);
+    // (Where the block is at 0.2 s and 0.8 s: the keys eased. Its rock has darker veins, so the share
+    // of red pixels in the box it covers then is counted, not one pixel.)
+    let red_share = |pixels: &[u8], x: f32| {
+        let to =
+            |x: f32, y: f32| (((x + 540.0) / 1080.0 * w as f32) as usize, ((y + 960.0) / 1920.0 * h as f32) as usize);
+        let ((x0, y0), (x1, y1)) = (to(x - 40.0, -140.0), to(x + 40.0, -60.0));
+        let mut red = 0;
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let c = &pixels[(py * w as usize + px) * 4..][..3];
+                red += usize::from(c[0] > 120 && c[0] > c[1].saturating_add(60) && c[0] > c[2].saturating_add(60));
+            }
+        }
+        red as f32 / ((x1 - x0) * (y1 - y0)) as f32
+    };
+    let eased = |t: f32| -120.0 + 240.0 * t * t * (3.0 - 2.0 * t);
+    let (then, later) = (eased(0.2), eased(0.8));
+    assert!(red_share(&early, then) > 0.6, "at 0.2 s the block is at {then}: {}", red_share(&early, then));
+    assert!(red_share(&late, then) < 0.05, "at 0.8 s it has gone: {}", red_share(&late, then));
+    assert!(red_share(&late, later) > 0.6, "at 0.8 s it is at {later}: {}", red_share(&late, later));
+    assert!(red_share(&early, later) < 0.05, "at 0.2 s it isn't there yet: {}", red_share(&early, later));
     std::fs::remove_dir_all(&dir).ok();
 }

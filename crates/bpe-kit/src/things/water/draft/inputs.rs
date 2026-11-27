@@ -14,7 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Keyed, PourKind, WaterSetup, world_keys};
+use super::{Keyed, MOVES_KEYS, PourKind, WaterSetup, world_keys};
 use crate::modules::water::PourCard;
 
 /// A tap takes part from this long before it starts (three frames).
@@ -90,10 +90,11 @@ impl WaterSetup {
             part("course".into(), 0.0, |h| {
                 self.strokes.hash64().hash(h);
                 for s in &self.solids {
-                    (s.id, s.kind, s.at.x.to_bits(), s.at.y.to_bits(), s.turn.to_bits()).hash(h);
+                    (s.id, s.kind, s.at.x.to_bits(), s.at.y.to_bits(), s.turn.to_bits(), s.motion()).hash(h);
                     s.form.hash_into(None, h);
                     s.material.hash_into(Some(&["wetting"]), h);
                 }
+                self.movers.hash(h);
                 Vec::new()
             }),
             part("rock".into(), 0.0, |h| self.rock.describe(Some(&["wetting"]), h)),
@@ -105,6 +106,10 @@ impl WaterSetup {
                 Vec::new()
             }),
         ];
+        // (Each moving part's keys: a moved key remakes from the key before it.)
+        for (k, &i) in self.movers.iter().enumerate() {
+            parts.push(part(format!("mover:{k}"), 0.0, |h| self.solids[i].moves.describe(Some(&MOVES_KEYS), h)));
+        }
         for (k, l) in self.liquids.iter().enumerate() {
             parts.push(part(format!("liquid:{k}"), 0.0, |h| {
                 l.id.hash(h);

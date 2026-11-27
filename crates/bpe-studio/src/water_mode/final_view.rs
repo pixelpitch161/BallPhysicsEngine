@@ -83,7 +83,13 @@ struct Got {
     tau: f64,
     frame: Option<(TakeFrame, f64)>,
     wet: Option<(Arc<Vec<u32>>, u32)>,
+    /// The course with its moving parts where they were then and their textures there, for the
+    /// setup of this print (`None`: nothing moves).
+    posed: Option<(u64, Posed)>,
 }
+
+/// A course's field with its moving parts laid where they are, and where their textures are read.
+type Posed = (SolidField, Vec<(u16, [f32; 4])>);
 
 /// What the worker and the window share.
 #[derive(Default)]
@@ -136,6 +142,7 @@ impl Drop for Worker {
 fn work(shared: &Shared, ctx: &egui::Context) {
     let mut reader: Option<(u64, u32, TakeReader)> = None;
     let mut field_for = None;
+    let mut movers = None;
     loop {
         let asked = {
             let Ok(mut ask) = shared.ask.lock() else { return };
@@ -153,6 +160,7 @@ fn work(shared: &Shared, ctx: &egui::Context) {
         if field_for != Some(asked.setup.print) {
             let field = Arc::new(asked.setup.field());
             field_for = Some(asked.setup.print);
+            movers = asked.setup.movers();
             if let Ok(mut slot) = shared.field.lock() {
                 *slot = Some((asked.setup.print, field));
             }
@@ -163,8 +171,17 @@ fn work(shared: &Shared, ctx: &egui::Context) {
         }
         let frame = reader.as_mut().and_then(|r| r.2.near(asked.tau).ok().flatten());
         let wet = reader.as_mut().and_then(|r| r.2.wet(asked.tau));
+        // (Where the take kept its parts then; a take of another course: where this one's keys
+        // put them.)
+        let posed = movers.as_ref().zip(frame.as_ref()).map(|(m, (f, ahead))| {
+            let mut poses = f.poses_at(*ahead);
+            if poses.len() != m.len() {
+                poses = asked.setup.poses_at(asked.tau);
+            }
+            (asked.setup.print, (m.field_at(&poses), m.textures(&poses)))
+        });
         if let Ok(mut got) = shared.got.lock() {
-            *got = Some(Got { take, tau: asked.tau, frame, wet });
+            *got = Some(Got { take, tau: asked.tau, frame, wet, posed });
         }
         ctx.request_repaint();
     }
@@ -250,6 +267,14 @@ impl FinalPicture {
                     let stored =
                         self.stored.get_or_insert_with(|| StoredDrops::new(&render.device, &render.queue, &[]));
                     stored.set(&render.device, &render.queue, &frame.xv, &frame.kinds);
+                    if let (Some((print, drawing)), Some((posed_for, (field, textures)))) = (&mut self.look, got.posed)
+                        && *print == posed_for
+                        && field.layout == drawing.layout()
+                    {
+                        drawing.set_posed(&field, textures);
+                        // (The parts moved on a moment already drawn: draw it again.)
+                        self.drawn = None;
+                    }
                     self.holds = Some((got.take, got.tau, ahead as f32));
                     self.wet = got.wet;
                 }

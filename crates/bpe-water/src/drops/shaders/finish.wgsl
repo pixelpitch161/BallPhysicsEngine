@@ -157,9 +157,10 @@ fn finish_at(i: u32, step: u32) -> Finished {
     }
     v = v + dv;
     if s.z < fr.s.y {
-        // Drag: speed along a near face is lost.
+        // Drag: speed along a near face is lost (as the face moves: the speed along it beside its own).
         let near = 1.0 - smoothstep(fr.w.y, fr.s.y, s.z);
-        let along = v - dot(v, s.xy) * s.xy;
+        let rel = v - solid_speed(xi);
+        let along = rel - dot(rel, s.xy) * s.xy;
         // (A waxy face keeps only a share of the drag every liquid has.)
         let drag = feel.b.y - fr.s.w * (1.0 - wet) * (1.0 - fr.w.x);
         v = v - along * (1.0 - exp(-max(drag, 0.0) * near * dt));

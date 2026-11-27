@@ -337,7 +337,7 @@ fn write(recv: Receiver<Message>, take: Arc<Mutex<TakeDir>>, cells: u32) -> anyh
                     most = most.max(drops);
                     let packed: Vec<Vec<u8>> = moments
                         .par_iter()
-                        .map_init(FrameCodec::new, |codec, c| codec.encode(&c.drops, cells))
+                        .map_init(FrameCodec::new, |codec, c| codec.encode(&c.drops, cells, &c.poses))
                         .collect();
                     for (c, bytes) in moments.iter().zip(packed) {
                         let second = c.moment.frame / 60;

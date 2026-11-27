@@ -21,6 +21,19 @@ struct Feel {
     b: vec4<f32>,
 };
 
+// A moving part (part 5, movers.wgsl) as a frame sees it, in grid units: its place, turn and scale
+// at the frame's start (`a`) and end (`b`); its speed over the frame (`e`: place a second, turn a
+// second, scale a second); its shape (`g`: its grid's first node in its own frame, in cells, how far
+// round its place its grid reaches, in cells, its faces' Wetting; `h`: its grid's columns and rows,
+// where its distances start in `shapes`, 0).
+struct Mover {
+    a: vec4<f32>,
+    b: vec4<f32>,
+    e: vec4<f32>,
+    g: vec4<f32>,
+    h: vec4<u32>,
+};
+
 // A frame's numbers: the same for each of its steps.
 struct Fr {
     // the layout's columns and rows of nodes, how many pours, bit 0 the course's edges are shut
@@ -78,14 +91,21 @@ struct Fr {
     dedges: array<vec4<u32>, 8>,
     // how many drains, the frame's code for the drops they take (`drained_y`), 0, 0
     dmeta: vec4<u32>,
+    // moving parts (part 5): 1 when they move this frame (the field is laid each step), how many
+    // there are, 0, 0; the nodes the frame's moves can change (x0, y0, x1, y1, inclusive); the parts
+    mv: vec4<u32>,
+    mbox: vec4<u32>,
+    movers: array<Mover, 64>,
 };
 
 // A step's numbers (one for each step of the frame, at its own offset): the drops this step, the
 // drops before this step's births, where its births start in the births buffer, and bit 0 the
-// frame's last step, bit 1 its first, bits 8 and up its number in the frame. The export takes (the first drop, how many, 0, 0); a pass of
-// the deep water's pressure (its number, 0, 0, 0).
+// frame's last step, bit 1 its first, bits 8 and up its number in the frame. The export takes (the
+// first drop, how many, 0, 0); a pass of the deep water's pressure (its number, 0, 0, 0). `t.x` is
+// the step's end as a share of its frame (where the moving parts are at the step's end).
 struct St {
     n: vec4<u32>,
+    t: vec4<f32>,
 };
 
 // A drop born this step: its place and speed at the step's end (grid units), and its kind,
@@ -141,7 +161,8 @@ const PI: f32 = 3.14159265;
 // Per drop, sorted: where it was (until the last sweep, then its new speed), its kind, 0.
 @group(0) @binding(14) var<storage, read_write> velb: array<vec4<f32>>;
 // Per layout node: how far it is from the nearest solid's face, in cells (below 0 inside); then per
-// node, how wet that face is (0 to 1).
+// node, how wet that face is (0 to 1); then per node, which moving part's face it is (its number plus
+// 1, 0 for a still one: part 5).
 @group(0) @binding(15) var<storage, read_write> solid: array<f32>;
 @group(0) @binding(16) var<storage, read_write> births: array<Born>;
 @group(0) @binding(17) var<storage, read_write> outd: array<DropOut>;
@@ -192,13 +213,42 @@ fn solid_at(q: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(g, d);
 }
 
+// Moving part `m`'s place (grid), turn and scale a share `t` through the frame: its end exactly at
+// 1 (a part laid at a frame's end and one laid there afresh, as from a restart point, are the same
+// to the bit).
+fn mover_pose(m: Mover, t: f32) -> vec4<f32> {
+    if t >= 1.0 {
+        return m.b;
+    }
+    return mix(m.a, m.b, t);
+}
+
+// How fast the solid's face nearest `q` moves (grid units a second): 0 for a still one, the point
+// speed of a moving part at `q` at the step's end (its place's speed, its turn's and its growth's).
+fn solid_speed(q: vec2<f32>) -> vec2<f32> {
+    if fr.mv.y == 0u {
+        return vec2<f32>(0.0);
+    }
+    let n = clamp(vec2<i32>(round(q)), vec2<i32>(0), vec2<i32>(i32(fr.grid.x) - 1, i32(fr.grid.y) - 1));
+    let who = u32(solid[2u * fr.grid.x * fr.grid.y + node(n.x, n.y)]);
+    if who == 0u || who > fr.mv.y {
+        return vec2<f32>(0.0);
+    }
+    let m = fr.movers[who - 1u];
+    let pose = mover_pose(m, st.t.x);
+    let r = q - pose.xy;
+    let scale = max(pose.w, 0.01);
+    // (A clockwise turn, y down: a point `r` from the place moves along (-r.y, r.x).)
+    return m.e.xy + m.e.z * vec2<f32>(-r.y, r.x) + (m.e.w / scale) * r;
+}
+
 struct Kept {
     x: vec2<f32>,
     v: vec2<f32>,
 };
 
 // Keeps a drop at `x` moving at `v` off the solids and (when it stops there) the course's edge.
-// It keeps none of its speed into a face.
+// It keeps none of its speed into a face, as the face moves.
 fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
     var x = xin;
     var v = vin;
@@ -206,7 +256,7 @@ fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
     let off = fr.w.y;
     if s.z < off {
         x = x + s.xy * min(off - s.z, 4.0);
-        let vn = dot(v, s.xy);
+        let vn = dot(v - solid_speed(x), s.xy);
         if vn < 0.0 {
             v = v - vn * s.xy;
         }
@@ -220,6 +270,22 @@ fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
         if x.y > hi.y - 0.05 { x.y = hi.y - 0.05; v.y = min(v.y, 0.0); }
     }
     return Kept(x, v);
+}
+
+// Keeps a drop at `x` off the solids and the course's edge, as `keep_off` does, for its place alone.
+fn keep_place(xin: vec2<f32>, stops: bool) -> vec2<f32> {
+    var x = xin;
+    let s = solid_at(x);
+    let off = fr.w.y;
+    if s.z < off {
+        x = x + s.xy * min(off - s.z, 4.0);
+    }
+    if stops {
+        let lo = vec2<f32>(EDGE);
+        let hi = vec2<f32>(f32(fr.grid.x) - 1.0 - EDGE, f32(fr.grid.y) - 1.0 - EDGE);
+        x = clamp(x, lo + vec2<f32>(0.05), hi - vec2<f32>(0.05));
+    }
+    return x;
 }
 
 fn is_air(kind: u32) -> bool {
