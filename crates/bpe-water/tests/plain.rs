@@ -580,7 +580,8 @@ fn moving_on_by_nothing_draws_the_same() {
     let mut stored = StoredDrops::new(gpu.device(), gpu.queue(), &[]);
     let xv: Vec<[f32; 4]> = bench.drops.iter().map(|d| [d.x[0], d.x[1], d.v[0], d.v[1]]).collect();
     let kinds: Vec<u32> = bench.drops.iter().map(|d| d.kind).collect();
-    stored.set(gpu.device(), gpu.queue(), &xv, &kinds);
+    let mixes: Vec<u32> = bench.drops.iter().map(|d| d.mix).collect();
+    stored.set(gpu.device(), gpu.queue(), &xv, &kinds, &mixes);
     let mut plain = Plain::new(gpu.clone(), &bench.field, REST);
     plain.draw_at(&stored.buffers(), &View::screen(0.25), &sets::look(), 0.0);
     assert!(a.pixels == plain.read(), "moved on by nothing, the picture is the same");
@@ -615,4 +616,27 @@ fn a_drop_moved_on_draws_where_it_will_be() {
     plain.draw_at(&stored.buffers(), &view, &sets::look(), 0.1);
     let later = middle(&plain.read());
     assert!((later - now - 10.0).abs() < 1.0, "drawn {} px on", later - now);
+}
+
+/// A drop carrying another liquid's colour is drawn between the two liquids' colours, by its share.
+#[test]
+fn a_mixed_pool_draws_between_its_liquids() {
+    let Some(gpu) = card() else { return };
+    let field = open(8.0);
+    let at = |x: f32| Vec2::new(x, 0.0);
+    let block = |x: f32, kind: u32| sets::lattice(&field, at(x) - Vec2::splat(80.0), at(x) + Vec2::splat(80.0), kind);
+    let mut drops = block(-300.0, 0);
+    drops.extend(block(300.0, 1));
+    drops.extend(block(0.0, 0).into_iter().map(|d| d.with_mix(1, 0.5)));
+    let pic = draw(&gpu, &field, &drops, View::screen(0.5));
+    let (water, orange, half) = (pic.at(at(-300.0)), pic.at(at(300.0)), pic.at(at(0.0)));
+    assert!(apart(water, orange) > 60, "the two liquids differ: {water:?} {orange:?}");
+    for k in 0..3 {
+        let (lo, hi) = (water[k].min(orange[k]), water[k].max(orange[k]));
+        let mid = (f32::from(lo) + f32::from(hi)) / 2.0;
+        assert!(
+            (f32::from(half[k]) - mid).abs() <= 0.25 * f32::from(hi - lo) + 2.0,
+            "channel {k}: the half mixed pool {half:?} is between {water:?} and {orange:?}"
+        );
+    }
 }

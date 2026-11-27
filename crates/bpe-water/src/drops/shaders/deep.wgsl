@@ -18,8 +18,9 @@ const S_M: f32 = 1048576.0;
 const S_P: f32 = 4096.0;
 const LIMIT: f32 = 33554432.0;
 // Words a cell in `sums`: mass on its left face, momentum across, mass on its top face, momentum
-// down, volume at its middle, and that volume times how full each drop in it was.
-const SUMS: u32 = 6u;
+// down, volume at its middle, that volume times how full each drop in it was, and (when the liquids'
+// weights differ) mass at its middle.
+const SUMS: u32 = 7u;
 // A drop's volume, in cells (four drops fill a cell).
 const VOL: f32 = 0.25;
 
@@ -45,6 +46,9 @@ const VOL: f32 = 0.25;
 // under a million cells (it is a strip a few cells deep under each surface).
 @group(0) @binding(26) var<storage, read_write> rest: array<atomic<u32>>;
 const REST: f32 = 4096.0;
+// Per cell, when the liquids' weights differ: the mass and the volume at its middle (from the sums,
+// before the across pass empties them), so the push shares a face's change of speed by mass.
+@group(0) @binding(31) var<storage, read_write> dmass: array<vec2<f32>>;
 
 fn fixed(x: f32, scale: f32) -> i32 {
     return i32(round(clamp(x * scale, -LIMIT, LIMIT)));
@@ -146,9 +150,11 @@ fn cs_deep_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !finite2(v) {
         return;
     }
-    // (Air is gathered as water: a pocket of it is full to the grid, and moves.)
+    // (Air is gathered as water: a pocket of it is full to the grid, and moves. A drop's mass is
+    // its liquid's weight only when the weights differ: liquids that weigh the same gather as one.)
     let kind = u32(was.z);
-    let mass = select(fr.feels[kind & 15u].b.w, 1.0, is_air(kind)) * VOL;
+    let by_mass = weighted();
+    let mass = select(1.0, select(fr.feels[kind & 15u].b.w, fr.mixs.z, is_air(kind)), by_mass) * VOL;
     // How full it was (its own density by its neighbours and the solids, as its sweeps see it).
     let full = clamp(was.w, 0.0, 4.0);
     // Speed across, on left faces (at whole x, y + a half).
@@ -189,6 +195,9 @@ fn cs_deep_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let at = SUMS * node(b.x + a, b.y + c);
                 atomicAdd(&sums[at + 4u], fixed(bilinear(f, a, c) * VOL, S_M));
                 atomicAdd(&sums[at + 5u], fixed(bilinear(f, a, c) * VOL * full, S_M));
+                if by_mass {
+                    atomicAdd(&sums[at + 6u], fixed(bilinear(f, a, c) * mass, S_M));
+                }
             }
         }
     }
@@ -388,6 +397,9 @@ fn cs_deep_across(@builtin(global_invocation_id) gid: vec3<u32>) {
     let liquid = f32(atomicLoad(&sums[SUMS * k + 4u])) / S_M;
     let wet = liquid > 1e-4;
     let filled = f32(atomicLoad(&sums[SUMS * k + 5u])) / S_M;
+    if weighted() {
+        dmass[k] = vec2<f32>(f32(atomicLoad(&sums[SUMS * k + 6u])) / S_M, liquid);
+    }
     for (var s = 0u; s < SUMS; s = s + 1u) {
         atomicStore(&sums[SUMS * k + s], 0);
     }
@@ -713,6 +725,24 @@ fn cs_deep_push(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     var shift = min(w, 1.0) * vec2<f32>(pressure_change(x, 0u), pressure_change(x, 1u)) * fr.time.x;
+    let kind = u32(velb[i].z);
+    if weighted() {
+        // (By mass: the cells round it share their faces' change of speed among their drops, the
+        // mean mass round it over its own, so a heavy drop among light ones is held up less and
+        // sinks, a light one among heavy ones rises.)
+        var m = 0.0;
+        var v = 0.0;
+        for (var a = 0; a < 2; a = a + 1) {
+            for (var c = 0; c < 2; c = c + 1) {
+                let at = dmass[node(b.x + a, b.y + c)];
+                m = m + bilinear(f, a, c) * at.x;
+                v = v + bilinear(f, a, c) * at.y;
+            }
+        }
+        if v > 1e-6 && m > 0.0 {
+            shift = shift * (m / v * inv_mass(kind));
+        }
+    }
     let far = length(shift);
     if far > fr.deep.w {
         shift = shift * (fr.deep.w / far);
@@ -720,6 +750,5 @@ fn cs_deep_push(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !finite2(shift) {
         return;
     }
-    let kind = u32(velb[i].z);
     y_in[i] = vec4<f32>(keep_off(x + shift, vec2<f32>(0.0), stops_at_edge(kind)).x, me.zw);
 }

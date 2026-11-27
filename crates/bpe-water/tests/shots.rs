@@ -138,7 +138,7 @@ fn shots() {
                         stored::save_drops(&out.join(format!("{label}-{t:.1}s.drops")), &drops).expect("the drops");
                     }
                     if dots {
-                        let (pixels, w, h) = probe::picture(&drops, &run.field, 1.0, f32::MAX);
+                        let (pixels, w, h) = probe::picture(&drops, &run.field, 1.0);
                         probe::save_png(&out.join(format!("{label}-drops-{t:.1}s-dots.png")), &pixels, w, h)
                             .expect("the dots");
                     }
@@ -411,7 +411,7 @@ fn landing() {
                     && (0.2..=0.8).contains(&t)
                 {
                     let drops = run.water.read();
-                    let (pixels, w, _) = probe::picture(&drops, &run.field, 1.0, f32::MAX);
+                    let (pixels, w, _) = probe::picture(&drops, &run.field, 1.0);
                     let (x0, y0) = ((block.0 - layout.origin).x as u32, (block.0 - layout.origin).y as u32);
                     let (cw, ch) = ((block.1 - block.0).x as u32, (block.1 - block.0).y as u32);
                     let mut crop = Vec::with_capacity((cw * ch * 4) as usize);
@@ -431,7 +431,7 @@ fn landing() {
                     if let Some(dir) = &dots
                         && t + 0.25 > seconds
                     {
-                        let (pixels, w, h) = probe::picture(&drops, &run.field, 0.5, f32::MAX);
+                        let (pixels, w, h) = probe::picture(&drops, &run.field, 0.5);
                         let name = format!("whole-pull{pull}-{cell}px-{t:.2}s.png");
                         probe::save_png(&dir.join(name), &pixels, w, h).expect("a picture");
                     }

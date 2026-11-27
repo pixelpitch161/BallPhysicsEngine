@@ -154,6 +154,8 @@ pub const SECTION_ORDER: &[&str] = &[
     "Drawn",
     "Extras",
     "Mixing shows",
+    // A Water Liquid's Mixing card (Water mode part 4.2).
+    "Meeting other liquids",
     "Pour",
     "Drain",
     "Force",

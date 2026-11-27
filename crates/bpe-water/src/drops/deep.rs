@@ -13,7 +13,7 @@ pub const MOST_LEVELS: usize = 12;
 /// The pressure passes' numbers (two a level: twice the level, plus the colour).
 pub(super) const TICKS: u32 = 2 * MOST_LEVELS as u32;
 /// Words a cell in the sums (`SUMS` in deep.wgsl).
-const SUMS: u64 = 6;
+const SUMS: u64 = 7;
 
 /// The pressure's levels for a grid of `cols` x `rows` nodes: (where it starts, columns, rows, 0),
 /// each half the one before each way, down to a handful of cells.
@@ -43,6 +43,9 @@ pub(super) struct Deep {
     /// is not full.
     pub(super) dfa: wgpu::Buffer,
     pub(super) dfb: wgpu::Buffer,
+    /// When the liquids' weights differ, each cell's mass and volume at its middle (written each
+    /// step before the push reads them).
+    pub(super) mass: wgpu::Buffer,
     /// The cells deep at a frame's last step.
     pub(super) count: wgpu::Buffer,
     /// The liquid, and the liquid times its drops' fullness, of the cells where the drops-only
@@ -63,6 +66,7 @@ impl Deep {
             coef: storage(device, "water deep faces", every * 16),
             dfa: storage(device, "water deep fill", cells * 4),
             dfb: storage(device, "water deep column", cells * 4),
+            mass: storage(device, "water deep mass", cells * 8),
             count: storage(device, "water deep count", 4),
             rest: storage(device, "water deep rest", 16),
         }

@@ -33,13 +33,19 @@ impl Moment {
     }
 }
 
-/// One moment's drops, each as `[cell | kind << 24, place and speed]` (all ones: not in the
+/// One moment's drops, each as `[cell | kind << 24, place and speed, mix]` (all ones: not in the
 /// course), in the order the card holds them.
 #[derive(Clone, Debug)]
 pub struct Captured {
     pub moment: Moment,
-    pub drops: Vec<[u32; 2]>,
+    pub drops: Vec<Packed>,
 }
+
+/// A drop as the pack pass keeps it (`cs_pack`): its cell and kind, its place in the cell and its
+/// speed, and its colour mix.
+pub type Packed = [u32; 3];
+/// The bytes a packed drop takes.
+const PACKED: u64 = 12;
 
 /// A moment's buffers: where the pass packs, and its copy for reading.
 struct Slot {
@@ -63,7 +69,7 @@ impl Pending {
         for (k, (_, n)) in moments.iter().enumerate() {
             if *n > 0 {
                 let left = left.clone();
-                slots[k].back.slice(..u64::from(*n) * 8).map_async(wgpu::MapMode::Read, move |_| {
+                slots[k].back.slice(..u64::from(*n) * PACKED).map_async(wgpu::MapMode::Read, move |_| {
                     left.fetch_sub(1, Ordering::AcqRel);
                 });
             }
@@ -122,10 +128,10 @@ impl Capture {
                 Vec::new()
             } else {
                 let back = &self.sets[set][k].back;
-                let bytes = u64::from(n) * 8;
+                let bytes = u64::from(n) * PACKED;
                 let out = {
                     let mapped = back.slice(..bytes).get_mapped_range().expect("the moment is mapped");
-                    bytemuck::pod_collect_to_vec::<u8, [u32; 2]>(&mapped)
+                    bytemuck::pod_collect_to_vec::<u8, Packed>(&mapped)
                 };
                 back.unmap();
                 out
@@ -149,7 +155,7 @@ impl Capture {
         for (k, &n) in counts.iter().enumerate() {
             if k >= slots.len() || slots[k].room < n {
                 let room = n.max(4096).next_power_of_two();
-                let bytes = u64::from(room) * 8;
+                let bytes = u64::from(room) * PACKED;
                 let pack = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("water kept moment"),
                     size: bytes,
@@ -252,7 +258,7 @@ impl Water {
             pass.set_bind_group(0, &group, &[at * STEP_ROOM as u32]);
             pass.dispatch_workgroups(self.count.div_ceil(super::WORKGROUP), 1, 1);
         }
-        let bytes = u64::from(self.count) * 8;
+        let bytes = u64::from(self.count) * PACKED;
         encoder.copy_buffer_to_buffer(&slot.pack, 0, &slot.back, 0, bytes);
         let done = self.gpu.queue.submit([encoder.finish()]);
         capture.busy[set] = Some(Pending::map(&capture.sets[set], vec![(moment, self.count)], done));
@@ -310,7 +316,7 @@ impl Packing {
         for (k, &n) in sizes.iter().enumerate() {
             if n > 0 {
                 let slot = &capture.sets[self.set][k];
-                encoder.copy_buffer_to_buffer(&slot.pack, 0, &slot.back, 0, u64::from(n) * 8);
+                encoder.copy_buffer_to_buffer(&slot.pack, 0, &slot.back, 0, u64::from(n) * PACKED);
             }
         }
     }

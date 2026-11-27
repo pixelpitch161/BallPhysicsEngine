@@ -80,7 +80,9 @@ fn a_tap_pours_its_liquid_at_its_place() {
         fed: false,
     };
     assert_eq!(inputs.pours, [want]);
-    assert_eq!(inputs.feels, [Feel::default()], "the Feel card's defaults are the engine's");
+    // (The engine mixes no colour unless asked; the Mixing card's Mix speed starts at 0.5.)
+    let feel = Feel { mix_speed: 0.5, ..Feel::default() };
+    assert_eq!(inputs.feels, [feel], "the Feel and Mixing cards' defaults are the engine's");
     assert!(s.fills(&s.layout(), &s.field()).is_empty());
     assert_eq!(s.note_for(pour), None);
 }
@@ -229,6 +231,28 @@ fn a_pour_finds_its_liquid() {
     let p = add(&mut bare, &reg, POUR, Vec2::ZERO);
     let s = setup(&bare, &reg);
     assert_eq!((s.note_for(p), s.inputs_at(0).pours.len()), (Some(NO_LIQUID), 0));
+}
+
+/// A Liquid's Mixing card reaches the water's feel (part 4.2), and its Weight is taken within its range.
+#[test]
+fn the_mixing_card_reaches_the_water() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let liquid = add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let feel = |scene: &Scene| setup(scene, &reg).inputs_at(0).feels[0];
+    let plain = feel(&scene);
+    assert_eq!((plain.keeps_apart, plain.mix_speed, plain.mixes_when), (0.0, 0.5, MixWhen::Always));
+    set(&mut scene, liquid, SlotId::Mixing, "keeps_apart", Value::Number(0.8));
+    set(&mut scene, liquid, SlotId::Mixing, "mix_speed", Value::Number(0.2));
+    set(&mut scene, liquid, SlotId::Mixing, "mixes_when", Value::Choice("only_on_hits".into()));
+    set(&mut scene, liquid, SlotId::Feel, "weight", Value::Number(3.0));
+    let f = feel(&scene);
+    assert_eq!((f.keeps_apart, f.mix_speed, f.mixes_when, f.weight), (0.8, 0.2, MixWhen::Hits, 3.0));
+    let before = setup(&scene, &reg).print;
+    scene.things.get_mut(&liquid).unwrap().slots.remove(&SlotId::Mixing);
+    let none = feel(&scene);
+    assert_eq!((none.keeps_apart, none.mix_speed), (0.0, 0.0), "no Mixing card: no mixing");
+    assert_ne!(setup(&scene, &reg).print, before, "taking the Mixing card off restarts the water");
 }
 
 #[test]
@@ -440,6 +464,8 @@ fn what_restarts_the_draft() {
             ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"].contains(&key)
         }
         cards::MATERIAL => key == "wetting",
+        // (Un-mix is part 4.4's.)
+        cards::MIXING => super::MIXING_KEYS.contains(&key),
         cards::CARVE | cards::FEEL | cards::POUR | cards::DRAIN | cards::SHAPE | cards::LINE => true,
         _ => false,
     };

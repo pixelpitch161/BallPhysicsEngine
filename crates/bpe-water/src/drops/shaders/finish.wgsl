@@ -47,6 +47,11 @@ fn finish_at(i: u32, step: u32) -> Finished {
     var bend = vec2<f32>(0.0);
     // (Air under the water's open top: liquid over it that is not full, a film or the surface.)
     var film = false;
+    // (When the liquids' weights differ, each pair's terms are shared by mass, `pair_mass`; between
+    // two liquids that keep apart, the skin's terms count by `1 - keep`, so neither pulls the other.)
+    let by_mass = weighted();
+    let wi = inv_mass(kind);
+    let keeping = fr.feels[kind & 15u].c.y > 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         let y = c.y + dy;
         if y < 0 || y >= i32(fr.cells.y) {
@@ -76,8 +81,12 @@ fn finish_at(i: u32, step: u32) -> Finished {
                 far = 1e-5;
             }
             let vj = velb[j];
+            let kj = u32(vj.z);
             // (Air and liquid even out and close on each other only by a share: a bubble's drag.)
-            let wj = weight(far) * select(1.0, fr.air.w, air != is_air(u32(vj.z)));
+            var wj = weight(far) * select(1.0, fr.air.w, air != is_air(kj));
+            if by_mass {
+                wj = wj * pair_mass(wi, inv_mass(kj));
+            }
             let rel = vj.xy - vi;
             even = even + rel * wj;
             // (Drops with little liquid round them pull harder: a surface's drops have fewer
@@ -100,9 +109,22 @@ fn finish_at(i: u32, step: u32) -> Finished {
             // (Which way the liquid lies, by a smooth kernel: by the steep one it is mostly the
             // nearest drop's way, and the bend's pull turns the surface ragged.)
             let t = 1.0 - r2 / (h * h);
-            lies = lies - way * (far * 24.0 / (PI * h * h * h * h) * t * t);
-            pull = pull + thin * skin(far / h) * way;
-            bend = bend + thin * (me.zw - other.zw);
+            var share = thin;
+            if by_mass {
+                share = share * pair_mass(wi, inv_mass(kj));
+            }
+            if keeping || fr.feels[kj & 15u].c.y > 0.0 {
+                // (To the skin, a liquid kept apart is only `1 - keep` liquid: where it lies, how
+                // it pulls and how it bends.)
+                let apart = 1.0 - keep_of(kind, kj);
+                lies = lies - way * (apart * far * 24.0 / (PI * h * h * h * h) * t * t);
+                pull = pull + (share * apart) * skin(far / h) * way;
+                bend = bend + (share * apart) * (me.zw - other.zw);
+            } else {
+                lies = lies - way * (far * 24.0 / (PI * h * h * h * h) * t * t);
+                pull = pull + share * skin(far / h) * way;
+                bend = bend + share * (me.zw - other.zw);
+            }
         }
     }
     // (The evening of speeds is the liquid's own: its Thickness. Drops that meet do not bounce
@@ -207,5 +229,5 @@ fn cs_export(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = xv[i];
     let n = nf[i];
     let d = id_cur[i];
-    outd[k] = DropOut(p.xy, p.zw, vec4<f32>(n.z, 0.0, n.xy), 0.0, d.x, d.y, d.z);
+    outd[k] = DropOut(p.xy, p.zw, vec4<f32>(n.z, 0.0, n.xy), d.w, d.x, d.y, d.z);
 }

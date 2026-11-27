@@ -37,6 +37,8 @@ pub(super) struct ByDrop {
     pub(super) lamb: wgpu::Buffer,
     pub(super) velb: wgpu::Buffer,
     pub(super) idx: wgpu::Buffer,
+    /// A colour mix pass's new mixes (mix.wgsl).
+    pub(super) mixb: wgpu::Buffer,
 }
 
 impl ByDrop {
@@ -51,6 +53,7 @@ impl ByDrop {
             lamb: storage(device, "water multipliers", n * 16),
             velb: storage(device, "water speeds", n * 16),
             idx: storage(device, "water order", n * 4),
+            mixb: storage(device, "water mixes", n * 4),
         }
     }
 

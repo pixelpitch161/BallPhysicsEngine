@@ -1424,3 +1424,99 @@ video does.
   drain from 0).
 - `bpe-studio`: `a_picked_pour_says_what_it_cannot_do` (rain pours; a fed tap with no drain says so),
   `the_draft_plays_rain_and_drains`.
+
+## Part 4.2: Weight, Keeps apart and colour mixing (as built)
+
+Plan `docs/superpowers/plans/water-mode/part4-more-liquids.md` ("4.2"). Several liquids in one course: a heavy one
+sinks through a light one and oil floats, a liquid that keeps apart pulls into round drops in another, and colours
+run together where liquids meet, by Mix speed, the same in pixels at every detail.
+
+### Weight (`bpe-water drops/numbers.rs`, `common.wgsl`, `sweep.wgsl`, `finish.wgsl`, `deep.wgsl`)
+
+- `Feel::mass()` is the Weight clamped to `LIGHTEST` 0.1 to `HEAVIEST` 10; `FeelGpu.b.w` holds it and the new
+  `FeelGpu.c` `(1 / mass, keeps apart, the mixing root, Mixes when's code)`. `Fr.mixf.x` bit 0 (`weighted()`) is set
+  only when the liquids' masses differ, and **every mass term is behind it**: with one Weight (or one liquid) every
+  pass runs its old arithmetic, so a scene's drops are the same to the bit at any Weight
+  (`a_liquid_alone_moves_the_same_at_any_weight`, `two_liquids_alike_move_as_one`).
+- Weighted, the pressure is Macklin and Mueller's with masses: the multiplier's stiffness is
+  `w_i |sum g|² + sum w_j |g|²` and the softening `k.z w_i` (`w` one over the mass), and the shift is scaled by `w_i`,
+  so a heavy drop yields less and sinks. In `finish_at` each pair's evening, closing loss, skin pull and bend are
+  shared by `pair_mass = 2 w_i / (w_i + w_j)` (where the liquid lies is not: it is a way, not a force). **Air weighs
+  as the lightest liquid** (`Fr.mixs.zw`, its mass and one over it): masses count only against each other, so with
+  the flag on air behaves as it does with it off, and a bubble rises in two light liquids as in water (with air
+  weighing 1 it rose 15 % slower in liquids of 0.3). The deep part (`deep.wgsl`, `SUMS` 7) gathers each cell's mass (word 6;
+  the liquid's mass, air 1), keeps it in `dmass` (binding 31, 8 bytes a cell, written by `cs_deep_across`) and
+  scales a drop's push by the cell's mean mass over its own.
+
+### Keeps apart (`finish.wgsl`)
+
+- **Keeps apart** (0 to 1, the Mixing card): between two different liquids the larger of their two keeps counts.
+  To the skin such a neighbour is only `1 - keep` liquid: where the liquid lies, the skin's pull and the bend count
+  it by `1 - keep`, so each liquid has a surface against the other and a lump of one pulls into a round drop in the
+  other. Pressure and the evening of speeds still act between them (they don't pass through each other). Keeps apart
+  1 also stops colour crossing. Liquids that keep nothing apart run the old expressions (a branch, not a `× 1`).
+
+### Colour mixing (`bpe-water drops/shaders/mix.wgsl`, `drop.rs`, `drops/mod.rs`)
+
+- A drop's **mix word** is its id's 4th word (`Drop.mix`, which replaces the stretch `e`): bits 0 to 3 the other
+  liquid it carries, bits 16 to 31 its share of 65535, 0 unmixed (`mix_word`, `Drop::with_mix`, `mix_share`,
+  `mix_other`). Its motion stays its own liquid's; only its colour (and look) blends. Air keeps 0.
+- Once a frame, right after the last step's `Finish` (before `cs_drained` and trapped air's passes; `P::Mix` and
+  `P::MixKeep` sit before `Report` in the pass list so they get step bind groups), `Fr.mixf.y` passes of `cs_mix` (bindings 0, 1, 2, 5, 8, 30) and `cs_mix_keep` (0, 1, 5, 30) diffuse
+  every liquid drop's holding of each liquid toward its liquid neighbours' (a 16-entry array a drop): a pair's
+  share a pass is `gate (1 - keep) r_i r_j L`, `L = (2 / rho0) 30 / (pi h³) t² / max(d, 0.05 h)` (the spiky kernel's
+  Laplacian weight), scaled by `0.9 / S` where the shares' sum `S` passes 0.9. What isn't the drop's own liquid is
+  carried as the one it holds most of (ties to the lower number), so with three liquids the weaker's dye goes to the
+  stronger. `mixb` (binding 30, 4 bytes a drop) holds a pass's result. Sums run in sorted order, no random numbers.
+- **Mix speed** `s` is `D = 400 s²` px² a second (`MIX_MOST`; between two liquids `400 s_i s_j`): about 20 px of
+  blend in a second at 0.5, 40 px at 1. `Numbers::mix_passes` picks enough passes that one moves at most 0.45 of a
+  resting drop's colour (`MIX_STEP`, from `mix_at_rest`), 1 to 64 (`MOST_MIX_PASSES`; finer than about 1.5 px at Mix
+  speed 1 it mixes as fast as 64 passes allow); `mix_root` gives each liquid's `r` for that many. So the blend's
+  width is the same in pixels at 6 and 3 px cells (within 30 %, `mixing_is_the_same_at_every_detail`).
+- **Mixes when**: Always; **Only when stirred**, `smoothstep(STIR / 4, STIR, |v_i - v_j|)` with `STIR` 200 px/s (a
+  pool resting under gravity has neighbours moving against each other at up to about 35 px/s at 6 and 3 px, so its
+  jiggle is no stir); **Only on hits**, `smoothstep(HIT / 2, HIT, closing)`, `HIT` 150 px/s. The pair's gate is the
+  smaller of the two liquids' (`Fr.mixs`, in cells a second).
+- A restart point and a copy keep the mix words (the ids are kept whole). `Water::add` clears a word that names the
+  drop's own liquid (`cs_mix` would drop it), and air carries none.
+
+### The take and the drawings (`pack.wgsl`, `capture.rs`, `take/`, `draw/stored.rs`, `look.wgsl`, `plain.wgsl`)
+
+- **`TAKE_FORMAT` 3**: `cs_pack` packs 12 bytes a drop (the third word the mix word, air 0); a moment
+  (`FrameCodec`, magic `BPF2`) keeps 7 planes, the share as a byte (`round(share16 / 257)`) and the other liquid, so
+  a share under a 255th reads back unmixed. `TakeFrame.mixes`; `StoredDrops::set` takes them (the cli, the final
+  view and the kit's tests pass `frame.mixes`).
+- **The look**: `vs_look_splat` passes the other liquid and share (flat); `fs_look_splat` and `fs_look_weights` put
+  `k (1 - s)` in the own liquid's channel and `k s` in the other's, so every per-liquid look setting blends by the
+  weights; `vs_look_nodes` mixes sigma, glow and colour by `s`. Mist and sparks stay the drop's own liquid's.
+  **The plain drawing** (`vs_splat`, `mix_of`) mixes colour and deep by `s`. Both only when `s > 0`: an unmixed drop
+  draws what it drew before.
+- `draw/sets.rs` `mixed(cell)`: a pool of two liquids whose shares ramp to a half across its middle third, and a
+  half-mixed blob; the full-size look check's `water-mixed-c3` and `water-look-mixed-c3`.
+- The probe's `picture` no longer colours by the stretch (gone with `e`). Drops files (`stored::save_drops`) are
+  `BPEDROP2`, 28 bytes a drop with the mix word.
+
+### The cards and the setup (`bpe-kit modules/water/liquid.rs`, `things/water/draft.rs`, `draft/inputs.rs`)
+
+- **Mixing card**: the group "Meeting other liquids" (a section in `bpe-core` `SECTION_ORDER`) holds **Keeps apart** (new, 0 to 1), Mix speed and Mixes when;
+  Fades and Fades to are gone (they need drops that carry an age). Un-mix stays for part 4.4. The Feel card's
+  **Weight** is 0.1 to 10.
+- `LiquidSetup.mixing` (its Mixing card); `MIXING_KEYS` (`keeps_apart`, `mix_speed`, `mixes_when`) are in the print
+  and in each liquid's `inputs()` part and restart the draft; `inputs_at` fills the Feel's mixing fields. A Liquid
+  with no Mixing card mixes nothing and keeps nothing apart (taking the card off restarts the water).
+
+### Tests
+
+- `bpe-water/tests/mixing.rs` (on the card): a lone liquid at Weight 1, 4 and 0.3 and two alike liquids move the
+  same to the bit; a Weight 3 block sinks through a Weight 1 pool at 6 and 3 px, and in a pool deep enough for the
+  deep part; oil (0.8) rises from under water; a kept-apart square pulls round (40.3 to 33.0 px in a quarter of a
+  second, a round drop's reach 33.9) where a not-kept one stays (42.2); colours run together by the line, stay
+  their own 80 px off and keep each liquid's amount within 1 %; the blend is as wide at 6 and 3 px; Mix speed 0 and
+  Keeps apart 1 cross no colour; resting liquids that mix only when stirred or on hits stay apart, and a lump
+  falling in mixes them; a restart point and a copy keep the mixes; a bubble rises as fast in liquids of Weight 0.3
+  and 0.31 as in water (within 5 %). Unit tests: the pass count
+  (`numbers.rs`), a moment keeps each drop's mix (`take/frame.rs`).
+- `tests/look.rs` `a_mixed_drop_draws_between_its_liquids`, `tests/plain.rs` `a_mixed_pool_draws_between_its_liquids`.
+- `bpe-kit`: `the_mixing_card_reaches_the_water` (and none with no Mixing card); `what_restarts_the_draft` counts the
+  Mixing card's three.
+
