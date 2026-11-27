@@ -5,6 +5,11 @@ all light ideas https://claude.ai/artifact/KKxkeDk62xp9VHPKeHJerz, the Light Tab
 https://claude.ai/artifact/SeWYB621hhg3U9PCMjJF1e, the Lighthouse and Slow Light
 https://claude.ai/artifact/XZC7g6MDvcz2gkJypcUDZb. Their sources are in the project files under
 `ballphysics/new-modes/`. The sketches are small JavaScript sims; they show the behaviour, not the engine.
+The editor mockups (2026-11-26/27, with Aedan's picks) are https://claude.ai/artifact/T2QcxmJC6uwnLupfXjKNE9,
+source in the project files under `ballphysics/light-mode/`.
+
+**Changed 2026-11-27:** slow motion is its own mode, **Slow light**, beside Light, at Aedan's request. Sections,
+ramps and the two clocks are gone; section 7 describes the new shape.
 
 Every number marked *target* or *estimate* is unmeasured. Lines marked **(My call)** are choices Aedan was not
 asked about; they are cheap to change before the part that builds them.
@@ -22,19 +27,24 @@ Aedan, 2026-11-26, in order:
   during the video. Tools to make rigs (object X orbits object Y). Real time and both ways of slow motion you showed
   here. The most important thing to get right is the quality of the light simulation itself, and the different
   things it refracts/reflects off of through."
+- (2026-11-27, after the editor mockups) "I'd rather have a separate mode for the slow motion stuff, because I
+  can't think of a situation where I'd want both real time and slow motion lights in the same video. That way the
+  slow motion mode could have slightly different settings for the lights and be more intuitive rather than having
+  it be in the timeline."
 
 Standing rules that apply (project memory): it must feel like a real simulation, not a scripted video; simulation
 quality comes before music timing; as much customisation as possible, psychedelic and experimental looks welcome.
 
 Success: Aedan picks **Light** for a new scene, drops a white beam and a ring of six prisms on the table, makes the
-ring spin with one rig tool, and sees the rainbows sweep round live. Aedan adds a slow-motion section, puts a flash
-in it, and watches a single flash cross the wheel, slow down in the glass and split into colours, then the wheel
-speeds up again. Aedan exports a 1080 x 1920 mp4 that is exactly what the preview showed, with no grain.
+ring spin with one rig tool, and sees the rainbows sweep round live. Aedan starts a **Slow light** scene with the
+same pieces, sets the beam to one flash, and watches it cross the wheel, slow down in the glass and split into
+colours; then gives the wheel a spin and watches the crawling beams curl. Aedan exports a 1080 x 1920 mp4 that is exactly what the preview showed, with no grain.
 
 ## Goals
 
-- **Scene type.** A new scene is Balls, Water or **Light**. A Light scene has its own things, its own engine and
-  its own editor stage. Balls and Water scenes do not change.
+- **Scene types.** A new scene is Balls, Water, **Light** or **Slow light**. Light and Slow light share their
+  things, engine and editor stage; Slow light runs the whole video slowed down (section 7). Balls and Water scenes
+  do not change.
 - **A light table.** A flat table seen from above, in a dark room with a little haze, so light shows everywhere it
   travels. Pieces are placed, dragged and turned on it like the Light Table sketch.
 - **Light quality first.** Light is simulated, never painted on: every beam, rainbow, focus point and shadow is
@@ -44,9 +54,9 @@ speeds up again. Aedan exports a 1080 x 1920 mp4 that is exactly what the previe
 - **Anything moves.** Any piece, light included, can move, turn and scale during the video.
 - **Rig tools**: spin, orbit ("object X orbits object Y"), swing, slide along a path, attach, gear links, aim at,
   copy around a centre, and chains of these.
-- **Three ways time runs**: real time; **flash slow motion** (real light speed, about a billion times slower, the
-  table frozen while light crosses it); **slowed light** (light speed turned down until moving pieces bend light
-  that is already on its way).
+- **Two modes for time**: **Light** runs in real time. **Slow light** slows the whole video until light visibly
+  travels; pieces that stand still give true slow motion (light flying through a frozen table), and pieces given a
+  move meet the crawling light where they are, so beams curl (the "what if").
 - **Camera and looks**: pan and zoom, exposure, long exposure, film glow, haze, and looks from lab bench to full
   psychedelic. Shared with other scenes: keyframes and the timeline, undo, copy and paste of values, Effects, Grade
   and Grade mode, export.
@@ -95,7 +105,7 @@ speeds up again. Aedan exports a 1080 x 1920 mp4 that is exactly what the previe
    from one engine.
 2. **The flat table with a 3D look painted on the pieces.** Not a starting point; a later layer on top of 1.
 3. **A full 3D scene with a camera.** Most photographic, but 3D light takes many times longer to come out clean,
-   flash slow motion becomes very costly, and the editor would have to be 3D.
+   Slow light becomes very costly, and the editor would have to be 3D.
 
 Inside approach 1 there are two ways to turn traced light into a picture, and part 1 builds both and keeps the
 better (section 2, "Drawing the light").
@@ -104,11 +114,14 @@ better (section 2, "Drawing the light").
 
 ### 1. Scene type and the Light scene's things
 
-- `SimKind` gains `Light` (after `Water`; the field already defaults to Balls and is left out of a Balls file).
+- `SimKind` gains `Light` and `SlowLight` (after `Water`; the field already defaults to Balls and is left out of a
+  Balls file). Both allow the same Light thing kinds; they differ in the root's cards, each light's timing card and
+  the timeline (sections 4, 7, 8) **(My call: two kinds rather than one kind with a switch, so the chooser, the
+  toolbar chip and the scene-kind rule treat Slow light as its own mode, as Aedan asked)**.
   `Scene::FORMAT` moves on only if an older program would otherwise misread a Light scene **(My call: move it to
   14 so 13-only programs refuse it cleanly)**.
-- **The chooser** gains a third tile, Light, with its own starting looks (section 6). File > New is the same
-  chooser.
+- **The chooser** gains two tiles, Light and Slow light, which share the starting looks (section 6). File > New
+  is the same chooser.
 - The root is the same Scene settings thing with the same `SceneSettings` (Width, Height, fps, Length), shown as
   Water mode shows them. The Camera thing is shared, with its ball-only settings hidden.
 - A Light scene is a tree of things that own their settings, so the inspector, right-click Copy Value / Paste
@@ -118,16 +131,15 @@ better (section 2, "Drawing the light").
 
 | Thing | What it is | Cards |
 | --- | --- | --- |
-| Scene settings (root) | The table, the room and the picture | its own settings as today, **Table** (size in metres, walls, floor), **Air** (haze, haze patches), **Engine** (quality, bounces, colour split, time), Effects, Grade |
+| Scene settings (root) | The table, the room and the picture | its own settings as today, **Table** (size in metres, walls, floor), **Air** (haze, haze patches), **Engine** (quality, bounces, colour split), in Slow light also **Light speed** (section 7), Effects, Grade |
 | Camera | Shared | Camera, **Exposure** (exposure, long exposure, film glow, tone) |
-| Light | A source: white beam, laser, lamp, spotlight, strip, sun, panel | **Source** (type and shape), **Spectrum**, **Switching** (steady, flash, blink, off and on), Moves |
+| Light | A source: white beam, laser, lamp, spotlight, strip, sun, panel | **Source** (type and shape), **Spectrum**, **Switching** in Light or **Fires** in Slow light (section 4), Moves |
 | Piece | Anything light meets: glass, mirror, filter, grating, stop, screen | **Shape**, **Material**, Moves |
 | Rig | An empty centre that pieces can be attached to and that can itself move: the hub of a wheel, a pendulum's pivot | Moves |
 | Volume | A patch of something light passes through: smoke, milky water, fog | **Shape**, **Medium**, Moves |
-| Slow-motion section | A stretch of the video where time slows | **Section** (flash slow motion or slowed light, the speed ramps, the light lane) |
 | Folder | Grouping | none |
 
-- Kind ids start with `light_` (`light_source`, `light_piece`, `light_rig`, `light_volume`, `light_section`), as
+- Kind ids start with `light_` (`light_source`, `light_piece`, `light_rig`, `light_volume`), as
   Water's start with `water_`, so they never clash with the Balls mode's own Light and Rig kinds.
 - New `SlotId`s for the new cards; `Form`, `Material`, `Moves` and `Main` already exist from Water mode and are
   reused where the meaning matches. Light's cards must use section names no ball setting groups under (the Water
@@ -271,8 +283,13 @@ coloured glass, frosted glass, haze and smoke. The rest in part 8.
   Blackbody at any temperature, and a drawn custom spectrum.
 - **Brightness** in one number per light, with the haze and exposure doing the rest, so lights mix as real light
   does.
-- **Switching** (in real time and in slow motion): Steady, Flash (when and how long), Blink (on time, off time),
-  Off then on. Brightness is also keyframed.
+- **Switching** (Light mode): Steady, Blink (on time, off time), Off then on. Brightness is also keyframed.
+- **Fires** (Slow light mode, in place of Switching) **(My call, shown on the mockup page)**: **Steady** (already
+  shining everywhere when the video starts), **One flash** (at, pulse length), **Flashes** (first flash, pulse
+  length, every), **Switch on** (at), **Switch off** (at). The pulse length is set in video seconds and also shown
+  as how long the streak of light is on the table and how long the flash would be in real life ("a streak 7.5 cm
+  long: a 0.25 ns flash"). Each light's lane on the timeline draws what it sends over time, and its flashes drag
+  there too.
 
 ### 5. Placing, motion and rigs
 
@@ -303,15 +320,15 @@ coloured glass, frosted glass, haze and smoke. The rest in part 8.
 
 - **Motion is worked out from time alone.** Every rig gives the pose of every thing for any moment directly, with
   no history (a pendulum dying down has a formula, or is worked out once on the processor and kept as a table).
-  That is what lets the light engine pose the table at any moment inside a frame, lets flash slow motion freeze
-  the table at an exact instant, and lets export draw frames in any order. Attach chains are worked out from the
+  That is what lets the light engine pose the table at any moment inside a frame, lets Slow light meet each
+  piece where it is when the light arrives, and lets export draw frames in any order. Attach chains are worked out from the
   root down; a loop (X attached to Y attached to X) is refused with a sentence.
 - **Nothing is scripted.** The light is never told where to go; rigs only move pieces, and the light does the
   rest. Switching is a setting of each light.
 
 ### 6. The table, the room and the camera
 
-- **Table**: its size in metres (default 1 m tall, the width from the scene's shape), used for slow-motion
+- **Table**: its size in metres (default 1 m tall, the width from the scene's shape), used for Slow light's
   timings. **Walls**: Open, Black, White or Mirror, each side on its own. **Floor**: dark, a colour, or a picture.
   Tables bigger than one screen with a travelling camera come later; the engine works in table units from the
   start so that is only an editor part **(My call)**.
@@ -326,96 +343,101 @@ coloured glass, frosted glass, haze and smoke. The rest in part 8.
   (black, strong glow, saturated), Blueprint (blue table, white outlines), Stained glass (warm, soft), Full
   psychedelic (colour maps on), and Plain.
 
-### 7. Time: real time and the two slow motions
+### 7. Time: Light is real time, Slow light is its own mode
 
-- **Real time**: light is everywhere at once each frame (it crosses a 1 m table in about 3.3 ns).
-- **Slow-motion section** (a thing, shown as a range on its own timeline lane): where in the video it sits, its
-  kind, the ramp in and the ramp out (how long, and the curve), and its own settings.
+Aedan asked (2026-11-27) for slow motion to be its own mode rather than sections on the timeline: a video is either
+real time or slow, never both, and a slow mode can give lights settings that suit it. So there are no sections,
+ramps or second clock. (If a video ever needs both, Video mode can put a Light scene and a Slow light scene back to
+back with a transition, `docs/notes/video.md`.)
 
-**Two clocks** **(My call)**:
+**Light** (real time): light is everywhere at once each frame (it crosses a 1 m table in about 3.3 ns). Pieces,
+rigs and keyframes all run on the one timeline.
 
-- **Video time** is the timeline. The Camera, Effects, Grade and the sections themselves run on it.
-- **Table time** is what the pieces, rigs, keyframes on pieces and lights, and each light's Switching (outside
-  sections) run on. Outside sections it moves with video time. Through a flash slow-motion section it slows on
-  the ramp in, stands still in the middle and picks up again on the ramp out, so **the table carries on from where
-  it stopped**: a section works like a freeze inserted into the video, and everything on the table after it plays
-  that much later in the video. Adding, lengthening or removing a section moves the later table keyframes on the
-  timeline with it, so what Aedan sees after the section is unchanged, only later.
-- **Keyframes are dragged in video time** and stored in table time. The timeline draws each table keyframe at its
-  video time. A table keyframe cannot be placed in a section's still middle (the table isn't moving there); in a
-  ramp it can, and plays at the ramp's speed.
-- **Slowed light leaves the table clock alone**: pieces keep moving at their normal speed. Its ramps change the
-  light's speed instead, from real speed down to the section's set speed and back, so the video's length doesn't
-  change.
-- Export turns each frame number into a video time and from it into table time (and, in a flash section, a light
-  time in nanoseconds), so any frame can still be drawn on its own.
+**Slow light**: the whole video is slow.
 
-**Flash slow motion** (light at its real speed):
-
-- Inside the section time slows to about a billion times slower **(settable, from a million to ten billion)**.
-  The table is frozen at the section's moment (every piece holds its pose), and the camera can still move
-  ("bullet time").
-- Each path records when light reaches every point on it, using how fast light really travels in each material:
-  three quarters of its speed in water, two thirds in crown glass, about two fifths in diamond, and slower for
-  blue than red (the group speed from the index curve). A frame at a moment shows only the light that is in the
-  air at that moment.
-- **The section's light lane** is measured in nanoseconds and holds each light's switching for the section:
-  switch off, a flash (how long), switch on, blinks. With the lamp steady and nothing switching, slow motion looks
-  like a frozen picture, so the lane is what shows light travelling. Several flashes and lights can overlap.
-- **Echoes**: every surface sends a share back. In the light-in-flight sketch they are exact shares, not chance,
-  so faint echoes come out clean. They follow from the materials; the Engine card can hide them only for show.
-- **Frozen means cheap.** All the section's paths are traced once, with their times, and reused for every frame,
-  so its paths can be far more numerous than a normal frame's. This is where the highest fidelity comes from
-  (*target*: the Final light-in-flight frame of the Lighthouse scene is clean at full size; numbers from part 6).
-- **Camera delay** (off by default): light from far parts of the table reaches a camera above it later, which
-  bends the fronts as real high-speed footage of light shows; the camera's height sets how much.
-- The ramp in and out runs the table's own motion slower and slower and then faster again, so the wheel slows to
-  a stop and speeds back up, and the time readout can be shown or hidden.
-
-**Slowed light** (a "what if": light speed turned down):
-
-- Inside the section light travels at a set speed (**Light crosses the table in**, from 0.5 to 30 seconds) while
-  the pieces keep moving at their own speed. Light bends and bounces off each piece where that piece is when the
-  light arrives, so a turning wheel curls the beams into spirals and a spinning mirror throws galaxy arms.
-- Every rule of section 3 still holds; only the speed changes. **Doppler colours** (off by default): light
-  reflected off a mirror moving at a fair share of the slowed light speed shifts colour, as real light would.
-- Here light needs its history, so it is stepped forward through the section on the card with checkpoints every
-  second; scrubbing goes back to the nearest checkpoint and steps forward. Each bit of light lives at its own
-  moment inside its frame, so beams stay continuous (the slowed-light sketch's lesson).
-- A section can start from light that is already everywhere (the moment before, in real time) or from dark.
+- **Light speed** (a card on Scene settings): **Crosses the table in**, from 0.5 to 30 seconds (default 4 s),
+  shown beside "about 1,200,000,000 times slower than real light". One setting for the whole video **(My call)**.
+- **How light looks** (same card): **Afterglow** (how long a place keeps glowing after light has passed, 0 to 2
+  s) and **Front glow** (how bright the leading edge of a flash or switch-on is). Both are drawn from the light's
+  own timing, not painted.
+- **Pieces stand still unless given a move** **(My call: one mode holds both kinds Aedan asked for)**:
+  - A table where nothing moves is **true slow motion**: light at its real relative speed in each material (three
+    quarters in water, two thirds in crown glass, about two fifths in diamond, blue slower than red, from the group
+    index), flying through a frozen table. All paths are traced once with the time light reaches every point and
+    drawn exactly for any moment, so scrubbing is instant and the path count can be far higher than a real-time
+    frame's. Echoes are exact shares, so faint ones come out clean. This is where the highest fidelity comes from
+    (*target*: the Final frame of a flash in the Lighthouse is clean at full size; numbers from the part that
+    builds it).
+  - Giving any piece a move (spin, orbit, keyframes) makes it meet the crawling light where it is when the light
+    arrives, so a turning wheel curls beams into spirals and a spinning mirror throws galaxy arms (the "what if",
+    once called slowed light). Here light needs its history: it is stepped forward on the card, with checkpoints
+    every second; scrubbing goes back to the nearest checkpoint and steps forward. Each bit of light lives at its
+    own moment inside its frame, so beams stay continuous (the sketch's lesson). The mockup steps about 4,000 bits
+    of light and rebuilds a moment in about 0.1 s on a laptop processor *(estimate for the real engine: faster, on
+    the card)*.
+  - **Doppler colours** (off by default): light reflected off a mirror moving at a fair share of the light speed
+    shifts colour, as real light would.
+- **Each light's Fires** (section 4) says when it sends light. A light left Steady fills the table from the start.
+- **Camera delay** (off by default): light from far parts of the table reaches a camera above it later, which bends
+  the fronts as real high-speed footage of light shows; the camera's height sets how much.
+- Export turns each frame number into a video time; a still table needs nothing else, a moving one steps from the
+  nearest checkpoint, so any frame can still be drawn on its own.
 
 ### 8. The editor
 
-- **A Light scene has its own stage** like Water mode's (`water_mode/stage.rs`): the table fitted to the room, the
-  camera's 9:16 shot, the live light under the pieces' outlines, and a tool rail. The Light stage is a sibling of
-  the Water stage and reuses its view and rail code where it fits.
-- **Rail**: Select, Light, Glass, Mirror, Filter, Screen, Volume, Pen (draw any glass or mirror shape), Rig (spin,
-  orbit, attach, copy around, by dragging from one thing to another), Camera.
+Aedan's picks on the mockup page (2026-11-27): **layout A**, the **piece pictures**, the **material list** (not
+tiles), all three **rig tools** (drag to link, Copy around and Mirror copy, handles with "where things go"), the
+**light probe**, the **status readout** and the **keys**. The New scene window was a maybe; layouts B and C were
+not picked.
+
+- **Layout A, like Water mode** (Aedan picked it there too): the tree on the left, the tool rail down the stage's
+  left edge, the tool's options in a strip above the stage, the inspector on the right, the timeline below. The
+  Light stage is a sibling of the Water stage (`water_mode/stage.rs`) and reuses its view and rail code where it
+  fits: the table fitted to the room, the camera's 9:16 shot as a frame, the live light under the pieces' outlines.
+  Light and Slow light use the same stage.
+- **Rail**: Select, Light, Glass, Mirror, Filter, Screen, Volume, Pen (draw any glass or mirror shape), Rig,
+  Camera. Picking Light, Glass, Mirror, Filter or Screen fills the options strip with that group's pieces, each
+  with a **picture made by the real engine** of what it does to light (a prism splitting a beam, a lens focusing,
+  a grating fanning rainbows); later pieces show greyed.
 - **Palette** of ready pieces: Prisms (equilateral, right angle, any angle), Lenses (convex, concave, flat on one
   side, meniscus, a Fresnel lens, a rod), Ball, Half ball, Block, Rod and bent rod, Gem (a cut diamond outline),
   Glass ring, Flat, curved, parabolic and oval mirrors, Mirror drum (any number of sides), Corner reflector, Half
   mirror, Grating, CD, Soap film, Slit, Blades, Screen, Black stop, Smoke patch, Tank of milky water.
-- **Handles** as in the Light Table sketch: drag to move, a round handle to turn, corners to scale; rigs show
-  their own handles (an orbit's ring and radius, a spin's arrow), and motion paths show as faint trails.
-- **Keyboard**: arrows move, `[` `]` turn, as in the sketch.
-- **Status**: Draft while moving, then "Gathering" and "Clean" as the still picture builds.
+- **Material list**: the Material card opens a list grouped by family (Liquids and ice, Glass and crystal,
+  Coloured and frosted, Mirrors and metal, Coatings and gratings, Where light lands), each row with an engine-made
+  picture and plain facts ("Bends 1.517 · Splits colour a little · Light slows to 65%"). Several pieces on one rig
+  can be changed together with a tick box.
+- **Rig tool** with options Orbit, Ride on, Aim at, Spin, then Copy around (with a count) and Mirror copy: drag
+  from the thing that moves to what it goes round, rides on or points at (or to an empty spot for a point); a
+  dashed line and a label ("go round Mirror") show what the drag will do. The inspector's **Moves** section lists
+  each move with Stop / Let go and has + Spin, + Orbit, + Ride on, + Aim at (more later).
+- **Handles**: drag to move, a round handle to turn, corners to scale; a picked moving thing shows its own handles
+  (a spin's arrow you drag to change turns a minute, an orbit's ring and a square to change its size). **Show where
+  things go** draws faint ghosts of where the picked thing will be over the next seconds.
+- **Keyboard**: arrows move (Shift further), `[` `]` turn, N picks the next, Delete removes, Space plays, Esc goes
+  back to Select.
+- **Status**: Draft while moving (it plays live), then "Gathering light" and "Clean" as the still picture builds.
+  In Slow light it says whether the table stands still or pieces move, and how many times slower than real light.
 - **Light probe** **(My call)**: hover a beam to see its colours as a small spectrum and its strength.
-- **Timeline**: keyframes as today, plus the Slow-motion lane with each section and, when one is opened, its
-  nanosecond light lane.
-- Toolbar: a **Light scene** chip, **Quality**, **Export**. Build | Grade modes; Grade works on the light picture
-  with the masks the Light renderer hands the shared finish (section 9).
+- **Timeline**: in Light, keyframes as today. In Slow light: the seconds ruler with **light time in nanoseconds**
+  under it, each light's lane drawing what it sends over time (flashes as pulses, drag them), a **Light reaches**
+  lane marking when the first flash reaches each piece or rig, and a lane for each moving rig.
+- Toolbar: a **Light scene** or **Slow light scene** chip, **Quality**, **Export**. Build | Grade modes; Grade works
+  on the light picture with the masks the Light renderer hands the shared finish (section 9).
 
 ### 9. Where the code goes
 
-- `bpe-core`: `SimKind::Light`, the new `SlotId`s, the Light things' data (outlines, motion lists, sections).
+- `bpe-core`: `SimKind::Light` and `SimKind::SlowLight`, the new `SlotId`s, the Light things' data (outlines,
+  motion lists, Fires).
 - **`bpe-light`** (new crate): the engine (`trace/`, WGSL compute), materials and spectra (`optics/`: index curves,
   metal colour curves, filter curves, CIE curves, light spectra), drawing (`draw/`: lines, fans, tone and colour
-  mapping), time (`time/`: arrival times, section frames, slowed-light stepping and checkpoints). It hands the
+  mapping), time (`time/`: arrival times, still-table flight frames, moving-table stepping and checkpoints). It hands the
   shared finish a colour picture, a light picture and silhouettes for each piece, as Water mode's renderer does
   (`2026-11-24-water-mode-design.md`, section 6, step 7).
 - `bpe-kit`: the Light thing kinds, cards and settings (`things/light_*`, `modules/light_*`), rig motion (worked
   out with `bpe_core::maths`), the looks table, the palette's ready pieces.
-- `bpe-studio`: `light_mode/` (stage, rail, handles, palette, probe, sections lane).
+- `bpe-studio`: `light_mode/` (stage, rail, options strip, handles, palette, material list, probe, Slow light
+  timeline lanes).
 - `bpe-cli`: a Light clip source in `FrameMaker`, so a Light scene exports. Water mode needs the same clip source
   (its part 8); whichever mode gets there first builds it for both **(My call)**.
 
@@ -445,18 +467,20 @@ review.
    better kept; whole-number sums; quality levels set from measurements; test scenes (prism, lens focus, glass
    ball, a six-prism lighthouse posed at several moments, mirror room). Ends with full-size pictures and a short
    film for Aedan from a test harness, and a verdict on the drawing method.
-2. **Light scenes open.** `SimKind::Light`, the chooser tile, the Light things and cards as data, the Light stage
-   with the rail, the engine's light live under the pieces, Draft and Clean when still.
-3. **Pieces and materials, first set.** The palette, handles and pen shapes; the materials listed at the end of
-   section 3; real light spectra; the light probe.
+2. **Light scenes open.** `SimKind::Light`, the Light tile, the Light things and cards as data, the Light stage in
+   layout A with the rail and options strip, the engine's light live under the pieces, Draft and Clean when still.
+3. **Pieces and materials, first set.** The palette with engine-made pictures, handles and pen shapes; the
+   materials listed at the end of section 3 and the material list; real light spectra; the light probe.
 4. **Motion and rigs.** Keyframed poses, every motion in the table of section 5, attach chains, Copy around,
    Mirror copy and Re-space, editing several selected pieces at once, motion trails, the shutter and motion blur.
 5. **Camera, looks and export.** Camera moves, the Exposure card, film glow, colour mapping and tone, the looks,
    the shared finish with Effects and Grade, the Light clip source and mp4 export. **Aedan can export the Rainbow
    Lighthouse video here.**
-6. **Flash slow motion.** Arrival times, group speeds, the section thing and lane, the two clocks, switching in
-   nanoseconds, ramps, exact echoes, frozen-table tracing at high path counts, camera delay, bullet time.
-7. **Slowed light.** Light speed, stepping with checkpoints, light meeting moving pieces, Doppler colours.
+6. **Slow light, still table.** `SimKind::SlowLight` and its tile, the Light speed card, each light's Fires,
+   arrival times and group speeds, exact echoes, still-table tracing at high path counts, the Slow light timeline
+   lanes (light time, Fires lanes, Light reaches), camera delay. **Aedan can export a flash crossing the
+   Lighthouse here.**
+7. **Slow light, moving pieces.** Stepping with checkpoints, light meeting moving pieces, Doppler colours.
 8. **Materials, second set.** Dichroic glass, thin films, gratings and CD, fluorescence and ultraviolet lights,
    corner reflectors, opal, milky water, the remaining glass kinds and metals.
 
@@ -474,8 +498,8 @@ part 2b also touches, so the two are not run at the same time.
   sizes and scale so a frame cannot overflow, and tests a laser focused to a point.
 - **Screen colours for laser light.** Pure colours lie outside what a screen shows; mapping them badly makes
   lasers look flat or wrong. Part 1 shows Aedan red, green and blue lasers and a rainbow at full size.
-- **Slowed light is the one part with history**, so scrubbing it is slower than the rest. Checkpoints are the cure;
-  if stepping is too slow at Final the section draws at Good while editing.
+- **Slow light with moving pieces is the one part with history**, so scrubbing it is slower than the rest.
+  Checkpoints are the cure; if stepping is too slow at Final it draws at Good while editing.
 - **Many pieces.** Hundreds of pieces with long bounce chains may be slow. The search structure and the bounce
   limit are the levers, measured in part 1 with a mirror room.
 
@@ -485,9 +509,10 @@ part 2b also touches, so the two are not run at the same time.
 - First video: most like the Rainbow Lighthouse; slow motion that shows light travelling.
 - Goal: placeable pieces, any of which move or turn; rig tools ("object X orbits object Y"); real time and both
   slow motions; the quality of the light simulation and the range of things it meets matter most.
+- (2026-11-27) Slow motion is its own mode, not timeline sections. Editor picks: layout A, piece pictures, the
+  material list, all three rig tools, the probe, the status readout and the keys (section 8).
 
 Told to Aedan as my calls, open to change: a flat table rather than 3D, pieces move by rigs only (no falling and
-colliding yet), no sound at first, Light as a third choice beside Balls and Water. Settled after the builder
-check, also open to change: a flash slow-motion section works like an inserted freeze (the table carries on from
-where it stopped, so later table keyframes move later), and Copy around makes separate pieces on a Rig, edited
+colliding yet), no sound at first, Light and Slow light as choices beside Balls and Water. Settled after the builder
+check, also open to change: Copy around makes separate pieces on a Rig, edited
 together by selecting them, rather than live copies.
