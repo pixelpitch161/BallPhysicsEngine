@@ -9,7 +9,9 @@ The editor mockups (2026-11-26/27, with Aedan's picks) are https://claude.ai/art
 source in the project files under `ballphysics/light-mode/`.
 
 **Changed 2026-11-27:** slow motion is its own mode, **Slow light**, beside Light, at Aedan's request. Sections,
-ramps and the two clocks are gone; section 7 describes the new shape.
+ramps and the two clocks are gone; section 7 describes the new shape. Later the same day Aedan asked for the
+video's Length to be set as normal and the light speed to be its own setting, so nothing about the timeline
+comes from the light.
 
 Every number marked *target* or *estimate* is unmeasured. Lines marked **(My call)** are choices Aedan was not
 asked about; they are cheap to change before the part that builds them.
@@ -31,6 +33,8 @@ Aedan, 2026-11-26, in order:
   can't think of a situation where I'd want both real time and slow motion lights in the same video. That way the
   slow motion mode could have slightly different settings for the lights and be more intuitive rather than having
   it be in the timeline."
+- (2026-11-27, on the Slow light mockup) "instead of having the scene time be determined by the light, the scene
+  time is set like normal, and a light simulation speed is chosen separately."
 
 Standing rules that apply (project memory): it must feel like a real simulation, not a scripted video; simulation
 quality comes before music timing; as much customisation as possible, psychedelic and experimental looks welcome.
@@ -131,7 +135,7 @@ better (section 2, "Drawing the light").
 
 | Thing | What it is | Cards |
 | --- | --- | --- |
-| Scene settings (root) | The table, the room and the picture | its own settings as today, **Table** (size in metres, walls, floor), **Air** (haze, haze patches), **Engine** (quality, bounces, colour split), in Slow light also **Light speed** (section 7), Effects, Grade |
+| Scene settings (root) | The table, the room and the picture | its own settings as today, **Table** (size in metres, walls, floor), **Air** (haze, haze patches), **Engine** (quality, bounces, colour split), in Slow light also **Light speed** (section 7) beside the usual Video **Length**, Effects, Grade |
 | Camera | Shared | Camera, **Exposure** (exposure, long exposure, film glow, tone) |
 | Light | A source: white beam, laser, lamp, spotlight, strip, sun, panel | **Source** (type and shape), **Spectrum**, **Switching** in Light or **Fires** in Slow light (section 4), Moves |
 | Piece | Anything light meets: glass, mirror, filter, grating, stop, screen | **Shape**, **Material**, Moves |
@@ -355,8 +359,13 @@ rigs and keyframes all run on the one timeline.
 
 **Slow light**: the whole video is slow.
 
-- **Light speed** (a card on Scene settings): **Crosses the table in**, from 0.5 to 30 seconds (default 4 s),
-  shown beside "about 1,200,000,000 times slower than real light". One setting for the whole video **(My call)**.
+- **Length and Light speed are separate** (Aedan, 2026-11-27). The video's **Length** is the usual Scene setting
+  (Video, 1 to 600 s), and the timeline is in plain seconds as in every mode. **Light speed** is its own card on
+  Scene settings with one setting, **Speed**: how far light moves in one second of video, in cm a second on the
+  1 m table (5 to 150, default 25). Under it a note says what that means: "crosses the table in 4.0 s, about
+  1,200,000,000 times slower than real light". Changing the speed never changes the Length or the times on the
+  timeline (flashes, keyframes), and changing the Length never changes the speed. One speed for the whole video
+  **(My call; it could take keyframes later if wanted)**.
 - **How light looks** (same card): **Afterglow** (how long a place keeps glowing after light has passed, 0 to 2
   s) and **Front glow** (how bright the leading edge of a flash or switch-on is). Both are drawn from the light's
   own timing, not painted.
@@ -388,7 +397,9 @@ rigs and keyframes all run on the one timeline.
 Aedan's picks on the mockup page (2026-11-27): **layout A**, the **piece pictures**, the **material list** (not
 tiles), all three **rig tools** (drag to link, Copy around and Mirror copy, handles with "where things go"), the
 **light probe**, the **status readout** and the **keys**. The New scene window was a maybe; layouts B and C were
-not picked.
+not picked. For Slow light: the mode itself, its own tile, **Fires** on the light's card, flashes on the light's
+lane, moving pieces curling the light, and **Afterglow** and **Front glow** were yes; the light speed setting was a
+maybe, with the change in section 7 (Length set as normal, Light speed chosen separately).
 
 - **Layout A, like Water mode** (Aedan picked it there too): the tree on the left, the tool rail down the stage's
   left edge, the tool's options in a strip above the stage, the inspector on the right, the timeline below. The
@@ -417,11 +428,11 @@ not picked.
 - **Keyboard**: arrows move (Shift further), `[` `]` turn, N picks the next, Delete removes, Space plays, Esc goes
   back to Select.
 - **Status**: Draft while moving (it plays live), then "Gathering light" and "Clean" as the still picture builds.
-  In Slow light it says whether the table stands still or pieces move, and how many times slower than real light.
+  In Slow light it says whether the table stands still or pieces move, and the light speed.
 - **Light probe** **(My call)**: hover a beam to see its colours as a small spectrum and its strength.
-- **Timeline**: in Light, keyframes as today. In Slow light: the seconds ruler with **light time in nanoseconds**
-  under it, each light's lane drawing what it sends over time (flashes as pulses, drag them), a **Light reaches**
-  lane marking when the first flash reaches each piece or rig, and a lane for each moving rig.
+- **Timeline**: in Light, keyframes as today. In Slow light: the same plain seconds ruler (no light-time ruler),
+  each light's lane drawing what it sends over time (flashes as pulses, drag them), a **Light reaches** lane
+  marking when the first flash reaches each piece or rig, and a lane for each moving rig.
 - Toolbar: a **Light scene** or **Slow light scene** chip, **Quality**, **Export**. Build | Grade modes; Grade works
   on the light picture with the masks the Light renderer hands the shared finish (section 9).
 
@@ -478,7 +489,7 @@ review.
    Lighthouse video here.**
 6. **Slow light, still table.** `SimKind::SlowLight` and its tile, the Light speed card, each light's Fires,
    arrival times and group speeds, exact echoes, still-table tracing at high path counts, the Slow light timeline
-   lanes (light time, Fires lanes, Light reaches), camera delay. **Aedan can export a flash crossing the
+   lanes (Fires lanes, Light reaches), camera delay. **Aedan can export a flash crossing the
    Lighthouse here.**
 7. **Slow light, moving pieces.** Stepping with checkpoints, light meeting moving pieces, Doppler colours.
 8. **Materials, second set.** Dichroic glass, thin films, gratings and CD, fluorescence and ultraviolet lights,
@@ -511,6 +522,8 @@ part 2b also touches, so the two are not run at the same time.
   slow motions; the quality of the light simulation and the range of things it meets matter most.
 - (2026-11-27) Slow motion is its own mode, not timeline sections. Editor picks: layout A, piece pictures, the
   material list, all three rig tools, the probe, the status readout and the keys (section 8).
+- (2026-11-27) Slow light: the video's Length is set as normal and Light speed is chosen separately (section 7).
+  Slow light picks: the mode, its tile, Fires, the Fires lane, moving pieces and the glows (section 8).
 
 Told to Aedan as my calls, open to change: a flat table rather than 3D, pieces move by rigs only (no falling and
 colliding yet), no sound at first, Light and Slow light as choices beside Balls and Water. Settled after the builder
