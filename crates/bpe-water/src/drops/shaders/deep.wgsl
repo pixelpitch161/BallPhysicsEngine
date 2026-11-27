@@ -154,7 +154,7 @@ fn cs_deep_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
     // its liquid's weight only when the weights differ: liquids that weigh the same gather as one.)
     let kind = u32(was.z);
     let by_mass = weighted();
-    let mass = select(1.0, select(fr.feels[kind & 15u].b.w, 1.0, is_air(kind)), by_mass) * VOL;
+    let mass = select(1.0, select(fr.feels[kind & 15u].b.w, fr.mixs.z, is_air(kind)), by_mass) * VOL;
     // How full it was (its own density by its neighbours and the solids, as its sweeps see it).
     let full = clamp(was.w, 0.0, 4.0);
     // Speed across, on left faces (at whole x, y + a half).

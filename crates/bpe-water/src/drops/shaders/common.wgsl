@@ -84,7 +84,8 @@ struct Fr {
     // bit 0 the liquids' weights differ (the pressure, the pairs' pulls and the deep push share by
     // mass), bit 1 colours mix this frame; the mix passes; 0, 0
     mixf: vec4<u32>,
-    // Mixes when's speeds: stirred, on hits (cells a second); 0, 0
+    // Mixes when's speeds: stirred, on hits (cells a second); air's mass (the lightest liquid's) and
+    // one over it
     mixs: vec4<f32>,
 };
 
@@ -240,10 +241,11 @@ fn weighted() -> bool {
     return (fr.mixf.x & 1u) != 0u;
 }
 
-// One over a drop's mass: its liquid's weight's (air's is 1).
+// One over a drop's mass: its liquid's weight's (air's is the lightest liquid's, `mixs.w`: masses
+// count only against each other, so air in light liquids is no heavier than in water).
 fn inv_mass(kind: u32) -> f32 {
     if is_air(kind) {
-        return 1.0;
+        return fr.mixs.w;
     }
     return fr.feels[kind & 15u].c.x;
 }

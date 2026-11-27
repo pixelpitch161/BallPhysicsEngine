@@ -32,7 +32,7 @@ use clock::Clock;
 pub use clock::{MOST_POURS, Report};
 use deep::{Deep, MOST_LEVELS, TICKS};
 pub use drains::{Drain, MOST_DRAINS};
-use numbers::{FRAME, Feel, FeelGpu, HIT, MOST_LIQUIDS, Numbers, STIR, mix_root};
+use numbers::{FRAME, Feel, FeelGpu, HEAVIEST, HIT, MOST_LIQUIDS, Numbers, STIR, mix_root};
 use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
 pub use state::WaterState;
 
@@ -599,7 +599,9 @@ impl Water {
             fastest = fastest.max(glam::Vec2::from(d.v).length() * self.layout.cell);
             xv.push([d.x[0], d.x[1], d.v[0], d.v[1]]);
             nf.push([0.0f32, 0.0, 1.0, 0.0]);
-            id.push([d.kind, self.serial, d.colour, if d.is_air() { 0 } else { d.mix }]);
+            // (Air and a drop that carries its own liquid carry nothing.)
+            let mix = if d.is_air() || d.mix_other() == d.liquid() { 0 } else { d.mix };
+            id.push([d.kind, self.serial, d.colour, mix]);
             self.serial = self.serial.wrapping_add(1);
         }
         let at = u64::from(self.count) * 16;
@@ -677,7 +679,7 @@ impl Water {
             dedges,
             dmeta,
             mixf: [u32::from(self.weights_differ()) | (u32::from(mixing) << 1), passes, 0, 0],
-            mixs: [STIR / cell, HIT / cell, 0.0, 0.0],
+            mixs: [STIR / cell, HIT / cell, self.air_mass(), 1.0 / self.air_mass()],
         }
     }
 
@@ -685,6 +687,12 @@ impl Water {
     /// pressure, the drops' pulls on each other and the deep water share their moves by mass.
     fn weights_differ(&self) -> bool {
         self.feels.iter().any(|f| f.mass() != self.feels[0].mass())
+    }
+
+    /// Air's mass when the weights differ: the lightest liquid's (masses count only against each
+    /// other, so with one Weight air weighs what the liquid does, as it does unweighted).
+    fn air_mass(&self) -> f32 {
+        self.feels.iter().map(Feel::mass).fold(f32::INFINITY, f32::min).min(HEAVIEST)
     }
 
     /// Whether colours mix: two liquids or more, one with a Mix speed.

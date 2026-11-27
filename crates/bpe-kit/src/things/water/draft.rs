@@ -127,8 +127,9 @@ impl Keyed {
 pub struct LiquidSetup {
     pub id: ThingId,
     feel: Keyed,
-    /// Its Mixing card (part 4.2: [`MIXING_KEYS`] reach the physics; Un-mix is part 4.4's).
-    mixing: Keyed,
+    /// Its Mixing card (part 4.2: [`MIXING_KEYS`] reach the physics; Un-mix is part 4.4's). With
+    /// none, its colour mixes with nothing and it keeps nothing apart.
+    mixing: Option<Keyed>,
 }
 
 /// The Mixing card's settings the physics reads.
@@ -237,7 +238,7 @@ impl WaterSetup {
             .map(|id| LiquidSetup {
                 id: *id,
                 feel: Keyed::of(scene, resolved, *id, SlotId::Feel).unwrap_or_default(),
-                mixing: Keyed::of(scene, resolved, *id, SlotId::Mixing).unwrap_or_default(),
+                mixing: Keyed::of(scene, resolved, *id, SlotId::Mixing),
             })
             .collect();
         let mut pours = Vec::new();
@@ -302,7 +303,10 @@ impl WaterSetup {
         for l in &liquids {
             l.id.hash(&mut h);
             l.feel.hash_into(None, &mut h);
-            l.mixing.hash_into(Some(&MIXING_KEYS), &mut h);
+            l.mixing.is_some().hash(&mut h);
+            if let Some(m) = &l.mixing {
+                m.hash_into(Some(&MIXING_KEYS), &mut h);
+            }
         }
         for p in &pours {
             (p.id, p.liquid, p.place.x.to_bits(), p.place.y.to_bits()).hash(&mut h);
@@ -390,7 +394,11 @@ impl WaterSetup {
             .iter()
             .map(|l| {
                 let f: FeelCard = l.feel.card(time);
-                let m: MixingCard = l.mixing.card(time);
+                // (No Mixing card: no Mix speed, nothing kept apart.)
+                let m: MixingCard = match &l.mixing {
+                    Some(m) => m.card(time),
+                    None => MixingCard { keeps_apart: 0.0, mix_speed: 0.0, ..MixingCard::default() },
+                };
                 Feel {
                     gravity: 1.0,
                     surface_pull: f.surface_pull,

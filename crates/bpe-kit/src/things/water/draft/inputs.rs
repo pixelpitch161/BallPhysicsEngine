@@ -109,8 +109,11 @@ impl WaterSetup {
             parts.push(part(format!("liquid:{k}"), 0.0, |h| {
                 l.id.hash(h);
                 let mut keys = l.feel.describe(None, h);
-                let mixing = l.mixing.describe(Some(&super::MIXING_KEYS), h);
-                keys.extend(mixing.into_iter().map(|(key, list)| (format!("mixing/{key}"), list)));
+                l.mixing.is_some().hash(h);
+                if let Some(m) = &l.mixing {
+                    let mixing = m.describe(Some(&super::MIXING_KEYS), h);
+                    keys.extend(mixing.into_iter().map(|(key, list)| (format!("mixing/{key}"), list)));
+                }
                 keys
             }));
         }

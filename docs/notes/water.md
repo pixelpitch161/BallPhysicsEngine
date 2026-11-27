@@ -1440,8 +1440,11 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
   (`a_liquid_alone_moves_the_same_at_any_weight`, `two_liquids_alike_move_as_one`).
 - Weighted, the pressure is Macklin and Mueller's with masses: the multiplier's stiffness is
   `w_i |sum g|² + sum w_j |g|²` and the softening `k.z w_i` (`w` one over the mass), and the shift is scaled by `w_i`,
-  so a heavy drop yields less and sinks. In `finish_at` each pair's evening, closing loss and skin terms are shared
-  by `pair_mass = 2 w_i / (w_i + w_j)`. The deep part (`deep.wgsl`, `SUMS` 7) gathers each cell's mass (word 6;
+  so a heavy drop yields less and sinks. In `finish_at` each pair's evening, closing loss, skin pull and bend are
+  shared by `pair_mass = 2 w_i / (w_i + w_j)` (where the liquid lies is not: it is a way, not a force). **Air weighs
+  as the lightest liquid** (`Fr.mixs.zw`, its mass and one over it): masses count only against each other, so with
+  the flag on air behaves as it does with it off, and a bubble rises in two light liquids as in water (with air
+  weighing 1 it rose 15 % slower in liquids of 0.3). The deep part (`deep.wgsl`, `SUMS` 7) gathers each cell's mass (word 6;
   the liquid's mass, air 1), keeps it in `dmass` (binding 31, 8 bytes a cell, written by `cs_deep_across`) and
   scales a drop's push by the cell's mean mass over its own.
 
@@ -1458,8 +1461,8 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
 - A drop's **mix word** is its id's 4th word (`Drop.mix`, which replaces the stretch `e`): bits 0 to 3 the other
   liquid it carries, bits 16 to 31 its share of 65535, 0 unmixed (`mix_word`, `Drop::with_mix`, `mix_share`,
   `mix_other`). Its motion stays its own liquid's; only its colour (and look) blends. Air keeps 0.
-- Once a frame, after the last step's `Finish`, `cs_drained` and trapped air's birth (`P::Mix`, `P::MixKeep`, before
-  `Report`), `Fr.mixf.y` passes of `cs_mix` (bindings 0, 1, 2, 5, 8, 30) and `cs_mix_keep` (0, 1, 5, 30) diffuse
+- Once a frame, right after the last step's `Finish` (before `cs_drained` and trapped air's passes; `P::Mix` and
+  `P::MixKeep` sit before `Report` in the pass list so they get step bind groups), `Fr.mixf.y` passes of `cs_mix` (bindings 0, 1, 2, 5, 8, 30) and `cs_mix_keep` (0, 1, 5, 30) diffuse
   every liquid drop's holding of each liquid toward its liquid neighbours' (a 16-entry array a drop): a pair's
   share a pass is `gate (1 - keep) r_i r_j L`, `L = (2 / rho0) 30 / (pi h³) t² / max(d, 0.05 h)` (the spiky kernel's
   Laplacian weight), scaled by `0.9 / S` where the shares' sum `S` passes 0.9. What isn't the drop's own liquid is
@@ -1474,7 +1477,8 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
   pool resting under gravity has neighbours moving against each other at up to about 35 px/s at 6 and 3 px, so its
   jiggle is no stir); **Only on hits**, `smoothstep(HIT / 2, HIT, closing)`, `HIT` 150 px/s. The pair's gate is the
   smaller of the two liquids' (`Fr.mixs`, in cells a second).
-- A restart point and a copy keep the mix words (the ids are kept whole).
+- A restart point and a copy keep the mix words (the ids are kept whole). `Water::add` clears a word that names the
+  drop's own liquid (`cs_mix` would drop it), and air carries none.
 
 ### The take and the drawings (`pack.wgsl`, `capture.rs`, `take/`, `draw/stored.rs`, `look.wgsl`, `plain.wgsl`)
 
@@ -1489,15 +1493,17 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
   draws what it drew before.
 - `draw/sets.rs` `mixed(cell)`: a pool of two liquids whose shares ramp to a half across its middle third, and a
   half-mixed blob; the full-size look check's `water-mixed-c3` and `water-look-mixed-c3`.
-- The probe's `picture` no longer colours by the stretch (gone with `e`).
+- The probe's `picture` no longer colours by the stretch (gone with `e`). Drops files (`stored::save_drops`) are
+  `BPEDROP2`, 28 bytes a drop with the mix word.
 
 ### The cards and the setup (`bpe-kit modules/water/liquid.rs`, `things/water/draft.rs`, `draft/inputs.rs`)
 
-- **Mixing card**: the group "Meeting other liquids" holds **Keeps apart** (new, 0 to 1), Mix speed and Mixes when;
+- **Mixing card**: the group "Meeting other liquids" (a section in `bpe-core` `SECTION_ORDER`) holds **Keeps apart** (new, 0 to 1), Mix speed and Mixes when;
   Fades and Fades to are gone (they need drops that carry an age). Un-mix stays for part 4.4. The Feel card's
   **Weight** is 0.1 to 10.
 - `LiquidSetup.mixing` (its Mixing card); `MIXING_KEYS` (`keeps_apart`, `mix_speed`, `mixes_when`) are in the print
-  and in each liquid's `inputs()` part and restart the draft; `inputs_at` fills the Feel's mixing fields.
+  and in each liquid's `inputs()` part and restart the draft; `inputs_at` fills the Feel's mixing fields. A Liquid
+  with no Mixing card mixes nothing and keeps nothing apart (taking the card off restarts the water).
 
 ### Tests
 
@@ -1507,8 +1513,10 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
   second, a round drop's reach 33.9) where a not-kept one stays (42.2); colours run together by the line, stay
   their own 80 px off and keep each liquid's amount within 1 %; the blend is as wide at 6 and 3 px; Mix speed 0 and
   Keeps apart 1 cross no colour; resting liquids that mix only when stirred or on hits stay apart, and a lump
-  falling in mixes them; a restart point and a copy keep the mixes. Unit tests: the pass count
+  falling in mixes them; a restart point and a copy keep the mixes; a bubble rises as fast in liquids of Weight 0.3
+  and 0.31 as in water (within 5 %). Unit tests: the pass count
   (`numbers.rs`), a moment keeps each drop's mix (`take/frame.rs`).
 - `tests/look.rs` `a_mixed_drop_draws_between_its_liquids`, `tests/plain.rs` `a_mixed_pool_draws_between_its_liquids`.
-- `bpe-kit`: `the_mixing_card_reaches_the_water`; `what_restarts_the_draft` counts the Mixing card's three.
+- `bpe-kit`: `the_mixing_card_reaches_the_water` (and none with no Mixing card); `what_restarts_the_draft` counts the
+  Mixing card's three.
 

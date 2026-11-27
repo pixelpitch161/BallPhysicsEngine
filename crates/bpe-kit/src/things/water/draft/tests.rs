@@ -248,6 +248,11 @@ fn the_mixing_card_reaches_the_water() {
     set(&mut scene, liquid, SlotId::Feel, "weight", Value::Number(3.0));
     let f = feel(&scene);
     assert_eq!((f.keeps_apart, f.mix_speed, f.mixes_when, f.weight), (0.8, 0.2, MixWhen::Hits, 3.0));
+    let before = setup(&scene, &reg).print;
+    scene.things.get_mut(&liquid).unwrap().slots.remove(&SlotId::Mixing);
+    let none = feel(&scene);
+    assert_eq!((none.keeps_apart, none.mix_speed), (0.0, 0.0), "no Mixing card: no mixing");
+    assert_ne!(setup(&scene, &reg).print, before, "taking the Mixing card off restarts the water");
 }
 
 #[test]

@@ -502,8 +502,14 @@ Built as planned, with these changes (the detail is in `docs/notes/water.md`, "P
 
 Built as planned, with these changes (the detail is in `docs/notes/water.md`, "Part 4.2"):
 
-- `P::Mix` and `P::MixKeep` sit after `AirBorn` and before `Report` (the passes after `Report` have no step bind
-  groups); they run once a frame on the last step's group, after `cs_drained` and trapped air's birth.
+- `P::Mix` and `P::MixKeep` sit after `AirBorn` and before `Report` in the pass list (the passes after `Report` have
+  no step bind groups); they are dispatched once a frame on the last step's group right after its `Finish`, before
+  `cs_drained` and trapped air's passes, as decided.
+- The review: **air weighs as the lightest liquid** (`Fr.mixs.zw`) instead of 1, so masses count only against each
+  other and air in light liquids is no heavier than in water (`air_rises_in_light_liquids_as_in_water`); where the
+  liquid lies is not shared by mass (a way, not a force); a Liquid with no Mixing card mixes nothing; drops files
+  keep the mix (`BPEDROP2`); `Water::add` clears a mix word naming the drop's own liquid. The group "Meeting other
+  liquids" was added to `bpe-core`'s `SECTION_ORDER` (the inspector refuses groups that are not sections).
 - The deep gather's mass is `select(1, the liquid's clamped Weight, weighted)` (air 1) rather than
   `1 / inv_mass`, which is not exact; so a lone liquid is the same at any Weight to the bit.
 - **Only when stirred** is `smoothstep(STIR / 4, STIR, |v_i - v_j|)`, not `min(|v_i - v_j| / STIR, 1)`: measured,

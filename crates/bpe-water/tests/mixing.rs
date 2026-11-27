@@ -186,6 +186,33 @@ fn kept_apart_liquids_pull_into_round_drops() {
     assert!(mixed > before * 0.95, "not kept apart, it stays: {before} to {mixed}");
 }
 
+/// Air weighs as the lightest liquid: a pocket of it in a still pool whose liquids weigh 0.3 and
+/// 0.31 rises as it does when they weigh 1 (masses count only against each other).
+#[test]
+fn air_rises_in_light_liquids_as_in_water() {
+    let Some(gpu) = card() else { return };
+    let rise = |a: f32, b: f32| {
+        let mut scene = scenes::pool_with_hole(12.0, true);
+        scene.feels = vec![weighing(a), weighing(b)];
+        let mut run = scene.start(&gpu, Numbers { air: 0, ..Numbers::for_cell(12.0) });
+        let layout = run.water.layout();
+        let air_y = |drops: &[Drop]| {
+            let at: Vec<f32> = probe::air(drops).iter().map(|d| layout.to_world(Vec2::from(d.x)).y).collect();
+            assert!(at.len() > 40, "the pocket holds air: {}", at.len());
+            at.iter().sum::<f32>() / at.len() as f32
+        };
+        let start = air_y(&run.water.read());
+        run.run_to(0.25);
+        start - air_y(&run.water.read())
+    };
+    let water = rise(1.0, 1.0);
+    let light = rise(0.3, 0.31);
+    // (Measured: 86.9 px in water and 86.8 in the light liquids; with air weighing 1 whatever the
+    // liquids weigh, 74.3.)
+    assert!(water > 20.0, "the air rises in water: {water} px");
+    assert!((light - water).abs() < 0.05 * water, "the air rose {light} px in light liquids, {water} px in water");
+}
+
 fn mixing(mix_speed: f32, keeps_apart: f32, mixes_when: MixWhen) -> Feel {
     Feel { mix_speed, keeps_apart, mixes_when, ..Feel::default() }
 }

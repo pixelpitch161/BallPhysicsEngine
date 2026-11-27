@@ -82,9 +82,9 @@ impl StoredDrops {
 }
 
 /// The bytes a drop takes in a drops file: place and speed (grid units, f32), kind and colour (u32), little-endian.
-const DROP_BYTES: usize = 24;
+const DROP_BYTES: usize = 28;
 /// What a drops file starts with.
-const MAGIC: &[u8; 8] = b"BPEDROP1";
+const MAGIC: &[u8; 8] = b"BPEDROP2";
 
 /// Writes `drops` to a drops file (the measuring runs' `WATER_DUMP`).
 pub fn save_drops(path: &Path, drops: &[Drop]) -> anyhow::Result<()> {
@@ -96,6 +96,7 @@ pub fn save_drops(path: &Path, drops: &[Drop]) -> anyhow::Result<()> {
         }
         out.extend_from_slice(&d.kind.to_le_bytes());
         out.extend_from_slice(&d.colour.to_le_bytes());
+        out.extend_from_slice(&d.mix.to_le_bytes());
     }
     std::fs::write(path, out)?;
     Ok(())
@@ -114,7 +115,8 @@ pub fn load_drops(path: &Path) -> anyhow::Result<Vec<Drop>> {
         .map(|(i, c)| {
             let f = |k| f32::from_le_bytes(word(c, k));
             let u = |k| u32::from_le_bytes(word(c, k));
-            Drop::new(glam::Vec2::new(f(0), f(1)), glam::Vec2::new(f(2), f(3)), u(4), i as u32, u(5))
+            let d = Drop::new(glam::Vec2::new(f(0), f(1)), glam::Vec2::new(f(2), f(3)), u(4), i as u32, u(5));
+            Drop { mix: u(6), ..d }
         })
         .collect())
 }
@@ -126,7 +128,8 @@ mod tests {
     #[test]
     fn a_drops_file_reads_back_what_was_written() {
         let drops = vec![
-            Drop::new(glam::Vec2::new(1.5, 2.25), glam::Vec2::new(-3.0, 0.5), 1 | crate::STOPS, 0, 0x1234_5678),
+            Drop::new(glam::Vec2::new(1.5, 2.25), glam::Vec2::new(-3.0, 0.5), 1 | crate::STOPS, 0, 0x1234_5678)
+                .with_mix(3, 0.25),
             Drop::new(glam::Vec2::new(f32::NAN, 7.0), glam::Vec2::ZERO, 0, 1, crate::WATER),
         ];
         let path = std::env::temp_dir().join(format!("bpe-drops-{}.drops", std::process::id()));
