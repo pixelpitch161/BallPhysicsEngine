@@ -335,6 +335,7 @@ impl Finals {
             };
             for c in old.chunks.iter().filter(|c| (c.second + 1) * 60 <= at) {
                 share(&chunk::chunk_path(&old_dir, c.second), &chunk::chunk_path(&dir, c.second))?;
+                share(&chunk::wet_path(&old_dir, c.second), &chunk::wet_path(&dir, c.second))?;
                 head.chunks.push(c.clone());
             }
             for p in old.points.iter().copied().filter(|p| *p <= at) {

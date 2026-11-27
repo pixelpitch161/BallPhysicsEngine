@@ -174,6 +174,8 @@ pub struct LookDraw {
     too_many_lamps: bool,
     /// Whether mist or sparks are drawn.
     extras_on: bool,
+    /// The wet marks drawn and the water frame they are read against.
+    wet: Option<(wgpu::Buffer, u32)>,
 }
 
 impl std::fmt::Debug for LookDraw {
@@ -218,6 +220,7 @@ impl LookDraw {
             back: back::BackPicture::default(),
             too_many_lamps: false,
             extras_on: false,
+            wet: None,
         }
     }
 
@@ -246,6 +249,11 @@ impl LookDraw {
 
     pub fn gpu(&self) -> &Arc<LookGpu> {
         &self.gpu
+    }
+
+    /// The layout it draws drops on.
+    pub fn layout(&self) -> crate::Layout {
+        self.plain.layout
     }
 
     /// What the stage should tell about the last look drawn (a back picture that can't be read, too
@@ -283,6 +291,12 @@ impl LookDraw {
             Some(r) => r.resize(device, width, height),
             None => self.renderer = Some(Renderer::new(device, width, height)),
         }
+    }
+
+    /// The wet marks the next pictures draw, read against water frame `frame` (`None`, or marks
+    /// on another layout: none).
+    pub fn set_wet(&mut self, wet: Option<&crate::draw::WetField>, frame: u32) {
+        self.wet = wet.filter(|w| w.layout() == self.plain.layout).map(|w| (w.buffer().clone(), frame));
     }
 
     /// Draws `drops` (in this drawing's layout's grid units) as `view` shows them, with `look`, and
@@ -362,7 +376,8 @@ impl LookDraw {
             spread: self.spread.as_ref().filter(|_| self.spread_on).map(|s| (s.grid, s.given_levels.len() as u32)),
             picture,
         };
-        let u = numbers::look_u(look, &layout, &placing);
+        let mut u = numbers::look_u(look, &layout, &placing);
+        u.time[3] = self.wet.as_ref().map_or(-1.0, |w| w.1 as f32);
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         queue.write_buffer(&self.grads, 0, bytemuck::cast_slice(&numbers::gradients(look)));
 
@@ -516,6 +531,7 @@ impl LookDraw {
                 entry(29, tex(spread_eo)),
                 entry(33, tex(lfree)),
                 entry(35, tex(&n.all[3])),
+                entry(36, self.wet.as_ref().map_or(&gpu.no_wet, |w| &w.0).as_entire_binding()),
             ],
         );
         let renderer = self.renderer.as_ref().expect("made with the pictures");

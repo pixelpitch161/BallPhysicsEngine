@@ -37,6 +37,8 @@ pub struct LookGpu {
     pub(crate) extras: Pipe,
     /// A 1 x 1 black texture, bound where a picture isn't drawn.
     pub(crate) black: wgpu::TextureView,
+    /// One dry node, bound where there are no wet marks.
+    pub(crate) no_wet: wgpu::Buffer,
 }
 
 impl std::fmt::Debug for LookGpu {
@@ -180,6 +182,7 @@ impl LookGpu {
                 (29, T),
                 (33, T),
                 (35, T),
+                (36, S),
             ],
             "vs_full",
             "fs_look",
@@ -214,6 +217,12 @@ impl LookGpu {
                 view_formats: &[],
             })
             .create_view(&Default::default());
+        let no_wet = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water look no wet marks"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         // (A new texture's contents are zero.)
         Arc::new(LookGpu {
             plain,
@@ -228,6 +237,7 @@ impl LookGpu {
             compose,
             extras,
             black,
+            no_wet,
         })
     }
 

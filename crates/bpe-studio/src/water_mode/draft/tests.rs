@@ -63,6 +63,31 @@ fn the_draft_follows_the_playhead_and_goes_back() {
     assert!(job.count() < first, "the tap had poured less by then");
 }
 
+/// The draft marks where the water has been as it plays; going back keeps the marks (the frames
+/// past the playhead's read dry against it), and a new body starts dry.
+#[test]
+fn the_draft_keeps_its_wet_marks_going_back() {
+    let reg = bpe_kit::registry();
+    let scene = chamber(&reg, "coarse");
+    let job = job(&scene, &reg, 500_000);
+    let marks = |job: &DraftJob| job.live().lock().unwrap().as_ref().unwrap().wet.read();
+    wait_for(&job, 120);
+    let played = marks(&job);
+    let wet_by = |m: &[u32], frame: u32| m.iter().filter(|&&f| f <= frame).count();
+    assert!(wet_by(&played, 0) > 0, "the fill is wet at the start");
+    assert!(wet_by(&played, 120) > wet_by(&played, 30), "the tap wets more by 2 s");
+    wait_for(&job, 30);
+    assert_eq!(marks(&job), played, "going back keeps the marks (read against frame 30, those after are dry)");
+    job.restart(setup(&scene, &reg));
+    let started = std::time::Instant::now();
+    while job.busy() || job.reached() != Some(30) {
+        assert!(started.elapsed().as_secs() < 300, "the new body gets to 30");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(wet_by(&marks(&job), 30) <= wet_by(&played, 30), "a new body's marks start again");
+    assert!(marks(&job).iter().all(|&f| f == bpe_water::draw::wet::DRY || f <= 30), "nothing past 30 yet");
+}
+
 #[test]
 fn going_back_plays_the_same_water() {
     let reg = bpe_kit::registry();

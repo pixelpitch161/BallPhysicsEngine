@@ -16,8 +16,9 @@ use bpe_kit::things::water::finals::{Finals, Status};
 use bpe_kit::things::water::look::look_of;
 use bpe_kit::things::water::make::{MakeFinal, MakeProgress, this_card};
 use bpe_kit::{Kit, SceneSettings};
-use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
-use bpe_water::take::{Chunk, FrameCodec, TakeFrame};
+use bpe_water::draw::wet::HeldWet;
+use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View, WetField};
+use bpe_water::take::{Chunk, FrameCodec, TakeFrame, chunk};
 use bpe_water::{SolidField, WaterGpu};
 use glam::Vec2;
 
@@ -107,6 +108,8 @@ pub struct TakeReader {
     good: u32,
     chunks: Vec<(u32, Chunk)>,
     codec: FrameCodec,
+    /// The wet marks of the chunk read last (`None`: none there).
+    wet: Option<(u32, Option<Arc<Vec<u32>>>)>,
 }
 
 impl TakeReader {
@@ -119,6 +122,7 @@ impl TakeReader {
             good: status.good,
             chunks: Vec::new(),
             codec: FrameCodec::new(),
+            wet: None,
         })
     }
 
@@ -136,6 +140,21 @@ impl TakeReader {
         }
         self.chunks.push((second, chunk));
         Ok(&mut self.chunks.last_mut().expect("just pushed").1)
+    }
+
+    /// The wet marks by water time `tau` (the marks kept with its chunk) and the water frame to read
+    /// them against; `None` when the final has not made that moment, or its marks don't read.
+    pub fn wet(&mut self, tau: f64) -> Option<(Arc<Vec<u32>>, u32)> {
+        let k = (tau.max(0.0) * 60.0).floor() as u32;
+        if k >= self.good {
+            return None;
+        }
+        let second = k / 60;
+        if self.wet.as_ref().is_none_or(|w| w.0 != second) {
+            let marks = chunk::read_wet(&self.dir, second, self.layout.nodes()).ok().map(Arc::new);
+            self.wet = Some((second, marks));
+        }
+        self.wet.as_ref().and_then(|w| w.1.clone()).map(|m| (m, k))
     }
 
     /// The kept moment nearest water time `tau` (seconds), unpacked, and how far `tau` is past it;
@@ -186,19 +205,24 @@ impl TakeReader {
 struct Drawing {
     look: LookDraw,
     stored: StoredDrops,
+    wet: HeldWet,
 }
 
 impl Drawing {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, field: &SolidField, rest: f32) -> Drawing {
         let gpu = LookGpu::new(device, queue);
-        Drawing { look: LookDraw::new(gpu, field, rest), stored: StoredDrops::new(device, queue, &[]) }
+        Drawing {
+            look: LookDraw::new(gpu, field, rest),
+            stored: StoredDrops::new(device, queue, &[]),
+            wet: HeldWet::default(),
+        }
     }
 }
 
 /// A moment's picture: the take's moment (or a draft body's frame) as the camera shows it then.
 enum Source {
     Final { reader: TakeReader },
-    Draft { setup: Arc<WaterSetup>, water: Box<bpe_water::Water>, field: SolidField },
+    Draft { setup: Arc<WaterSetup>, water: Box<bpe_water::Water>, field: SolidField, wet: WetField },
 }
 
 /// The final's status for `video`'s scene in `finals`, made first when `make`.
@@ -287,7 +311,9 @@ fn export_water(
             let field = setup.field();
             let gpu = WaterGpu::new(device, queue);
             let water = Box::new(setup.start(gpu, &field, DRAFT_MOST));
-            Source::Draft { setup, water, field }
+            let wet = WetField::new(device, queue, field.layout);
+            wet.mark(&water.drop_buffers(), water.frames());
+            Source::Draft { setup, water, field, wet }
         }
         WaterSource::Final | WaterSource::MakeFinal => {
             let make = options.water == WaterSource::MakeFinal;
@@ -367,15 +393,19 @@ fn draw_moment(
         Source::Final { reader } => {
             let (frame, ahead) = reader.near(tau)?.context(FRAME_NOT_MADE)?;
             drawing.stored.set(device, queue, &frame.xv, &frame.kinds);
+            let wet = reader.wet(tau);
+            drawing.wet.give(device, queue, reader.layout(), wet.as_ref(), &mut drawing.look);
             drawing.look.draw_at(&drawing.stored.buffers(), &view, &look, ahead as f32);
         }
-        Source::Draft { setup, water, field } => {
+        Source::Draft { setup, water, field, wet } => {
             let k = (tau.max(0.0) * 60.0).round() as u32;
             while water.frames() < k {
                 setup.set_inputs(water, field, DRAFT_MOST);
                 water.frame();
+                wet.mark(&water.drop_buffers(), water.frames());
             }
             let ahead = tau - f64::from(water.frames()) / 60.0;
+            drawing.look.set_wet(Some(wet), water.frames());
             drawing.look.draw_at(&water.drop_buffers(), &view, &look, ahead as f32);
         }
     }

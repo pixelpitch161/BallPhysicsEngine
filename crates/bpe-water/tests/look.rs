@@ -670,7 +670,7 @@ fn fast_lone_drops_draw_mist_and_sparks() {
     let Some(gpu) = card() else { return };
     let field = boxed(&[]);
     let view = View { lo: Vec2::new(-270.0, -400.0), scale: 1.0, width: 270, height: 200 };
-    let mut extras = |speed: f32, mist: f32, sparks: f32| {
+    let extras = |speed: f32, mist: f32, sparks: f32| {
         let mut look = extras_look(LiquidLook { mist, sparks, ..blue() });
         look.back = BackLook::Colour([0.01; 3]);
         look.light.ambient = 0.5;
@@ -705,6 +705,36 @@ fn the_extras_draw_the_same_twice() {
     let mut d = Drawn::new(&gpu, &field, &drops);
     let (a, b) = (d.draw(view, &look), d.draw(view, &look));
     assert!(a.pixels == b.pixels, "the same twice");
+}
+
+/// Test 19: Wet marks: rock just inside its face where the pool's drops have been is darker by the
+/// frame drawn with Wet marks 1, the same with Wet marks 0, and dry at a frame before the marks.
+#[test]
+fn wet_marks_darken_the_rock_the_water_has_touched() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let drops = sets::lattice(&field, Vec2::new(-500.0, 700.0), Vec2::new(500.0, 900.0), 0);
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    let wet = bpe_water::draw::WetField::new(gpu.device(), gpu.queue(), field.layout);
+    wet.mark(&d.stored.buffers(), 3);
+    let view = View { lo: Vec2::new(-100.0, 880.0), scale: 2.0, width: 200, height: 100 };
+    let mut drawn = |marks: f32, frame: Option<u32>| {
+        let mut look = extras_look(blue());
+        look.rock.wet_marks = marks;
+        d.look.set_wet(frame.map(|_| &wet), frame.unwrap_or(0));
+        d.draw(view, &look)
+    };
+    let (dry, wet_now, before, none) =
+        (drawn(1.0, None), drawn(1.0, Some(10)), drawn(1.0, Some(1)), drawn(0.0, Some(10)));
+    // (The floor's face, from the field.)
+    let face = (0..400).map(|k| 880.0 + 0.1 * k as f32).find(|&y| field.at(Vec2::new(-50.0, y)) < 0.0).unwrap();
+    let p = Vec2::new(-50.0, face + 2.0);
+    assert!(luma(wet_now.at(p)) < 0.8 * luma(dry.at(p)), "darker: {:?} against {:?}", wet_now.at(p), dry.at(p));
+    let deep = Vec2::new(-50.0, face + 12.0);
+    assert!(wet_now.at(deep) == dry.at(deep), "only near the face");
+    assert!(before.pixels == dry.pixels, "dry at a frame before the marks");
+    let dry_none = drawn(0.0, None);
+    assert!(none.pixels == dry_none.pixels, "Wet marks 0 draws no marks");
 }
 
 /// The bench at 3 px under two warm Spots and a waved pool under a Sun, at full size, for looking at

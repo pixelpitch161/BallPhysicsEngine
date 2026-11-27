@@ -92,7 +92,8 @@ struct LU {
     shot: vec4<f32>,
     // the spread light: its lo (world), its base texel (world px), its levels
     spread: vec4<f32>,
-    // water seconds, the largest Ripples, the paper's largest Depth (world px), 0
+    // water seconds, the largest Ripples, the paper's largest Depth (world px), the water frame
+    // drawn for the wet marks (below 0: none)
     time: vec4<f32>,
     liquids: array<LiquidL, 16>,
     lamps: array<LampL, 16>,
@@ -146,6 +147,9 @@ struct LB {
 // speeds in SPEED_UNIT.
 @group(0) @binding(34) var half_m: texture_2d<f32>;
 @group(0) @binding(35) var motion: texture_2d<f32>;
+// The wet marks (draw/wet.rs): each node's water frame liquid first touched it (u32 max: never),
+// read against `lu.time.w`.
+@group(0) @binding(36) var<storage, read> wet_marks: array<u32>;
 
 // Speeds go into the half floats in thousands of world px a second.
 const SPEED_UNIT: f32 = 1000.0;
@@ -1287,6 +1291,29 @@ fn fizz_at(p: vec2<f32>, size: f32, life: f32, count: f32, t: f32, scale: f32) -
     return vec2<f32>(outer - inner, inner) * shown;
 }
 
+// ---- wet marks (6b) ----
+
+// How far in from its face a solid shows its wet marks (world px), and how much darker it is.
+const WET_REACH: f32 = 6.0;
+const WET_DARK: f32 = 0.45;
+
+// How wet world point `p` is by the frame drawn (0 to 1, between the nodes round it).
+fn wet_at(p: vec2<f32>) -> f32 {
+    let cols = u.size.z;
+    let rows = u.size.w;
+    let g = clamp((p - u.grid.xy) / u.grid.z, vec2<f32>(0.0), vec2<f32>(f32(cols) - 1.001, f32(rows) - 1.001));
+    let x = u32(floor(g.x));
+    let y = u32(floor(g.y));
+    let f = g - vec2<f32>(f32(x), f32(y));
+    let i = y * cols + x;
+    let now = lu.time.w;
+    let a = select(0.0, 1.0, f32(wet_marks[i]) <= now);
+    let b = select(0.0, 1.0, f32(wet_marks[i + 1u]) <= now);
+    let c = select(0.0, 1.0, f32(wet_marks[i + cols]) <= now);
+    let d = select(0.0, 1.0, f32(wet_marks[i + cols + 1u]) <= now);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 // Shades `x` (0 to 1) in `bands` flat steps, each step's edge softened by `softness`.
 fn banded(x: f32, bands: f32, softness: f32) -> f32 {
     let y = clamp(x, 0.0, 1.0) * bands;
@@ -1539,9 +1566,16 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         let mat = lu.materials[m];
         let kind = u32(mat.colour.w + 0.5);
         let depth = mat.shape.x;
-        let rough = mat.shape.y;
         let deep_in = max(-far, 0.0);
         let n = field_normal(w);
+        // Wet marks: near its face where the liquid has been by now, darker and a little glossier
+        // (read just outside the face, where the drops were).
+        var wet = 0.0;
+        if lu.time.w >= 0.0 && mat.shape.w > 0.0 && deep_in < WET_REACH {
+            wet = mat.shape.w * wet_at(w + n * (deep_in + 0.5 * u.grid.z))
+                * (1.0 - smoothstep(0.5 * WET_REACH, WET_REACH, deep_in));
+        }
+        let rough = mat.shape.y * (1.0 - 0.5 * wet);
         let spill = 2.0 * max(depth, 8.0);
         // (Falling off fast past the spill: the light on a face changes sharply where its own
         // shadow starts, and carried deep in it would draw lines out from the solid's middle.)
@@ -1556,7 +1590,7 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             normal = normalize(vec3<f32>(n * tilt, 1.0 - tilt + 0.15));
         }
         let facing = clamp(max(dot(normal, l3), 0.0) / max(l3.z, 0.3), 0.0, 2.0);
-        let albedo = material_albedo(m, w);
+        let albedo = material_albedo(m, w) * (1.0 - WET_DARK * wet);
         var solid_c = albedo * (ambient * (0.7 + 0.3 * normal.z) + lit * facing + spread_lit);
         if kind != 4u {
             let h = normalize(l3 + vec3<f32>(0.0, 0.0, 1.0));
