@@ -45,6 +45,8 @@ struct U {
     // level's width and height (nodes, padded)
     depth: vec4<f32>,
     liquids: array<Liquid, 16>,
+    // each piece's and wall's linear colour by its owner number less one (the rock's past the list)
+    solids: array<vec4<f32>, 64>,
 };
 
 const PI: f32 = 3.14159265;
@@ -69,7 +71,8 @@ const EDGE_STOP: f32 = 2.05;
 // The two amount pictures: (Σ k colour, Σ k) and (Σ k deep, Σ k clarity / CLARITY_SCALE).
 @group(0) @binding(3) var amount0: texture_2d<f32>;
 @group(0) @binding(4) var amount1: texture_2d<f32>;
-// The solid field: each node's distance from the nearest face, world px (below 0 inside).
+// The solid field: each node's distance from the nearest face, world px (below 0 inside), then each
+// node's owner (0 the rock, k the kth piece or wall laid over it).
 @group(0) @binding(5) var<storage, read> field: array<f32>;
 // The ladder: air's share and the open (not rock) share, blurred more at each level (all levels in
 // `fs_show`, the level before in `fs_down`).
@@ -210,6 +213,51 @@ fn field_at(p: vec2<f32>) -> f32 {
     let top = mix(field[at], field[at + 1u], f.x);
     let bottom = mix(field[at + cols], field[at + cols + 1u], f.x);
     return mix(top, bottom, f.y);
+}
+
+// The colour of owner number `k` (as a float): the rock's for 0 and past the palette.
+fn owner_colour(k: f32) -> vec3<f32> {
+    let i = u32(max(k, 0.0) + 0.5);
+    if i == 0u || i > 64u {
+        return u.rock.rgb;
+    }
+    return u.solids[i - 1u].rgb;
+}
+
+// The solids' colour at world point `p`: the owners' colours of the four nodes round it that are
+// inside a solid, mixed between them (one owner all round, the rock's alone: as before pieces had
+// colours of their own). A node in open water belongs to the nearest part, so counting it would
+// bleed a piece's colour onto the solid beside it.
+fn solid_colour_at(p: vec2<f32>) -> vec3<f32> {
+    let cols = u.size.z;
+    let rows = u.size.w;
+    let g = clamp((p - u.grid.xy) / u.grid.z, vec2<f32>(0.0), vec2<f32>(f32(cols) - 1.001, f32(rows) - 1.001));
+    let x = u32(floor(g.x));
+    let y = u32(floor(g.y));
+    let f = g - vec2<f32>(f32(x), f32(y));
+    let i = y * cols + x;
+    let at = cols * rows + i;
+    let a = field[at];
+    let b = field[at + 1u];
+    let c = field[at + cols];
+    let d = field[at + cols + 1u];
+    if a == 0.0 && b == 0.0 && c == 0.0 && d == 0.0 {
+        return u.rock.rgb;
+    }
+    let inside = vec4<f32>(
+        select(0.0, 1.0, field[i] < 0.0),
+        select(0.0, 1.0, field[i + 1u] < 0.0),
+        select(0.0, 1.0, field[i + cols] < 0.0),
+        select(0.0, 1.0, field[i + cols + 1u] < 0.0),
+    );
+    let w = vec4<f32>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y) * inside;
+    let sum = w.x + w.y + w.z + w.w;
+    if sum <= 0.0 {
+        let top = mix(owner_colour(a), owner_colour(b), f.x);
+        let bottom = mix(owner_colour(c), owner_colour(d), f.x);
+        return mix(top, bottom, f.y);
+    }
+    return (owner_colour(a) * w.x + owner_colour(b) * w.y + owner_colour(c) * w.z + owner_colour(d) * w.w) / sum;
 }
 
 // How far grid point `g` (node units) is inside the course's edge, cells, measured like the field:
@@ -463,7 +511,7 @@ fn fs_show(in: FullOut) -> @location(0) vec4<f32> {
     let cover = rock_cover(far);
     if cover > 0.0 {
         let deep_in = -far * u.view.z;
-        let rock = u.rock.rgb * (1.0 - ROCK_DARK * (1.0 - smoothstep(0.0, u.widths.y, deep_in)));
+        let rock = solid_colour_at(world_of(at)) * (1.0 - ROCK_DARK * (1.0 - smoothstep(0.0, u.widths.y, deep_in)));
         colour = mix(colour, rock, cover);
     }
 

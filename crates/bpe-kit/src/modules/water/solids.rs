@@ -1,5 +1,6 @@
 //! The cards of a Water scene's solid things: **Material** (the Course's Rock card too),
-//! a Piece's **Shape**, a Wall's **Line**, and **Moves**.
+//! a Piece's **Shape**, a Wall's **Line**, and **Moves**. What a Shape or a Line is as solid is in
+//! [`super::pieces`].
 
 use bpe_core::{Choice, Color, Settings, ShapePath};
 use glam::Vec2;
@@ -103,9 +104,31 @@ pub struct PieceShape {
     /// Mirrors it left to right.
     #[setting(label = "Flip", group = "Shape")]
     pub flip: bool,
-    /// Cuts its shape out of the course instead of adding to it.
+    /// Cuts its shape out of the course instead of adding to it: a solid piece leaves a hole of its
+    /// shape, and a hollow one (a pipe, a basin) opens its inside, with its own walls round it.
     #[setting(label = "Cuts", group = "Shape")]
     pub cuts: bool,
+    /// How thick a basin's, funnel's, pipe's or bucket's walls, a wheel's paddles and a sieve's bars
+    /// are.
+    #[setting(
+        label = "Thickness",
+        when = "piece=basin or piece=funnel or piece=pipe or piece=sieve or piece=bucket or piece=wheel",
+        range(1, 1e9),
+        span(2, 80),
+        unit = "px",
+        group = "Shape"
+    )]
+    pub thickness: f32,
+    /// How wide a funnel's mouth and a sieve's gaps are.
+    #[setting(
+        label = "Opening",
+        when = "piece=funnel or piece=sieve",
+        range(0, 1e9),
+        span(0, 200),
+        unit = "px",
+        group = "Shape"
+    )]
+    pub opening: f32,
     #[setting(label = "Outline", when = "piece=custom", group = "Shape")]
     pub path: ShapePath,
 }
@@ -117,6 +140,8 @@ impl Default for PieceShape {
             size: Vec2::new(300.0, 200.0),
             flip: false,
             cuts: false,
+            thickness: 16.0,
+            opening: 40.0,
             path: ShapePath::circle(),
         }
     }

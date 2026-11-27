@@ -426,7 +426,11 @@ part adds its own tools to the rail.
      air bursts once it comes up into the band under the water's top, and Wetting 1 is the default (the least that
      settles the shelves on the RX 9070 XT); Wetting reaching less at Extreme than at Fine is handed to part 3
      (`plans/water-mode/part2c-air-and-wetting.md`, "As built and measured").
-3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
+3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data. **Built** (PR #241):
+   pieces and pen walls laid over the carved rock in the tree's order, each in its Material's Wetting and colour, a
+   cut lined with its cutter's Material; the Piece and Pen tools and Select's handles. A wetted face now counts in
+   the skin's bend, so Wetting reaches alike at every detail and Wetting 1 is a film
+   (`plans/water-mode/part3-pieces-and-the-pen.md`, "As built and measured").
 4. **More liquids.** Several liquids with mixing and Un-mix; **Weight** (one liquid floats on another, layers
    settle by weight); thick liquids (honey, slime); rain, drips and bursts; drains and leaks; and **drains that feed
    pours**, so water that leaves comes back and a course runs as long as the video. Heat (freezing, melting),

@@ -1,6 +1,7 @@
 //! A Water scene as the water engine's inputs (Water mode part 2b): the carved course and its
-//! Rock's Wetting, the Liquids' Feel, the Pours, Trapped air, gravity and Bubbles rise read once a
-//! frame from their keyframes, and a fingerprint of
+//! Rock's Wetting, the Pieces and Walls laid over it (part 3, [`course`]), the Liquids' Feel, the
+//! Pours, Trapped air, gravity and Bubbles rise read once a frame from their keyframes, and a
+//! fingerprint of
 //! everything the physics reads ([`WaterSetup::print`]), so the editor's draft starts over for a
 //! physics edit and never for a look, a lamp or the camera.
 //!
@@ -16,11 +17,15 @@ use bpe_water::draw::{PlainLiquid, PlainLook};
 use bpe_water::{Drop, Feel, Layout, Numbers, Pour, STOPS, SolidField, WATER, Water, WaterGpu};
 use glam::Vec2;
 
-use super::{LIQUID, POUR, carving_of, course_of};
+use super::{LIQUID, PIECE, POUR, WALL, carving_of, course_of};
 use crate::modules::water::{
     BackCard, BackShows, CarveMask, FeelCard, MaterialCard, PourCard, PourKind, WaterLook, WaterWorld, layout_for,
     mask_for,
 };
+
+pub mod course;
+
+pub use course::{Form, SolidSetup};
 
 /// The most drops a draft holds (water spec, Detail): past it the pours stop.
 pub const DRAFT_MOST: u32 = 500_000;
@@ -36,8 +41,14 @@ pub const LATER_KINDS: &str = "Rain, drips and bursts arrive in a later part of 
 pub const TOO_MANY_LIQUIDS: &str = "The water tells at most 16 liquids apart: this one isn't poured.";
 /// What the stage says about a tap past the most the water pours at once.
 pub const TOO_MANY_TAPS: &str = "The water pours at most 64 taps at once: this one isn't poured.";
-/// What the stage says about a tap whose spout is in the rock.
-pub const IN_ROCK: &str = "This tap's spout is in the rock: carve the rock away round it to pour.";
+/// What the stage says about a tap whose spout is in a solid.
+pub const IN_ROCK: &str = "This tap's spout is inside a solid: carve the rock away round it, or move it, to pour.";
+/// What the stage says about a Piece or Wall with a part under two draft cells thick: the draft
+/// takes a thin wall as thicker and may let water through a thin block (neither is thickened past
+/// what the physics needs), so the finer final can play it a little differently.
+pub const THIN: &str = "Thinner than two draft cells: the draft can't hold it exactly, so the water may act a little differently in the final.";
+/// What the stage says about a Piece or Wall whose Moves card asks it to move.
+pub const MOVES_LATER: &str = "Moving pieces arrive in a later part of Water mode: this one stays where it is for now.";
 
 /// A card's settings at the start and the keyframes that move them.
 #[derive(Clone, Debug, Default)]
@@ -125,7 +136,9 @@ pub struct WaterSetup {
     pub strokes: Arc<Strokes>,
     pub liquids: Vec<LiquidSetup>,
     pub pours: Vec<PourSetup>,
-    /// What the stage says about a pour that can't pour.
+    /// The enabled Pieces and Walls, in the scene's order: the order they are laid over the rock.
+    pub solids: Vec<SolidSetup>,
+    /// What the stage says about a pour that can't pour, or a piece or wall that is not as it will be.
     pub notes: Vec<(ThingId, &'static str)>,
     /// Changes exactly when what the physics reads changes.
     pub print: u64,
@@ -175,6 +188,20 @@ impl WaterSetup {
             let place = scene.things[&id].transform.position;
             pours.push(PourSetup { id, liquid, kind: c.kind, place, card });
         }
+        let solids: Vec<SolidSetup> = scene
+            .order
+            .iter()
+            .filter(|id| matches!(scene.things[*id].kind.as_str(), PIECE | WALL) && on(id))
+            .filter_map(|id| SolidSetup::of(scene, resolved, *id))
+            .collect();
+        for s in &solids {
+            if s.thinnest() < 2.0 * cell {
+                notes.push((s.id, THIN));
+            }
+            if s.moves() {
+                notes.push((s.id, MOVES_LATER));
+            }
+        }
         let mut h = DefaultHasher::new();
         let world_keys = ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"];
         world.hash_into(Some(&world_keys), &mut h);
@@ -188,8 +215,13 @@ impl WaterSetup {
             (p.id, p.liquid, p.place.x.to_bits(), p.place.y.to_bits()).hash(&mut h);
             p.card.hash_into(None, &mut h);
         }
+        for s in &solids {
+            (s.id, s.kind, s.at.x.to_bits(), s.at.y.to_bits(), s.turn.to_bits()).hash(&mut h);
+            s.form.hash_into(None, &mut h);
+            s.material.hash_into(Some(&["wetting"]), &mut h);
+        }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, notes, print, world, rock }
+        WaterSetup { size, cell, strokes, liquids, pours, solids, notes, print, world, rock }
     }
 
     /// The grid the water runs on.
@@ -202,9 +234,38 @@ impl WaterSetup {
         mask_for(self.size, &self.strokes)
     }
 
-    /// The solid field the water feels and the drawing shows, as wet as the Course's Rock.
+    /// The solid field the water feels and the drawing shows: the carved rock, as wet as the
+    /// Course's Rock, with every Piece and Wall laid over it in order, each as wet as its Material.
     pub fn field(&self) -> SolidField {
-        self.mask().field(self.cell).with_wetting(self.wetting())
+        self.field_with(&self.mask())
+    }
+
+    /// The same with the rock carved as `mask` says (the Carve tool's stroke being painted).
+    pub fn field_with(&self, mask: &CarveMask) -> SolidField {
+        let mut field = mask.field(self.cell).with_wetting(self.wetting());
+        let least = bpe_water::drops::LEAST_WALL * self.cell;
+        for (k, s) in self.solids.iter().enumerate() {
+            if let Some(part) = s.part() {
+                field.add_part(&part, u16::try_from(k + 1).unwrap_or(u16::MAX), least);
+            }
+        }
+        field
+    }
+
+    /// The top-most Piece or Wall whose body is within `reach` pixels of world point `p`.
+    pub fn solid_at(&self, p: Vec2, reach: f32) -> Option<ThingId> {
+        self.solids.iter().rev().find(|s| s.distance(p) <= reach).map(|s| s.id)
+    }
+
+    /// Where a piece or a pen point snaps to (world pixels): every Piece's and Wall's corners but
+    /// `except`'s.
+    pub fn snap_points(&self, except: Option<ThingId>) -> Vec<Vec2> {
+        self.solids.iter().filter(|s| Some(s.id) != except).flat_map(SolidSetup::corners).collect()
+    }
+
+    /// Piece or Wall `id`, if it is in the course.
+    pub fn solid(&self, id: ThingId) -> Option<&SolidSetup> {
+        self.solids.iter().find(|s| s.id == id)
     }
 
     /// The Course's Rock's Wetting (the Material card's default with no Course).
@@ -218,7 +279,7 @@ impl WaterSetup {
         Numbers { air: u32::from(w.trapped_air), ..Numbers::for_cell(self.cell) }
     }
 
-    /// What the stage says about pour `id`, if it can't pour.
+    /// What the stage says about pour, piece or wall `id`, if anything.
     pub fn note_for(&self, id: ThingId) -> Option<&'static str> {
         self.notes.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
@@ -276,7 +337,7 @@ impl WaterSetup {
         inputs
     }
 
-    /// The taps (with a Liquid to pour) whose spouts are in the rock of `field`.
+    /// The taps (with a Liquid to pour) whose spouts are in the solid of `field`.
     pub fn taps_in_rock(&self, field: &SolidField) -> Vec<ThingId> {
         let clear = self.numbers().wall_off * self.cell;
         let taps = self.pours.iter().filter(|p| p.kind == PourKind::Tap && p.liquid.is_some());
@@ -383,8 +444,9 @@ fn liquid_index(scene: &Scene, liquids: &[ThingId], target: &Target) -> Option<u
 }
 
 /// What the plain drawing is told by the cards at `time`: each Liquid's Colour, Deep colour and
-/// Clarity, the Course's Rock colour, and the Back (darker rock, a colour, a gradient's middle;
-/// a Picture shows as darker rock until pictures are drawn).
+/// Clarity, the Course's Rock colour, each Piece's and Wall's Material Colour (in the order they are
+/// laid over the rock), and the Back (darker rock, a colour, a gradient's middle; a Picture shows as
+/// darker rock until pictures are drawn).
 pub fn plain_look(scene: &Scene, resolved: &Resolved, time: f64) -> PlainLook {
     let srgb = |c: Color| [c.r, c.g, c.b].map(|v| f32::from(v) / 255.0);
     let rock = course_of(scene)
@@ -408,7 +470,17 @@ pub fn plain_look(scene: &Scene, resolved: &Resolved, time: f64) -> PlainLook {
             PlainLiquid { colour: srgb(look.colour), deep: srgb(look.deep), clarity: look.clarity }
         })
         .collect();
-    PlainLook { back, rock, liquids }
+    let solids = scene
+        .order
+        .iter()
+        .filter(|id| matches!(scene.things[*id].kind.as_str(), PIECE | WALL) && resolved.things.contains_key(*id))
+        .take(bpe_water::draw::MOST_COLOURED)
+        .map(|id| {
+            let m: MaterialCard = Keyed::of(scene, resolved, *id, SlotId::Material).unwrap_or_default().card(time);
+            srgb(m.colour)
+        })
+        .collect();
+    PlainLook { back, rock, liquids, solids }
 }
 
 #[cfg(test)]

@@ -660,3 +660,144 @@ Tables, stills and films: project files `water-core/2c/`; every number in the pl
   carries the Rock's Wetting.
 - Measuring runs (`#[ignore]`, `tests/shots.rs`): `air`, `wetting`, and `shelves` (with its "hanging above" column).
 
+
+## Part 3: pieces and the pen (as built)
+
+Plan: `docs/superpowers/plans/water-mode/part3-pieces-and-the-pen.md` ("As built and measured" there has every
+number). A course is now carved rock with ready-made **Pieces** and pen-drawn **Walls** laid over it, each with its
+own Material (Wetting and colour), and the editor places, draws, picks, moves, turns, sizes and moulds them.
+
+### Wetting at every detail (`bpe-water numbers.rs` `wet_bend`, `finish.wgsl`; hand-over item 0)
+
+- 2c's "Wetting is weaker at 3 px" was two things. Under a tenth of gravity (`scenes::cap`, where the edge shows the
+  true angle) the angle was the same at 6 and 3 px (117°, 100°, 71° at Wetting 0, 0.5, 1 at 6 px; 115°, 99°, 74° at
+  3 px): the 6 px "film" at full gravity was a one-drop-thick layer, the coarseness of a 6 px draft. But no Wetting
+  ever made a film: a wetted face was liquid to the skin's pull and to the way the liquid lies, not to the **bend**,
+  and the bend held a soaked floor's edge up at about 72°.
+- **`Numbers::wet_bend`** (1): a wetted face's resting lattice counts in the skin's bend as neighbours with no
+  surface of their own, `wet × thin × 4 × seg(q)` per face (`seg` the lens of the reach circle past the face). Under
+  a tenth of gravity a cap's edge now follows Young's law (cos θ = 2 Wetting − 1) from Wetting 0.5 on: 86°, 55°, 2° at
+  Wetting 0.5, 0.75, 1 at 6 px, 85°, 63°, 5° at 3 px, 82°, 55°, 6° at 2 px. Below 0.5 it can't reach: Wetting 0.25 stands
+  at about 100° (Young 120°) and Wetting 0 at 111 to 117° as before (its bend term is 0, so Wetting 0 is 2c's water
+  to the bit). At full gravity a 24 px blob at Wetting 1 is a film at every detail (`a_soaked_floor_spreads_a_blob_
+  into_a_film_at_every_detail`).
+
+### Solids on the course (`bpe-water solid.rs`: `Part`, `add_part`, owners, square-ended lines)
+
+- `Solid::Polyline { points, thickness, square }` is a pen wall (square ends run a half thickness past the end points
+  and stop flat). `Solid::bounds` and `is_sound` (a polygon of three finite points, a circle of a radius, a line of
+  two points): an unsound solid adds nothing anywhere.
+- **`Part { solids, cut, wetting }`**, laid over the field by **`add_part(part, owner, least)`** in order: the cut
+  first takes the solid away (`max(d, −cut)`), then the solids add (`min`). A node's owner (`SolidField.owner`, one
+  `u16` per node, 0 the Rock) and Wetting become the part's where its face is now the nearest: inside what it adds,
+  in open water nearer it, and in solid within `LINING` (2 cells) of a face it cut, so a cut is lined with the
+  cutting thing's Material. Only nodes within `BAND` (48 px) of the part's box change, so a huge or far piece costs
+  only its box clipped to the layout.
+
+### Pieces and Walls as the water sees them (`bpe-kit modules/water/pieces.rs`, `things/water/draft/course.rs`)
+
+- **`PieceShape`** gains **Thickness** (a hollow piece's walls, a wheel's paddles, a sieve's bars; 16 px) and
+  **Opening** (a funnel's gap, a sieve's gaps; 40 px). Each kind is `parts()` in its own frame (its box `Size`
+  centred on its place, Flip mirrors x, the thing's Rotation turns it clockwise): Ramp, Step, Pillar, Gate, Float
+  (rounded corners) and Custom (its Outline, shape units ±1 times half its Size) are filled outlines; Basin, Funnel,
+  Pipe, Sieve, Bucket (round-ended rim) and Wheel (a rim, 8 paddles and a hub) are walls `Thickness` thick. Its
+  **cut** (`cut()`) is what Cuts takes away: a filled piece's own shape, a hollow piece's inside (a pipe's bore, a
+  basin's or bucket's bowl, a funnel's mouth, a sieve's gaps, a wheel's disc), and its walls then add as usual, so a
+  cutting pipe is a tunnel lined with pipe and nothing opens beside its walls. Its **hull** (its outline) is only for
+  snapping corners. Walls are at most half the box's smaller side thick (a sieve's bars half its width, so a short
+  wide sieve keeps its bars). A Wall's Line is a polyline through its points (Curved: a
+  centripetal Catmull-Rom curve), Round or Square ends; with Cuts it is a channel. The palette's sizes are
+  `default_size` (a 300 x 150 ramp, a 60 x 300 pillar, a 400 x 80 pipe, ...).
+- **`SolidSetup`** (one per enabled Piece and Wall, in `scene.order`) is its place, turn and cards as resolved;
+  `WaterSetup.solids` holds them. `field_with(mask)` is the carved rock (the Rock's Wetting) with each laid over it
+  as owner `k + 1`, thin walls at least `LEAST_WALL` (1.5) cells thick. `solid_at(p, reach)` picks the top-most body
+  under a point; `snap_points(except)` lists every other solid's hull corners and wall points.
+- **What restarts the draft**: a piece's or wall's place, turn, every Form setting, its Material's Wetting, turning
+  it on or off, and the tree's order. Its colour and its Moves card do not. A tap whose spout is inside a piece says
+  so (`IN_ROCK`, now "inside a solid") and pours nothing.
+- **Notes** when picked: `THIN` (a part under two draft cells thick: the draft thickens it, so the final will be a
+  little different) and `MOVES_LATER` (Moves not Fixed: moving pieces are part 5's; it stays put).
+- **Not yet**: air under pieces is the course's, as under rock (no diving bell: part 5); Keyframed and Driven pieces
+  stay at their place.
+
+### Drawn in their colours (`bpe-water draw/plain.rs`, `shaders/plain.wgsl`)
+
+The plain look's field buffer holds the distances, then the owners. `PlainLook.solids` gives the first
+`MOST_COLOURED` (64) owners their Material's colour; the rock colour at a pixel mixes the owners' colours of the
+four nodes around it that are inside a solid (open water nodes are owned by the nearest solid too, so counting them
+bled a solid's colour across a touching one), and a field with no parts draws exactly as before (the pinned
+pictures did not move).
+
+### The editor (`bpe-studio water_mode/{piece_tool,pen_tool,solid_edit}.rs`, `stage.rs`, `picture.rs`)
+
+- **Piece**: the strip has the palette (each kind's own outline, named for kittest), Turn (°), Flip and Cuts; a ghost
+  follows the pointer; a click places one (its palette size, named after its kind), picks it and keeps the tool; one
+  undo step each. **Make custom** (strip, a picked Ramp, Step, Pillar, Basin, Bucket, Gate or Float) turns it into a
+  Custom piece of its own outline, one undo step.
+- **Pen**: Thickness, Curved, Round | Square, Cuts. Clicks add points with a line on to the pointer; a double-click
+  or Enter finishes a Wall of two points or more (its place the points' middle, one undo step); Escape or another
+  tool drops the line and leaves no step. Enter and Escape are left alone while a text box has the keys.
+- **Snapping** (Alt turns it all off): a placed or dragged piece moves so its hull corner nearest another solid's
+  corner meets it, within 10 screen points (`SNAP_REACH`); a pen point or a dragged point lands on another solid's
+  corner (a pen point on the line's first point too). This works whether or not the grid snaps; when it snaps and no
+  corner is near, a piece's place lands on the grid, and a dragged wall's first point does (so all its points stay
+  on the grid).
+- **Select**: a piece or wall is picked by its marker or its body (4 screen points) and dragged with snapping. A picked
+  one shows its outline; a wall or Custom piece its points (drag one; double-click its line to add one, a point to
+  remove it, keeping two on a wall and three on a piece); a piece a turn dot above it (15° steps, Alt free) and a size
+  dot at its box's corner (sized in its own frame, on the grid's spacing).
+- **The preview**: while a carve stroke is painted or a piece or wall moved or moulded, the draft's restart waits for
+  the drag to rest (as any drag) and the stage's picture shows the course as it will be
+  (`WaterSetup::field_with(stroke)` or `field()`, made again only when the stroke or the scene changes) over the water
+  still playing. `picture::Rock` carries any `SolidField` as the preview. After a piece's drag or mould the preview
+  stays up until the draft plays the new course (so the picture doesn't jump back for the moment the restart waits).
+
+### Measured (in the container; the plan's "As built and measured" has the tables)
+
+- Caps under a tenth of gravity at Wetting 0.5, 0.75, 1: 86°, 55°, 2° at 6 px; 85°, 63°, 5° at 3 px; 82°, 55°, 6° at 2 px
+  (Young 90°, 60°, 0°). The edge-angle test takes the mean over three grids: at 0.75 the 6 px cap stays a little
+  wider (on the owner's card 50° against 62° on one grid), so the details agree within 8° at 0.5 and 12° at 0.75.
+- The course's shelves at 6 px with the fix: 2.1 % left, tallest puddle 5.1 px at 30 s (5.4 px before), nothing
+  hanging: `DEFAULT_WETTING` stays 1. Openings at 30 s: 35.6 % through 12 px and 60.8 % through 24 px (35.8 % and
+  60.6 % before), so the fix doesn't hold water in narrow gaps.
+- Forty pieces over a carved screen at 6 px: 3.2 ms for the carving, 17.7 ms for the pieces (release). The stage's
+  preview builds it again for each change while a solid is dragged.
+
+### Tests
+
+- `bpe-water/tests/wetting.rs`: **the edge angle is the same at every detail** (Wetting 0.5 and 0.75, three grids
+  each), **a soaked floor spreads a blob into a film at every detail**. `src/solid.rs`: a polyline is round or square at
+  its ends, a part adds its solid and its Wetting, a cutting part opens the solid and lines it, a part touches only its
+  band, a part with nothing in it changes nothing. `tests/plain.rs`: **each solid is drawn in its colour** (and a
+  field with no parts as before).
+- `bpe-kit` `modules::water::pieces`: every piece fills its box, the hull holds the parts, Flip mirrors and Rotation
+  turns a piece about its place, a curved wall passes through its points, Make custom keeps the outline, broken shapes
+  add nothing, the Shape card shows Thickness and Opening only where they count. `things::water::draft`: what restarts
+  the draft (flipped for pieces and walls; colour and Moves do not), a piece adds solid and its own Wetting, a cutting
+  pipe is a lined tunnel, the tree's order decides what a cut takes, a tap inside a piece pours nothing, a huge piece
+  is kept to the layout, THIN and MOVES_LATER, picking by body, snap points, colours in the plain look, forty pieces
+  build quickly.
+- `bpe-studio` `water_mode::solid_tests`: the palette places each kind at its size; snapping to a corner (not with
+  Alt; the grid otherwise); Turn, Flip and Cuts; Make custom (one undo step; none for a funnel); three clicks and Enter
+  make a wall; a double-click finishes one; Escape and another tool drop the line; one point makes no wall; a pen
+  point snaps; a click on a body picks; a drag snaps and is one undo step; a point drag moves only that point;
+  double-clicks add and remove points (two kept on a wall, three on a piece); the turn dot's 15° steps; the size dot
+  in the piece's frame; a thin wall says so. `app::water_tests`: a piece edit restarts the draft and a colour or Moves
+  edit does not. The rail test: only Camera path is greyed.
+- Full-size look check: `LOOK_ONLY=water-pieces` (`water-pieces-c8`, `-c3`).
+- From the review: a cutting hollow piece leaves no room beside its walls, a sieve's bars take their thickness
+  (kit); a solid's colour doesn't bleed onto one it touches (plain); corners snap with the grid's snapping off, a
+  dragged wall keeps its points on the grid (editor).
+
+### Known, left for later
+
+- `LINING` is 2 cells, so a cut's lining is 16 px deep at an 8 px draft and 6 px at 3 px: the lining looks a
+  little thicker in the draft.
+- Adding a point to a Curved wall measures the click against the straight lines between its points, not the curve.
+- Make custom on a cutting Basin or Bucket changes what it cuts: the Custom piece is its walls' one outline, so it
+  cuts only where its walls are and leaves its inside as it was.
+- A Custom piece is one filled outline, so the kinds made of several parts (Funnel, Pipe, Sieve, Wheel) have no Make
+  custom yet.
+- A very large Sieve (thousands of bars) is slow to build; the bars are not merged.
+- The preview builds every part again for each change while dragging (about 20 ms for forty pieces at 6 px); only
+  the moved part's band would need it.

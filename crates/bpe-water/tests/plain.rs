@@ -117,6 +117,49 @@ fn an_empty_body_draws_the_rock_and_the_back() {
     assert!(apart(pic.at(Vec2::new(-400.0, -800.0)), BACK()) <= 1, "the box's corner is back");
 }
 
+/// Each piece or wall laid over the rock (part 3) is drawn in its own colour, and the rock in the
+/// rock's; a part past the colours given is the rock's colour.
+#[test]
+fn each_solid_is_drawn_in_its_colour() {
+    let Some(gpu) = card() else { return };
+    let mut field = SolidField::build(
+        Layout::cover(Vec2::new(-540.0, -960.0), Vec2::new(540.0, 960.0), 8.0),
+        &[bpe_water::Solid::rect(Vec2::new(-600.0, 400.0), Vec2::new(600.0, 1000.0), true, 0.0)],
+    );
+    let block = |lo: Vec2, hi: Vec2| bpe_water::Part {
+        solids: vec![bpe_water::Solid::rect(lo, hi, true, 0.0)],
+        ..bpe_water::Part::default()
+    };
+    field.add_part(&block(Vec2::new(-300.0, -200.0), Vec2::new(-100.0, 0.0)), 1, 8.0);
+    field.add_part(&block(Vec2::new(100.0, -200.0), Vec2::new(300.0, 0.0)), 2, 8.0);
+    let red = [0.9, 0.1, 0.1];
+    let look = PlainLook { solids: vec![red], ..PlainLook::default() };
+    let pic = draw_with(&gpu, &field, &[], View::screen(0.5), &look);
+    assert!(apart(pic.at(Vec2::new(-200.0, -100.0)), srgb8(red)) <= 2, "{:?}", pic.at(Vec2::new(-200.0, -100.0)));
+    let rock = srgb8(look.rock);
+    assert!(
+        apart(pic.at(Vec2::new(200.0, -100.0)), rock) <= 2,
+        "past the colours: {:?}",
+        pic.at(Vec2::new(200.0, -100.0))
+    );
+    assert!(apart(pic.at(Vec2::new(0.0, 700.0)), rock) <= 2, "the rock: {:?}", pic.at(Vec2::new(0.0, 700.0)));
+    assert!(apart(pic.at(Vec2::new(0.0, -100.0)), BACK()) <= 1, "the back between them");
+    // With no colours given, the same field draws as rock all through.
+    let plain = draw_with(&gpu, &field, &[], View::screen(0.5), &PlainLook::default());
+    assert!(apart(plain.at(Vec2::new(-200.0, -100.0)), rock) <= 2);
+    // A piece standing just over the rock: the open nodes under it are its, and the rock beside them
+    // keeps its own colour (no red bleeds into it).
+    let mut field = SolidField::build(
+        Layout::cover(Vec2::new(-540.0, -960.0), Vec2::new(540.0, 960.0), 8.0),
+        &[bpe_water::Solid::rect(Vec2::new(-600.0, 403.0), Vec2::new(600.0, 1000.0), true, 0.0)],
+    );
+    field.add_part(&block(Vec2::new(-300.0, 300.0), Vec2::new(-100.0, 399.0)), 1, 8.0);
+    let pic = draw_with(&gpu, &field, &[], View::screen(0.5), &look);
+    let under = pic.at(Vec2::new(-200.0, 406.0));
+    assert!(apart(under, rock) <= 2, "the rock under the piece: {under:?}");
+    assert!(apart(pic.at(Vec2::new(-200.0, 380.0)), srgb8(red)) <= 2, "the piece over it");
+}
+
 /// A lone drop shows, a picture pixel or more, however far out the view is.
 #[test]
 fn a_lone_drop_shows_at_any_zoom() {

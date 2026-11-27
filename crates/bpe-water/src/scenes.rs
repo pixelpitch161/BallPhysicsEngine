@@ -424,6 +424,12 @@ pub fn blob(cell: f32, side: f32, wetting: f32) -> Scene {
     }
 }
 
+/// A [`blob`] under a tenth of the gravity (part 3, item 0): too light for its weight to flatten it,
+/// so the cap it settles into shows the edge's own angle on a face `wetting` wet.
+pub fn cap(cell: f32, side: f32, wetting: f32) -> Scene {
+    Scene { name: "cap", gravity: GRAVITY * 0.1, ..blob(cell, side, wetting) }
+}
+
 /// Shot 5's beads ([`beads`]) with every solid `wetting` wet.
 pub fn blobs(cell: f32, wetting: f32) -> Scene {
     Scene { name: "blobs", wetting, ..beads(cell) }

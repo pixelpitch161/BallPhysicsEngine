@@ -497,6 +497,8 @@ fn air() {
 /// `WATER_CELLS` (6, 3) after `WATER_SECONDS` (3):
 /// - a 12, 24 and 48 px blob (`WATER_BLOBS`) on a level floor: width, height (`probe::puddle`) and
 ///   the angle its edge makes with the floor (a circle's cap: `2 atan(2h / w)`);
+/// - a 36 px cap under a tenth of the gravity (`scenes::cap`, by `WATER_SECONDS` or 2 s if sooner):
+///   its edge's own angle, which its weight does not flatten (part 3, item 0);
 /// - the `beads` shot's tilted plate after `WATER_PLATE_SECONDS` (1): the share of the drops set on
 ///   it still on it, how far down it they are on average (pixels along it from where they started),
 ///   and the share of those on it that lie in a film (no more than two spacings deep where they
@@ -521,6 +523,15 @@ fn wetting() {
                 let angle = 2.0 * (2.0 * h / w).det_atan().to_degrees();
                 println!("{cell}\t{wetting}\t{side}\t{w:.1}\t{h:.1}\t{angle:.0}\t{:.0}", began.elapsed().as_secs_f64());
             }
+            // A 36 px cap under a tenth of the gravity: the edge's own angle (part 3, item 0).
+            let began = Instant::now();
+            let mut run = start(&scenes::cap(cell, 36.0, wetting), &gpu);
+            run.run_to(seconds.min(2.0));
+            let (floor, half) = scenes::BLOB;
+            let inside = (-half + 2.0 * cell, half - 2.0 * cell);
+            let (w, h) = probe::puddle(&run.water.read(), &run.water.layout(), floor, inside);
+            let angle = 2.0 * (2.0 * h / w).det_atan().to_degrees();
+            println!("{cell}\t{wetting}\tcap 36\t{w:.1}\t{h:.1}\t{angle:.0}\t{:.0}", began.elapsed().as_secs_f64());
             // The tilted plate of the beads shot (scenes::beads: from a to b, its face on that line).
             let began = Instant::now();
             let mut run = start(&scenes::blobs(cell, wetting), &gpu);

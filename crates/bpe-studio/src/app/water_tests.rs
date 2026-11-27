@@ -367,6 +367,31 @@ fn a_physics_edit_restarts_the_draft_and_a_look_edit_does_not() {
 }
 
 #[test]
+fn a_piece_edit_restarts_the_draft_and_a_colour_edit_does_not() {
+    use bpe_kit::things::water::PIECE;
+    let mut studio = Studio::headless_water();
+    let kit = studio.kit.clone();
+    let piece = bpe_kit::add_thing(&mut studio.scene, &kit.registry, PIECE, ThingId::ROOT).unwrap();
+    studio.scene_changed();
+    let print = |studio: &Studio| studio.water_draft.setup.as_ref().expect("a Water scene has its water").print;
+    let set = |studio: &mut Studio, slot, key: &str, v| {
+        studio.scene.things.get_mut(&piece).unwrap().slots.get_mut(&slot).unwrap().params.set(key, v);
+        studio.scene_changed();
+    };
+    let before = print(&studio);
+    set(&mut studio, SlotId::Material, "colour", Value::Color(bpe_core::Color::rgb(200, 10, 10)));
+    assert_eq!(print(&studio), before, "a new colour plays the same water");
+    set(&mut studio, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    assert_eq!(print(&studio), before, "a piece that will move (a later part) plays the same water");
+    set(&mut studio, SlotId::Form, "size", Value::Vec2([120.0, 40.0]));
+    let sized = print(&studio);
+    assert_ne!(sized, before, "a new size starts the water over");
+    studio.scene.things.get_mut(&piece).unwrap().transform.position.x += 30.0;
+    studio.scene_changed();
+    assert_ne!(print(&studio), sized, "so does a move");
+}
+
+#[test]
 fn a_balls_scene_has_no_draft() {
     let mut studio = Studio::headless_water();
     assert!(studio.water_draft.setup.is_some());

@@ -12,5 +12,5 @@ pub mod plain;
 pub mod sets;
 pub mod stored;
 
-pub use plain::{Plain, PlainGpu, PlainLiquid, PlainLook, View};
+pub use plain::{MOST_COLOURED, Plain, PlainGpu, PlainLiquid, PlainLook, View};
 pub use stored::StoredDrops;

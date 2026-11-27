@@ -83,21 +83,27 @@ impl Default for PlainLiquid {
     }
 }
 
-/// What the plain drawing is told by the cards: the back's colour, the rock's, and each liquid's
-/// look by its kind (a kind past the list takes the list's last; none: [`PlainLiquid::default`]).
+/// What the plain drawing is told by the cards: the back's colour, the rock's, each liquid's look by
+/// its kind (a kind past the list takes the list's last; none: [`PlainLiquid::default`]), and each
+/// solid's colour by its owner in the field ([`SolidField::owner`]: owner `k` from 1 is
+/// `solids[k - 1]`; owner 0, and one past the list or past [`MOST_COLOURED`], is the rock's).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlainLook {
     pub back: [f32; 3],
     pub rock: [f32; 3],
     pub liquids: Vec<PlainLiquid>,
+    pub solids: Vec<[f32; 3]>,
 }
+
+/// The most pieces and walls drawn in their own colours (the rest in the rock's).
+pub const MOST_COLOURED: usize = 64;
 
 impl Default for PlainLook {
     /// The Rock card's colour (`#6b5e52`) and the Back card's default, the rock half as bright
     /// (Shows: Darker rock, Darker 0.5).
     fn default() -> Self {
         let rock = [f32::from(0x6bu8) / 255.0, f32::from(0x5eu8) / 255.0, f32::from(0x52u8) / 255.0];
-        PlainLook { back: rock.map(|c| c * 0.5), rock, liquids: Vec::new() }
+        PlainLook { back: rock.map(|c| c * 0.5), rock, liquids: Vec::new(), solids: Vec::new() }
     }
 }
 
@@ -123,6 +129,7 @@ struct PlainU {
     rock: [f32; 4],
     depth: [f32; 4],
     liquids: [[f32; 8]; MOST_LIQUIDS],
+    solids: [[f32; 4]; MOST_COLOURED],
 }
 
 /// A splat's peak weight at its own size: a body at rest (four drops a cell) sums to 1.
@@ -424,9 +431,12 @@ impl std::fmt::Debug for Plain {
     }
 }
 
+/// The field as the drawing reads it: each node's distance (world px), then each node's owner.
 fn field_buffer(device: &wgpu::Device, queue: &wgpu::Queue, field: &SolidField) -> wgpu::Buffer {
     let far = 64.0 * field.layout.cell;
-    let distances: Vec<f32> = field.distance.iter().map(|d| d.clamp(-far, far)).collect();
+    let mut distances: Vec<f32> = field.distance.iter().map(|d| d.clamp(-far, far)).collect();
+    let nodes = distances.len();
+    distances.extend((0..nodes).map(|i| f32::from(field.owner.get(i).copied().unwrap_or(0))));
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("water plain field"),
         size: (distances.len() as u64 * 4).max(16),
@@ -506,6 +516,11 @@ impl Plain {
         }
         let [br, bg, bb] = linear3(look.back);
         let [rr, rg, rb] = linear3(look.rock);
+        let mut solids = [[rr, rg, rb, 1.0]; MOST_COLOURED];
+        for (k, c) in look.solids.iter().take(MOST_COLOURED).enumerate() {
+            let [r, g, b] = linear3(*c);
+            solids[k] = [r, g, b, 1.0];
+        }
         PlainU {
             view: [view.lo.x, view.lo.y, view.scale, 0.0],
             size: [width, height, l.cols, l.rows],
@@ -521,6 +536,7 @@ impl Plain {
             rock: [rr, rg, rb, 1.0],
             depth: [RADIUS, body_peak(), self.depth.width as f32, self.depth.height as f32],
             liquids,
+            solids,
         }
     }
 

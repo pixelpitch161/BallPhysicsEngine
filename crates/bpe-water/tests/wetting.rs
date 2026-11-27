@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use bpe_core::maths::Maths;
 use bpe_water::probe;
 use bpe_water::scenes::{self, BLOB};
 use bpe_water::{AIR, Drop, Layout, Numbers, STOPS, Solid, SolidField, Water, WaterGpu, fill_stacked};
@@ -44,6 +45,57 @@ fn a_blob_spreads_on_a_wet_floor_and_stands_up_on_a_waxy_one() {
     }
     assert!(sizes[0].1 > 0.4 * sizes[0].0, "standing up on a waxy floor: {:?}", sizes[0]);
     assert!(sizes[2].1 < 2.0 * spacing, "a film on a soaked one: {:?}", sizes[2]);
+}
+
+/// The edge's own angle on a face (a light cap, its weight too small to flatten it) is the same at
+/// 6 and 3 px: Wetting reaches as far at every detail (part 3, item 0; part 2c's caps stood 45° apart
+/// at Wetting 1). A cap a few drops high is measured a spacing at a time (at 6 px a spacing of
+/// height is about 7° of its edge), so each detail's angle is the mean of the cap laid on three
+/// grids, each a third of a cell further across and down. At Wetting 0.5 the details agree within
+/// 8°; at 0.75 the 6 px cap spreads a little wider (on the owner's card 50° against 62° on one grid,
+/// in the container 54° against 61°: under two spacings of height), so there they must agree within
+/// 12° (part 3's plan, "As built and measured").
+#[test]
+fn the_edge_angle_is_the_same_at_every_detail() {
+    let Some(gpu) = card() else { return };
+    let angle = |cell: f32, wetting: f32| {
+        let angles: Vec<f32> = (0..3)
+            .map(|k| {
+                let mut scene = scenes::cap(cell, 36.0, wetting);
+                scene.layout.origin -= Vec2::splat(cell * k as f32 / 3.0);
+                let mut run = scene.start(&gpu, Numbers::for_cell(cell));
+                run.run_to(2.0);
+                let (w, h) = size(&run.water.read(), &run.water.layout());
+                let angle = 2.0 * (2.0 * h / w).det_atan().to_degrees();
+                eprintln!("Wetting {wetting}, {cell} px, grid {k}: {w:.1} x {h:.1} px, {angle:.0} degrees");
+                angle
+            })
+            .collect();
+        angles.iter().sum::<f32>() / angles.len() as f32
+    };
+    // (Wetting, Young's angle, how near the details must come, how near Young's law each must come.)
+    for (wetting, young, same, near) in [(0.5, 90.0, 8.0, 15.0), (0.75, 60.0, 12.0, 15.0)] {
+        let (fine, finer) = (angle(6.0, wetting), angle(3.0, wetting));
+        eprintln!("Wetting {wetting}: {fine:.1} at 6 px, {finer:.1} at 3 px");
+        assert!((fine - finer).abs() <= same, "Wetting {wetting}: {fine:.0} at 6 px, {finer:.0} at 3 px");
+        for a in [fine, finer] {
+            assert!((a - young).abs() <= near, "Wetting {wetting} makes an edge of about {young} degrees, not {a:.0}");
+        }
+    }
+}
+
+/// On a soaked floor (Wetting 1) a 24 px blob spreads into a film at 6 and at 3 px (part 2c's 3 px
+/// one stood as a cap 12.6 px tall, its edge held up by the skin's bend: part 3, item 0).
+#[test]
+fn a_soaked_floor_spreads_a_blob_into_a_film_at_every_detail() {
+    let Some(gpu) = card() else { return };
+    for cell in [6.0, 3.0] {
+        let mut run = scenes::blob(cell, 24.0, 1.0).start(&gpu, Numbers::for_cell(cell));
+        run.run_to(3.0);
+        let (w, h) = size(&run.water.read(), &run.water.layout());
+        eprintln!("{cell} px: {w:.1} x {h:.1} px");
+        assert!(h < cell, "a film at {cell} px is under two spacings deep, not {h:.1} px");
+    }
 }
 
 /// Water further than a reach from every face plays the same to the bit however wet the faces are.

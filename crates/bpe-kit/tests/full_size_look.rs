@@ -1181,26 +1181,31 @@ fn file_shots(reg: &Registry) -> Vec<Shot> {
 }
 
 /// Water mode's plain drawing (`bpe_water::draw`, its own drawing on the card, not the renderer's) of drops laid out
-/// by hand: the bench at 8, 3 and 2 px cells and a screen two thirds full at 2 px (1.4 million drops). Drops of real
+/// by hand: the bench at 8, 3 and 2 px cells, a screen two thirds full at 2 px (1.4 million drops), and part 3's
+/// pieces in their colours at 8 and 3 px. Drops of real
 /// runs are looked at with `bpe-water`'s `bench_pictures` (tests/plain.rs).
 fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     use bpe_water::draw::{Plain, PlainGpu, StoredDrops, View, sets};
     type Make = fn() -> sets::Bench;
-    let all: [(&str, Make); 4] = [
-        ("water-bench-c8", || sets::bench(8.0)),
-        ("water-bench-c3", || sets::bench(3.0)),
-        ("water-bench-c2", || sets::bench(2.0)),
-        ("water-pool-c2", || sets::screen_pool(2.0, 2.0 / 3.0)),
+    type Look = fn() -> bpe_water::draw::PlainLook;
+    let all: [(&str, Make, Look); 6] = [
+        ("water-bench-c8", || sets::bench(8.0), sets::look),
+        ("water-bench-c3", || sets::bench(3.0), sets::look),
+        ("water-bench-c2", || sets::bench(2.0), sets::look),
+        ("water-pool-c2", || sets::screen_pool(2.0, 2.0 / 3.0), sets::look),
+        // Part 3: pieces in their own colours, at the draft's and Fine's detail.
+        ("water-pieces-c8", || sets::pieces(8.0), sets::pieces_look),
+        ("water-pieces-c3", || sets::pieces(3.0), sets::pieces_look),
     ];
     let card = PlainGpu::new(&gpu.device, &gpu.queue);
     let mut out = Vec::new();
-    for (name, make) in all.into_iter().filter(|(name, _)| wanted(name, only)) {
+    for (name, make, look) in all.into_iter().filter(|(name, ..)| wanted(name, only)) {
         let set = make();
         let stored = StoredDrops::new(&gpu.device, &gpu.queue, &set.drops);
         let mut plain = Plain::new(card.clone(), &set.field, sets::REST);
         let view = View::screen(1.0);
         assert_eq!((view.width, view.height), (W, H));
-        plain.draw(&stored.buffers(), &view, &sets::look());
+        plain.draw(&stored.buffers(), &view, &look());
         out.push((name.to_string(), plain.read()));
     }
     out

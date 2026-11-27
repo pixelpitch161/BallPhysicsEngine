@@ -5,12 +5,17 @@ pub mod carve_tool;
 pub mod chooser;
 pub mod course_view;
 pub mod draft;
+pub mod pen_tool;
 pub mod picture;
+pub mod piece_tool;
 pub mod rail;
+pub mod solid_edit;
 pub mod stage;
 
 pub use chooser::{Chooser, ChooserOutcome, NewScene};
 pub use stage::{WaterStage, stage};
 
+#[cfg(test)]
+mod solid_tests;
 #[cfg(test)]
 mod tests;

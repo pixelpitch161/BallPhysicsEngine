@@ -1,7 +1,9 @@
 //! A Water scene's stage, in place of the ball preview (Water mode part 1): a strip with the
 //! active tool's hint, the tool rail, and the course fitted to the room with the camera's shot
 //! and a marker for each thing that is at a place. Since part 2b the water plays on it at draft
-//! detail, drawn in the plain look (`draft`, `picture`).
+//! detail, drawn in the plain look (`draft`, `picture`); since part 3 the Piece and Pen tools add
+//! pieces and walls, and Select moves, turns, sizes and moulds them (`piece_tool`, `pen_tool`,
+//! `solid_edit`).
 
 use super::course_view::CourseView;
 use super::draft::frame_of;
@@ -12,6 +14,7 @@ use crate::style;
 use bpe_core::{Address, Settings, SlotId, ThingId, Value};
 use bpe_kit::modules::water::{SCREEN, WaterWorld};
 use bpe_kit::things::water;
+use bpe_water::SolidField;
 use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use glam::Vec2;
 
@@ -25,7 +28,7 @@ const MARKER_R: f32 = 11.0;
 pub struct WaterStage {
     pub tool: Tool,
     /// The thing being dragged, and where it is held: its place minus the pointer's world point.
-    drag: Option<(ThingId, Vec2)>,
+    pub(super) drag: Option<(ThingId, Vec2)>,
     /// Where the course was drawn last frame.
     pub view: Option<CourseView>,
     /// Goes up whenever the carve stroke being painted changes (or is let go or dropped), so the
@@ -36,6 +39,29 @@ pub struct WaterStage {
     /// The Carve tool's brush, and the stroke it is painting.
     pub brush: super::carve_tool::CarveBrush,
     pub painting: Option<super::carve_tool::Painting>,
+    /// The Piece tool's next piece, and the Pen's next wall.
+    pub piece: super::piece_tool::PieceBrush,
+    pub pen: super::pen_tool::PenBrush,
+    /// The wall being drawn with the Pen (world points).
+    pub line: Option<Vec<Vec2>>,
+    /// The handle Select is dragging, and whether a piece or wall is being moved or moulded (the
+    /// picture then shows the course as it will be).
+    pub grab: Option<super::solid_edit::Grab>,
+    pub moulding: bool,
+    /// The course as it will be while a stroke is painted or a solid moved or moulded (kept after a
+    /// move until the draft plays it), and a count that goes up when it changes.
+    preview: Option<Preview>,
+    preview_version: u64,
+}
+
+/// The course as it will be, and what it was made for.
+struct Preview {
+    /// The carve stroke's version and the scene's physics (`WaterSetup::print`).
+    stroke: u64,
+    print: u64,
+    /// Whether a piece or wall was moved or moulded (not a stroke painted).
+    moulded: bool,
+    field: SolidField,
 }
 
 /// What the stage says over a course with nothing carved.
@@ -65,7 +91,7 @@ fn placed(studio: &Studio) -> Vec<(ThingId, Vec2)> {
 }
 
 /// The marker under the screen point, the one drawn last (on top) first.
-fn marker_at(view: &CourseView, things: &[(ThingId, Vec2)], at: Pos2) -> Option<(ThingId, Vec2)> {
+pub(super) fn marker_at(view: &CourseView, things: &[(ThingId, Vec2)], at: Pos2) -> Option<(ThingId, Vec2)> {
     things.iter().rev().copied().find(|(_, p)| view.to_screen(*p).distance(at) <= MARKER_R + 1.0)
 }
 
@@ -81,10 +107,27 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
     let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
     let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(first).layout(layout));
     bar.label(RichText::new(tool.name()).font(style::semibold(13.0)));
-    if tool == Tool::Carve {
-        super::carve_tool::strip(&mut bar, &mut studio.water_stage.brush);
-    } else {
-        bar.label(RichText::new(tool.hint()).color(style::MUTED));
+    match tool {
+        Tool::Carve => super::carve_tool::strip(&mut bar, &mut studio.water_stage.brush),
+        Tool::Piece => super::piece_tool::strip(&mut bar, &mut studio.water_stage.piece),
+        Tool::Pen => {
+            super::pen_tool::strip(&mut bar, &mut studio.water_stage.pen);
+            bar.label(RichText::new(tool.hint()).color(style::MUTED));
+        }
+        _ => {
+            bar.label(RichText::new(tool.hint()).color(style::MUTED));
+        }
+    }
+    // A picked ready-made piece can become a Custom piece of its outline.
+    if matches!(tool, Tool::Select | Tool::Piece)
+        && let Some(id) = studio.selection.primary
+        && super::piece_tool::can_make_custom(studio, id)
+        && bar
+            .button("Make custom")
+            .on_hover_text("Turn the piece into a Custom one of its outline, to move its points")
+            .clicked()
+    {
+        super::piece_tool::make_custom(studio, id);
     }
     // What a picked pour can't do (yet).
     let note = studio.selection.primary.and_then(|id| {
@@ -122,46 +165,39 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
         }
     } else if tool == Tool::Carve {
         super::carve_tool::paint(ui, &response, studio, &view);
+    } else if tool == Tool::Piece {
+        super::piece_tool::place(ui, &response, studio, &view);
+    } else if tool == Tool::Pen {
+        super::pen_tool::draw(ui, &response, studio, &view);
     } else if tool == Tool::Select {
-        if response.drag_started()
-            && let Some(press) = ui.input(|i| i.pointer.press_origin())
-            && let Some((id, place)) = marker_at(&view, &things, press)
-        {
-            studio.selection.set(id);
-            studio.water_stage.drag = Some((id, place - view.to_world(press)));
-        }
-        if response.dragged()
-            && let Some((id, held)) = studio.water_stage.drag
-            && let Some(at) = response.interact_pointer_pos()
-            && let Some(thing) = studio.scene.things.get_mut(&id)
-        {
-            let to = crate::grid::snap_point(view.to_world(at) + held, step);
-            if thing.transform.position != to {
-                thing.transform.position = to;
-            }
-        }
-        if response.clicked()
-            && let Some(at) = response.interact_pointer_pos()
-        {
-            match marker_at(&view, &things, at) {
-                Some((id, _)) => studio.selection.set(id),
-                None => studio.selection.clear(),
-            }
-        }
+        super::solid_edit::select(ui, &response, studio, &view, &things);
     }
     if !response.dragged() {
-        studio.water_stage.drag = None;
+        super::solid_edit::let_go(studio);
     }
     if tool != Tool::Carve {
         super::carve_tool::drop_stroke(studio);
     }
+    if tool != Tool::Pen {
+        super::pen_tool::drop_line(studio);
+    }
     let shown = water(ui, studio, &view, room);
     paint(ui, studio, &view, room, shown);
-    if tool == Tool::Carve
-        && let Some(at) = response.hover_pos()
-        && view.holds(at)
-    {
-        super::carve_tool::outline(ui, studio, &view, at);
+    super::solid_edit::paint(ui, studio, &view, room, tool == Tool::Select);
+    let hover = response.hover_pos().filter(|p| view.holds(*p));
+    match tool {
+        Tool::Carve => {
+            if let Some(at) = hover {
+                super::carve_tool::outline(ui, studio, &view, at);
+            }
+        }
+        Tool::Piece => {
+            if let Some(at) = hover {
+                super::piece_tool::ghost(ui, studio, &view, at);
+            }
+        }
+        Tool::Pen => super::pen_tool::show_line(ui, studio, &view, hover),
+        _ => {}
     }
     if water::carving_of(&studio.scene).list.is_empty() {
         // (A label that senses nothing, so the stage under it still takes the clicks.)
@@ -176,6 +212,7 @@ pub fn stage(ui: &mut Ui, studio: &mut Studio) {
 fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     let Some(render) = studio.panels.inspector.render.clone() else { return false };
     studio.water_draft.start_on(&render);
+    update_preview(studio);
     let Some(job) = studio.water_draft.job.as_ref() else { return false };
     let target = frame_of(studio.time);
     job.follow(target);
@@ -188,8 +225,8 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     };
     let painter = ui.painter_at(room);
     let rock = Rock {
-        version: studio.water_stage.field_version,
-        painting: studio.water_stage.painting.as_ref().map(|p| p.mask()),
+        version: studio.water_stage.preview_version,
+        preview: studio.water_stage.preview.as_ref().map(|p| &p.field),
     };
     let shown = studio.water_draft.picture.show(&painter, &render, job, &look, view, rock);
     if job.busy() || studio.playing {
@@ -210,6 +247,39 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
         painter.galley(pill.center() - text.size() / 2.0, text, style::TEXT);
     }
     shown
+}
+
+/// Makes the course as it will be while a carve stroke is painted (with the pieces and walls over
+/// it) or a piece or wall is moved or moulded (the draft's restart waits for the drag to rest),
+/// again only when the stroke or the scene's physics changes. A moved or moulded course is kept
+/// once it is let go until the draft plays it, so the piece never jumps back meanwhile; a stroke's
+/// is let go with it (the carving's own rule).
+fn update_preview(studio: &mut Studio) {
+    let (painting, moulding) = (studio.water_stage.painting.is_some(), studio.water_stage.moulding);
+    if !painting && !moulding {
+        let draft = &studio.water_draft;
+        let keep = studio.water_stage.preview.as_ref().is_some_and(|p| {
+            let played = draft.job.as_ref().is_none_or(|job| job.plays() == p.print);
+            let coming = studio.runs_due.is_some() || draft.setup.as_ref().is_some_and(|s| s.print == p.print);
+            p.moulded && !played && coming
+        });
+        if !keep && studio.water_stage.preview.take().is_some() {
+            studio.water_stage.preview_version += 1;
+        }
+        return;
+    }
+    let Some(setup) = super::draft::WaterRun::setup_of(&studio.scene, &studio.resolved) else { return };
+    let stroke = studio.water_stage.field_version;
+    if studio.water_stage.preview.as_ref().is_some_and(|p| p.stroke == stroke && p.print == setup.print) {
+        return;
+    }
+    let field = match &studio.water_stage.painting {
+        Some(painting) => setup.field_with(painting.mask()),
+        None => setup.field(),
+    };
+    let moulded = moulding && !painting;
+    studio.water_stage.preview = Some(Preview { stroke, print: setup.print, moulded, field });
+    studio.water_stage.preview_version += 1;
 }
 
 /// Adds a thing of `kind` at the world point, selects it, and goes back to Select.
