@@ -26,6 +26,28 @@ pub(crate) struct Scened {
     pub(crate) timed: bool,
 }
 
+/// What the finish reads beside the picture: the pictures effects on the light read (the picture
+/// before lighting and the lit colour), and where the grade's Things masks find the things.
+pub(crate) struct FinishInputs {
+    pub(crate) light: Option<(wgpu::TextureView, wgpu::TextureView)>,
+    pub(crate) things: Things,
+}
+
+/// Where the grade's Things masks find the things.
+pub(crate) enum Things {
+    /// The frame's own things, drawn again as silhouettes.
+    Frame,
+    /// None (a picture drawn elsewhere, Water mode part 6).
+    None,
+}
+
+/// What a picture drawn elsewhere gives the finish beside itself ([`Renderer::finish_picture`]):
+/// the picture before its light and its lit colour, for effects that take the light only.
+#[derive(Default)]
+pub struct GivenPicture {
+    pub light: Option<(wgpu::TextureView, wgpu::TextureView)>,
+}
+
 pub(crate) const BLOOM_LEVELS: usize = 6;
 
 pub(crate) const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![

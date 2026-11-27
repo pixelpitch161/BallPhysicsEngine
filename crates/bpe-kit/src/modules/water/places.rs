@@ -1,7 +1,7 @@
-//! The one card each of a Water scene's placed things: **Pour**, **Drain**, **Force** and
-//! **Lamp**. Where each is, and which way it is turned, is the thing's own place.
+//! The one card each of a Water scene's placed things: **Pour**, **Drain** and **Force** (a
+//! **Lamp**'s is in [`super::look`]). Where each is, and which way it is turned, is the thing's own place.
 
-use bpe_core::{Choice, Color, Settings, Target};
+use bpe_core::{Choice, Settings, Target};
 use glam::Vec2;
 
 /// How a Pour lets its liquid in.
@@ -193,65 +193,5 @@ pub struct ForceCard {
 impl Default for ForceCard {
     fn default() -> Self {
         Self { kind: ForceKind::Magnet, strength: 1.0, reach: 300.0, aim: 0.0, spikes: 0, spike_size: 0.5 }
-    }
-}
-
-/// The kinds of lamp.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
-pub enum LampKind {
-    /// A cone of light from one point.
-    #[default]
-    Spot,
-    /// A line of light.
-    Strip,
-    /// Light from far away, the same everywhere.
-    Sun,
-}
-
-/// A Lamp's card.
-#[derive(Clone, Debug, PartialEq, Settings)]
-pub struct LampCard {
-    #[setting(label = "Kind", simple, group = "Lamp")]
-    pub kind: LampKind,
-    #[setting(label = "Colour", simple, keyframe, group = "Lamp")]
-    pub colour: Color,
-    #[setting(label = "Brightness", range(0, 1e9), span(0, 4), simple, keyframe, group = "Lamp")]
-    pub brightness: f32,
-    /// Which way it shines: 90 is straight down.
-    #[setting(label = "Aim", span(-180, 180), unit = "°", keyframe, group = "Lamp")]
-    pub aim: f32,
-    /// How wide the spot's cone is.
-    #[setting(label = "Spread", when = "kind=spot", range(1, 360), span(1, 360), unit = "°", keyframe, group = "Lamp")]
-    pub spread: f32,
-    #[setting(
-        label = "Length",
-        when = "kind=strip",
-        range(1, 1e9),
-        span(10, 2000),
-        unit = "px",
-        keyframe,
-        group = "Lamp"
-    )]
-    pub length: f32,
-    /// How soft the edges of its light and its shadows are.
-    #[setting(label = "Softness", range(0, 1), span(0, 1), group = "Lamp")]
-    pub softness: f32,
-    /// The course and the pieces throw shadows in its light.
-    #[setting(label = "Shadows", group = "Lamp")]
-    pub shadows: bool,
-}
-
-impl Default for LampCard {
-    fn default() -> Self {
-        Self {
-            kind: LampKind::Spot,
-            colour: Color::rgb(0xff, 0xe2, 0xb8),
-            brightness: 1.0,
-            aim: 90.0,
-            spread: 60.0,
-            length: 400.0,
-            softness: 0.3,
-            shadows: true,
-        }
     }
 }

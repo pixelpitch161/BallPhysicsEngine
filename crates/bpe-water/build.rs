@@ -1,13 +1,19 @@
 //! Prints the sources a Water take depends on (an FNV-1a hash of every file under them, in path
 //! order, line ends made alike), so a program whose water changed in any way never takes an older
-//! take for its own.
+//! take for its own. Only the physics and the take are printed: the drawing (`src/draw`,
+//! `src/shaders`) and the test helpers never change what a take holds, so a look change keeps every
+//! final (Water mode part 6).
 
 use std::path::{Path, PathBuf};
 
-/// The folders printed.
-const ROOTS: &[&str] = &["src"];
+/// The folders and files printed.
+const ROOTS: &[&str] = &["src/drops", "src/take", "src/drop.rs", "src/solid.rs", "src/lib.rs"];
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+    if dir.is_file() {
+        out.push(dir.to_path_buf());
+        return;
+    }
     let Ok(read) = std::fs::read_dir(dir) else { return };
     for entry in read.flatten() {
         let path = entry.path();

@@ -1,7 +1,8 @@
 use super::*;
 use crate::modules::water::{self as cards, SCREEN};
 use crate::things::water::{COURSE, DRAIN, FORCE, KINDS, LAMP, PIECE, StartingLook, WALL, new_water_scene};
-use bpe_core::{Address, Registry, SettingDef, Stroke, Value, ValueType};
+use bpe_core::{Address, Color, Registry, SettingDef, Stroke, Value, ValueType};
+use bpe_water::draw::{PlainLiquid, PlainLook};
 
 fn water_scene(reg: &Registry) -> Scene {
     new_water_scene(reg, StartingLook::Plain, "")

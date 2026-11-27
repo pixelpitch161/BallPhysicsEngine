@@ -12,16 +12,12 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use bpe_core::{Color, Params, Resolved, Scene, Settings, SlotId, Strokes, Target, ThingId, Track};
-use bpe_water::draw::{PlainLiquid, PlainLook};
+use bpe_core::{Params, Resolved, Scene, Settings, SlotId, Strokes, Target, ThingId, Track};
 use bpe_water::{Drop, Feel, Layout, Numbers, Pour, STOPS, SolidField, WATER, Water, WaterGpu};
 use glam::Vec2;
 
 use super::{LIQUID, PIECE, POUR, WALL, carving_of, course_of};
-use crate::modules::water::{
-    BackCard, BackShows, CarveMask, FeelCard, MaterialCard, PourCard, PourKind, WaterLook, WaterWorld, layout_for,
-    mask_for,
-};
+use crate::modules::water::{CarveMask, FeelCard, MaterialCard, PourCard, PourKind, WaterWorld, layout_for, mask_for};
 
 pub mod course;
 pub mod inputs;
@@ -30,6 +26,8 @@ pub mod slow;
 pub use course::{Form, SolidSetup};
 pub use inputs::{InputPart, WaterInputs};
 pub use slow::Speeds;
+
+pub use super::look::plain_look;
 
 /// The most drops a draft holds (water spec, Detail): past it the pours stop.
 pub const DRAFT_MOST: u32 = 500_000;
@@ -67,14 +65,14 @@ pub const MOVES_LATER: &str = "Moving pieces arrive in a later part of Water mod
 
 /// A card's settings at the start and the keyframes that move them.
 #[derive(Clone, Debug, Default)]
-struct Keyed {
+pub(crate) struct Keyed {
     params: Params,
     tracks: Vec<(String, Track)>,
 }
 
 impl Keyed {
     /// The card in `slot` of `thing`, as resolved, with its keyframes; `None` when it has none.
-    fn of(scene: &Scene, resolved: &Resolved, thing: ThingId, slot: SlotId) -> Option<Keyed> {
+    pub(crate) fn of(scene: &Scene, resolved: &Resolved, thing: ThingId, slot: SlotId) -> Option<Keyed> {
         let params = resolved.things.get(&thing)?.slots.get(&slot)?.params.clone();
         let tracks = scene
             .tracks
@@ -86,7 +84,7 @@ impl Keyed {
     }
 
     /// The card's settings at `time` seconds.
-    fn card<T: Settings>(&self, time: f64) -> T {
+    pub(crate) fn card<T: Settings>(&self, time: f64) -> T {
         if self.tracks.is_empty() {
             return T::from_params(&self.params);
         }
@@ -533,46 +531,6 @@ fn liquid_index(scene: &Scene, liquids: &[ThingId], target: &Target) -> Option<u
         Target::Tag(tag) => liquids.iter().position(|l| scene.things[l].tags.contains(tag)),
         _ => None,
     }
-}
-
-/// What the plain drawing is told by the cards at `time`: each Liquid's Colour, Deep colour and
-/// Clarity, the Course's Rock colour, each Piece's and Wall's Material Colour (in the order they are
-/// laid over the rock), and the Back (darker rock, a colour, a gradient's middle; a Picture shows as
-/// darker rock until pictures are drawn).
-pub fn plain_look(scene: &Scene, resolved: &Resolved, time: f64) -> PlainLook {
-    let srgb = |c: Color| [c.r, c.g, c.b].map(|v| f32::from(v) / 255.0);
-    let rock = course_of(scene)
-        .and_then(|id| Keyed::of(scene, resolved, id, SlotId::Material))
-        .map_or_else(|| MaterialCard::default().colour, |k| k.card::<MaterialCard>(time).colour);
-    let rock = srgb(rock);
-    let back: BackCard = Keyed::of(scene, resolved, ThingId::ROOT, SlotId::Back).unwrap_or_default().card(time);
-    let darker = rock.map(|c| c * (1.0 - back.darker.clamp(0.0, 1.0)));
-    let back = match back.shows {
-        BackShows::DarkerRock | BackShows::Picture => darker,
-        BackShows::Colour => srgb(back.colour),
-        BackShows::Gradient => srgb(Color::from_linear(back.gradient.sample(0.5))),
-    };
-    let liquids = scene
-        .order
-        .iter()
-        .filter(|id| scene.things[*id].kind == LIQUID && resolved.things.contains_key(*id))
-        .take(MOST_LIQUIDS)
-        .map(|id| {
-            let look: WaterLook = Keyed::of(scene, resolved, *id, SlotId::Look).unwrap_or_default().card(time);
-            PlainLiquid { colour: srgb(look.colour), deep: srgb(look.deep), clarity: look.clarity }
-        })
-        .collect();
-    let solids = scene
-        .order
-        .iter()
-        .filter(|id| matches!(scene.things[*id].kind.as_str(), PIECE | WALL) && resolved.things.contains_key(*id))
-        .take(bpe_water::draw::MOST_COLOURED)
-        .map(|id| {
-            let m: MaterialCard = Keyed::of(scene, resolved, *id, SlotId::Material).unwrap_or_default().card(time);
-            srgb(m.colour)
-        })
-        .collect();
-    PlainLook { back, rock, liquids, solids }
 }
 
 #[cfg(test)]

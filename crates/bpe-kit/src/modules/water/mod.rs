@@ -6,18 +6,20 @@
 
 pub mod carve;
 pub mod liquid;
+pub mod look;
 pub mod pieces;
 pub mod places;
 pub mod scene;
 pub mod solids;
 
 pub use carve::{CarveCard, CarveMask, CarvePaint, layout_for, mask_for};
-pub use liquid::{ColourFrom, FeelCard, GlowFrom, HeatCard, MixShows, MixesWhen, MixingCard, WaterLook};
-pub use pieces::{PALETTE, default_size, placed};
-pub use places::{CourseEdge, DrainCard, DrainKind, ForceCard, ForceKind, LampCard, LampKind, PourCard, PourKind};
-pub use scene::{
-    BackCard, BackShows, DraftDetail, FinalDetail, LightQuality, SCREEN, StartingLook, WaterLightCard, WaterWorld,
+pub use liquid::{FeelCard, HeatCard, MixesWhen, MixingCard};
+pub use look::{
+    BackCard, BackShows, ColourFrom, GlowFrom, LampCard, LampKind, LightQuality, WaterLightCard, WaterLook,
 };
+pub use pieces::{PALETTE, default_size, placed};
+pub use places::{CourseEdge, DrainCard, DrainKind, ForceCard, ForceKind, PourCard, PourKind};
+pub use scene::{DraftDetail, FinalDetail, SCREEN, StartingLook, WaterWorld};
 pub use solids::{Joint, LineEnds, MaterialCard, MaterialKind, MovesCard, MovesKind, PieceKind, PieceShape, WallLine};
 
 use bpe_core::{ModuleKind, Registry, SettingDef, Settings, SlotId};
@@ -186,7 +188,7 @@ fn cards() -> [WaterCard; 16] {
         card(
             LOOK,
             "Look",
-            "How the liquid is drawn: its colour, how deep you see into it, its surface, glow, crust and extras.",
+            "How the liquid is drawn: its colour, how deep you see into it, its surface, glow and extras.",
             SlotId::Look,
             WaterLook::defs,
             LIQUID,

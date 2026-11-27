@@ -1,11 +1,14 @@
 //! Prints the sources a Water take depends on (an FNV-1a hash of every file under them, in path
 //! order, line ends made alike), so a program whose water changed in any way never takes an older
-//! take for its own.
+//! take for its own. The look's files (`look.rs`, `looks.rs`) are left out: what a scene looks like
+//! never changes what a take holds, so a look change keeps every final (Water mode part 6).
 
 use std::path::{Path, PathBuf};
 
 /// The folders printed.
 const ROOTS: &[&str] = &["src/things/water", "src/modules/water"];
+/// The files under them that only say how the water looks, never printed.
+const LOOKS: &[&str] = &["look.rs", "looks.rs"];
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
@@ -13,7 +16,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             files(&path, out);
-        } else {
+        } else if !LOOKS.iter().any(|name| path.file_name().is_some_and(|f| f == *name)) {
             out.push(path);
         }
     }
