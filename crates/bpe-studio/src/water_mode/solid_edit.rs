@@ -5,7 +5,7 @@
 //! a turn dot above it (15° steps, Alt for free) and a size dot at its box's corner.
 
 use bpe_core::{SlotId, ThingId, Value};
-use bpe_kit::modules::water::{PieceKind, PieceShape, WallLine};
+use bpe_kit::modules::water::{MovesKind, PieceKind, PieceShape, WallLine};
 use bpe_kit::things::water;
 use bpe_kit::things::water::draft::{Form, SolidSetup};
 use eframe::egui::{self, Pos2, Rect, Stroke, Ui, vec2};
@@ -19,6 +19,8 @@ use crate::style;
 /// A handle's half side (screen points), and how near a press must land to take it.
 const HANDLE: f32 = 4.0;
 const HANDLE_REACH: f32 = 7.0;
+/// A Position key's dot on a moving part's path (its radius, screen points).
+const KEY_DOT: f32 = 3.5;
 /// How far above a piece's box its turn dot sits (screen points).
 const TURN_OFF: f32 = 24.0;
 /// How near (screen points) a click must come to a piece's body to pick it.
@@ -334,8 +336,21 @@ pub fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, with_handl
     // (In the Shot view only over the shot: the course reaches past it.)
     let painter = ui.painter_at(if view.shot.is_some() { room.intersect(view.seen_rect()) } else { room });
     for id in studio.selection.all(&studio.scene) {
-        if let Some(solid) = solid_of(studio, id) {
-            draw_outlines(&painter, view, &solid.outline(), style::TEXT_STRONG);
+        let Some(solid) = solid_of(studio, id) else { continue };
+        match path_of(studio, id) {
+            // (A moving part: its path and its Position keys, its place (where the handles are)
+            // faint, and where it is at the playhead.)
+            Some((path, keys)) => {
+                let points: Vec<Pos2> = path.iter().map(|p| view.to_screen(*p)).collect();
+                painter.add(egui::Shape::line(points.clone(), Stroke::new(2.5, style::OUTLINE)));
+                painter.add(egui::Shape::line(points, Stroke::new(1.0, style::MUTED)));
+                for k in keys {
+                    painter.circle(view.to_screen(k), KEY_DOT, style::TEXT_STRONG, Stroke::new(1.0, style::OUTLINE));
+                }
+                draw_outlines(&painter, view, &solid.outline(), style::FAINT);
+                draw_outlines(&painter, view, &solid.outline_at(studio.time), style::TEXT_STRONG);
+            }
+            None => draw_outlines(&painter, view, &solid.outline(), style::TEXT_STRONG),
         }
     }
     if !with_handles {
@@ -357,6 +372,28 @@ pub fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, with_handl
         painter.rect_stroke(square(at), 0.0, Stroke::new(1.5, style::TEXT_STRONG), egui::StrokeKind::Inside);
     }
 }
+
+/// The water time between two points of a moving part's path (seconds).
+const PATH_STEP: f64 = 1.0 / 30.0;
+
+/// Piece or Wall `id`'s path, when it moves (Keyframed, with something to it): where it is every
+/// [`PATH_STEP`] of water time over the scene's Length, and where its Position keys put it (world
+/// pixels).
+pub fn path_of(studio: &Studio, id: ThingId) -> Option<(Vec<Vec2>, Vec<Vec2>)> {
+    let solid = solid_of(studio, id)?;
+    if solid.motion() != MovesKind::Keyframed || solid.moving_part().is_none() {
+        return None;
+    }
+    let root = studio.resolved.things.get(&ThingId::ROOT);
+    let settings = root.map(|r| <bpe_kit::SceneSettings as bpe_core::Settings>::from_params(&r.params));
+    let length = f64::from(settings.unwrap_or_default().duration.max(0.0));
+    let steps = (length / PATH_STEP).ceil().min(MOST_PATH_STEPS) as usize;
+    let path = (0..=steps).map(|i| solid.pose_at((i as f64 * PATH_STEP).min(length)).at).collect();
+    Some((path, solid.position_keys()))
+}
+
+/// The most steps a path is drawn in (ten minutes' worth).
+const MOST_PATH_STEPS: f64 = 18_000.0;
 
 /// The picked handles on screen, for tests: points, turn dot, size dot.
 #[cfg(test)]

@@ -346,6 +346,40 @@ fn a_click_on_a_pieces_body_picks_it() {
     assert_eq!(h.state().selection.primary, None, "beside it lets go");
 }
 
+/// A Keyframed piece shows its path (Water mode part 5a): where it is every 1/30 s over the
+/// scene's Length, from its first Position key's place to its last, with a dot at each key.
+#[test]
+fn a_picked_keyframed_piece_shows_its_path() {
+    let mut studio = water_studio();
+    let piece = add_piece(&mut studio, &pillar(), Vec2::new(0.0, -100.0), 0.0);
+    assert_eq!(super::solid_edit::path_of(&studio, piece), None, "a Fixed piece has none");
+    let kit = studio.kit.clone();
+    let reg = &kit.registry;
+    let root = studio.scene.things.get_mut(&ThingId::ROOT).unwrap();
+    root.params.set("duration", bpe_core::Value::Number(1.0));
+    let moves = studio.scene.things.get_mut(&piece).unwrap().slots.get_mut(&SlotId::Moves).unwrap();
+    moves.params.set("moves", bpe_core::Value::Choice("keyframed".into()));
+    let offset = bpe_core::Address { thing: piece, slot: Some(SlotId::Moves), key: "offset".into() };
+    studio.scene.set_key(reg, &offset, 0.0, bpe_core::Value::Vec2([-50.0, 0.0])).unwrap();
+    studio.scene.set_key(reg, &offset, 1.0, bpe_core::Value::Vec2([50.0, 0.0])).unwrap();
+    studio.scene_changed();
+    let (path, keys) = super::solid_edit::path_of(&studio, piece).expect("a moving piece has a path");
+    assert_eq!(path.len(), 31, "a point every 1/30 s of the second, both ends");
+    let (a, b) = (Vec2::new(-50.0, -100.0), Vec2::new(50.0, -100.0));
+    assert!((path[0] - a).length() < 1e-3 && (path[30] - b).length() < 1e-3, "{} to {}", path[0], path[30]);
+    assert_eq!(keys, vec![a, b], "a dot at each Position key");
+    // (Its outline at the playhead is where its keys put it then, half way.)
+    let solid = bpe_kit::things::water::draft::SolidSetup::of(&studio.scene, &studio.resolved, piece).unwrap();
+    let middle = |lines: Vec<Vec<Vec2>>| {
+        let all: Vec<Vec2> = lines.into_iter().flatten().collect();
+        all.iter().copied().sum::<Vec2>() / all.len() as f32
+    };
+    let (home, half) = (middle(solid.outline()), middle(solid.outline_at(0.5)));
+    assert!((half - home).length() < 1.0, "the keys ease through its place half way: {home} then {half}");
+    let late = middle(solid.outline_at(1.0));
+    assert!((late - home - Vec2::new(50.0, 0.0)).length() < 1.0, "{home} then {late}");
+}
+
 #[test]
 fn dragging_a_piece_moves_it_with_snapping() {
     let mut studio = snapping_studio(25.0);

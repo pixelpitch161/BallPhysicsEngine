@@ -167,6 +167,30 @@ impl SolidSetup {
         outlines(&self.body())
     }
 
+    /// The same where it is at water time `time`: a Keyframed part with something to it where its
+    /// keys put it then, anything else at its place.
+    pub fn outline_at(&self, time: f64) -> Vec<Vec<Vec2>> {
+        match self.moving_part() {
+            Some(own) if self.motion() == MovesKind::Keyframed => {
+                let pose = self.pose_at(time);
+                outlines(&own).into_iter().map(|line| line.into_iter().map(|p| pose.to_world(p)).collect()).collect()
+            }
+            _ => self.outline(),
+        }
+    }
+
+    /// Where its Position keys put it (world pixels: its place plus each key's Position), in the
+    /// keys' order.
+    pub fn position_keys(&self) -> Vec<Vec2> {
+        let keys = self.moves.tracks.iter().filter(|(k, _)| k == "offset").flat_map(|(_, t)| &t.keys);
+        keys.filter_map(|k| match k.value {
+            Value::Vec2(v) => Some(self.place() + Vec2::from(v)),
+            _ => None,
+        })
+        .filter(|p| p.is_finite())
+        .collect()
+    }
+
     /// Where other solids and pen points snap to it (world pixels): a piece's hull's corners (a
     /// wheel's top, bottom and sides), a wall's own points.
     pub fn corners(&self) -> Vec<Vec2> {

@@ -383,14 +383,21 @@ fn a_piece_edit_restarts_the_draft_and_a_colour_edit_does_not() {
     let before = print(&studio);
     set(&mut studio, SlotId::Material, "colour", Value::Color(bpe_core::Color::rgb(200, 10, 10)));
     assert_eq!(print(&studio), before, "a new colour plays the same water");
-    set(&mut studio, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
-    assert_eq!(print(&studio), before, "a piece that will move (a later part) plays the same water");
     set(&mut studio, SlotId::Form, "size", Value::Vec2([120.0, 40.0]));
     let sized = print(&studio);
     assert_ne!(sized, before, "a new size starts the water over");
+    // (Water mode part 5a: a piece that moves, and each of its keys, start the water over.)
+    set(&mut studio, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    let keyframed = print(&studio);
+    assert_ne!(keyframed, sized, "a piece that moves starts the water over");
+    let offset = bpe_core::Address { thing: piece, slot: Some(SlotId::Moves), key: "offset".into() };
+    studio.scene.set_key(&kit.registry, &offset, 0.5, Value::Vec2([40.0, 0.0])).unwrap();
+    studio.scene_changed();
+    assert_ne!(print(&studio), keyframed, "so does a key of its Position");
+    let keyed = print(&studio);
     studio.scene.things.get_mut(&piece).unwrap().transform.position.x += 30.0;
     studio.scene_changed();
-    assert_ne!(print(&studio), sized, "so does a move");
+    assert_ne!(print(&studio), keyed, "so does a move");
 }
 
 #[test]
