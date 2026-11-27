@@ -916,6 +916,17 @@ fn a_water_scenes_things_parts_name_what_the_water_draws() {
     assert_eq!(part(ThingsOnly::OneThing, Target::Thing(piece)), sorted(vec![code(piece)]));
     assert_eq!(part(ThingsOnly::OneThing, Target::Kind(LIQUID.into())), sorted(vec![code(a), code(b)]));
     assert_eq!(part(ThingsOnly::OneThing, Target::Thing(ThingId(999))), None, "left out");
+    // Its row's note looks in the scene, not in the blank Balls world a Water scene plays beside.
+    let kit = crate::kit();
+    let none = crate::new_studio_scene(&kit.registry);
+    let blank = bpe_runtime::World::build(&none, &bpe_core::resolve(&none, &kit.registry), &kit.sims);
+    let mut p = bpe_core::Params::default();
+    p.set("only", Value::Choice("one_thing".into()));
+    p.set("target", Value::Target(Target::Thing(piece)));
+    assert_eq!(grade::masks::follow_note(&blank, THINGS, &p, Some(&scene)), None);
+    assert_eq!(grade::masks::follow_note(&blank, THINGS, &p, None).as_deref(), Some("Thing not found"));
+    p.set("target", Value::Target(Target::Thing(ThingId(999))));
+    assert_eq!(grade::masks::follow_note(&blank, THINGS, &p, Some(&scene)).as_deref(), Some("Thing not found"));
     // A new Things part starts on the Liquids, and reaches the finish's grade.
     let mask = grade::add_mask(&mut scene, &reg, THINGS).unwrap();
     let card = |scene: &Scene| scene.card(ThingId::ROOT, SlotId::Grade).unwrap().clone();

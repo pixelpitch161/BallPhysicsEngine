@@ -821,8 +821,9 @@ fn on_a_thing(world: &World, target: &Target, turns: bool, grows: bool) -> Optio
 }
 
 /// What a part's row says about what it follows: "Thing not found" when it follows nothing that
-/// is there, or that only the first balls are covered.
-pub fn follow_note(world: &World, kind: &str, params: &Params) -> Option<String> {
+/// is there, or that only the first balls are covered. In a Water scene (`water`), a Things part
+/// looks for what the water's drawing draws.
+pub fn follow_note(world: &World, kind: &str, params: &Params, water: Option<&Scene>) -> Option<String> {
     let (place, target, ball) = match kind {
         LINEAR => {
             let s = LinearPart::from_params(params);
@@ -838,7 +839,11 @@ pub fn follow_note(world: &World, kind: &str, params: &Params) -> Option<String>
         }
         THINGS => {
             let s = ThingsPart::from_params(params);
-            return s.things(Some(world)).is_none().then(|| "Thing not found".into());
+            let found = match water {
+                Some(scene) => s.water_things(scene).is_some(),
+                None => s.things(Some(world)).is_some(),
+            };
+            return (!found).then(|| "Thing not found".into());
         }
         _ => return None,
     };

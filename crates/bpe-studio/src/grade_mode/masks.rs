@@ -8,7 +8,7 @@ use super::GradeMode;
 use super::cx::{self, GradeCx, GradeEdit, full_key};
 use crate::app::Studio;
 use crate::style;
-use bpe_core::{Layer, LayerId, Params, Slot, Value};
+use bpe_core::{Layer, LayerId, Params, Scene, Slot, Value};
 use bpe_kit::modules::grade::{self, BRUSH, COLOUR_RANGE, LINEAR, LUMINANCE_RANGE, PART_KINDS, RADIAL, THINGS};
 use eframe::egui::{self, RichText, Sense, Stroke, Ui};
 
@@ -27,8 +27,9 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
         whole_row(ui, mode, &gx, shown == grade::whole_of(card), &mut edits);
         let masks = grade::masks_of(card);
         let mut rows = Vec::new();
+        let water = (gx.scene.sim == bpe_core::SimKind::Water).then_some(gx.scene);
         for (index, layer) in masks.iter().enumerate() {
-            let note = note_of(card, layer.id, playback.world());
+            let note = note_of(card, layer.id, playback.world(), water);
             let place = Place { index, count: masks.len() };
             let rect = mask_row(ui, mode, &gx, layer, place, shown == Some(layer.id), note, &mut edits);
             rows.push((layer.id, rect));
@@ -322,10 +323,11 @@ pub fn layer_params(card: &Slot, id: LayerId) -> Params {
     )
 }
 
-/// What a mask's row says: the first of its gradients' notes ("Thing not found").
-fn note_of(card: &Slot, mask: LayerId, world: &bpe_runtime::World) -> Option<String> {
+/// What a mask's row says: the first of its gradients' notes ("Thing not found"). A Water scene
+/// (`water`) plays beside a blank Balls world, so its Things parts look in the scene.
+fn note_of(card: &Slot, mask: LayerId, world: &bpe_runtime::World, water: Option<&Scene>) -> Option<String> {
     grade::parts_of(card, mask)
         .iter()
         .filter(|p| p.enabled)
-        .find_map(|p| grade::masks::follow_note(world, &p.kind, &layer_params(card, p.id)))
+        .find_map(|p| grade::masks::follow_note(world, &p.kind, &layer_params(card, p.id), water))
 }

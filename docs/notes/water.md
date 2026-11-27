@@ -1276,7 +1276,8 @@ what the water's drawing draws, and an effect on the Light only reads the water'
 - **`ThingsPart::water_things(scene)`** names them from the scene by thing codes (`bpe_gfx::thing_code`, as a
   Balls part does from the world); Extras is `bpe_water::draw::look::EXTRAS` (`u32::MAX`); Back is Background's
   "every thing, turned over". `grade::stack_in(card, world, water)` passes the scene to `masks::area`;
-  `finish_of` uses it.
+  `finish_of` uses it. `masks::follow_note(.., water)` likewise, so a mask row's "Thing not found" looks in the
+  scene, not in the blank Balls world a Water scene plays beside.
 - **`FinishLook.things`** (`ThingCodes`) tells the drawing which code drew what: each liquid's by kind, the
   course's (owner 0) and each Piece's and Wall's (owner k from 1, in the scene's order, as the draft's field
   numbers them; `things_of` in `things/water/look.rs`).
