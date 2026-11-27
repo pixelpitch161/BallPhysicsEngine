@@ -36,6 +36,17 @@ pub(crate) struct MaterialU {
     second: [f32; 4],
     shape: [f32; 4],
     edge: [f32; 4],
+    texture: [f32; 4],
+}
+
+/// Where the drawing reads the moving parts' textures (from [`crate::Movers::textures`]); every
+/// other owner's lies on the world.
+pub(crate) fn lay_textures(u: &mut LookU, textures: &[(u16, [f32; 4])]) {
+    for &(owner, map) in textures {
+        if let Some(m) = u.materials.get_mut(usize::from(owner)) {
+            m.texture = map;
+        }
+    }
 }
 
 #[repr(C)]
@@ -197,6 +208,7 @@ fn material_u(m: &MaterialLook) -> MaterialU {
             finite(m.wet_marks, 0.0).clamp(0.0, 1.0),
         ],
         edge: c4(linear3(m.outline_colour), 0.0),
+        texture: [1.0, 0.0, 0.0, 0.0],
     }
 }
 

@@ -1,6 +1,6 @@
 use super::*;
-use bpe_core::{Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value};
-use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
+use bpe_core::{Address, Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value};
+use bpe_kit::things::water::{LIQUID, PIECE, POUR, course_of, new_water_scene};
 use glam::Vec2;
 
 fn set(scene: &mut Scene, id: ThingId, slot: SlotId, key: &str, v: Value) {
@@ -100,6 +100,36 @@ fn going_back_plays_the_same_water() {
     wait_for(&job, 10);
     wait_for(&job, 150);
     assert_eq!(drops(&job), once, "and from the start");
+}
+
+/// A Keyframed block crossing the chamber moves as the draft plays (Water mode part 5a), and is
+/// where it was when the draft goes back.
+#[test]
+fn a_keyframed_piece_moves_as_the_draft_plays_and_goes_back() {
+    let reg = bpe_kit::registry();
+    let mut scene = chamber(&reg, "coarse");
+    let block = bpe_kit::add_thing(&mut scene, &reg, PIECE, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&block).unwrap().transform.position = Vec2::new(0.0, -60.0);
+    set(&mut scene, block, SlotId::Form, "piece", Value::Choice("pillar".into()));
+    set(&mut scene, block, SlotId::Form, "size", Value::Vec2([40.0, 40.0]));
+    set(&mut scene, block, SlotId::Moves, "moves", Value::Choice("keyframed".into()));
+    let offset = Address { thing: block, slot: Some(SlotId::Moves), key: "offset".into() };
+    scene.set_key(&reg, &offset, 0.0, Value::Vec2([-100.0, 0.0])).unwrap();
+    scene.set_key(&reg, &offset, 1.0, Value::Vec2([100.0, 0.0])).unwrap();
+    let s = setup(&scene, &reg);
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let job = DraftJob::start(&device, &queue, s.clone(), 500_000).expect("the thread starts");
+    let at = |job: &DraftJob| {
+        let live = job.live().lock().unwrap();
+        let live = live.as_ref().expect("a body");
+        assert!(live.water.movers().is_some(), "the body has its moving part");
+        live.water.poses()[0]
+    };
+    wait_for(&job, 45);
+    assert_eq!(at(&job), s.poses_at(45.0 / 60.0)[0], "at 3/4 s, where its keys put it then");
+    assert!(at(&job).at.x > 50.0, "{}", at(&job).at);
+    wait_for(&job, 15);
+    assert_eq!(at(&job), s.poses_at(15.0 / 60.0)[0], "back at 1/4 s, where it was then");
 }
 
 #[test]

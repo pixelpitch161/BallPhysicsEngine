@@ -91,6 +91,8 @@ pub struct StagePicture {
     /// stroke being painted.
     rock: Option<(u64, u64)>,
     previewing: bool,
+    /// The body and its moving parts' poses the drawing's field was last laid for.
+    posed: Option<(u64, Vec<bpe_water::Pose>)>,
     /// What the drawing told about the last look drawn (a back picture that can't be read).
     notes: Vec<String>,
     shown: Option<Shown>,
@@ -114,6 +116,7 @@ impl StagePicture {
             && let Some(live) = guard.as_mut()
         {
             self.set_rock(live, &rock);
+            self.set_poses(live);
             let want = Drawn {
                 generation: live.generation,
                 frame: live.water.frames(),
@@ -180,10 +183,23 @@ impl StagePicture {
             None if self.previewing => {
                 live.look.set_field(&live.field);
                 self.previewing = false;
+                self.posed = None;
             }
             None => {}
         }
         self.rock = Some(now);
+    }
+
+    /// Lays the body's moving parts where they are now in the drawing's field (not while the course
+    /// as it will be is shown).
+    fn set_poses(&mut self, live: &mut super::draft::Live) {
+        let Some(movers) = live.water.movers() else { return };
+        let poses = live.water.poses();
+        if self.previewing || self.posed.as_ref().is_some_and(|(g, p)| *g == live.generation && p == poses) {
+            return;
+        }
+        live.look.set_movers(movers, poses);
+        self.posed = Some((live.generation, poses.to_vec()));
     }
 
     /// The picture last drawn.

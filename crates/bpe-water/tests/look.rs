@@ -14,7 +14,7 @@ use bpe_water::draw::look::{
 };
 use bpe_water::draw::sets::{self, REST};
 use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
-use bpe_water::{Drop, Layout, Part, Solid, SolidField};
+use bpe_water::{Drop, Layout, Mover, MoverShape, Movers, Part, Pose, Solid, SolidField};
 use glam::Vec2;
 
 /// The unit way at angle `a` (radians).
@@ -335,6 +335,55 @@ fn each_material_draws_its_own_way() {
     assert!(glass_right > glass_left + 10.0, "glass shows the back's gradient: {glass_left} then {glass_right}");
     let edge = pic.at(Vec2::new(-448.0, -600.0));
     assert!(edge[0] > 150 && edge[1] < 80 && edge[2] > 150, "the outline's colour at the face: {edge:?}");
+}
+
+/// Test 7b: A moving part's texture goes with it (Water mode part 5): a rock block moved and turned
+/// shows the same patches at the same points of itself as where it started, not the world's.
+#[test]
+fn a_moving_parts_texture_goes_with_it() {
+    let Some(gpu) = card() else { return };
+    let still = boxed(&[]);
+    let block = [Solid::rect(Vec2::new(-100.0, -100.0), Vec2::new(100.0, 100.0), true, 0.0)];
+    let start = Pose::new(Vec2::new(-200.0, -300.0), 0.0, 1.0);
+    let l = still.layout;
+    let shape = MoverShape::of(&block, l.cell, 12.0, l.origin - start.at).expect("a shape");
+    let movers = Movers {
+        still: Arc::new(still.clone()),
+        movers: vec![Mover { shape: Arc::new(shape), wetting: 1.0, owner: 1, start }],
+    };
+    let rock = MaterialLook {
+        kind: MaterialKind::Rock,
+        colour: [0.9, 0.2, 0.1],
+        second: [0.02, 0.02, 0.02],
+        texture: 40.0,
+        ..MaterialLook::default()
+    };
+    let look = Look { solids: vec![rock], back: BackLook::Colour([0.2, 0.6, 0.3]), ..Look::default() };
+    let mut d = Drawn::new(&gpu, &still, &[]);
+    let view = View::screen(0.25);
+    d.look.set_movers(&movers, &[start]);
+    let first = d.draw(view, &look);
+    // (Moved a whole number of the picture's pixels and of the course's cells, so the same points of
+    // the block fall on the same points of pixels.)
+    let moved = Pose::new(Vec2::new(200.0, -300.0), 0.0, 1.0);
+    d.look.set_movers(&movers, &[moved]);
+    let second = d.draw(view, &look);
+    let points: Vec<Vec2> =
+        (0..8).flat_map(|i| (0..8).map(move |j| Vec2::new(i as f32, j as f32) * 20.0 - Vec2::splat(70.0))).collect();
+    let lumas =
+        |pic: &Picture, pose: Pose| points.iter().map(|&own| luma(pic.at(pose.to_world(own)))).collect::<Vec<_>>();
+    let (a, b) = (lumas(&first, start), lumas(&second, moved));
+    let (lo, hi) = a.iter().fold((f32::MAX, f32::MIN), |(p, q), &x| (p.min(x), q.max(x)));
+    assert!(hi - lo > 30.0, "the block's rock has patches: {lo} to {hi}");
+    let off = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+    assert!(off <= 4.0, "its patches went with it: {off} apart");
+    // (Turned a quarter about its place, the same points of it show the same patches.)
+    let turned = Pose::new(moved.at, std::f32::consts::FRAC_PI_2, 1.0);
+    d.look.set_movers(&movers, &[turned]);
+    let third = d.draw(view, &look);
+    let c = lumas(&third, turned);
+    let off = a.iter().zip(&c).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+    assert!(off <= 12.0, "turned, its patches went with it: {off} apart");
 }
 
 /// A PNG of `w` x `h` from `pixels` (rgb) in a fresh temporary file.

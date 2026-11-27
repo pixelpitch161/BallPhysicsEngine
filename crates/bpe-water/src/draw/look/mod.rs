@@ -31,6 +31,7 @@ use numbers::{BoxU, Grid, Placing};
 use crate::draw::plain::{Plain, PlainLook, View, attach, run_pass};
 use crate::drops::DropBuffers;
 use crate::drops::numbers::MOST_LIQUIDS;
+use crate::parts::Movers;
 use crate::solid::SolidField;
 
 /// The most texels a side of a light map or the spread light.
@@ -247,6 +248,8 @@ pub struct LookDraw {
     masks: Option<Masks>,
     choices: Option<usize>,
     cover_u: wgpu::Buffer,
+    /// Where each moving part's texture is read (its owner and the map from [`Movers::textures`]).
+    textures: Vec<(u16, [f32; 4])>,
 }
 
 impl std::fmt::Debug for LookDraw {
@@ -301,11 +304,30 @@ impl LookDraw {
             masks: None,
             choices: None,
             cover_u,
+            textures: Vec::new(),
         }
     }
 
-    /// The course changed (its layout must be the drops' own).
+    /// The course changed (its layout must be the drops' own), nothing of it moved.
     pub fn set_field(&mut self, field: &SolidField) {
+        self.textures.clear();
+        self.lay_field(field);
+    }
+
+    /// The course with its moving parts at `poses` (its layout must be the drops' own), each part's
+    /// texture going with it.
+    pub fn set_movers(&mut self, movers: &Movers, poses: &[crate::Pose]) {
+        self.set_posed(&movers.field_at(poses), movers.textures(poses));
+    }
+
+    /// The same from the course's field with its parts where they are ([`Movers::field_at`]) and
+    /// their textures there ([`Movers::textures`]), worked out elsewhere.
+    pub fn set_posed(&mut self, field: &SolidField, textures: Vec<(u16, [f32; 4])>) {
+        self.lay_field(field);
+        self.textures = textures;
+    }
+
+    fn lay_field(&mut self, field: &SolidField) {
         let layout = self.plain.layout;
         self.plain.set_field(field);
         if field.layout != layout {
@@ -318,6 +340,7 @@ impl LookDraw {
     /// Draws another body's drops on `field` (`rest` as [`LookDraw::new`]'s), keeping the pictures,
     /// the finish and the back's picture (a new body after a physics edit).
     pub fn renew(&mut self, field: &SolidField, rest: f32) {
+        self.textures.clear();
         let layout = self.plain.layout;
         self.plain = Plain::new(self.gpu.plain.clone(), field, rest);
         if field.layout != layout {
@@ -457,6 +480,7 @@ impl LookDraw {
             picture,
         };
         let mut u = numbers::look_u(look, &layout, &placing);
+        numbers::lay_textures(&mut u, &self.textures);
         u.time[3] = self.wet.as_ref().map_or(-1.0, |w| w.1 as f32);
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         queue.write_buffer(&self.grads, 0, bytemuck::cast_slice(&numbers::gradients(look)));

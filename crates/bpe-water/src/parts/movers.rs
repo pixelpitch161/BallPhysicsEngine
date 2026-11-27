@@ -5,18 +5,21 @@
 
 use std::sync::Arc;
 
+use bpe_core::maths::Maths;
 use glam::{UVec2, Vec2};
 
 use super::{MoverShape, Pose};
 use crate::solid::{DEFAULT_WETTING, SolidField};
 
-/// One moving part: its shape, how wet its faces are, and the owner number its faces are marked
-/// with for the drawing's colours (its place among the course's parts plus 1, as a still part's).
+/// One moving part: its shape, how wet its faces are, the owner number its faces are marked with
+/// for the drawing's colours (its place among the course's parts plus 1, as a still part's), and
+/// where it starts (its texture lies on it as it does there, and goes with it as it moves).
 #[derive(Clone, Debug)]
 pub struct Mover {
     pub shape: Arc<MoverShape>,
     pub wetting: f32,
     pub owner: u16,
+    pub start: Pose,
 }
 
 impl Mover {
@@ -81,6 +84,26 @@ impl Movers {
             }
         }
         field
+    }
+
+    /// Where the drawing reads each moving part's texture when the parts are at `poses`: for each
+    /// part, its owner number and the map from a world point to the point of the texture there,
+    /// `(a, b, c, d)` taking `p` to `(a p.x - b p.y + c, b p.x + a p.y + d)` (the point the part had
+    /// at its start, so its texture goes with it).
+    pub fn textures(&self, poses: &[Pose]) -> Vec<(u16, [f32; 4])> {
+        self.movers
+            .iter()
+            .enumerate()
+            .map(|(k, m)| {
+                let (from, now) = (m.start.sane(), Movers::pose(poses, k));
+                let (s, c) = (from.turn - now.turn).det_sin_cos();
+                let k = from.scale / now.scale;
+                let (a, b) = (k * c, k * s);
+                let t = from.at - Vec2::new(a * now.at.x - b * now.at.y, b * now.at.x + a * now.at.y);
+                let map = [a, b, t.x, t.y];
+                (m.owner, if map.iter().all(|v| v.is_finite()) { map } else { [1.0, 0.0, 0.0, 0.0] })
+            })
+            .collect()
     }
 
     /// The nodes (inclusive, clipped to the layout) that the parts moving between `from` and `to`
@@ -152,7 +175,10 @@ mod tests {
 
     fn movers_at(still: SolidField, solids: &[Solid], place: Vec2) -> Movers {
         let shape = Arc::new(MoverShape::of(solids, still.layout.cell, 6.0, still.layout.origin - place).unwrap());
-        Movers { still: Arc::new(still), movers: vec![Mover { shape, wetting: 0.25, owner: 2 }] }
+        Movers {
+            still: Arc::new(still),
+            movers: vec![Mover { shape, wetting: 0.25, owner: 2, start: Pose::new(place, 0.0, 1.0) }],
+        }
     }
 
     fn movers(still: SolidField, solids: &[Solid]) -> Movers {
@@ -238,5 +264,26 @@ mod tests {
         let got = m.fastest(&[a], &[b], 1.0 / 60.0);
         assert!((got - want).abs() < 0.02 * want, "{got} is not {want}");
         assert_eq!(m.fastest(&[a], &[a], 1.0 / 60.0), 0.0);
+    }
+
+    #[test]
+    fn a_parts_texture_goes_with_it() {
+        let bar = [Solid::rect(Vec2::new(-100.0, -5.0), Vec2::new(100.0, 5.0), true, 0.0)];
+        let mut m = movers(course(), &bar);
+        let start = Pose::new(Vec2::new(10.0, -4.0), 0.3, 1.5);
+        m.movers[0].start = start;
+        let now = Pose::new(Vec2::new(50.0, 20.0), 1.1, 0.75);
+        let [(owner, [a, b, c, d])] = m.textures(&[now])[..] else { panic!("one part") };
+        assert_eq!(owner, 2);
+        for own in [Vec2::ZERO, Vec2::new(30.0, -7.0), Vec2::new(-80.0, 4.0)] {
+            let p = now.to_world(own);
+            let got = Vec2::new(a * p.x - b * p.y + c, b * p.x + a * p.y + d);
+            let want = start.to_world(own);
+            assert!((got - want).length() < 1e-3, "{got} is not {want}");
+        }
+        // (Where it starts, its texture is the world's.)
+        let [(_, map)] = m.textures(&[start])[..] else { panic!("one part") };
+        let want = [1.0, 0.0, 0.0, 0.0];
+        assert!(map.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4), "{map:?}");
     }
 }

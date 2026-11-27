@@ -82,7 +82,7 @@ impl WaterSetup {
                 // (Thin walls as thick as the physics needs at the smallest the part is keyed to.)
                 let least = bpe_water::drops::LEAST_WALL * l.cell / s.least_scale();
                 let shape = MoverShape::of(&s.moving_part()?, l.cell, least, l.origin - pose.at)?;
-                Some(Mover { shape: std::sync::Arc::new(shape), wetting: s.wetting(), owner: owner(k) })
+                Some(Mover { shape: std::sync::Arc::new(shape), wetting: s.wetting(), owner: owner(k), start: *pose })
             })
             .collect();
         Some(Movers { still: std::sync::Arc::new(still), movers })
