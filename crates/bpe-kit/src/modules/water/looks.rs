@@ -143,7 +143,7 @@ impl ReadyLook {
                 (m.material, m.colour, m.second_colour) = (MaterialKind::Rock, rgb(0x7a5c44), rgb(0x4a3626));
                 (m.texture_size, m.depth, m.roughness, m.wet_marks) = (160.0, 14.0, 0.7, 0.6);
                 (b.shows, b.darker) = (BackShows::DarkerRock, 0.65);
-                (light.ambient, light.bounce, light.caustics, light.shafts) = (0.12, 0.4, 0.0, 0.3);
+                (light.ambient, light.bounce, light.caustics, light.shafts) = (0.12, 0.4, 1.2, 0.3);
                 let spot = |aim: f32, x: f32| LampRow {
                     card: LampCard {
                         kind: LampKind::Spot,

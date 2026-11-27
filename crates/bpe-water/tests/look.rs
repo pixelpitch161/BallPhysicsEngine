@@ -1,7 +1,8 @@
 //! The look drawing (`bpe_water::draw::look`, Water mode part 6): that it repeats, where it draws
 //! what, the lamps' light and shadows, light through the liquid, caustics, glow, the materials, the
 //! back, bend, shine, bands, that the light doesn't depend on the view, Quality, the extras
-//! (bubbles, fizz, foam, mist, sparks) and the finish's Effects. From drops laid
+//! (bubbles, fizz, foam, mist, sparks), the finish's Effects, a lone drop's whole shadow and no
+//! caustics behind a stream. From drops laid
 //! out by hand (`draw::sets`), never physics; on the software card at 270 x 480 or less.
 
 use std::sync::Arc;
@@ -784,6 +785,69 @@ fn the_finish_runs_the_effects_over_the_picture() {
     assert!(apart(plain.at(left), plain.at(right)) > 40, "{:?} and {:?}", plain.at(left), plain.at(right));
     assert!(apart(mirrored.at(left), mirrored.at(right)) <= 2, "{:?} and {:?}", mirrored.at(left), mirrored.at(right));
     assert!(apart(mirrored.at(left), plain.at(left)) <= 1, "the left half as it was");
+}
+
+/// The screen's box carved in rock on a 3 px layout (the full-size look check's detail).
+fn boxed_fine() -> SolidField {
+    let layout = Layout::cover(Vec2::new(-540.0, -960.0), Vec2::new(540.0, 960.0), 3.0);
+    let solids = sets::carved(&[Solid::rect(Vec2::new(-500.0, -900.0), Vec2::new(500.0, 900.0), false, 16.0)], 12.0);
+    SolidField::build_least(layout, &solids, 12.0)
+}
+
+/// Test 21: A lone small drop high in the air casts one shadow under a Sun, deep near it and softening
+/// smoothly further down: the march through open air never steps over it (its shadow came out dashed
+/// while a coarse texel holding a lone drop counted as empty).
+#[test]
+fn a_lone_drop_casts_a_whole_shadow() {
+    let Some(gpu) = card() else { return };
+    let field = boxed_fine();
+    let drop = Vec2::new(0.0, -600.0);
+    let drops = sets::lattice(&field, drop - Vec2::splat(1.5), drop + Vec2::splat(1.5), 0);
+    assert!(!drops.is_empty() && drops.len() <= 9, "a few drops: {}", drops.len());
+    // (A Sun in a closed course reaches only with Shadows off; the liquid still takes its light.)
+    let sun = Lamp { kind: LampKind::Sun, aim: 90.0, colour: [1.0; 3], shadows: false, ..Lamp::default() };
+    let mut look = dark(vec![sun], Quality::Good);
+    look.liquids = vec![LiquidLook { clarity: 1.0, ..LiquidLook::default() }];
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    d.draw(View::screen(0.25), &look);
+    let mut shares = Vec::new();
+    for k in 0..80 {
+        let y = -580.0 + 8.0 * k as f32;
+        let under = bright(d.look.light_at(Vec2::new(0.0, y)).unwrap());
+        let beside = bright(d.look.light_at(Vec2::new(200.0, y)).unwrap());
+        assert!(beside > 0.5, "open air is lit at y {y}: {beside}");
+        shares.push(under / beside);
+    }
+    // Near the drop its shadow is deep; further down it softens, as the march's coarser levels average
+    // the drop over more room. A dashed shadow had points fully lit between dark ones.
+    let near = &shares[..25];
+    assert!(near.iter().all(|&s| s < 0.4), "the drop shadows the 200 px under it: {near:?}");
+    let jumps = shares.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+    assert!(jumps < 0.3, "the shadow softens smoothly, with no dashes: {shares:?}");
+}
+
+/// Test 22: A Spot just beside a falling stream lights the rock behind the stream the same with
+/// Caustics 2 as with none: the stream's two surfaces aren't one lens over the rock (its caustics
+/// there were wide bright and dark stripes). A pool's floor keeps its caustics (test 5).
+#[test]
+fn a_stream_throws_no_caustics_on_the_rock_behind_it() {
+    let Some(gpu) = card() else { return };
+    let field = boxed_fine();
+    let drops = sets::lattice(&field, Vec2::new(-6.0, -500.0), Vec2::new(6.0, 300.0), 0);
+    let lamp = spot(Vec2::new(40.0, -100.0), 180.0, 150.0);
+    let behind = |caustics: f32| -> Vec<f32> {
+        let mut look = dark(vec![lamp.clone()], Quality::Good);
+        look.light.caustics = caustics;
+        look.liquids = vec![LiquidLook { clarity: 4000.0, ..LiquidLook::default() }];
+        let mut d = Drawn::new(&gpu, &field, &drops);
+        d.draw(View::screen(0.25), &look);
+        (0..40).map(|k| bright(d.look.light_at(Vec2::new(-300.0, -400.0 + 15.0 * k as f32)).unwrap())).collect()
+    };
+    let (with, without) = (behind(2.0), behind(0.0));
+    assert!(without.iter().all(|&l| l > 0.05), "the rock behind is lit: {without:?}");
+    for (k, (a, b)) in with.iter().zip(&without).enumerate() {
+        assert!((a - b).abs() <= 0.02 * b.max(1e-3), "point {k}: {a} with caustics against {b} without");
+    }
 }
 
 /// The bench at 3 px under two warm Spots and a waved pool under a Sun, at full size, for looking at
