@@ -6,12 +6,14 @@
 
 pub mod carve;
 pub mod liquid;
+pub mod pieces;
 pub mod places;
 pub mod scene;
 pub mod solids;
 
 pub use carve::{CarveCard, CarveMask, CarvePaint, layout_for, mask_for};
 pub use liquid::{ColourFrom, FeelCard, GlowFrom, HeatCard, MixShows, MixesWhen, MixingCard, WaterLook};
+pub use pieces::{PALETTE, default_size, placed};
 pub use places::{CourseEdge, DrainCard, DrainKind, ForceCard, ForceKind, LampCard, LampKind, PourCard, PourKind};
 pub use scene::{
     BackCard, BackShows, DraftDetail, FinalDetail, LightQuality, SCREEN, StartingLook, WaterLightCard, WaterWorld,

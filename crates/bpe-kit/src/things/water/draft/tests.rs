@@ -349,13 +349,13 @@ fn what_restarts_the_draft() {
     let liquid = scene.order.iter().copied().find(|id| scene.things[id].kind == LIQUID).unwrap();
     crate::fill_slot(&mut scene, &reg, liquid, SlotId::Heat).unwrap();
     let base = setup(&scene, &reg).print;
-    // (A Piece's or a Wall's Material plays no part until pieces and walls are in the water.)
-    let physics = |thing: &str, card: &str, key: &str| match card {
+    // (A solid's Material is felt only by its Wetting; Moves waits for moving pieces.)
+    let physics = |_thing: &str, card: &str, key: &str| match card {
         cards::WORLD => {
             ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"].contains(&key)
         }
-        cards::MATERIAL => thing == COURSE && key == "wetting",
-        cards::CARVE | cards::FEEL | cards::POUR => true,
+        cards::MATERIAL => key == "wetting",
+        cards::CARVE | cards::FEEL | cards::POUR | cards::SHAPE | cards::LINE => true,
         _ => false,
     };
     let mut checked = 0;
@@ -376,21 +376,27 @@ fn what_restarts_the_draft() {
                 checked += 1;
             }
         }
-        // Moving it, and turning it off.
+        // Moving it, turning it, and turning it off.
         if crate::things::water::is_placed(&thing.kind) {
             let mut moved = scene.clone();
             moved.things.get_mut(&id).unwrap().transform.position += Vec2::new(5.0, 0.0);
             let restarts = setup(&moved, &reg).print != base;
-            if restarts != (thing.kind == POUR) {
+            if restarts != [POUR, PIECE, WALL].contains(&thing.kind.as_str()) {
                 wrong.push(format!("moving a {}: restarts {restarts}", thing.kind));
             }
-            checked += 1;
+            let mut turned = scene.clone();
+            turned.things.get_mut(&id).unwrap().transform.rotation += 0.3;
+            let restarts = setup(&turned, &reg).print != base;
+            if restarts != [PIECE, WALL].contains(&thing.kind.as_str()) {
+                wrong.push(format!("turning a {}: restarts {restarts}", thing.kind));
+            }
+            checked += 2;
         }
         if [LIQUID, POUR, PIECE, WALL, DRAIN, FORCE, LAMP].contains(&thing.kind.as_str()) {
             let mut off = scene.clone();
             off.things.get_mut(&id).unwrap().enabled = false;
             let restarts = setup(&off, &reg).print != base;
-            if restarts != [LIQUID, POUR].contains(&thing.kind.as_str()) {
+            if restarts != [LIQUID, POUR, PIECE, WALL].contains(&thing.kind.as_str()) {
                 wrong.push(format!("turning off a {}: restarts {restarts}", thing.kind));
             }
             checked += 1;
@@ -398,7 +404,9 @@ fn what_restarts_the_draft() {
     }
     // Keyframes count where the setting does.
     let pour = ids[KINDS.iter().position(|k| *k == POUR).unwrap() - 1];
+    let piece = ids[KINDS.iter().position(|k| *k == PIECE).unwrap() - 1];
     for (thing, slot, key, v, restarts) in [
+        (piece, SlotId::Material, "colour", Value::Color(Color::rgb(1, 2, 3)), false),
         (liquid, SlotId::Feel, "thickness", Value::Number(0.5), true),
         (liquid, SlotId::Look, "colour", Value::Color(Color::rgb(1, 2, 3)), false),
         (ThingId::ROOT, SlotId::Water, "gravity", Value::Vec2([0.0, 10.0]), true),
@@ -445,4 +453,210 @@ fn the_plain_look_reads_the_cards() {
     // The defaults are the plain drawing's own.
     let plain = look(&water_scene(&reg));
     assert_eq!(plain, PlainLook::default());
+}
+
+/// A square Piece of `side` px (a Pillar sized so) at `at`, as wet as `wetting`.
+fn block(scene: &mut Scene, reg: &Registry, at: Vec2, side: f32, wetting: f64) -> ThingId {
+    let id = add(scene, reg, PIECE, at);
+    set(scene, id, SlotId::Form, "piece", Value::Choice("pillar".into()));
+    set(scene, id, SlotId::Form, "size", Value::Vec2([side, side]));
+    set(scene, id, SlotId::Material, "wetting", Value::Number(wetting));
+    id
+}
+
+#[test]
+fn a_piece_adds_solid_and_its_own_wetting() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let id = block(&mut scene, &reg, Vec2::new(0.0, 100.0), 120.0, 0.0);
+    let s = setup(&scene, &reg);
+    assert_eq!(s.solids.iter().map(|s| s.id).collect::<Vec<_>>(), [id]);
+    let field = s.field();
+    assert!(field.at(Vec2::new(0.0, 100.0)) < -50.0, "solid in its middle");
+    assert!(
+        (field.at(Vec2::new(0.0, 20.0)) - 20.0).abs() < 1.0,
+        "20 px over its top: {}",
+        field.at(Vec2::new(0.0, 20.0))
+    );
+    assert_eq!(field.wetting_at(Vec2::new(0.0, 36.0)), 0.0, "its face is waxy");
+    assert_eq!(field.wetting_at(Vec2::new(0.0, -390.0)), 1.0, "the rock's is soaked");
+    // Turned a quarter, a tall piece lies along.
+    set(&mut scene, id, SlotId::Form, "size", Value::Vec2([40.0, 300.0]));
+    scene.things.get_mut(&id).unwrap().transform.rotation = std::f32::consts::FRAC_PI_2;
+    let field = setup(&scene, &reg).field();
+    assert!(field.at(Vec2::new(120.0, 100.0)) < 0.0 && field.at(Vec2::new(0.0, 160.0)) > 0.0);
+}
+
+#[test]
+fn a_cutting_pipe_opens_a_tunnel_lined_with_its_material() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let pipe = add(&mut scene, &reg, PIECE, Vec2::new(0.0, 0.0));
+    set(&mut scene, pipe, SlotId::Form, "piece", Value::Choice("pipe".into()));
+    set(&mut scene, pipe, SlotId::Form, "size", Value::Vec2([400.0, 80.0]));
+    set(&mut scene, pipe, SlotId::Form, "cuts", Value::Bool(true));
+    set(&mut scene, pipe, SlotId::Material, "wetting", Value::Number(0.25));
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    assert!(field.at(Vec2::ZERO) > 10.0, "open down its bore: {}", field.at(Vec2::ZERO));
+    assert!(field.at(Vec2::new(0.0, 36.0)) < 0.0, "its walls stand in the hole");
+    assert!(field.at(Vec2::new(0.0, 200.0)) < 0.0, "the rock round it stays");
+    assert!(field.at(Vec2::new(300.0, 0.0)) < 0.0, "past its ends too");
+    assert!((field.wetting_at(Vec2::ZERO) - 0.25).abs() < 1e-6, "lined with its own Material");
+    // A wall that cuts is a channel.
+    let wall = add(&mut scene, &reg, WALL, Vec2::new(0.0, 300.0));
+    set(&mut scene, wall, SlotId::Form, "cuts", Value::Bool(true));
+    let field = setup(&scene, &reg).field();
+    assert!(field.at(Vec2::new(0.0, 300.0)) > 0.0 && field.at(Vec2::new(0.0, 360.0)) < 0.0);
+}
+
+#[test]
+fn order_decides_what_a_cut_takes() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let plug = block(&mut scene, &reg, Vec2::ZERO, 200.0, 1.0);
+    let cutter = block(&mut scene, &reg, Vec2::ZERO, 80.0, 1.0);
+    set(&mut scene, cutter, SlotId::Form, "cuts", Value::Bool(true));
+    // The cut comes after the plug: a hole in it.
+    let s = setup(&scene, &reg);
+    assert!(s.field().at(Vec2::ZERO) > 0.0);
+    // Moved above the plug in the tree, it cuts only the open water, and the plug fills it back.
+    let at = |scene: &Scene, id| scene.order.iter().position(|i| *i == id).unwrap();
+    let (a, b) = (at(&scene, plug), at(&scene, cutter));
+    scene.order.swap(a, b);
+    let s2 = setup(&scene, &reg);
+    assert!(s2.field().at(Vec2::ZERO) < 0.0);
+    assert_ne!(s.print, s2.print, "the order restarts the draft");
+}
+
+#[test]
+fn a_tap_inside_a_piece_pours_nothing() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let tap = add(&mut scene, &reg, POUR, Vec2::new(0.0, -200.0));
+    let s = setup(&scene, &reg);
+    assert!(s.taps_in_rock(&s.field()).is_empty());
+    block(&mut scene, &reg, Vec2::new(0.0, -200.0), 100.0, 1.0);
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    assert_eq!(s.taps_in_rock(&field), [tap]);
+    assert_eq!(s.inputs_on(0, &field).pours[0].width, 0.0);
+}
+
+#[test]
+fn a_huge_piece_is_kept_to_the_layout() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let id = block(&mut scene, &reg, Vec2::ZERO, 1e6, 1.0);
+    scene.things.get_mut(&id).unwrap().transform.rotation = 0.4;
+    let far = block(&mut scene, &reg, Vec2::new(1e7, -1e7), 50.0, 1.0);
+    let started = std::time::Instant::now();
+    let s = setup(&scene, &reg);
+    let field = s.field();
+    assert!(started.elapsed().as_secs_f32() < 2.0, "{:?}", started.elapsed());
+    assert!(field.distance.iter().all(|d| *d < 0.0), "solid all through");
+    assert!(s.solid(far).is_some());
+}
+
+#[test]
+fn thin_and_moving_pieces_say_so() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let wall = add(&mut scene, &reg, WALL, Vec2::ZERO);
+    let thick = add(&mut scene, &reg, WALL, Vec2::ZERO);
+    set(&mut scene, wall, SlotId::Form, "thickness", Value::Number(14.0));
+    let wheel = add(&mut scene, &reg, PIECE, Vec2::ZERO);
+    set(&mut scene, wheel, SlotId::Moves, "moves", Value::Choice("driven".into()));
+    let s = setup(&scene, &reg);
+    assert_eq!(s.note_for(wall), Some(THIN), "14 px is under two 8 px cells");
+    assert_eq!(s.note_for(thick), None, "24 px is not");
+    assert_eq!(s.note_for(wheel), Some(MOVES_LATER));
+    // At a finer draft (6 px), 14 px is thick enough.
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "draft_detail", Value::Choice("fine".into()));
+    assert_eq!(setup(&scene, &reg).note_for(wall), None);
+}
+
+#[test]
+fn a_piece_is_picked_by_its_body() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let under = block(&mut scene, &reg, Vec2::ZERO, 200.0, 1.0);
+    let over = block(&mut scene, &reg, Vec2::new(80.0, 0.0), 100.0, 1.0);
+    let wall = add(&mut scene, &reg, WALL, Vec2::new(0.0, 300.0));
+    let s = setup(&scene, &reg);
+    assert_eq!(s.solid_at(Vec2::new(-80.0, 0.0), 0.0), Some(under));
+    assert_eq!(s.solid_at(Vec2::new(90.0, 0.0), 0.0), Some(over), "the later one is on top");
+    assert_eq!(s.solid_at(Vec2::new(140.0, 300.0), 0.0), Some(wall), "a wall by its line");
+    assert_eq!(s.solid_at(Vec2::new(0.0, 200.0), 0.0), None);
+    assert_eq!(s.solid_at(Vec2::new(0.0, 103.0), 5.0), Some(under), "within the reach");
+}
+
+#[test]
+fn snap_points_leave_the_piece_itself_out() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let a = block(&mut scene, &reg, Vec2::ZERO, 100.0, 1.0);
+    let wall = add(&mut scene, &reg, WALL, Vec2::new(0.0, 300.0));
+    let s = setup(&scene, &reg);
+    let all = s.snap_points(None);
+    assert!(all.iter().any(|p| p.distance(Vec2::new(50.0, 50.0)) < 1e-3), "{all:?}");
+    assert!(all.iter().any(|p| p.distance(Vec2::new(150.0, 300.0)) < 1e-3), "the wall's end");
+    let without = s.snap_points(Some(a));
+    assert!(!without.iter().any(|p| p.distance(Vec2::new(50.0, 50.0)) < 1e-3));
+    assert_eq!(s.snap_points(Some(wall)).len(), 4);
+}
+
+#[test]
+fn the_plain_look_colours_each_solid() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let a = block(&mut scene, &reg, Vec2::ZERO, 100.0, 1.0);
+    let b = add(&mut scene, &reg, WALL, Vec2::ZERO);
+    set(&mut scene, a, SlotId::Material, "colour", Value::Color(Color::rgb(255, 0, 0)));
+    set(&mut scene, b, SlotId::Material, "colour", Value::Color(Color::rgb(0, 0, 255)));
+    let look = plain_look(&scene, &bpe_core::resolve(&scene, &reg), 0.0);
+    assert_eq!(look.solids, [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+    // The field marks each one's solid by its place in that list.
+    let field = setup(&scene, &reg).field();
+    let node = |p: Vec2| {
+        let g = field.layout.to_grid(p).round();
+        field.owner[g.y as usize * field.layout.cols as usize + g.x as usize]
+    };
+    assert_eq!(node(Vec2::new(0.0, 30.0)), 1);
+    assert_eq!(node(Vec2::new(-150.0, 0.0)), 2, "the wall, laid after");
+    // Off, it is in neither.
+    scene.things.get_mut(&a).unwrap().enabled = false;
+    let look = plain_look(&scene, &bpe_core::resolve(&scene, &reg), 0.0);
+    assert_eq!(look.solids, [[0.0, 0.0, 1.0]]);
+}
+
+/// One screen at Fine (6 px), carved, with 40 pieces of every kind: the field builds quickly (by
+/// hand in release it prints its time; 150 ms is the aim).
+#[test]
+fn a_field_with_forty_pieces_builds_quickly() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "draft_detail", Value::Choice("fine".into()));
+    carve(&mut scene, vec![hole([0.0, 0.0], 500.0)]);
+    let kinds =
+        ["ramp", "step", "pillar", "basin", "funnel", "pipe", "sieve", "bucket", "wheel", "gate", "float", "custom"];
+    for k in 0..40 {
+        let at = Vec2::new(-400.0 + (k % 5) as f32 * 200.0, -800.0 + (k / 5) as f32 * 220.0);
+        let id = add(&mut scene, &reg, PIECE, at);
+        set(&mut scene, id, SlotId::Form, "piece", Value::Choice(kinds[k % kinds.len()].into()));
+        scene.things.get_mut(&id).unwrap().transform.rotation = k as f32 * 0.1;
+    }
+    let s = setup(&scene, &reg);
+    let mask = s.mask();
+    let started = std::time::Instant::now();
+    let field = s.field_with(&mask);
+    let took = started.elapsed();
+    println!("40 pieces over a carved screen at 6 px: {took:?}");
+    assert!(took.as_secs_f32() < 2.0, "{took:?}");
+    assert_eq!(field.layout.cell, 6.0);
 }
