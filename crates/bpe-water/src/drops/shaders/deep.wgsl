@@ -121,6 +121,11 @@ fn cs_deep_walls(@builtin(global_invocation_id) gid: vec3<u32>) {
     if k >= fr.grid.x * fr.grid.y {
         return;
     }
+    walls_at(k);
+}
+
+// Cell `k`'s faces' open shares and its solids' share.
+fn walls_at(k: u32) {
     let x = i32(k % fr.grid.x);
     let y = i32(k / fr.grid.x);
     let p00 = node_phi(x, y);
@@ -721,5 +726,5 @@ fn cs_deep_push(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let kind = u32(velb[i].z);
-    y_in[i] = vec4<f32>(keep_off(x + shift, vec2<f32>(0.0), stops_at_edge(kind)).x, me.zw);
+    y_in[i] = vec4<f32>(keep_place(x + shift, stops_at_edge(kind)), me.zw);
 }

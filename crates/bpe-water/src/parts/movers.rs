@@ -105,7 +105,7 @@ impl Movers {
     /// How fast the fastest point of a part moves between `from` and `to` over `seconds` (pixels a
     /// second): its place's speed, its turn's at its furthest solid point, and its growth there.
     pub fn fastest(&self, from: &[Pose], to: &[Pose], seconds: f32) -> f32 {
-        if !(seconds > 0.0) {
+        if seconds.is_nan() || seconds <= 0.0 {
             return 0.0;
         }
         let mut fastest = 0.0f32;

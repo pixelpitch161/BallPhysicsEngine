@@ -9,6 +9,7 @@ pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/finish.wgsl"),
     include_str!("shaders/deep.wgsl"),
     include_str!("shaders/air.wgsl"),
+    include_str!("shaders/movers.wgsl"),
     include_str!("shaders/report.wgsl"),
     include_str!("shaders/pack.wgsl"),
 );
@@ -44,6 +45,8 @@ pub(super) enum P {
     AirSumB,
     AirDead,
     AirBorn,
+    Movers,
+    DeepWallsMoved,
     Report,
     Export,
     Pack,
@@ -58,7 +61,8 @@ pub(super) enum P {
 /// pressure, 22 the faces' open shares, 23 how full each cell is and then its depth share, 24 how far
 /// down its column a cell that is not full is, 25 the cells deep at the frame's end, 26 how full the
 /// drops-only water just above the deep water is; for trapped air (air.wgsl) 27 each cell's spots,
-/// 28 the blocks' running sums and every spot; for a kept moment (pack.wgsl) 29 the drops packed.
+/// 28 the blocks' running sums and every spot; for a kept moment (pack.wgsl) 29 the drops packed; for
+/// moving parts (movers.wgsl) 30 the still field, 31 the parts' own grids.
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_predict", &[0, 1, 2, 3, 4, 6, 7, 15, 16]),
     ("cs_sum_a", &[0, 1, 7, 8, 9]),
@@ -88,6 +92,8 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_air_sum_b", &[0, 1, 28]),
     ("cs_air_dead", &[0, 1, 2, 3, 5, 8, 28]),
     ("cs_air_born", &[0, 1, 2, 3, 5, 8, 27, 28]),
+    ("cs_movers", &[0, 1, 15, 30, 31]),
+    ("cs_deep_walls_moved", &[0, 1, 15, 20]),
     ("cs_report", &[0, 1, 2, 5, 8, 15, 18, 25, 28]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
     ("cs_pack", &[0, 1, 2, 5, 29]),
@@ -97,6 +103,8 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
 /// dynamic offset must be a whole number of, on every card).
 pub(super) const STEP: u32 = 1;
 pub(super) const STEP_ROOM: u64 = 256;
+/// The bytes of one step's numbers (`St` in common.wgsl).
+pub(super) const STEP_BYTES: u64 = 32;
 /// The most storage buffers a pass binds (wgpu's default limit for a stage).
 #[cfg(test)]
 pub(super) const MOST_STORAGE: usize = 8;
@@ -111,7 +119,7 @@ fn binding_type(b: u32) -> wgpu::BindingType {
         STEP => wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
-            min_binding_size: std::num::NonZeroU64::new(16),
+            min_binding_size: std::num::NonZeroU64::new(STEP_BYTES),
         },
         _ => wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -182,6 +190,8 @@ mod tests {
         assert_eq!(ENTRIES[P::DeepPush as usize].0, "cs_deep_push");
         assert_eq!(ENTRIES[P::AirFind as usize].0, "cs_air_find");
         assert_eq!(ENTRIES[P::AirBorn as usize].0, "cs_air_born");
+        assert_eq!(ENTRIES[P::Movers as usize].0, "cs_movers");
+        assert_eq!(ENTRIES[P::DeepWallsMoved as usize].0, "cs_deep_walls_moved");
         assert_eq!(ENTRIES[P::Report as usize].0, "cs_report");
         for (name, bindings) in ENTRIES {
             let storage = bindings.iter().filter(|&&b| b > STEP).count();

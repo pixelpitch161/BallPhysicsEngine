@@ -175,7 +175,7 @@ fn apply_at(i: u32, last: bool) {
         shift = vec2<f32>(0.0);
     }
     let kind = u32(was.z);
-    let x = keep_off(xi + shift, vec2<f32>(0.0), stops_at_edge(kind)).x;
+    let x = keep_place(xi + shift, stops_at_edge(kind));
     y_out[i] = vec4<f32>(x, me.zw);
     if last {
         velb[i] = vec4<f32>((x - was.xy) / fr.time.x, was.z, 0.0);

@@ -36,7 +36,8 @@ impl MoverShape {
         if !(cell > 0.0 && cell.is_finite()) {
             return None;
         }
-        let reach = [lo, hi, Vec2::new(lo.x, hi.y), Vec2::new(hi.x, lo.y)].into_iter().map(Vec2::length).fold(0.0, f32::max);
+        let reach =
+            [lo, hi, Vec2::new(lo.x, hi.y), Vec2::new(hi.x, lo.y)].into_iter().map(Vec2::length).fold(0.0, f32::max);
         let pad = Vec2::splat(SolidField::BAND + cell);
         let align = if align.is_finite() { align } else { Vec2::ZERO };
         let lo = align + ((lo - pad - align) / cell).floor() * cell;
@@ -56,10 +57,8 @@ impl MoverShape {
             }
         }
         let far = lo + Vec2::new(cols as f32 - 1.0, rows as f32 - 1.0) * cell;
-        let radius = [lo, far, Vec2::new(lo.x, far.y), Vec2::new(far.x, lo.y)]
-            .into_iter()
-            .map(Vec2::length)
-            .fold(0.0, f32::max);
+        let radius =
+            [lo, far, Vec2::new(lo.x, far.y), Vec2::new(far.x, lo.y)].into_iter().map(Vec2::length).fold(0.0, f32::max);
         Some(MoverShape { origin: lo, cell, cols, rows, distance, radius, reach })
     }
 
@@ -112,7 +111,11 @@ mod tests {
     fn a_shape_keyed_small_keeps_its_walls_thick() {
         // (A 2 px wall at 8 px cells that is keyed down to a tenth of its size: taken as 1.5 cells
         // over a tenth thick, so at a tenth it is still 1.5 cells to the water.)
-        let wall = Solid::Polyline { points: vec![Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0)], thickness: 2.0, square: false };
+        let wall = Solid::Polyline {
+            points: vec![Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0)],
+            thickness: 2.0,
+            square: false,
+        };
         let shape = MoverShape::of(&[wall], 8.0, 1.5 * 8.0 / 0.1, Vec2::ZERO).unwrap();
         assert!(shape.at(Vec2::new(10.0, 0.0)) <= -0.5 * 120.0 + 1.0);
         assert!(shape.at(Vec2::new(10.0, 0.0)) * 0.1 <= -0.5 * 1.5 * 8.0 + 0.1);

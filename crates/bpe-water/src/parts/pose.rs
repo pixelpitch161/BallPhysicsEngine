@@ -1,5 +1,6 @@
 //! Where a moving part is at a moment: its place, its turn and its size.
 
+use bpe_core::maths::Maths;
 use glam::Vec2;
 
 /// A moving part's place (world pixels: where its own frame's origin is), turn (radians, clockwise
@@ -27,21 +28,25 @@ impl Pose {
 
     /// A point of the part's own frame in the world.
     pub fn to_world(&self, own: Vec2) -> Vec2 {
-        let (s, c) = self.turn.sin_cos();
+        let (s, c) = self.turn.det_sin_cos();
         let p = own * self.scale;
         self.at + Vec2::new(p.x * c - p.y * s, p.x * s + p.y * c)
     }
 
     /// A world point in the part's own frame (its place, turn and scale undone).
     pub fn to_own(&self, world: Vec2) -> Vec2 {
-        let (s, c) = self.turn.sin_cos();
+        let (s, c) = self.turn.det_sin_cos();
         let d = world - self.at;
         Vec2::new(d.x * c + d.y * s, -d.x * s + d.y * c) / self.scale
     }
 
     /// The pose a share `t` of the way from `a` to `b` (place, turn and scale each evenly).
     pub fn lerp(a: Pose, b: Pose, t: f32) -> Pose {
-        Pose { at: a.at + (b.at - a.at) * t, turn: a.turn + (b.turn - a.turn) * t, scale: a.scale + (b.scale - a.scale) * t }
+        Pose {
+            at: a.at + (b.at - a.at) * t,
+            turn: a.turn + (b.turn - a.turn) * t,
+            scale: a.scale + (b.scale - a.scale) * t,
+        }
     }
 
     /// The same pose, with anything that isn't a number taken as its default and the scale kept
