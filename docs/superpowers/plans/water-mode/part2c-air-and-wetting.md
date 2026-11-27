@@ -390,7 +390,7 @@ The draft in the editor is not timed again unless `pace` shows air costing more 
 6. **The marks' tests.** At 12 px an empty hole falls in for the two frames the count takes to come back, so
    `a_hole_in_a_pool_fills_with_air` asks for 30 air drops, not 60 (47 come). The pool shot keeps sloshing for
    seconds after its 3 s pour and its breaking waves trap air all along, so `a_pour_into_a_pool_loses_its_air`
-   pours for one second (most air 177 at 1.5 s, 11 at 4 s). A 48 px blob is too big to stand up (the skin of C2's
+   pours for one second (with the fixes below: most air 86 at 1.25 s, 1 at 4 s). A 48 px blob is too big to stand up (the skin of C2's
    water holds about 20 px up), so the blob test is 24 px: at Wetting 0 its edge is near square to the floor (36 px
    wide, 17 px tall), at 0.5 lower (42 x 15), at 1 a film (117 x 3). `a_stronger_skin_holds_a_bubble_whole_longer`
    looks at 0.25 s, since bubbles rise faster.
@@ -398,7 +398,9 @@ The draft in the editor is not timed again unless `pace` shows air costing more 
    none of it a film (56 % still on it), and at Wetting 1, 256 px with 58 % of what is on it a film: waxy beads roll
    without taking drag away.
 
-### Measured on the software card (lavapipe), Fine (6 px)
+### Measured on the software card (lavapipe), Fine (6 px), before the review's fixes
+
+(These numbers are from before point 8 below: born air was being cut at the boundaries, so they flatter the air.)
 
 - The pool shot (a 70 px pour plunging for 3 s), trapped room (`probe::pockets`, px²) every 0.25 s from 3.25 s:
 
@@ -415,4 +417,83 @@ The draft in the editor is not timed again unless `pace` shows air costing more 
 - Wetting 0 is C2's water: the course's top shelf after 10 s is 5.6 % of the water, its tallest puddle 13.5 px
   (C2's card: 5.6 %, 13.4 px).
 
-(The card run, Task 8, follows.)
+### The review's fixes (one Opus review of the branch)
+
+8. **New air was cut at frame boundaries.** Air was born after the drops that left, but a boundary lets go from the
+   end: whenever more drops had left two frames back than the last frame kept as unused room, the cut ran into air
+   born the frame before (at 12 px, 2,723 live air drops cut in a one-second pour). Air is now born over the head of
+   the drops that left (`starts[cells]`), and the room past the births holds drops that left, so the body always ends
+   in drops that left. Test `a_boundary_lets_go_of_no_air` (it failed with 2,160 cut before the fix).
+9. **The draft's cap counted air.** `Water::count()` holds air and the room kept for it, so near the draft's cap the
+   pours could stop and start as air came and went. The report now counts the liquid's drops in the course
+   (`Report.liquid`, `cs_report` binds the kinds the last step sorted into) and `Water::liquid()` adds the liquid
+   poured since; the editor's draft caps its pours and shows its count by it. Test
+   `the_liquid_is_counted_without_the_air`.
+10. **A copy did not take the depth share** (`deep.dfa`), which a frame that only measures the deep part reads on its
+    steps before the last (where air bursts): `Deep::copy_kept` copies it.
+11. **`bursts` was looked at for every drop** (`select` takes both sides): now for air drops only, the same numbers.
+12. Left as they are, with a note in part 3's hand-over: air takes liquid 0's feel (part 4, several liquids); air born
+    against a drop the last step moved (rare, by under 0.4 cell); the step count leaves Bubbles rise out of its
+    headroom (the speed cap holds it; the report catches up two frames on).
+
+### The card (RX 9070 XT), Task 8
+
+Three runs through Remote Control (results `card/water-2c/results` on the branch until the merge, then project files
+`water-core/2c/`): at c7cfd3f (before the review, shelves only kept for their ceiling finding), at ca85aa3 (the
+review's fixes; shelves, Wetting, pools kept), and at 33d8ed9 (the band below; air, films, pace, landing, course,
+repeats).
+
+13. **The shelf measure counted drops hanging from the box's lid** (the top pool starts 24 px under it, and on wet
+    rock a few drops stay up there): any Wetting above 0 read 254 to 256 px. `shelves` now counts only water joined
+    to the shelf, each drop within a cell of the one under it, and reports the rest as "hanging above" (0.0 % in
+    every row at 30 s on the second run).
+14. **Shelves at 30 s, Stickiness 0** (tallest px at 6 px / 3 px): Wetting 0 7.1 / 7.9 (C2 7.0 / 7.9), 0.3 6.9 /
+    7.6, 0.5 6.2 / 6.9, 0.7 5.5 / 6.6, 0.9 5.3 / 6.2, **1 6.6 / 5.2**. Only Wetting 1 meets both marks (7 and 5.5),
+    so **`DEFAULT_WETTING` is 1**. The engine tests (35 lib, 28 engine, 20 plain, air, wetting) and the kit's 46
+    Water tests pass at it; no bound moved.
+15. **A foam under the water's top.** With point 8 fixed, the pour's air lived on: at 3 px 53,925 air drops at
+    4 s and 32,328 at 6 s, much of it a foam of small pockets under the top that never burst. The liquid rests on
+    air (it makes way for it), so a cap or a foam's films stand. A real bubble's cap drains and breaks within a
+    moment, so **air now bursts out of the deep water**, in the band under the water's open top that the drops alone
+    hold (`deep_d`, 24 px at every detail; the deep part counts air as water, so a foam under the top is in the band
+    and a pocket deep in the pool is not). This replaces the earlier "out of the deep water, if the drops alone are
+    not full" rule. Air held deep under a solid stays (`air_held_deep_under_a_bell_stays`); air on a floor with no
+    water round it bursts at once, so `air_takes_no_wetting` (which watched such a block burst from its sides in)
+    is now `air_on_a_wet_floor_bursts_as_on_a_dry_one`.
+16. **The pool shot at 33d8ed9** (air drops; pockets px², air on / air off):
+
+    | | most air | air at 4.5 s | air at 6 s | pockets mean on / off | pockets most on / off |
+    | --- | --- | --- | --- | --- | --- |
+    | 6 px | 1,191 | 214 | 188 | 36,599 / 33,641 | 91,305 / 90,531 |
+    | 3 px | 11,523 | 4,094 | 4,027 | 79,924 / 60,507 | 140,260 / 119,500 |
+    | 2 px | 22,418 | 15,467 | 11,626 | 87,117 / 110,983 | 165,644 / 178,493 |
+
+    (At ca85aa3, before the band: most 5,415, 53,925 and 94,426; at 6 s 2,024, 32,328 and 70,412.) **The mark is
+    missed as written**: the pool sloshes (rms about 1,000 px/s) for seconds after the pour and its breaking waves
+    keep trapping air, as they make empty pockets with air off. By the stills (3.5, 4.5 and 5.5 s) the foam under the
+    top is gone and the air is small pockets in the churning water; what is left at 6 s is new air from the slosh and
+    the rims of cavities wider than about twice `air_reach`, which stay empty inside (as with air off). (The table's
+    "biggest pocket" is a different pocket from row to row, so it does not show one pocket rising.)
+17. **Pace** (wall s a scene second, quiet PC): pool 0.450 / 0.417 at 6 px, 2.905 / 2.845 at 2 px; course 0.407 /
+    0.403 and 2.056 / 2.008; weird 0.379 / 0.380 and 1.196 / 1.169. Air costs at most 8 % (pool, 6 px): the mark (a
+    tenth) is met. (At ca85aa3, before the band, the pool at 2 px cost 18 %.)
+18. **Wetting on the card** (blobs after 3 s, edge angle °): monotone at both details. At 6 px a 24 px blob is 92,
+    84, 70, 47, 6 at Wetting 0, 0.25, 0.5, 0.75, 1; at 3 px 89, 79, 73, 61, 51. **Missed**: Wetting 0 beads stand
+    at 113° (12 px blobs) but 90° (24 px), not 120° (bigger blobs sag: the skin holds about 20 px up); and Wetting
+    is **weaker at 3 px than at 6 px** (at Wetting 1 the 24 px blob is 6° against 51°; the tilted plate keeps 60 %
+    of its water as a film at 6 px, 3 % at 3 px), more than the 20° the plan allowed. Handed to part 3 (it gives
+    each piece its own Wetting): find why adhesion reaches less at finer cells (the table's reach is a cell; the
+    skin's is too) before a final at 2 px is judged against a draft.
+19. **The course** at 30 s (Wetting 1 against C2 at 0): top pool 5.3 % / 5.7 % (C2 7.5 / 7.3), through 12 px 32.8 /
+    32.3 (C2 34.8 / 38.2), through 24 px 57.2 / 55.9 (C2 52.0 / 51.1): wet rock holds less on the shelves, so more
+    goes on; within 5 points but for the 12 px opening at 3 px (5.9). Landing: Water Weird's block stays one body
+    (2 to 10 pieces, its biggest holds nearly all). Pools at rest 99.7 % of their height; repeats all yes.
+20. **`run.ps1`**: a list of groups needs `powershell -Command` (`-File` passes it as one string). Another project's
+    CI runner on the PC shares it; pace was re-run when it was quiet.
+
+### Verdict
+
+Built and kept: trapped air that rises, breaks up and bursts at the top (and stays deep under a solid), Wetting per
+node with Wetting 1 as the default (the shelves' marks met), the liquid count for the draft's cap. Missed and said:
+the pour shot's pockets mark (the slosh keeps trapping air, as with air off), Wetting 0's 120° beads, and Wetting's
+reach at Extreme against Fine (to part 3).

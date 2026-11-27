@@ -422,7 +422,10 @@ part adds its own tools to the rail.
    - **2c. Air and wetting** (added at the checkpoint, below; the tiles that used to be called 2c are now in part
      9). Air trapped under a plunging pour rises and breaks up instead of lingering as big pockets, and each
      material gets a **Wetting** setting: on a waxy surface water beads up and rolls, on a wet one it spreads
-     into a film. Wetting, not a weaker skin bend, is what settles C2's tall shelf puddles.
+     into a film. Wetting, not a weaker skin bend, is what settles C2's tall shelf puddles. **Built** (PR #240):
+     air bursts once it comes up into the band under the water's top, and Wetting 1 is the default (the least that
+     settles the shelves on the RX 9070 XT); Wetting reaching less at Extreme than at Fine is handed to part 3
+     (`plans/water-mode/part2c-air-and-wetting.md`, "As built and measured").
 3. **Pieces and the pen.** Piece and Wall, the palette, snapping, Cuts, Materials as data.
 4. **More liquids.** Several liquids with mixing and Un-mix; **Weight** (one liquid floats on another, layers
    settle by weight); thick liquids (honey, slime); rain, drips and bursts; drains and leaks; and **drains that feed

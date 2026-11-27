@@ -565,10 +565,13 @@ up and rolls on a waxy one and spreads into a film on a soaked one.
   72 px hole was still spread through the pool 3 s on). The deep part gathers air as full water, so a pocket is no
   longer the liquid's edge.
 - **Bursting** (`sweep.wgsl` `bursts`, `finish_at`): an air drop is let go (moved off the course, counted out two
-  frames on like a drop that left) when it is less than `air_pop` (0.75) full; out of the water (no deep water there)
-  when the drops alone are less than that full (so air thrown out against a ceiling bursts and air held under a solid
-  deep in the water stays); and when liquid over it (within 60° of straight up) is less than `air_pop` full: a film or
-  the water's top, which a real bubble's film drains through and breaks.
+  frames on like a drop that left) when it is less than `air_pop` (0.75) full; when it is out of the deep water, in
+  the band under the water's open top that the drops alone hold (`deep_d`, 24 px at every detail; the deep part counts
+  air as water, so a pocket is deep and a foam under the top is not); and when liquid over it (within 60° of straight
+  up) is less than `air_pop` full. The liquid rests on air (it makes way for it), so without the band a cap or a
+  foam's films stood: on the owner's card a plunging pour left about 40,000 air drops as a foam under the top at 3 px
+  3 s after it stopped. A real bubble's cap drains and breaks within a moment. Air thrown out against a ceiling
+  bursts, and air held deep under a solid stays (`air_held_deep_under_a_bell_stays`).
 - **Finding** (`cs_air_find`, on the last step of every frame with deep cells, from the deep sums before
   `cs_deep_across` empties them): a cell neither full nor solid, with full liquid over it (not rock: air under a ledge
   is the course's) and full liquid or a solid under and beside it within `air_reach` (48 px, 3 to 64 cells), is trapped
@@ -577,10 +580,15 @@ up and rolls on a waxy one and spreads into a film on a soaked one.
   burst at once); a pocket part filled is filled the rest of the way the next frame. Whole-number running sums over
   the cells and blocks (`cs_air_sum_a`, `_b`) give each spot its slot.
 - **Births** (`cs_air_dead`, `cs_air_born`, after the frame's last finish): the host keeps `slots_for(found, deep)`
-  slots after the frame's drops (the spots the report two frames back found and a quarter more, plus room for
-  pockets that closed since: a quarter of the deep cells, 64 to 2048; none when it found none); each spot is born in
-  its slot at the liquid's speed round it, the rest hold drops that left. The report counts the births as live and
-  reports the spots found (`Report.air`, `Water::air_found`). Everything a frame finds is born in its own submission,
+  slots of room after the frame's drops (the spots the report two frames back found and a quarter more, plus room for
+  pockets that closed since: a quarter of the deep cells, 64 to 2048; none when it found none). Each spot is born at
+  the liquid's speed round it, in its slot counted from the **head of the drops that left** (`starts[cells]`, where
+  the last sort put them), and the room past the births holds drops that left: the body always ends in drops that
+  left, as every boundary lets go from the end. (Born after the drops that left, the next boundary cut live air born
+  the frame before: `a_boundary_lets_go_of_no_air`.) The report counts the births as live and reports the spots
+  found (`Report.air`, `Water::air_found`) and the liquid's drops in the course (`Report.liquid`, a whole-number
+  count). **`Water::liquid()`** is that count from two frames back plus the liquid poured since: the editor's draft
+  caps its pours and shows its count by it (`count()` also holds air and the room kept for it). Everything a frame finds is born in its own submission,
   so a copy at a frame boundary needs nothing and runs repeat. An empty hole falls in for the two frames the count
   takes to come back (at 12 px a 72 px hole keeps about 47 air drops of the 113 it would hold).
 - **Off** (`Numbers::air` 0, the Water card's Trapped air): none of the passes run and no slot is kept: C2's water to
@@ -600,7 +608,9 @@ up and rolls on a waxy one and spreads into a film on a soaked one.
   off a waxy slope at 1, so it stays.
 - `SolidField.wetting` is one value per node (`with_wetting`, `wetting_at`, read between nodes on the card from the
   second half of the solid buffer). In 2c every node takes the Course's Rock card's Wetting; part 3 gives Pieces and
-  Walls their own (the nearest face's solid). `DEFAULT_WETTING` is the Material card's default.
+  Walls their own (the nearest face's solid). **`DEFAULT_WETTING` is 1** (stone and clean glass are fully wet): on the
+  owner's card it is the least Wetting at which the course's top shelf drains to puddles of at most 7 px at 6 px and
+  5.5 px at 3 px. It is the Material card's default and every `bpe-water` scene's.
 
 ### Cards and the editor (`bpe-kit modules/water/{scene,solids}.rs`, `things/water/draft.rs`, `bpe-studio`)
 
@@ -609,3 +619,44 @@ up and rolls on a waxy one and spreads into a film on a soaked one.
   card: `print` hashes Trapped air, Bubbles rise and the Rock's Wetting (a Piece's or Wall's Material does not restart
   the draft yet); `numbers()` sets `air` from Trapped air; `field()` takes the Rock's Wetting;
   `FrameInputs::air_lift` is Bubbles rise at the frame's start, which the draft sets on the body each frame.
+
+### Measured on the RX 9070 XT (Wetting 1, Surface pull 0.5, Stickiness 0)
+
+Tables, stills and films: project files `water-core/2c/`; every number in the plan's "As built and measured".
+
+- **Shelves** (the course's top shelf after 30 s, tallest puddle joined to the shelf; Stickiness 0): Wetting 0 gives
+  7.1 px at 6 px and 7.9 px at 3 px (C2's 7.0 and 7.9); 0.9 gives 5.3 and 6.2; **1 gives 6.6 and 5.2**, the only
+  Wetting under both marks. Nothing hangs from the box's lid at 30 s.
+- **Trapped air** (the pool shot, a 70 px pour plunging for 3 s): the most air drops are 1,191 at 6 px, 11,523 at
+  3 px and 22,418 at 2 px; at 6 s, 188, 4,027 and 11,626. The pool sloshes for seconds after the pour and its
+  breaking waves keep trapping air, so the plan's mark (trapped room under a tenth of its most 1.5 s after the pour)
+  is missed on this shot, as it is with air off; the pockets' mean with air on and off is 36,599 and 33,641 px² at
+  6 px, 79,924 and 60,507 at 3 px, 87,117 and 110,983 at 2 px (the air's own room counts as a pocket: air is not
+  drawn). Cavities wider than about twice `air_reach` (48 px) stay empty, with air only round their rims.
+- **Pace** (wall seconds a scene second, physics alone): air costs 8 % on the pool shot at 6 px (0.450 against 0.417)
+  and 2 % at 2 px (2.905 against 2.845); course and weird 0 to 2 %.
+- **Wetting** (blobs after 3 s): monotone at both details (a 24 px blob's edge 92°, 84°, 70°, 47°, 6° at Wetting 0
+  to 1 at 6 px; 89°, 79°, 73°, 61°, 51° at 3 px). **Wetting is weaker at 3 px than at 6 px**: at Wetting 1 a 24 px
+  blob is a film at 6 px but a low cap at 3 px, and the tilted plate keeps 60 % of its water as a film at 6 px but 3 %
+  at 3 px. Wetting 0 beads stand at 113° (12 px) and 90° (24 px): bigger blobs sag, as the skin of this water holds
+  about 20 px up. Handed on (part 3's hand-over).
+- **The course at Wetting 1** drains its top pool further than C2's at Wetting 0 (left in it at 30 s: 5.3 % and 5.7 %
+  at 6 and 3 px, C2 7.5 % and 7.3 %), so a little more goes through the 24 px opening (57.2 % and 55.9 %, C2 52.0 %
+  and 51.1 %) and less through the 12 px one (32.8 % and 32.3 %, C2 34.8 % and 38.2 %): within the plan's 5 points
+  but for the 12 px opening at 3 px (5.9).
+- **Unchanged**: the deep pool at rest (99.7 % of its height, rms 1.5 to 3.7 px/s), the slosh, Water Weird's landing
+  (one body), and every run repeats (twice, and from a copy).
+
+### Tests
+
+- `bpe-water/tests/air.rs`: air rises and bursts; a stronger skin holds a bubble longer; a hole in a pool fills with
+  air (the liquid kept every frame); open water gets none; off leaves the hole; repeats (twice, from a copy with
+  births in flight); a pour into a pool loses its air; **a boundary lets go of no air**; **the liquid is counted
+  without the air**; **air held deep under a bell stays**.
+- `bpe-water/tests/wetting.rs`: a blob spreads on a wet floor and stands up on a waxy one; Wetting reaches only water
+  near a face (bit for bit); air on a wet floor bursts as on a dry one.
+- `bpe-water/tests/engine.rs`: the heap test counts the liquid's drops (a bursting heap traps a little air).
+- `bpe-kit` `things::water::draft` tests: Trapped air, Bubbles rise and the Rock's Wetting restart the draft; the field
+  carries the Rock's Wetting.
+- Measuring runs (`#[ignore]`, `tests/shots.rs`): `air`, `wetting`, and `shelves` (with its "hanging above" column).
+
