@@ -1,7 +1,8 @@
 //! The look drawing (`bpe_water::draw::look`, Water mode part 6): that it repeats, where it draws
 //! what, the lamps' light and shadows, light through the liquid, caustics, glow, the materials, the
 //! back, bend, shine, bands, that the light doesn't depend on the view, Quality, the extras
-//! (bubbles, fizz, foam, mist, sparks) and the finish's Effects. From drops laid
+//! (bubbles, fizz, foam, mist, sparks), the finish's Effects, a lone drop's whole shadow and no
+//! caustics behind a stream. From drops laid
 //! out by hand (`draw::sets`), never physics; on the software card at 270 x 480 or less.
 
 use std::sync::Arc;
@@ -786,6 +787,82 @@ fn the_finish_runs_the_effects_over_the_picture() {
     assert!(apart(mirrored.at(left), plain.at(left)) <= 1, "the left half as it was");
 }
 
+/// The screen's box carved in rock on a 3 px layout (the full-size look check's detail).
+fn boxed_fine() -> SolidField {
+    let layout = Layout::cover(Vec2::new(-540.0, -960.0), Vec2::new(540.0, 960.0), 3.0);
+    let solids = sets::carved(&[Solid::rect(Vec2::new(-500.0, -900.0), Vec2::new(500.0, 900.0), false, 16.0)], 12.0);
+    SolidField::build_least(layout, &solids, 12.0)
+}
+
+/// Test 21: A lone small drop high in the air casts one shadow under a Sun, deep near it and softening
+/// smoothly further down: the march through open air never steps over it (its shadow came out dashed
+/// while a coarse texel holding a lone drop counted as empty).
+#[test]
+fn a_lone_drop_casts_a_whole_shadow() {
+    let Some(gpu) = card() else { return };
+    let field = boxed_fine();
+    let drop = Vec2::new(0.0, -600.0);
+    let drops = sets::lattice(&field, drop - Vec2::splat(1.5), drop + Vec2::splat(1.5), 0);
+    assert!(!drops.is_empty() && drops.len() <= 9, "a few drops: {}", drops.len());
+    // (A Sun in a closed course reaches only with Shadows off; the liquid still takes its light.)
+    let sun = Lamp { kind: LampKind::Sun, aim: 90.0, colour: [1.0; 3], shadows: false, ..Lamp::default() };
+    let mut look = dark(vec![sun], Quality::Good);
+    look.liquids = vec![LiquidLook { clarity: 1.0, ..LiquidLook::default() }];
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    d.draw(View::screen(0.25), &look);
+    let mut shares = Vec::new();
+    for k in 0..80 {
+        let y = -580.0 + 8.0 * k as f32;
+        let under = bright(d.look.light_at(Vec2::new(0.0, y)).unwrap());
+        let beside = bright(d.look.light_at(Vec2::new(200.0, y)).unwrap());
+        assert!(beside > 0.5, "open air is lit at y {y}: {beside}");
+        shares.push(under / beside);
+    }
+    // Near the drop its shadow is deep; further down it softens, as the march's coarser levels average
+    // the drop over more room. A dashed shadow had points fully lit between dark ones.
+    let near = &shares[..25];
+    assert!(near.iter().all(|&s| s < 0.4), "the drop shadows the 200 px under it: {near:?}");
+    let jumps = shares.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+    assert!(jumps < 0.3, "the shadow softens smoothly, with no dashes: {shares:?}");
+}
+
+/// Test 22: A Spot just beside a falling stream lights the rock behind the stream the same with
+/// Caustics 2 as with none: the stream's two surfaces aren't one lens over the rock (its caustics
+/// there were wide bright and dark stripes). Close behind the stream the lens fades out, with no
+/// line where it ends. A pool's floor keeps its caustics (test 5).
+#[test]
+fn a_stream_throws_no_caustics_on_the_rock_behind_it() {
+    let Some(gpu) = card() else { return };
+    let field = boxed_fine();
+    let drops = sets::lattice(&field, Vec2::new(-6.0, -500.0), Vec2::new(6.0, 300.0), 0);
+    let lamp = spot(Vec2::new(40.0, -100.0), 180.0, 150.0);
+    let rows = [-200.0f32, -100.0, 0.0, 100.0];
+    // Far behind the stream, then close behind it in rows, from where the lens starts to fade (28 px
+    // past the stream's middle, its liquid's edge about 8 px out) to 106 px.
+    let behind = |caustics: f32| -> (Vec<f32>, Vec<Vec<f32>>) {
+        let mut look = dark(vec![lamp.clone()], Quality::Good);
+        look.light.caustics = caustics;
+        look.liquids = vec![LiquidLook { clarity: 4000.0, ..LiquidLook::default() }];
+        let mut d = Drawn::new(&gpu, &field, &drops);
+        d.draw(View::screen(0.25), &look);
+        let light = |p: Vec2| bright(d.look.light_at(p).unwrap());
+        let far = (0..40).map(|k| light(Vec2::new(-300.0, -400.0 + 15.0 * k as f32))).collect();
+        let near =
+            rows.iter().map(|&y| (0..40).map(|k| light(Vec2::new(-28.0 - 2.0 * k as f32, y))).collect()).collect();
+        (far, near)
+    };
+    let ((with, near_with), (without, near_without)) = (behind(2.0), behind(0.0));
+    assert!(without.iter().all(|&l| l > 0.05), "the rock behind is lit: {without:?}");
+    for (k, (a, b)) in with.iter().zip(&without).enumerate() {
+        assert!((a - b).abs() <= 0.02 * b.max(1e-3), "point {k}: {a} with caustics against {b} without");
+    }
+    for (y, (a, b)) in rows.iter().zip(near_with.iter().zip(&near_without)) {
+        let shares: Vec<f32> = a.iter().zip(b).map(|(a, b)| a / b.max(1e-4)).collect();
+        let jump = shares.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(jump < 0.1, "at y {y} the lens fades out with no line: {shares:?}");
+    }
+}
+
 /// The bench at 3 px under two warm Spots and a waved pool under a Sun, at full size, for looking at
 /// (by hand): `LOOK_DEBUG_DIR=<folder>` (`bpe-kit`'s full-size look check draws more of the same).
 #[test]
@@ -835,4 +912,48 @@ fn bench_look_pictures() {
         ..lit
     };
     Drawn::new(&gpu, &pool.field, &pool.drops).draw(View::screen(1.0), &sun);
+}
+
+/// Test 23: The finish's Grade measures in the video's pixels: a Radial mask on a block of the shot
+/// grades the same block in a quarter-size picture and a half-size one, and leaves the block under it
+/// as it was; and the same for a video of another shape (measured across, as the masks' handles are).
+#[test]
+fn the_grade_measures_in_the_videos_pixels() {
+    use bpe_gfx::{GradeArea, GradeBasic, GradeCombine, GradeMask, GradePanel, GradePart, GradePlace, GradeRadial};
+    let Some(gpu) = card() else { return };
+    let (field, plain) = materials(&[MaterialKind::Flat]);
+    let radial = GradeRadial {
+        x: 250.0,
+        y: -600.0,
+        width: 200.0,
+        height: 200.0,
+        angle: 0.0,
+        roundness: 0.0,
+        feather: 10.0,
+        places: vec![GradePlace::SCREEN],
+    };
+    let mut graded = plain.clone();
+    graded.finish.grade.masks = vec![GradeMask {
+        amount: 1.0,
+        area: Some(GradeArea {
+            parts: vec![GradePart {
+                combine: GradeCombine::Add,
+                invert: false,
+                shape: bpe_gfx::GradeShape::Radial(radial),
+                id: 0,
+            }],
+            invert: false,
+        }),
+        panels: vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() })],
+        ..GradeMask::default()
+    }];
+    let (inside, below) = (Vec2::new(250.0, -600.0), Vec2::new(250.0, -50.0));
+    for (scale, video) in [(0.25, (1080, 1920)), (0.5, (1080, 1920)), (0.25, (1080, 1350))] {
+        graded.finish.video = video;
+        let before = draw(&gpu, &field, &[], View::screen(scale), &plain);
+        let after = draw(&gpu, &field, &[], View::screen(scale), &graded);
+        let (a, b) = (luma(after.at(inside)), luma(before.at(inside)));
+        assert!(a > b + 20.0, "at {scale}, {video:?}: the mask's middle is a stop brighter: {a} vs {b}");
+        assert!(apart(after.at(below), before.at(below)) <= 1, "at {scale}, {video:?}: the block under it as it was");
+    }
 }

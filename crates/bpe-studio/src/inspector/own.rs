@@ -22,11 +22,8 @@ pub(super) fn kind_card(
             }
             root_card(ui, inspector, cx, name, edits);
         }
-        // A Water scene has no Grade mode yet.
-        if scene.sim == bpe_core::SimKind::Balls {
-            ui.add_space(6.0);
-            grade_summary(ui, inspector, cx, edits);
-        }
+        ui.add_space(6.0);
+        grade_summary(ui, inspector, cx, edits);
     } else if !has_own_card(kind) {
         // A Water thing has no settings of its own: everything is on its cards.
     } else if kind.id() == EMITTER {

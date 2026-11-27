@@ -333,9 +333,8 @@ impl GradeMode {
     }
 }
 
-/// The Build | Grade switch, for the toolbar.
-/// `grade_ok` is false where the scene has no Grade mode yet (a Water scene): Grade is greyed.
-pub fn mode_switch(ui: &mut Ui, mode: &mut EditorMode, grade_ok: bool) {
+/// The Build | Grade | Video switch, for the toolbar.
+pub fn mode_switch(ui: &mut Ui, mode: &mut EditorMode) {
     let frame = egui::Frame::new().stroke(egui::Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -346,10 +345,7 @@ pub fn mode_switch(ui: &mut Ui, mode: &mut EditorMode, grade_ok: bool) {
         ] {
             let on = *mode == m;
             let button = style::toggle_button(name, on).frame_when_inactive(on);
-            let can = grade_ok || m != EditorMode::Grade;
-            let shown =
-                ui.add_enabled(can, button).on_hover_text(help).on_disabled_hover_text(crate::app::NO_WATER_GRADE);
-            if shown.clicked() {
+            if ui.add(button).on_hover_text(help).clicked() {
                 *mode = m;
             }
         }

@@ -460,7 +460,10 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         if grading {
             split_line(ui, &response, rect, studio);
         }
-        pick_colour(ui, &response, rect, &preview.renderer, device, &render_state.queue);
+        let renderer = &preview.renderer;
+        pick_colour(ui, &response, rect, || {
+            Some((renderer.read_output(device, &render_state.queue).ok()?, renderer.size()))
+        });
         studio.panels.preview = Some(preview);
         return outcome;
     }
@@ -595,13 +598,11 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
 /// The eyedropper over the picture at `rect`: a crosshair and a pill saying what to do; a click
 /// reads the drawn picture back and hands the colour under the pointer to the gradient row that
 /// asked; a right-click or Esc stops.
-fn pick_colour(
+pub(crate) fn pick_colour(
     ui: &Ui,
     response: &egui::Response,
     rect: Rect,
-    renderer: &Renderer,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    read: impl FnOnce() -> Option<(Vec<u8>, (u32, u32))>,
 ) {
     let ctx = ui.ctx();
     // The row that asked has gone (another thing or tab): nothing could take the colour.
@@ -630,10 +631,8 @@ fn pick_colour(
         && let Some(p) = response.interact_pointer_pos()
     {
         let uv = (p - rect.min) / rect.size();
-        let picked = renderer
-            .read_output(device, queue)
-            .ok()
-            .and_then(|pixels| crate::eyedropper::pixel_at(&pixels, renderer.size(), egui::vec2(uv.x, uv.y)));
+        let picked =
+            read().and_then(|(pixels, size)| crate::eyedropper::pixel_at(&pixels, size, egui::vec2(uv.x, uv.y)));
         match picked {
             Some(c) => crate::eyedropper::deliver(ctx, c),
             None => crate::eyedropper::stop(ctx),
@@ -851,7 +850,7 @@ pub(crate) fn compose(
 
 /// The copy of the scene with the snapshot the pointer is over put on, made once for each
 /// snapshot and scene revision (`None` inside when nothing is peeked).
-fn peeked(studio: &Studio) -> Option<std::cell::Ref<'_, Option<crate::grade_mode::Peeked>>> {
+pub(crate) fn peeked(studio: &Studio) -> Option<std::cell::Ref<'_, Option<crate::grade_mode::Peeked>>> {
     let peek = studio.grade.peek.filter(|_| studio.mode == crate::grade_mode::EditorMode::Grade);
     let Some(index) = peek else {
         // Nothing hovered: the copy goes (it is a whole scene).
@@ -877,7 +876,7 @@ fn peeked(studio: &Studio) -> Option<std::cell::Ref<'_, Option<crate::grade_mode
 }
 
 /// Grade mode's corner switch: After, Before, or Split.
-fn compare_switch(ui: &mut Ui, studio: &mut Studio) {
+pub(crate) fn compare_switch(ui: &mut Ui, studio: &mut Studio) {
     use crate::grade_mode::Compare;
     ui.horizontal(|ui| {
         ui.add_space(8.0);
@@ -971,7 +970,7 @@ fn clip_picture(
 }
 
 /// A small pill in the picture's top right corner.
-fn corner_pill(painter: &egui::Painter, rect: Rect, text: &str) {
+pub(crate) fn corner_pill(painter: &egui::Painter, rect: Rect, text: &str) {
     let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(12.0), style::TEXT_STRONG);
     let size = galley.size() + egui::vec2(14.0, 6.0);
     let back = Rect::from_min_size(egui::pos2(rect.right() - size.x - 10.0, rect.top() + 10.0), size);
@@ -980,7 +979,7 @@ fn corner_pill(painter: &egui::Painter, rect: Rect, text: &str) {
 }
 
 /// The Split view's line across the picture at `rect`: white, dragged left and right.
-fn split_line(ui: &mut Ui, response: &egui::Response, rect: Rect, studio: &mut Studio) {
+pub(crate) fn split_line(ui: &mut Ui, response: &egui::Response, rect: Rect, studio: &mut Studio) {
     if studio.grade.compare != crate::grade_mode::Compare::Split {
         return;
     }

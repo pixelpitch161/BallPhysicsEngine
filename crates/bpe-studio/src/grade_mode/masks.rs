@@ -36,7 +36,7 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
         drop_line(ui, mode, &rows);
         mode.mask_rows = rows;
         ui.add_space(4.0);
-        add_mask(ui, &mut edits);
+        add_mask(ui, offered(gx.scene), &mut edits);
         ui.add_space(6.0);
         overlay_switch(ui, mode);
     }
@@ -242,9 +242,16 @@ pub fn part_name(kind: &str) -> &'static str {
     }
 }
 
-fn add_mask(ui: &mut Ui, edits: &mut Vec<GradeEdit>) {
+/// The part kinds a mask in `scene` can have: a Water scene has no Things part yet (its things are
+/// drawn by the water's own drawing, which makes no picture of where each is).
+pub fn offered(scene: &bpe_core::Scene) -> Vec<&'static str> {
+    let water = scene.sim == bpe_core::SimKind::Water;
+    PART_KINDS.iter().copied().filter(|k| !(water && *k == THINGS)).collect()
+}
+
+fn add_mask(ui: &mut Ui, kinds: Vec<&'static str>, edits: &mut Vec<GradeEdit>) {
     ui.menu_button("Add mask", |ui| {
-        for kind in PART_KINDS {
+        for kind in kinds {
             if ui.button(part_name(kind)).clicked() {
                 edits.push(GradeEdit::AddMask(kind));
                 ui.close();

@@ -114,8 +114,6 @@ pub struct Offer {
     pub video: Option<bpe_core::video::Video>,
 }
 
-/// Why a Water scene has no Grade mode yet.
-pub(crate) const NO_WATER_GRADE: &str = "Grading a Water scene arrives with its light and looks.";
 /// Why a Water scene can't be exported yet.
 /// Why a Water scene can't go in a video yet.
 pub(crate) const NO_WATER_VIDEO: &str = "Water scenes can't go in a video yet.";
@@ -618,15 +616,6 @@ impl Studio {
         if self.water() { settings::BottomView::Timeline } else { self.bottom }
     }
 
-    /// A Water scene has no Grade mode yet (nothing draws it): sends Grade mode back to Build
-    /// and says why, however it was asked for (the D key, "Open in Grade mode").
-    pub(crate) fn keep_out_of_grade(&mut self) {
-        if self.water() && self.mode == crate::grade_mode::EditorMode::Grade {
-            self.mode = crate::grade_mode::EditorMode::Build;
-            self.status = NO_WATER_GRADE.into();
-        }
-    }
-
     /// The root's settings as resolved: the video's size, length and frame rate.
     pub fn settings(&self) -> SceneSettings {
         self.resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default()
@@ -784,7 +773,6 @@ impl eframe::App for Studio {
             )
             .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
-        self.keep_out_of_grade();
         let video_mode = self.mode == crate::grade_mode::EditorMode::Video;
         if !video_mode {
             crate::video_mode::edit::bar(ui, self);
@@ -806,7 +794,6 @@ impl eframe::App for Studio {
             self.inspector_panel(ui);
             if std::mem::take(&mut self.panels.inspector.open_grade) {
                 self.mode = crate::grade_mode::EditorMode::Grade;
-                self.keep_out_of_grade();
             }
         }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {

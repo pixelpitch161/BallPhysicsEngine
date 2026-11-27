@@ -98,13 +98,8 @@ fn opening_a_water_scene_stops_the_ball_jobs_and_a_balls_scene_starts_them_again
 }
 
 #[test]
-fn a_water_scene_cannot_reach_grade_mode_or_a_video() {
-    use crate::grade_mode::EditorMode;
+fn a_water_scene_cannot_go_in_a_video() {
     let mut studio = Studio::headless_water();
-    studio.mode = EditorMode::Grade;
-    studio.keep_out_of_grade();
-    assert_eq!(studio.mode, EditorMode::Build);
-    assert_eq!(studio.status, "Grading a Water scene arrives with its light and looks.");
     // Adding the open scene to a video is refused, and a new video from it starts empty.
     let scene = studio.scene.clone();
     assert!(crate::video_mode::scenes::keep(&mut studio, scene).is_none());
@@ -115,22 +110,24 @@ fn a_water_scene_cannot_reach_grade_mode_or_a_video() {
     assert_eq!(studio.status, "Started a new video. Water scenes can't go in a video yet.");
     // A Balls scene is as it was.
     let mut balls = Studio::headless();
-    balls.mode = EditorMode::Grade;
-    balls.keep_out_of_grade();
-    assert_eq!(balls.mode, EditorMode::Grade);
     balls.new_video();
     assert_eq!(balls.video.video.scenes.len(), 1);
 }
 
 #[test]
-fn a_water_scenes_toolbar_says_so_and_greys_grade() {
+fn a_water_scenes_toolbar_says_so_and_grade_mode_grades_the_shot() {
     let size = egui::vec2(1700.0, 80.0);
     let mut h = harness(Studio::headless_water(), size, |ui, s| s.toolbar(ui));
     h.run();
     assert!(has(&h, "Water scene"));
-    // (A Water scene exports from its final since part 8.)
-    assert!(!disabled(&h, "Export video…") && disabled(&h, "Grade"));
+    // (A Water scene exports from its final since part 8, and is graded since part 6d.)
+    assert!(!disabled(&h, "Export video…") && !disabled(&h, "Grade"));
     assert!(!disabled(&h, "Build") && !disabled(&h, "Video"));
+    assert!(!disabled(&h, "Whole course") && !disabled(&h, "Shot"));
+    // Grade mode grades the shot: the stage's switch is greyed there.
+    h.state_mut().mode = crate::grade_mode::EditorMode::Grade;
+    h.run();
+    assert!(disabled(&h, "Whole course") && disabled(&h, "Shot"));
     // In Video mode the video can still be exported.
     h.state_mut().mode = crate::grade_mode::EditorMode::Video;
     h.run();

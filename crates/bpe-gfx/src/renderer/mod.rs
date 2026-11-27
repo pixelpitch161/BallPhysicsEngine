@@ -556,7 +556,7 @@ impl Renderer {
 }
 
 /// Copies an `Rgba8Unorm` texture `width` × `height` back to the CPU as tightly packed RGBA bytes.
-pub(crate) fn read_rgba8(
+pub fn read_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,

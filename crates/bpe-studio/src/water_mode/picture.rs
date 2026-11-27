@@ -61,6 +61,25 @@ pub fn place_of(v: &View) -> [u32; 3] {
     [v.lo.x.to_bits(), v.lo.y.to_bits(), v.scale.to_bits()]
 }
 
+/// A picture of the water on the card, as last drawn: what Grade mode's scopes, clipping and
+/// colour picks read (`graded`).
+#[derive(Clone, Debug)]
+pub struct Shown {
+    pub texture: wgpu::Texture,
+    pub size: (u32, u32),
+    /// Different for every drawing, the draft's and the final's.
+    pub drawing: u64,
+}
+
+impl Shown {
+    /// The drawing's picture just drawn from `texture`.
+    pub fn new(texture: &wgpu::Texture) -> Shown {
+        static DRAWINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let drawing = DRAWINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Shown { texture: texture.clone(), size: (texture.width(), texture.height()), drawing }
+    }
+}
+
 /// The stage's picture of the water.
 #[derive(Default)]
 pub struct StagePicture {
@@ -74,6 +93,7 @@ pub struct StagePicture {
     previewing: bool,
     /// What the drawing told about the last look drawn (a back picture that can't be read).
     notes: Vec<String>,
+    shown: Option<Shown>,
 }
 
 impl StagePicture {
@@ -106,6 +126,7 @@ impl StagePicture {
                 live.look.set_wet(Some(&live.wet), live.water.frames());
                 live.look.draw(&live.water.drop_buffers(), &v, look);
                 self.notes = live.look.notes();
+                self.shown = live.look.output().map(Shown::new);
                 self.drawn = Some(want);
             }
             self.last = Some(Instant::now());
@@ -163,6 +184,11 @@ impl StagePicture {
             None => {}
         }
         self.rock = Some(now);
+    }
+
+    /// The picture last drawn.
+    pub fn shown(&self) -> Option<&Shown> {
+        self.shown.as_ref()
     }
 
     /// The look the picture was last drawn in.

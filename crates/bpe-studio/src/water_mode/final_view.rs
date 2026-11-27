@@ -197,6 +197,7 @@ pub struct FinalPicture {
     held_wet: HeldWet,
     texture: Option<(egui::TextureId, (u32, u32))>,
     drawn: Option<Drawn>,
+    shown: Option<super::picture::Shown>,
 }
 
 impl FinalPicture {
@@ -271,6 +272,7 @@ impl FinalPicture {
                 let layout = drawing.layout();
                 self.held_wet.give(&render.device, &render.queue, layout, self.wet.as_ref(), drawing);
                 drawing.draw_at(&stored.buffers(), &v, look, ahead);
+                self.shown = drawing.output().map(super::picture::Shown::new);
                 if let Some(output) = drawing.output() {
                     let output = output.create_view(&wgpu::TextureViewDescriptor::default());
                     let mut renderer = render.renderer.write();
@@ -300,6 +302,11 @@ impl FinalPicture {
             }
             _ => false,
         }
+    }
+
+    /// The picture last drawn.
+    pub fn shown(&self) -> Option<&super::picture::Shown> {
+        self.shown.as_ref()
     }
 
     /// Lets the picture and the worker go.

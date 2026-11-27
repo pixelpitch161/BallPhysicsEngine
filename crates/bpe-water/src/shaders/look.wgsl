@@ -170,6 +170,12 @@ const SHADOW_REACH: f32 = 44.0;
 const CAUSTIC_NEAREST: f32 = 1.0 / 6.0;
 // The liquid's surface in the coarse amount (the node fields' level 1).
 const COARSE_LEVEL: f32 = 0.5;
+// How far from a point in the air its lamp's light may go into the liquid and still focus on it
+// (world px): a bubble's size. A point further from the liquid isn't under its surface (a lamp
+// shining through a stream or a drop onto the rock behind it), and a single surface's lens says
+// nothing about light that comes out of the liquid again. The lens fades out over the reach's
+// second half, so no line is drawn where it ends.
+const LENS_REACH: f32 = 32.0;
 // How far the back's contact shadow reaches from a solid (world px) and how dark it gets.
 const AO_REACH: f32 = 24.0;
 const AO_DARK: f32 = 0.35;
@@ -774,6 +780,8 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
     // Whether the march has been in the liquid yet (a point in a bubble deep under the surface is
     // lit through the surface too), and has come out of it.
     var been_in = density_at(p, surface_level()).a > COARSE_LEVEL;
+    // How far along the march it first went into the liquid (0: the point is in it).
+    var t_in = 0.0;
     var surface = false;
     // How wide the lamp looks from a point (radians): a deep point sees the surface's caustics blurred
     // over this times its depth.
@@ -808,8 +816,10 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
                 stride = max(d, texel);
             }
         }
-        // The liquid: a coarse texel with none in it is skipped whole.
-        let any_here = density_at(q, 4).a > 1e-3;
+        // The liquid: a coarse texel with none in it is skipped whole. (None is none: a lone drop
+        // is a few thousandths of a coarse texel, and a march that took it for empty stepped over it
+        // on some rays and not others, so its shadow came out dashed.)
+        let any_here = density_at(q, 4).a > 0.0;
         if any_here {
             let s = max(texel, 0.04 * t);
             // (Level 1 at least: the drops' own grain would speckle the light texel by texel.)
@@ -826,7 +836,7 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
         } else {
             // (Half a coarse texel at a time, a whole one where the level above is empty too: a far
             // lamp's march through open air reaches it within MOST_STEPS even at a fine detail.)
-            let none_round = density_at(q, 5).a <= 1e-3;
+            let none_round = density_at(q, 5).a <= 0.0;
             stride = min(stride, max(select(8.0, 16.0, none_round) * u.grid.z, texel));
         }
         // Where the light came into the liquid: the first point out of it on the way to the lamp,
@@ -835,8 +845,14 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
         let out_of_it = !any_here || density_at(q, surface_level()).a < COARSE_LEVEL;
         if !surface && been_in && out_of_it {
             surface = true;
-            let tc = crossing(p, towards, last_t, t);
-            caustic = caustic_at(p + towards * tc, tc, tc * seen, towards, texel);
+            let lens = 1.0 - smoothstep(0.5 * LENS_REACH, LENS_REACH, t_in);
+            if lens > 0.0 {
+                let tc = crossing(p, towards, last_t, t);
+                caustic = mix(1.0, caustic_at(p + towards * tc, tc, tc * seen, towards, texel), lens);
+            }
+        }
+        if !been_in && !out_of_it {
+            t_in = t;
         }
         been_in = been_in || !out_of_it;
         last_t = t;

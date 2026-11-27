@@ -1659,10 +1659,12 @@ fn shown(h: &Harness<'_, State>, label: &str) -> bool {
 #[test]
 fn a_water_scenes_settings_show_its_own_cards_and_none_of_the_balls() {
     let h = water_harness(None);
-    for card in ["Video", "Picture", "Sound", "Water", "Light", "Back"] {
+    // (The Grade card since part 6d: Grade mode grades a Water scene's shot.)
+    for card in ["Video", "Picture", "Sound", "Water", "Light", "Back", "Grade"] {
         assert!(shown(&h, card), "{card} shows");
     }
-    for card in ["World", "Background", "Lighting", "Air", "Grade"] {
+    assert!(shown(&h, "Open in Grade mode"));
+    for card in ["World", "Background", "Lighting", "Air"] {
         assert!(!shown(&h, card), "{card} belongs to a Balls scene");
     }
     assert!(shown(&h, "Screens wide") && !shown(&h, "Starting look"));

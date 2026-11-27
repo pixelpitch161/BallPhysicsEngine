@@ -306,11 +306,22 @@ pub struct FinishLook {
     /// Bottom first; only the calls at [`bpe_gfx::Stage::Picture`] run.
     pub effects: Vec<bpe_gfx::EffectCall>,
     pub grade: bpe_gfx::GradeStack,
+    /// The video's size (the scene's Width and Height) when the picture is the camera's shot: the
+    /// Effects and the Grade measure in the video's pixels (across: a picture of another shape is
+    /// the video's width wide), so a smaller picture (the editor's, or an export at a lower scale)
+    /// looks like the video scaled down. `(0, 0)`: the picture's own.
+    pub video: (u32, u32),
 }
 
 impl Default for FinishLook {
     fn default() -> Self {
-        FinishLook { bloom: 0.0, exposure: 1.0, effects: Vec::new(), grade: bpe_gfx::GradeStack::default() }
+        FinishLook {
+            bloom: 0.0,
+            exposure: 1.0,
+            effects: Vec::new(),
+            grade: bpe_gfx::GradeStack::default(),
+            video: (0, 0),
+        }
     }
 }
 

@@ -11,6 +11,9 @@ use super::stage::Seen;
 use crate::app::Studio;
 use crate::style;
 
+/// Why Whole course | Shot is greyed in Grade mode.
+pub const GRADES_THE_SHOT: &str = "Grade mode grades the camera's shot, as the video shows it.";
+
 /// What Make final's hover says when the final is made.
 pub const ALL_MADE: &str = "The final is made and up to date.";
 
@@ -31,14 +34,17 @@ pub(crate) fn toolbar(ui: &mut egui::Ui, studio: &mut Studio) {
         studio.water_final.view = WaterView::Final;
     }
     ui.separator();
-    // What the stage shows (decision 44).
+    // What the stage shows (decision 44). Grade mode always grades the shot.
+    let grading = studio.mode == crate::grade_mode::EditorMode::Grade;
     let seen = &mut studio.water_stage.seen;
     let parts = [
         (Seen::Course, "Whole course", "Show the whole course to work on (the Effects and the Grade show in Shot)."),
         (Seen::Shot, "Shot", "Show the camera's shot as the video shows it, with the Effects and the Grade."),
     ];
     for (part, name, help) in parts {
-        if ui.add(style::toggle_button(name, *seen == part)).on_hover_text(help).clicked() {
+        let on = if grading { part == Seen::Shot } else { *seen == part };
+        let button = ui.add_enabled(!grading, style::toggle_button(name, on));
+        if button.on_hover_text(help).on_disabled_hover_text(GRADES_THE_SHOT).clicked() {
             *seen = part;
         }
     }
