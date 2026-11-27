@@ -177,12 +177,8 @@ fn a_magnet_pulls_only_its_liquid() {
     water.set_forces(&[magnet(Vec2::ZERO, 2.0, 0, 180.0, 0b10)]);
     // (Each liquid's middle, and its drops' mean distance from the magnet.)
     let mean = |water: &Water, kind: u32| {
-        let drops: Vec<Vec2> = water
-            .read()
-            .iter()
-            .filter(|d| d.kind & 15 == kind)
-            .map(|d| layout.to_world(Vec2::from(d.x)))
-            .collect();
+        let drops: Vec<Vec2> =
+            water.read().iter().filter(|d| d.kind & 15 == kind).map(|d| layout.to_world(Vec2::from(d.x))).collect();
         let n = drops.len() as f32;
         (drops.iter().sum::<Vec2>() / n, drops.iter().map(|p| p.length()).sum::<f32>() / n, drops.len())
     };
@@ -289,4 +285,3 @@ fn forces_play_the_same_twice() {
     assert_eq!(probe::print_of(&first), probe::print_of(&b.read()), "twice");
     assert_eq!(probe::print_of(&first), probe::print_of(&c.read()), "from a copy");
 }
-

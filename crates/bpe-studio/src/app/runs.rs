@@ -164,6 +164,8 @@ impl Studio {
         self.runs_due = None;
         if water_changed {
             self.water_draft.set(water, self.panels.inspector.render.as_ref());
+        } else {
+            self.water_draft.renote(water.as_ref());
         }
         if rebuilt || particles || sound_rebuilt || water_changed {
             self.runs_things = self.scene.things.keys().copied().collect();

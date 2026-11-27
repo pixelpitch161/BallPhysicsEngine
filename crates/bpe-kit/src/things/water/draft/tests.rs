@@ -350,13 +350,15 @@ fn what_restarts_the_draft() {
     let liquid = scene.order.iter().copied().find(|id| scene.things[id].kind == LIQUID).unwrap();
     crate::fill_slot(&mut scene, &reg, liquid, SlotId::Heat).unwrap();
     let base = setup(&scene, &reg).print;
-    // (A solid's Material is felt only by its Wetting; Moves waits for moving pieces.)
+    // (A solid's Material is felt only by its Wetting; Moves waits for moving pieces; a Drain only by
+    // its Whirlpool while drains wait for part 4.)
     let physics = |_thing: &str, card: &str, key: &str| match card {
         cards::WORLD => {
             ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"].contains(&key)
         }
         cards::MATERIAL => key == "wetting",
-        cards::CARVE | cards::FEEL | cards::POUR | cards::SHAPE | cards::LINE => true,
+        cards::CARVE | cards::FEEL | cards::POUR | cards::SHAPE | cards::LINE | cards::FORCE => true,
+        cards::DRAIN => key == "whirlpool",
         _ => false,
     };
     let mut checked = 0;
@@ -382,7 +384,7 @@ fn what_restarts_the_draft() {
             let mut moved = scene.clone();
             moved.things.get_mut(&id).unwrap().transform.position += Vec2::new(5.0, 0.0);
             let restarts = setup(&moved, &reg).print != base;
-            if restarts != [POUR, PIECE, WALL].contains(&thing.kind.as_str()) {
+            if restarts != [POUR, PIECE, WALL, FORCE].contains(&thing.kind.as_str()) {
                 wrong.push(format!("moving a {}: restarts {restarts}", thing.kind));
             }
             let mut turned = scene.clone();
@@ -397,7 +399,7 @@ fn what_restarts_the_draft() {
             let mut off = scene.clone();
             off.things.get_mut(&id).unwrap().enabled = false;
             let restarts = setup(&off, &reg).print != base;
-            if restarts != [LIQUID, POUR, PIECE, WALL].contains(&thing.kind.as_str()) {
+            if restarts != [LIQUID, POUR, PIECE, WALL, FORCE].contains(&thing.kind.as_str()) {
                 wrong.push(format!("turning off a {}: restarts {restarts}", thing.kind));
             }
             checked += 1;
@@ -406,6 +408,7 @@ fn what_restarts_the_draft() {
     // Keyframes count where the setting does.
     let pour = ids[KINDS.iter().position(|k| *k == POUR).unwrap() - 1];
     let piece = ids[KINDS.iter().position(|k| *k == PIECE).unwrap() - 1];
+    let force = ids[KINDS.iter().position(|k| *k == FORCE).unwrap() - 1];
     for (thing, slot, key, v, restarts) in [
         (piece, SlotId::Material, "colour", Value::Color(Color::rgb(1, 2, 3)), false),
         (liquid, SlotId::Feel, "thickness", Value::Number(0.5), true),
@@ -414,6 +417,7 @@ fn what_restarts_the_draft() {
         (ThingId::ROOT, SlotId::Water, "bubble_rise", Value::Number(2.0), true),
         (ThingId::ROOT, SlotId::Back, "darker", Value::Number(0.1), false),
         (pour, SlotId::Main, "speed", Value::Number(10.0), true),
+        (force, SlotId::Main, "strength", Value::Number(2.0), true),
     ] {
         let mut keyed = scene.clone();
         keyed.set_key(&reg, &Address { thing, slot: Some(slot), key: key.into() }, 2.0, v).unwrap();
@@ -740,6 +744,20 @@ fn the_earliest_change_is_where_the_water_can_first_differ() {
         s.order.insert(at, t);
     });
     assert!((ahead.unwrap() - (2.0 - 3.0 / 60.0)).abs() < 1e-9, "{ahead:?}");
+    // A Force's Strength key added after one at 1 s changes the water from 1 s; turning it off, from 0.
+    let force = add(&mut scene, &reg, FORCE, Vec2::new(0.0, 200.0));
+    let strength = Address { thing: force, slot: Some(SlotId::Main), key: "strength".into() };
+    scene.set_key(&reg, &strength, 1.0, Value::Number(1.0)).unwrap();
+    let base = inputs(&scene);
+    let moved = {
+        let mut s = scene.clone();
+        s.set_key(&reg, &strength, 2.0, Value::Number(3.0)).unwrap();
+        base.earliest_change(&inputs(&s))
+    };
+    assert_eq!(moved, Some(1.0), "a key after one at 1 s");
+    let mut gone = scene.clone();
+    gone.things.get_mut(&force).unwrap().enabled = false;
+    assert_eq!(base.earliest_change(&inputs(&gone)), Some(0.0), "a Force turned off: from the start");
 }
 
 /// Slow motion: the video plays a water second at Speed s for 1/s seconds, and keeps more

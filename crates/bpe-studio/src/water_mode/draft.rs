@@ -57,6 +57,17 @@ impl WaterRun {
         }
     }
 
+    /// Takes `new`'s notes when it plays the same water as the setup held: a note can change with
+    /// no physics (a Force turned into a Heater in a scene with no Liquid to move).
+    pub fn renote(&mut self, new: Option<&WaterSetup>) {
+        if let (Some(new), Some(old)) = (new, &self.setup)
+            && new.print == old.print
+            && new.notes != old.notes
+        {
+            self.setup = Some(Arc::new(new.clone()));
+        }
+    }
+
     /// Plays `new` from the start (`None`: stops the draft and lets its picture go).
     pub fn set(&mut self, new: Option<WaterSetup>, render: Option<&egui_wgpu::RenderState>) {
         match new {

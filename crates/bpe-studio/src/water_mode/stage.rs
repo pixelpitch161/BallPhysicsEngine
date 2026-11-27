@@ -487,6 +487,64 @@ fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, shown: bool) {
         if thing.kind == water::LAMP {
             lamp_marks(&painter, studio, view, id, place, ink);
         }
+        if thing.kind == water::FORCE {
+            force_marks(&painter, studio, view, id, place, ink);
+        }
+    }
+}
+
+/// A force's reach: a Magnet's and a Whirlpool's ring (a Magnet's spikes as ticks across it, a
+/// Whirlpool's spin as an arrow head on it), a Wind's three arrows along its Aim. At the playhead,
+/// with its keyframes.
+fn force_marks(
+    painter: &egui::Painter,
+    studio: &Studio,
+    view: &CourseView,
+    id: ThingId,
+    place: Vec2,
+    ink: egui::Color32,
+) {
+    use bpe_kit::modules::water::ForceKind;
+    let Some(force) = water::draft::force_card_at(&studio.scene, &studio.resolved, id, studio.time) else { return };
+    let line = Stroke::new(1.0, ink);
+    let at = view.to_screen(place);
+    let way_at = |angle: f32| {
+        let (sin, cos) = angle.sin_cos();
+        vec2(cos, sin)
+    };
+    let head = |tip: Pos2, way: egui::Vec2| {
+        painter.line_segment([tip, tip - way * 7.0 + way.rot90() * 4.0], line);
+        painter.line_segment([tip, tip - way * 7.0 - way.rot90() * 4.0], line);
+    };
+    match force.kind {
+        ForceKind::Magnet | ForceKind::Whirlpool => {
+            let r = (force.reach.max(0.0) * view.scale()).max(MARKER_R + 6.0);
+            painter.circle_stroke(at, r, Stroke::new(1.0, style::LINE_SOFT));
+            if force.kind == ForceKind::Magnet && force.spikes > 0 {
+                let n = force.spikes.min(64);
+                let spread = force.spike_spread.clamp(0.0, 360.0).to_radians();
+                let from = force.spike_aim.to_radians() - spread / 2.0;
+                for k in 0..n {
+                    let d = way_at(from + spread * (k as f32 + 0.5) / n as f32);
+                    painter.line_segment([at + d * (r - 5.0), at + d * (r + 5.0)], line);
+                }
+            }
+            if force.kind == ForceKind::Whirlpool && force.strength != 0.0 {
+                // (Above 0 it turns clockwise on the screen: at the ring's top, to the right.)
+                let tip = at + vec2(0.0, -r);
+                head(tip, vec2(force.strength.signum(), 0.0));
+            }
+        }
+        ForceKind::Wind => {
+            let way = way_at(force.aim.to_radians()) * if force.strength < 0.0 { -1.0 } else { 1.0 };
+            for i in [-1.0, 0.0, 1.0] {
+                let from = at + way.rot90() * (22.0 * i) - way * 18.0 + way * (MARKER_R + 22.0);
+                let tip = from + way * 36.0;
+                painter.line_segment([from, tip], line);
+                head(tip, way);
+            }
+        }
+        ForceKind::Heater | ForceKind::Cooler => {}
     }
 }
 
