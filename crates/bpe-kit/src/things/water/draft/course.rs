@@ -79,7 +79,7 @@ impl SolidSetup {
     fn own(&self) -> (Vec<Solid>, Vec<Solid>) {
         match self.form() {
             Form::Piece(shape) if shape.cuts => {
-                (if shape.is_hollow() { shape.parts() } else { Vec::new() }, shape.hull())
+                (if shape.is_hollow() { shape.parts() } else { Vec::new() }, shape.cut())
             }
             Form::Piece(shape) => (shape.parts(), Vec::new()),
             Form::Wall(line) => {

@@ -147,6 +147,17 @@ fn each_solid_is_drawn_in_its_colour() {
     // With no colours given, the same field draws as rock all through.
     let plain = draw_with(&gpu, &field, &[], View::screen(0.5), &PlainLook::default());
     assert!(apart(plain.at(Vec2::new(-200.0, -100.0)), rock) <= 2);
+    // A piece standing just over the rock: the open nodes under it are its, and the rock beside them
+    // keeps its own colour (no red bleeds into it).
+    let mut field = SolidField::build(
+        Layout::cover(Vec2::new(-540.0, -960.0), Vec2::new(540.0, 960.0), 8.0),
+        &[bpe_water::Solid::rect(Vec2::new(-600.0, 403.0), Vec2::new(600.0, 1000.0), true, 0.0)],
+    );
+    field.add_part(&block(Vec2::new(-300.0, 300.0), Vec2::new(-100.0, 399.0)), 1, 8.0);
+    let pic = draw_with(&gpu, &field, &[], View::screen(0.5), &look);
+    let under = pic.at(Vec2::new(-200.0, 406.0));
+    assert!(apart(under, rock) <= 2, "the rock under the piece: {under:?}");
+    assert!(apart(pic.at(Vec2::new(-200.0, 380.0)), srgb8(red)) <= 2, "the piece over it");
 }
 
 /// A lone drop shows, a picture pixel or more, however far out the view is.

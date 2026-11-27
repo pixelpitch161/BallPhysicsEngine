@@ -43,9 +43,10 @@ pub const TOO_MANY_LIQUIDS: &str = "The water tells at most 16 liquids apart: th
 pub const TOO_MANY_TAPS: &str = "The water pours at most 64 taps at once: this one isn't poured.";
 /// What the stage says about a tap whose spout is in a solid.
 pub const IN_ROCK: &str = "This tap's spout is inside a solid: carve the rock away round it, or move it, to pour.";
-/// What the stage says about a Piece or Wall with a part under two draft cells thick.
-pub const THIN: &str =
-    "Thinner than two draft cells: the draft makes it thicker for the water, so the final will be a little different.";
+/// What the stage says about a Piece or Wall with a part under two draft cells thick: the draft
+/// takes a thin wall as thicker and may let water through a thin block (neither is thickened past
+/// what the physics needs), so the finer final can play it a little differently.
+pub const THIN: &str = "Thinner than two draft cells: the draft can't hold it exactly, so the water may act a little differently in the final.";
 /// What the stage says about a Piece or Wall whose Moves card asks it to move.
 pub const MOVES_LATER: &str = "Moving pieces arrive in a later part of Water mode: this one stays where it is for now.";
 

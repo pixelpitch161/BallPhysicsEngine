@@ -5,8 +5,10 @@
 //! Each ready-made piece fills its box (its Size): solid pieces (a ramp, a step, a pillar, a gate,
 //! a float, a drawn outline) are filled outlines; hollow ones (a basin, a funnel, a pipe, a sieve, a
 //! bucket, a wheel) are walls `Thickness` thick, which the water takes as at least
-//! [`bpe_water::drops::LEAST_WALL`] cells thick. A piece's **hull** is what it takes away with
-//! Cuts on: a solid piece's own shape, and a hollow one's outline (its own walls then go back in).
+//! [`bpe_water::drops::LEAST_WALL`] cells thick. With Cuts on a piece takes away its **cut**: a solid
+//! piece its own shape, a hollow one only its inside (the open room inside its walls, whose walls then
+//! go over the course as they are), so no sliver of open water is left beside its walls. Its **hull**
+//! (its whole outline) is what other pieces snap to.
 
 use bpe_core::ShapePath;
 use bpe_core::maths::Maths;
@@ -144,10 +146,12 @@ impl PieceShape {
         (half.is_finite() && half.x > 0.0 && half.y > 0.0).then_some(half)
     }
 
-    /// Its walls' thickness (pixels): the Thickness, kept to half its smaller side.
+    /// Its walls' thickness (pixels): the Thickness, kept to half its smaller side (a sieve's bars,
+    /// which stand its whole height, to half its width).
     fn wall(&self, half: Vec2) -> f32 {
         let t = if self.thickness.is_finite() { self.thickness } else { 16.0 };
-        t.clamp(0.5, half.x.min(half.y).max(0.5))
+        let most = if self.piece == PieceKind::Sieve { half.x } else { half.x.min(half.y) };
+        t.clamp(0.5, most.max(0.5))
     }
 
     /// Its Opening (pixels), kept to what its box holds.
@@ -282,8 +286,42 @@ impl PieceShape {
         self.flipped(parts)
     }
 
-    /// What it takes away with Cuts on, in its own frame (Flip applied): a solid piece's own shape,
-    /// a hollow one's outline.
+    /// What it takes away with Cuts on, in its own frame (Flip applied): a solid piece's own shape, a
+    /// hollow one's inside: the open room its walls hold (a basin's, a bucket's or a funnel's out to
+    /// its top, a funnel's to its foot, a pipe's bore end to end, a sieve's gaps, a wheel's round). It
+    /// meets the walls only at their inner faces, so laying the walls over the cut leaves no open
+    /// water outside them.
+    pub fn cut(&self) -> Vec<Solid> {
+        let Some(half) = self.half() else { return Vec::new() };
+        let t = self.wall(half);
+        let (w, h) = (half.x, half.y);
+        let corners = |lo: Vec2, hi: Vec2| filled(vec![lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)]);
+        let inside = match self.piece {
+            PieceKind::Basin => vec![corners(Vec2::new(-w + t, -h), Vec2::new(w - t, h - t))],
+            PieceKind::Pipe => vec![corners(Vec2::new(-w, -h + t), Vec2::new(w, h - t))],
+            PieceKind::Sieve => {
+                let bars = sieve_xs(half, t, self.gap(half, t));
+                bars.windows(2).map(|x| corners(Vec2::new(x[0] + t, -h), Vec2::new(x[1], h))).collect()
+            }
+            PieceKind::Bucket => {
+                let (x, b, top, foot) = (w - t / 2.0, BUCKET_FOOT * w - t / 2.0, -h + t / 2.0, h - t / 2.0);
+                within(Vec2::new(-x, top), Vec2::new(-b, foot), t / 2.0, -h, h - t).into_iter().collect()
+            }
+            PieceKind::Funnel => {
+                let g = self.gap(half, t);
+                let (x, mouth, top, foot) = (w - t / 2.0, g / 2.0 + t / 2.0, -h + t / 2.0, h - t / 2.0);
+                within(Vec2::new(-x, top), Vec2::new(-mouth, foot), t / 2.0, -h, h).into_iter().collect()
+            }
+            PieceKind::Wheel => {
+                vec![Solid::Circle { centre: Vec2::ZERO, radius: w.min(h), filled: true, thickness: 0.0 }]
+            }
+            _ => return self.parts(),
+        };
+        self.flipped(inside)
+    }
+
+    /// Its whole outline, in its own frame (Flip applied): a solid piece's own shape, a hollow one's
+    /// outline. Other pieces' corners and pen points snap to its corners.
     pub fn hull(&self) -> Vec<Solid> {
         let Some(half) = self.half() else { return Vec::new() };
         let t = self.wall(half);
@@ -391,23 +429,40 @@ fn float_outline(half: Vec2) -> ShapePath {
     path
 }
 
-/// A sieve's bars: as many `t` wide as fit with gaps of at least `g` (two at least), spread evenly
-/// across the box, each as tall as it.
-fn sieve_bars(half: Vec2, t: f32, g: f32) -> Vec<Solid> {
+/// Where a sieve's bars start (their left sides): as many `t` wide as fit with gaps of at least `g`
+/// (two at least), spread evenly across the box.
+fn sieve_xs(half: Vec2, t: f32, g: f32) -> Vec<f32> {
     let w = 2.0 * half.x;
     let n = (((w + g) / (t + g).max(1e-3)).floor() as u32).clamp(2, 512);
     let step = if n > 1 { (w - t) / (n - 1) as f32 } else { 0.0 };
-    (0..n)
-        .map(|k| {
-            let x = -half.x + k as f32 * step;
-            filled(vec![
-                Vec2::new(x, -half.y),
-                Vec2::new(x + t, -half.y),
-                Vec2::new(x + t, half.y),
-                Vec2::new(x, half.y),
-            ])
-        })
-        .collect()
+    (0..n).map(|k| -half.x + k as f32 * step).collect()
+}
+
+/// A sieve's bars ([`sieve_xs`]), each as tall as its box.
+fn sieve_bars(half: Vec2, t: f32, g: f32) -> Vec<Solid> {
+    let bar = |x: f32| {
+        filled(vec![Vec2::new(x, -half.y), Vec2::new(x + t, -half.y), Vec2::new(x + t, half.y), Vec2::new(x, half.y)])
+    };
+    sieve_xs(half, t, g).into_iter().map(bar).collect()
+}
+
+/// The room between a left wall running from `a` to `b` (its middle line) and its mirror image,
+/// each wall `off` from its middle to its face, from `top` down to `bottom`: the polygon through the
+/// walls' inner faces, carried on straight past their ends. `None` when the walls' faces cross
+/// (walls too thick for the room between them).
+fn within(a: Vec2, b: Vec2, off: f32, top: f32, bottom: f32) -> Option<Solid> {
+    let way = b - a;
+    if way.y.abs() < 1e-6 || !way.is_finite() {
+        return None;
+    }
+    // The inner face: the middle line moved `off` toward the middle (+x side of a left wall).
+    let normal = Vec2::new(way.y, -way.x).normalize_or_zero();
+    let normal = if normal.x < 0.0 { -normal } else { normal };
+    let (p, d) = (a + normal * off, way);
+    let at = |y: f32| p.x + d.x * (y - p.y) / d.y;
+    let (xt, xb) = (at(top), at(bottom));
+    (xt < 0.0 && xb < 0.0)
+        .then(|| filled(vec![Vec2::new(xt, top), Vec2::new(-xt, top), Vec2::new(-xb, bottom), Vec2::new(xb, bottom)]))
 }
 
 /// Pieces a curved wall's span between two of its points is cut into.
@@ -533,6 +588,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A hollow piece that cuts opens only the room its walls hold: no open water lies beside a wall
+    /// with rock straight past it (a sliver between a wall and the rock).
+    #[test]
+    fn a_cutting_hollow_piece_leaves_no_room_beside_its_walls() {
+        // (Which way its walls stand across: rows scanned along x, or columns along y.)
+        for (kind, across) in [
+            (PieceKind::Basin, Vec2::X),
+            (PieceKind::Bucket, Vec2::X),
+            (PieceKind::Funnel, Vec2::X),
+            (PieceKind::Pipe, Vec2::Y),
+            (PieceKind::Sieve, Vec2::X),
+        ] {
+            for flip in [false, true] {
+                let p = PieceShape { flip, cuts: true, ..piece(kind) };
+                let (parts, cut) = (p.parts(), p.cut());
+                assert!(!cut.is_empty(), "{kind:?}");
+                let d = |set: &[Solid], q: Vec2| set.iter().map(|s| s.distance(q, 0.0)).fold(f32::MAX, f32::min);
+                let open = |q: Vec2| d(&cut, q) < -0.5 && d(&parts, q) > 0.5;
+                let rock = |q: Vec2| d(&cut, q) > 0.5 && d(&parts, q) > 0.5;
+                let half = p.size / 2.0;
+                // Along the walls, clear of their ends by a wall's thickness (a sieve's bars stand
+                // its whole height).
+                let end = if kind == PieceKind::Sieve { 1.0 } else { p.thickness };
+                let along = Vec2::ONE - across;
+                let span = (half * along).max_element() - end;
+                for a in (-span as i32)..=(span as i32) {
+                    for b in -(half * across).max_element() as i32..=(half * across).max_element() as i32 {
+                        let q = along * a as f32 + across * b as f32;
+                        if open(q) {
+                            for side in [q + across * 1.5, q - across * 1.5] {
+                                assert!(!rock(side), "{kind:?} (flip {flip}): open water at {q} beside rock");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A sieve's bars take their Thickness (up to half its width), not its height: a flat sieve of
+    /// 16 px bars is not THIN at the 8 px draft.
+    #[test]
+    fn a_sieves_bars_take_their_thickness() {
+        let sieve = piece(PieceKind::Sieve);
+        assert_eq!((sieve.size, sieve.thickness), (Vec2::new(320.0, 20.0), 16.0));
+        assert_eq!(sieve.thinnest(), 16.0);
+        let bar = &sieve.parts()[0];
+        assert!(bar.distance(Vec2::new(-160.0 + 15.0, 0.0), 0.0) < 0.0, "16 px wide");
+        assert!(bar.distance(Vec2::new(-160.0 + 17.0, 0.0), 0.0) > 0.0);
+        assert_eq!(PieceShape { thickness: 1e6, ..sieve }.thinnest(), 20.0, "kept to its height when thinner");
     }
 
     #[test]

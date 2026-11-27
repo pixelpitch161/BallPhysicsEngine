@@ -97,31 +97,37 @@ pub fn body_at(studio: &Studio, view: &CourseView, at: Pos2) -> Option<ThingId> 
 }
 
 /// Where solid `id` lands when dragged to `want`: moved so its corner nearest another solid's
-/// corner meets it (within reach), else on the grid; snapping off or Alt held, where it is asked.
+/// corner meets it (within reach), else on the grid with its snapping on (a piece's place, a wall's
+/// first point, so a wall drawn on the grid stays on it). Alt held turns both off.
 fn landing(studio: &Studio, view: &CourseView, id: ThingId, want: Vec2, alt: bool) -> Vec2 {
-    let step = studio.grid.step(alt);
-    if step.is_some()
-        && let Some(solid) = solid_of(studio, id)
-        && let Some(setup) = studio.water_draft.setup.as_deref()
-    {
-        let mine: Vec<Vec2> = solid.corners().iter().map(|c| *c - solid.at + want).collect();
+    let Some(solid) = solid_of(studio, id) else { return want };
+    let moved = |p: Vec2| p - solid.at + want;
+    if !alt && let Some(setup) = studio.water_draft.setup.as_deref() {
+        let mine: Vec<Vec2> = solid.corners().into_iter().map(moved).collect();
         if let Some((m, t)) = nearest_pair(&mine, &setup.snap_points(Some(id)), SNAP_REACH / view.scale()) {
             return want + (t - m);
         }
     }
-    crate::grid::snap_point(want, step)
+    let step = studio.grid.step(alt);
+    match (solid.kind, solid.corners().first()) {
+        (water::WALL, Some(first)) => {
+            let first = moved(*first);
+            want + (crate::grid::snap_point(first, step) - first)
+        }
+        _ => crate::grid::snap_point(want, step),
+    }
 }
 
-/// Where a dragged point lands: on another solid's corner within reach, else on the grid.
+/// Where a dragged point lands: on another solid's corner within reach, else on the grid (with its
+/// snapping on). Alt held turns both off.
 fn point_landing(studio: &Studio, view: &CourseView, id: ThingId, want: Vec2, alt: bool) -> Vec2 {
-    let step = studio.grid.step(alt);
-    if step.is_some()
+    if !alt
         && let Some(setup) = studio.water_draft.setup.as_deref()
         && let Some((_, t)) = nearest_pair(&[want], &setup.snap_points(Some(id)), SNAP_REACH / view.scale())
     {
         return t;
     }
-    crate::grid::snap_point(want, step)
+    crate::grid::snap_point(want, studio.grid.step(alt))
 }
 
 fn set_form(studio: &mut Studio, id: ThingId, key: &str, v: Value) {

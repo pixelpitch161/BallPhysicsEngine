@@ -155,6 +155,39 @@ fn a_piece_snaps_to_another_ones_corner() {
 }
 
 #[test]
+fn corners_snap_with_the_grid_off_too() {
+    let mut studio = water_studio();
+    assert!(!studio.grid.snap);
+    add_piece(&mut studio, &pillar(), Vec2::ZERO, 0.0);
+    let mut h = with_tool(studio, Tool::Piece);
+    let v = view(&h);
+    click_at(&mut h, v.to_screen(Vec2::new(184.0, 78.0)));
+    let ramp = *of_kind(h.state(), water::PIECE).last().unwrap();
+    assert!(place(&h, ramp).distance(Vec2::new(180.0, 75.0)) < 0.01, "on the corner: {}", place(&h, ramp));
+    // A pen point too.
+    h.get_by_role_and_label(Role::Button, "Pen").click();
+    h.run();
+    let v = view(&h);
+    click_at(&mut h, v.to_screen(Vec2::new(-33.0, -147.0)));
+    let first = h.state().water_stage.line.as_ref().and_then(|l| l.first().copied());
+    assert_eq!(first, Some(Vec2::new(-30.0, -150.0)));
+}
+
+#[test]
+fn a_dragged_wall_keeps_its_points_on_the_grid() {
+    let mut studio = snapping_studio(60.0);
+    // Points at (0, 0) and (60, 0): its place, their middle, is half a step off the grid.
+    let wall = add_wall(&mut studio, &[[-30.0, 0.0], [30.0, 0.0]], 24.0, Vec2::new(30.0, 0.0));
+    let mut h = harness(studio);
+    let v = view(&h);
+    let from = v.to_screen(Vec2::new(30.0, 0.0));
+    drag(&mut h, from, from + egui::vec2(47.0, 13.0) * v.scale());
+    let at = place(&h, wall);
+    let points: Vec<Vec2> = line(&h, wall).points.iter().map(|p| at + Vec2::from(*p)).collect();
+    assert_eq!(points, [Vec2::new(60.0, 0.0), Vec2::new(120.0, 0.0)], "on the grid");
+}
+
+#[test]
 fn turn_flip_and_cuts_go_on_the_piece() {
     let mut h = with_tool(water_studio(), Tool::Piece);
     h.get_by_role_and_label(Role::Button, "Basin").click();

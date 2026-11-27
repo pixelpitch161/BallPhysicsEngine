@@ -652,11 +652,13 @@ fn a_field_with_forty_pieces_builds_quickly() {
         scene.things.get_mut(&id).unwrap().transform.rotation = k as f32 * 0.1;
     }
     let s = setup(&scene, &reg);
+    let started = std::time::Instant::now();
     let mask = s.mask();
+    let masked = started.elapsed();
     let started = std::time::Instant::now();
     let field = s.field_with(&mask);
     let took = started.elapsed();
-    println!("40 pieces over a carved screen at 6 px: {took:?}");
+    println!("40 pieces over a carved screen at 6 px: the carving {masked:?}, the pieces over it {took:?}");
     assert!(took.as_secs_f32() < 2.0, "{took:?}");
     assert_eq!(field.layout.cell, 6.0);
 }

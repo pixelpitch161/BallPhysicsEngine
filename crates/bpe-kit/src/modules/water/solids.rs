@@ -105,7 +105,7 @@ pub struct PieceShape {
     #[setting(label = "Flip", group = "Shape")]
     pub flip: bool,
     /// Cuts its shape out of the course instead of adding to it: a solid piece leaves a hole of its
-    /// shape, and a hollow one (a pipe, a basin) a hole of its outline with its own walls in it.
+    /// shape, and a hollow one (a pipe, a basin) opens its inside, with its own walls round it.
     #[setting(label = "Cuts", group = "Shape")]
     pub cuts: bool,
     /// How thick a basin's, funnel's, pipe's or bucket's walls, a wheel's paddles and a sieve's bars

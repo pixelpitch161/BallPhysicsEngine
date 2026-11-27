@@ -338,4 +338,71 @@ it took the drag: a point, the turn dot, the size dot, or the body).
 
 ## As built and measured
 
-(Filled in as the tasks land.)
+Measured in the container (lavapipe), release; the owner's card gives the same physics.
+
+**Item 0 (Task 1).** Under a tenth of gravity (`scenes::cap`, 36 px, 2 s) the 2c engine's edge angle was the same
+at both details: 117°, 100°, 71° at Wetting 0, 0.5, 1 at 6 px and 115°, 99°, 74° at 3 px. 2c's difference at full
+gravity was the 6 px draft's coarseness (a 24 px blob at Wetting 1 lies one drop thick, 117 x 3 px, from 0.5 s; at
+3 px it stood as a 54 x 12.5 px cap at 50° to 6 s). Of the knobs tried (the floor's pull, even meeting, drag, deep
+water, air), only the skin's bend changed it: with the bend off Wetting 1 spread (12 to 21°) but Wetting 0 fell from
+116° to 78°.
+
+- Candidate (a), the face's pull counted `wet_pull` times: at 2 the angles came near Young's law between Wetting 0.5
+  and 0.75 (6 px 90°, 62°; 3 px 93°, 66°) but Wetting 1 stuck at 33 to 34° at 3 px and 42° at 2 px (no film), and
+  the angle hung on both the pull and the lie (`k = 2, w = 0.5` gave 93°, `k = 1, w = 1` 74°). Taken out.
+- **Candidate (b), kept: `wet_bend` 1** (the face's resting lattice in the bend). Caps under a tenth of gravity:
+
+  | Wetting | Young | 6 px | 3 px | 2 px |
+  | --- | --- | --- | --- | --- |
+  | 0 | 180° | 117° | 115° | 111° |
+  | 0.25 | 120° | 101° | 100° | |
+  | 0.5 | 90° | 86° | 85° | 82° |
+  | 0.75 | 60° | 55° | 63° | 55° |
+  | 1 | 0° | 2° (357 x 3 px) | 5° (396 x 8.7 px) | 6° (299 x 7.9 px) |
+
+  Full gravity, a 24 px blob after 3 s: Wetting 0.5, 0.75, 1 give 29°, 5°, 4° at 6 px and 60°, 18°, 1° at 3 px (6 px
+  is one drop thick from Wetting 0.75). Wetting 0 is unchanged to the bit (its bend term is 0).
+- **The edge-angle test's bound moved.** As planned it compared one cap at 6 and 3 px at Wetting 0.75 within 8°. On
+  the owner's card that measured 50° and 62° (the container 55° and 63°): a 6 px cap is a few drops high and measured
+  a spacing at a time (a spacing of its height is about 7° of its edge), and at 0.75 the 6 px cap spreads a little
+  wider on every grid. The test now takes each detail's mean over three grids a third of a cell apart: in the
+  container 84.0° and 85.1° at Wetting 0.5 (must agree within 8°) and 53.8° and 61.1° at 0.75 (within 12°), each
+  within 15° of Young's law. 2c's difference (45° at Wetting 1) is far outside both.
+
+**Shelves and openings (Task 1 step 5)**, the course at 6 px, Wetting 1, Stickiness 0, in the container, `wet_bend`
+0 then 1:
+
+- Shelves at 30 s: left on the shelf 2.2 % and 2.1 %, tallest puddle 5.4 px and 5.1 px, mean 2.7 and 2.8 px, nothing
+  hanging above. `DEFAULT_WETTING` stays 1 (the mark was at most 7 px with nothing standing).
+- Openings at 30 s: through 12 px 35.8 % and 35.6 %, through 24 px 60.6 % and 60.8 %, top pool 2.2 % and 2.1 %:
+  no change over 5 points, so nothing more to do.
+
+**Kit and editor (Tasks 2 to 8).**
+
+- The forty-piece field (every kind, turned, over a carved screen at 6 px), release: the carving 3.2 ms, the 40 pieces
+  over it 17.7 ms. The stage builds it again for each change while a piece is dragged or moulded (and the draft's
+  restart waits for the drag to rest), so a big course previews at about 20 ms a change; small ones far less.
+- The full-size look check gains `water-pieces-c8` and `-c3` (each piece in its colour, a ramp under a pillar, a
+  basin of orange liquid, a wheel, a cutting pipe through the rock, a square-ended pen wall in the pool). Looked at
+  full size and in 1:1 crops: colours right, no light leaks or seams, the pillar drawn over the ramp, the pipe's
+  tunnel open through the rock and lined with the pipe's colour (2 cells into the rock, so the pipe's walls look a
+  little thicker where they enter it). At 8 px two colours meet over one cell (bilinear owners) and inner corners
+  are rounded by the field's sampling, as the rock's are; at 3 px both are a pixel or two.
+- Tests: the editor's 16 new (`solid_tests.rs`) and the rail's ready list, `a_piece_edit_restarts_the_draft_and_a_
+  colour_edit_does_not` (app), the kit's (pieces, the course, the draft) and the engine's (solid, plain, wetting).
+
+**Fixes from the review.**
+
+- A hollow piece with Cuts cut its whole outline, so a wall's sides left open room where the outline ran past the
+  walls (a basin's corners, a sieve's bar ends, a bucket's slanted sides). `PieceShape::cut()` now gives only its
+  inside; `hull()` stays for snapping. A sieve's bars were capped at half the box's height, so a short wide sieve
+  lost its bars' thickness; they cap at half its width.
+- Corner snapping needed the grid's snapping on; it now works with it off too (Alt still turns it off). A dragged
+  wall's place landed on the grid but its points could sit half a step off; now its first point lands on the grid.
+- The plain look mixed owners from open water nodes too, so a solid's colour bled onto a touching one by about a
+  cell; the mix now counts only nodes inside a solid.
+- After a drag the picture jumped back to the old course while the restart waited; the preview now stays until the
+  draft plays the new one. Enter and Escape no longer finish or drop a pen line while a text box is being typed in.
+  The THIN note says what it means in plain words.
+- Left for later (in `docs/notes/water.md`, "Known, left for later"): the lining in cells, a Curved wall's added
+  point, Make custom on a cutting Basin or Bucket, flat Custom pieces, huge Sieves, and the preview's full rebuild.

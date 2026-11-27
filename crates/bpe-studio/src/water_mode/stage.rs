@@ -48,10 +48,20 @@ pub struct WaterStage {
     /// picture then shows the course as it will be).
     pub grab: Option<super::solid_edit::Grab>,
     pub moulding: bool,
-    /// The course as it will be while a stroke is painted or a solid moulded, with the stroke's
-    /// version and the scene's revision it was made for; and a count that goes up when it changes.
-    preview: Option<((u64, u64), SolidField)>,
+    /// The course as it will be while a stroke is painted or a solid moved or moulded (kept after a
+    /// move until the draft plays it), and a count that goes up when it changes.
+    preview: Option<Preview>,
     preview_version: u64,
+}
+
+/// The course as it will be, and what it was made for.
+struct Preview {
+    /// The carve stroke's version and the scene's physics (`WaterSetup::print`).
+    stroke: u64,
+    print: u64,
+    /// Whether a piece or wall was moved or moulded (not a stroke painted).
+    moulded: bool,
+    field: SolidField,
 }
 
 /// What the stage says over a course with nothing carved.
@@ -216,7 +226,7 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
     let painter = ui.painter_at(room);
     let rock = Rock {
         version: studio.water_stage.preview_version,
-        preview: studio.water_stage.preview.as_ref().map(|(_, field)| field),
+        preview: studio.water_stage.preview.as_ref().map(|p| &p.field),
     };
     let shown = studio.water_draft.picture.show(&painter, &render, job, &look, view, rock);
     if job.busy() || studio.playing {
@@ -241,25 +251,34 @@ fn water(ui: &Ui, studio: &mut Studio, view: &CourseView, room: Rect) -> bool {
 
 /// Makes the course as it will be while a carve stroke is painted (with the pieces and walls over
 /// it) or a piece or wall is moved or moulded (the draft's restart waits for the drag to rest),
-/// again only when the stroke or the scene changes; lets it go otherwise.
+/// again only when the stroke or the scene's physics changes. A moved or moulded course is kept
+/// once it is let go until the draft plays it, so the piece never jumps back meanwhile; a stroke's
+/// is let go with it (the carving's own rule).
 fn update_preview(studio: &mut Studio) {
-    let stage = &studio.water_stage;
-    if stage.painting.is_none() && !stage.moulding {
-        if studio.water_stage.preview.take().is_some() {
+    let (painting, moulding) = (studio.water_stage.painting.is_some(), studio.water_stage.moulding);
+    if !painting && !moulding {
+        let draft = &studio.water_draft;
+        let keep = studio.water_stage.preview.as_ref().is_some_and(|p| {
+            let played = draft.job.as_ref().is_none_or(|job| job.plays() == p.print);
+            let coming = studio.runs_due.is_some() || draft.setup.as_ref().is_some_and(|s| s.print == p.print);
+            p.moulded && !played && coming
+        });
+        if !keep && studio.water_stage.preview.take().is_some() {
             studio.water_stage.preview_version += 1;
         }
         return;
     }
-    let key = (stage.field_version, studio.revision);
-    if stage.preview.as_ref().is_some_and(|(made, _)| *made == key) {
+    let Some(setup) = super::draft::WaterRun::setup_of(&studio.scene, &studio.resolved) else { return };
+    let stroke = studio.water_stage.field_version;
+    if studio.water_stage.preview.as_ref().is_some_and(|p| p.stroke == stroke && p.print == setup.print) {
         return;
     }
-    let Some(setup) = super::draft::WaterRun::setup_of(&studio.scene, &studio.resolved) else { return };
     let field = match &studio.water_stage.painting {
         Some(painting) => setup.field_with(painting.mask()),
         None => setup.field(),
     };
-    studio.water_stage.preview = Some((key, field));
+    let moulded = moulding && !painting;
+    studio.water_stage.preview = Some(Preview { stroke, print: setup.print, moulded, field });
     studio.water_stage.preview_version += 1;
 }
 

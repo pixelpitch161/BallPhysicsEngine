@@ -143,7 +143,7 @@ pub fn nearest_pair(mine: &[Vec2], theirs: &[Vec2], reach: f32) -> Option<(Vec2,
 }
 
 /// The world point a piece of `shape` lands on for the pointer at `at`: snapped to another solid's
-/// corner, else to the grid (with snapping on and Alt not held).
+/// corner, else to the grid (with its snapping on). Alt held turns both off.
 pub fn landing(
     studio: &Studio,
     view: &CourseView,
@@ -153,14 +153,13 @@ pub fn landing(
     alt: bool,
     except: Option<ThingId>,
 ) -> Vec2 {
-    let step = studio.grid.step(alt);
-    if step.is_some()
+    if !alt
         && let Some(setup) = studio.water_draft.setup.as_deref()
         && let Some(snapped) = snap_piece(setup, except, shape, at, turn, SNAP_REACH / view.scale())
     {
         return snapped;
     }
-    crate::grid::snap_point(at, step)
+    crate::grid::snap_point(at, studio.grid.step(alt))
 }
 
 /// Places the brush's piece where the stage is clicked, picks it and keeps the tool.
@@ -217,10 +216,9 @@ pub fn can_make_custom(studio: &Studio, id: ThingId) -> bool {
 
 /// Piece `id`'s Shape card as resolved.
 pub fn shape_of(studio: &Studio, id: ThingId) -> Option<PieceShape> {
-    let thing = studio.scene.things.get(&id).filter(|t| t.kind == water::PIECE)?;
-    let params = studio.resolved.things.get(&id)?.slots.get(&SlotId::Form)?.params.clone();
-    let _ = thing;
-    Some(PieceShape::from_params(&params))
+    studio.scene.things.get(&id).filter(|t| t.kind == water::PIECE)?;
+    let params = &studio.resolved.things.get(&id)?.slots.get(&SlotId::Form)?.params;
+    Some(PieceShape::from_params(params))
 }
 
 /// Turns piece `id` into a Custom piece of its own outline (one undo step). Whether it did.

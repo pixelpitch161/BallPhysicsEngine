@@ -224,8 +224,10 @@ fn owner_colour(k: f32) -> vec3<f32> {
     return u.solids[i - 1u].rgb;
 }
 
-// The solids' colour at world point `p`: the four nodes round it's owners' colours, mixed between
-// them (one owner all round, the rock's alone: as before pieces had colours of their own).
+// The solids' colour at world point `p`: the owners' colours of the four nodes round it that are
+// inside a solid, mixed between them (one owner all round, the rock's alone: as before pieces had
+// colours of their own). A node in open water belongs to the nearest part, so counting it would
+// bleed a piece's colour onto the solid beside it.
 fn solid_colour_at(p: vec2<f32>) -> vec3<f32> {
     let cols = u.size.z;
     let rows = u.size.w;
@@ -233,7 +235,8 @@ fn solid_colour_at(p: vec2<f32>) -> vec3<f32> {
     let x = u32(floor(g.x));
     let y = u32(floor(g.y));
     let f = g - vec2<f32>(f32(x), f32(y));
-    let at = cols * rows + y * cols + x;
+    let i = y * cols + x;
+    let at = cols * rows + i;
     let a = field[at];
     let b = field[at + 1u];
     let c = field[at + cols];
@@ -241,9 +244,20 @@ fn solid_colour_at(p: vec2<f32>) -> vec3<f32> {
     if a == 0.0 && b == 0.0 && c == 0.0 && d == 0.0 {
         return u.rock.rgb;
     }
-    let top = mix(owner_colour(a), owner_colour(b), f.x);
-    let bottom = mix(owner_colour(c), owner_colour(d), f.x);
-    return mix(top, bottom, f.y);
+    let inside = vec4<f32>(
+        select(0.0, 1.0, field[i] < 0.0),
+        select(0.0, 1.0, field[i + 1u] < 0.0),
+        select(0.0, 1.0, field[i + cols] < 0.0),
+        select(0.0, 1.0, field[i + cols + 1u] < 0.0),
+    );
+    let w = vec4<f32>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y) * inside;
+    let sum = w.x + w.y + w.z + w.w;
+    if sum <= 0.0 {
+        let top = mix(owner_colour(a), owner_colour(b), f.x);
+        let bottom = mix(owner_colour(c), owner_colour(d), f.x);
+        return mix(top, bottom, f.y);
+    }
+    return (owner_colour(a) * w.x + owner_colour(b) * w.y + owner_colour(c) * w.z + owner_colour(d) * w.w) / sum;
 }
 
 // How far grid point `g` (node units) is inside the course's edge, cells, measured like the field:

@@ -48,23 +48,27 @@ pub fn strip(ui: &mut Ui, brush: &mut PenBrush) {
 }
 
 /// Where a pen point lands for the pointer at world point `at`: on another solid's corner (or the
-/// line's own first point) within reach, else on the grid (snapping on, Alt not held).
+/// line's own first point) within reach, else on the grid (with its snapping on). Alt held turns
+/// both off.
 pub fn landing(studio: &Studio, view: &CourseView, at: Vec2, alt: bool) -> Vec2 {
-    let step = studio.grid.step(alt);
-    if step.is_some() {
+    if !alt {
         let mut theirs = studio.water_draft.setup.as_deref().map(|s| s.snap_points(None)).unwrap_or_default();
         theirs.extend(studio.water_stage.line.as_ref().and_then(|l| l.first()).copied());
         if let Some((_, to)) = nearest_pair(&[at], &theirs, SNAP_REACH / view.scale()) {
             return to;
         }
     }
-    crate::grid::snap_point(at, step)
+    crate::grid::snap_point(at, studio.grid.step(alt))
 }
 
 /// Draws with the Pen from `response` on the course `view`.
 pub fn draw(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &CourseView) {
-    let (alt, enter, escape) =
-        ui.input(|i| (i.modifiers.alt, i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+    // (Enter and Escape typed into a text field, such as the strip's Thickness, are the field's.)
+    let typing = ui.ctx().text_edit_focused();
+    let (alt, enter, escape) = ui.input(|i| {
+        let key = |k| !typing && i.key_pressed(k);
+        (i.modifiers.alt, key(egui::Key::Enter), key(egui::Key::Escape))
+    });
     if escape {
         drop_line(studio);
         return;
