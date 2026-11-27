@@ -256,10 +256,17 @@ fn share_of(a: u32, b: u32, c: u32) -> f32 {
     return f32(h >> 8u) / 16777216.0;
 }
 
-// The first drain whose reach holds a drop at `x` (grid units), or -1: a disc's within its reach
-// of its middle, an edge's within `EDGE` + 0.8 cells of one of its edges (the drops stop at
-// `EDGE` + 0.05).
-fn drain_at(x: vec2<f32>) -> i32 {
+// The drain that takes drop `i` at `x` (grid units) this step, or -1. A drain whose reach holds it
+// (a disc's within its reach of its middle, an edge's within `EDGE` + 0.8 cells of one of its edges:
+// the drops stop at `EDGE` + 0.05) takes it when one share, a hash of the drop's place in the order,
+// the frame and the step (the same every run), is under its chance; the first in the list that does
+// is the one. So where drains overlap the strongest decides, and one that takes nothing (a Rate of
+// 0) changes nothing.
+fn drain_taking(i: u32, x: vec2<f32>, step: u32) -> i32 {
+    if fr.dmeta.x == 0u {
+        return -1;
+    }
+    let share = share_of(i, fr.dmeta.y, step);
     let strip = EDGE + 0.8;
     let far = vec2<f32>(fr.grid.xy) - vec2<f32>(1.0 + strip);
     for (var k = 0u; k < min(fr.dmeta.x, 32u); k = k + 1u) {
@@ -272,7 +279,7 @@ fn drain_at(x: vec2<f32>) -> i32 {
             inside = ((e & 1u) != 0u && x.x < strip) || ((e & 2u) != 0u && x.x > far.x)
                 || ((e & 4u) != 0u && x.y < strip) || ((e & 8u) != 0u && x.y > far.y);
         }
-        if inside {
+        if inside && share < fr.drains[k].w {
             return i32(k);
         }
     }

@@ -1331,7 +1331,9 @@ video does.
 - The lattice is **offset by the lump's own share of a spacing** (`hash01(.., 3)`, `(.., 4)`): a disc at a random
   offset holds its area over the spacing squared on average whatever its size, so a fine drizzle pours its amount
   at every detail (this replaced the plan's floor rule for lumps under one drop). Drops within `clear` of the
-  solids or past `EDGE_CLEAR` (2.1 cells) of the grid's edge are left out. `amount()` counts the area.
+  solids or past `EDGE_CLEAR` (2.1 cells) of the grid's edge are left out. `amount()` counts the area (past
+  100,000 lumps, `count()` from the times alone times a lump's mean area, so heavy rain over a long video is
+  counted whole).
 
 ### Timed births (`bpe-water drops/mod.rs`)
 
@@ -1349,11 +1351,13 @@ video does.
   BOTTOM 8), at most `MOST_DRAINS` 32, `Water::set_drains` from the next frame. On the card: `Fr` gains, at its
   end, `drains` (middle and reach in grid units, chance a step `1 - exp(-pull dt)`, 1 when infinite, 0 when not a
   number or not above 0), `dedges` (four to an entry) and `dmeta` (count, the frame's code).
-- **`finish_at(i, step)`**, before the neighbour loop: the first drain whose reach holds the drop (a disc's within
-  its reach; an edge's within `EDGE + 0.8` cells of a named edge) takes it when `share_of(i, frame code, step)` is
-  under its chance: liquid is sent to `(-2e6 - k, -1e6 - code)` and dies; **air bursts** there by the same chance
-  (to `(-1e6, -1e6)`) and is never counted. `cs_finish_predict` passes the step before its `st`'s, `cs_finish` its
-  own. A Rate of 0 is to the bit the same as no drain.
+- **`finish_at(i, step)`**, before the neighbour loop, asks `drain_taking`: one share, `share_of(i, frame code,
+  step)`, is rolled for the drop, and the first drain whose reach holds it (a disc's within its reach; an edge's
+  within `EDGE + 0.8` cells of a named edge) and whose chance is above the share takes it. So where drains overlap
+  the strongest decides whatever their order (a Leak over a pool doesn't slow the hole in it), and a Rate of 0 is
+  to the bit the same as no drain, overlapping or not. Liquid is sent to `(-2e6 - k, -1e6 - code)` and dies; **air
+  bursts** there by the same chance (to `(-1e6, -1e6)`) and is never counted. `cs_finish_predict` passes the step
+  before its `st`'s, `cs_finish` its own.
 - **`cs_drained`** (bindings 0, 1, 2, 18; its own bind group per report slot) runs after the frame's last step and
   before trapped air is born over the drops that left (air is born at the head of the dead drops and would hide
   them): it adds each dead drop whose place is this frame's code to `Report.drained[k]`. The frame code wraps at
@@ -1393,7 +1397,9 @@ video does.
   field, its seed from its thing id); `set_inputs` sets both (no timed drops while the body is full). A fed tap
   with no drain that feeds pours says `NO_FEEDING_DRAIN`. `LATER_KINDS` is gone. The print hashes the drains;
   `inputs()` has a `drains` part (from 0) and a `lumps:<id>` part for each rain, drip and burst (from its Starts
-  less `TAP_LEAD`, as a tap). `drops_about` counts the lumps.
+  less `TAP_LEAD`, as a tap). `drops_about` counts the lumps. `start()` sets frame 0's timed drops and drains too.
+- The editor's draft thread (`bpe-studio water_mode/draft.rs`) plays each frame through `set_inputs`, as the final
+  and the export do (it used to set the inputs by hand, and would have left the rain and the drains out).
 
 ### The editor (`bpe-studio water_mode/stage.rs`)
 
@@ -1409,10 +1415,12 @@ video does.
   and its count is exactly what it took; two drains are told apart and air is not counted; an edge drain takes all
   of a tap's water (what it took plus what is left is what was poured); a drain with no pull is to the bit no
   drain; a loop keeps every drop (14,541 taken from a pool of 4,266 in 10 s); a fed tap with no feeding drain pours
-  nothing; the tank survives a restart point and a copy to the bit. Unit tests in `lumps.rs` and
-  `drops/drains.rs`.
+  nothing; the tank survives a restart point and a copy to the bit; drains that take nothing change nothing where
+  they overlap another, and overlapping drains take the same whatever their order. Unit tests in `lumps.rs`
+  (heavy long rain is counted whole) and `drops/drains.rs`.
 - `bpe-kit`: `rain_drips_and_bursts_pour_at_their_moments`, `drains_are_read_each_frame`,
   `a_fed_tap_says_when_no_drain_feeds_it`; `what_restarts_the_draft` now counts the Drain card, moving a Drain and
   turning one off; `the_earliest_change_is_where_the_water_can_first_differ` (rain from just before its Starts, a
   drain from 0).
-- `bpe-studio`: `a_picked_pour_says_what_it_cannot_do` (rain pours; a fed tap with no drain says so).
+- `bpe-studio`: `a_picked_pour_says_what_it_cannot_do` (rain pours; a fed tap with no drain says so),
+  `the_draft_plays_rain_and_drains`.

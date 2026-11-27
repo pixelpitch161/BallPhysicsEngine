@@ -22,11 +22,11 @@ fn finish_at(i: u32, step: u32) -> Finished {
     // is a surface, so a bubble keeps round. The evening of speeds and the closing loss act between
     // every pair: a bubble's drag.)
     let air = is_air(kind);
-    // A drain takes a drop in its reach with its chance for a step, by a hash of the drop's place in
-    // the order, the frame and the step (the same every run): liquid is sent to the drain's place
-    // for this frame and counted there (`cs_drained`); air bursts as at the water's top.
-    let d = drain_at(xi);
-    if d >= 0 && share_of(i, fr.dmeta.y, step) < fr.drains[u32(d)].w {
+    // A drain takes a drop in its reach with its chance for a step (`drain_taking`): liquid is sent
+    // to the drain's place for this frame and counted there (`cs_drained`); air bursts as at the
+    // water's top.
+    let d = drain_taking(i, xi, step);
+    if d >= 0 {
         nf[i] = vec4<f32>(0.0);
         if air {
             return Finished(vec4<f32>(-1e6, -1e6, 0.0, 0.0), kind);

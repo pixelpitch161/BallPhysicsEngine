@@ -337,16 +337,10 @@ impl Run {
                 None => live.water = setup.start(self.water_gpu.clone(), &live.field, self.most),
             }
         } else if at < target {
-            let inputs = setup.inputs_on(at, &live.field);
+            // (As the final and the export play a frame: the taps, rain and drains as the frame has
+            // them, none of the pours while the draft holds its most liquid.)
+            setup.set_inputs(&mut live.water, &live.field, self.most);
             let water = &mut live.water;
-            water.set_gravity(inputs.gravity);
-            water.set_air_lift(inputs.air_lift);
-            if !inputs.feels.is_empty() {
-                water.set_feels(&inputs.feels);
-            }
-            // (By the liquid: trapped air comes and goes, and would stop and start the pours.)
-            let full = water.liquid() >= self.most;
-            water.set_pours(if full { &[] } else { &inputs.pours });
             water.frame();
             let now = water.frames();
             live.wet.mark(&live.water.drop_buffers(), now);

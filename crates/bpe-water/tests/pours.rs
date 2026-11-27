@@ -215,6 +215,20 @@ fn a_drain_with_no_pull_changes_nothing() {
     a.run_to(0.75);
     b.run_to(0.75);
     assert_eq!(probe::print_of(&a.water.read()), probe::print_of(&b.water.read()));
+    // Nor where it overlaps another: listed first, it doesn't stop a drain under it. And where drains
+    // overlap, the strongest decides whatever their order (a leak over a pool doesn't slow the hole in
+    // it).
+    let hole = Drain::disc(Vec2::new(0.0, 440.0), 60.0, 30.0);
+    let play = |drains: &[Drain]| {
+        let mut run = scenes::still_box(12.0, 0.3).start(&gpu, Numbers::for_cell(12.0));
+        run.water.set_drains(drains);
+        run.run_to(0.5);
+        probe::print_of(&run.water.read())
+    };
+    let alone = play(&[hole]);
+    assert_eq!(alone, play(&[Drain::edge(Drain::ALL_EDGES, 0.0), Drain::disc(Vec2::ZERO, 2000.0, 0.0), hole]));
+    let leak = Drain::disc(Vec2::ZERO, 2000.0, 1.0);
+    assert_eq!(play(&[leak, hole]), play(&[hole, leak]));
 }
 
 /// A pool over a drain that feeds a tap above it: the loop runs, and keeps every drop of its

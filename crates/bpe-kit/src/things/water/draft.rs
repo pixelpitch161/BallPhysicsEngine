@@ -589,6 +589,8 @@ impl WaterSetup {
             water.add(&fills);
         }
         water.set_pours(&inputs.pours);
+        water.set_timed(&inputs.timed);
+        water.set_drains(&inputs.drains);
         water
     }
 }

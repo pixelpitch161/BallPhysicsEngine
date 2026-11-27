@@ -316,7 +316,12 @@ Built as planned, with these changes (the detail is in `docs/notes/water.md`, "P
   Spread of its own: `born` takes a `throw(moment)` that reads them, and the stream carries a colour.
 - Decision 10: the drain test is at the start of `finish_at` (before the neighbour loop, so a taken drop costs
   nothing); air in a drain's reach bursts by the drain's chance, not at once, so a slow Leak doesn't pop every
-  bubble.
+  bubble. Overlapping drains (the review): one share is rolled for the drop and the first drain in reach whose
+  chance is above it takes it, so the strongest decides whatever the order and a Rate 0 drain never shadows
+  another (the edge case "the first in the list takes a drop" now holds only for which drain is credited).
+- The review also found the editor's draft set its inputs by hand and so left rain and drains out: it now plays
+  each frame through `WaterSetup::set_inputs`, as the final does, and `start()` sets frame 0's timed drops and
+  drains.
 - Decision 13: the counting is its own pass, `cs_drained`, after the frame's last step and before trapped air is
   born: air is born over the head of the drops that left and would hide this frame's taken drops from
   `cs_report`. The frame code wraps at 2^23 frames.

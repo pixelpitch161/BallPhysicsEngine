@@ -166,16 +166,40 @@ impl Lumps {
     }
 
     /// About how many drops the lumps born from `t0` to `t1` hold on `layout` (their area over the
-    /// spacing squared; the solids and the edge left out of count).
+    /// spacing squared; the solids and the edge left out of count). Past [`MOST_LUMPS`] lumps, their
+    /// number times a lump's mean area.
     pub fn amount(&self, layout: &Layout, t0: f64, t1: f64) -> f64 {
         let s = f64::from(layout.cell) * 0.5;
-        self.times(t0, t1)
-            .iter()
-            .map(|&(k, _)| {
-                let r = f64::from(self.lump(k, Throw { aim: 90.0, speed: 0.0, spread: 0.0 }).1.max(0.0)) * 0.5;
-                std::f64::consts::PI * r * r / (s * s)
-            })
-            .sum()
+        let area = |size: f32| {
+            let r = f64::from(size.max(0.0)) * 0.5;
+            std::f64::consts::PI * r * r / (s * s)
+        };
+        let n = self.count(t0, t1);
+        if n > MOST_LUMPS as u64 {
+            // (Rain's sizes are `size (0.75 + 0.5 h)`, h even on [0, 1): the mean of the square is
+            // 0.75² + 0.75 × 0.5 + 0.5² / 3.)
+            let spread = if self.kind == LumpKind::Rain { 0.5625 + 0.375 + 0.25 / 3.0 } else { 1.0 };
+            return n as f64 * area(self.size) * spread;
+        }
+        let still = Throw { aim: 90.0, speed: 0.0, spread: 0.0 };
+        self.times(t0, t1).iter().map(|&(k, _)| area(self.lump(k, still).1)).sum()
+    }
+
+    /// About how many lumps are born from `t0` to `t1` (from the times alone: no list).
+    pub fn count(&self, t0: f64, t1: f64) -> u64 {
+        if !(t0 < t1 && self.from < self.until) {
+            return 0;
+        }
+        if !(self.every.is_finite() && self.every > 0.0) {
+            return u64::from(t0 <= self.from && self.from < t1);
+        }
+        let (lo, hi) = (t0.max(self.from), t1.min(self.until));
+        if hi <= lo {
+            return 0;
+        }
+        let first = ((lo - self.from) / self.every).ceil();
+        let end = ((hi - self.from) / self.every).ceil();
+        (end - first).max(0.0) as u64
     }
 }
 
@@ -268,6 +292,20 @@ mod tests {
         for t in &drops {
             assert!((Vec2::from(t.drop.v) * layout.cell - Vec2::new(0.0, 300.0)).length() < 1e-2);
         }
+    }
+
+    #[test]
+    fn heavy_long_rain_is_counted_whole() {
+        let layout = Layout { origin: Vec2::splat(-500.0), cell: 8.0, cols: 126, rows: 126 };
+        for kind in [LumpKind::Rain, LumpKind::Drip] {
+            let heavy = Lumps { kind, every: 1.0 / 10_000.0, from: 0.0, until: 600.0, ..rain(300.0, 12.0, 0.1) };
+            assert_eq!(heavy.count(0.0, 600.0), 6_000_000);
+            assert_eq!(heavy.count(0.0, 1.0), heavy.times(0.0, 1.0).len() as u64);
+            let (all, one) = (heavy.amount(&layout, 0.0, 600.0), heavy.amount(&layout, 0.0, 1.0));
+            assert!((all / (600.0 * one) - 1.0).abs() < 0.01, "{kind:?}: {all} in 10 minutes, {one} in a second");
+        }
+        let once = Lumps { kind: LumpKind::Burst, every: 0.0, ..rain(0.0, 100.0, 0.0) };
+        assert_eq!((once.count(0.0, 0.25), once.count(0.25, 1.0), once.count(0.3, 1.0)), (0, 1, 0));
     }
 
     #[test]

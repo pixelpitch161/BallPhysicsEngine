@@ -50,6 +50,31 @@ fn drops(job: &DraftJob) -> Vec<bpe_water::Drop> {
     live.water.read()
 }
 
+/// The draft plays rain and drains as the final does (part 4.1): a rain with no tap pours, and a
+/// drain under the fill takes the water away.
+#[test]
+fn the_draft_plays_rain_and_drains() {
+    let reg = bpe_kit::registry();
+    let mut scene = chamber(&reg, "coarse");
+    let pours: Vec<ThingId> = scene.order.iter().copied().filter(|id| scene.things[id].kind == POUR).collect();
+    set(&mut scene, pours[1], SlotId::Main, "kind", Value::Choice("rain".into()));
+    set(&mut scene, pours[1], SlotId::Main, "drops_a_second", Value::Number(40.0));
+    let rain = job(&scene, &reg, 500_000);
+    wait_for(&rain, 1);
+    let at_start = rain.count();
+    wait_for(&rain, 60);
+    assert!(rain.count() > at_start, "the rain pours: {} drops, {at_start} at the start", rain.count());
+    set(&mut scene, pours[1], SlotId::Main, "drops_a_second", Value::Number(0.0));
+    let drain = bpe_kit::add_thing(&mut scene, &reg, bpe_kit::things::water::DRAIN, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&drain).unwrap().transform.position = Vec2::new(0.0, 150.0);
+    set(&mut scene, drain, SlotId::Main, "radius", Value::Number(200.0));
+    let drained = job(&scene, &reg, 500_000);
+    wait_for(&drained, 1);
+    let full = drained.count();
+    wait_for(&drained, 60);
+    assert!(drained.count() * 4 < full, "the drain takes the fill: {} of {full} left", drained.count());
+}
+
 #[test]
 fn the_draft_follows_the_playhead_and_goes_back() {
     let reg = bpe_kit::registry();
