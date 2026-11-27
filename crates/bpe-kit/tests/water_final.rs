@@ -1,7 +1,7 @@
 //! Water mode part 8: Make final. A small Water scene's final made at 8 px into a temporary finals
-//! folder: it reads back as the draft plays, a remake from a restart point equals a make in one go,
-//! a stopped make keeps its whole chunks, slow motion keeps more moments, and a make the disk has no
-//! room for is refused. `water_final_speed` (by hand, and in the card job's timing step) times a
+//! folder: it reads back as the draft plays (with its wet marks), a remake from a restart point
+//! equals a make in one go (its wet marks too), a stopped make keeps its whole chunks, slow motion
+//! keeps more moments, and a make the disk has no room for is refused. `water_final_speed` (by hand, and in the card job's timing step) times a
 //! one-screen final at 2 px:
 //! `cargo test --release -p bpe-kit --test water_final -- --ignored --nocapture water_final_speed`.
 
@@ -66,6 +66,10 @@ fn chunk_bytes(dir: &Path, second: u32) -> Vec<u8> {
     std::fs::read(chunk::chunk_path(dir, second)).unwrap()
 }
 
+fn wet_bytes(dir: &Path, second: u32) -> Vec<u8> {
+    std::fs::read(chunk::wet_path(dir, second)).unwrap()
+}
+
 /// A final made reads back moment by moment, in order, and its frame 60 is the draft's.
 #[test]
 fn a_final_is_made_and_reads_back() {
@@ -97,6 +101,13 @@ fn a_final_is_made_and_reads_back() {
     let drops = body.read();
     assert_eq!(frame.len(), drops.len(), "every drop of frame 60");
     assert!(drops.len() > 1000);
+    // Each chunk has its wet marks: the nodes wet by a frame are wet in every later chunk's too.
+    let nodes = head.layout().nodes();
+    let marks: Vec<Vec<u32>> = (0..3).map(|s| chunk::read_wet(&dir, s, nodes).unwrap()).collect();
+    let wet_by = |m: &[u32], frame: u32| m.iter().filter(|&&f| f <= frame).count();
+    assert!(wet_by(&marks[0], 0) > 100, "the fill wets its nodes at the start");
+    assert!(wet_by(&marks[1], 119) > wet_by(&marks[0], 59), "the tap wets more");
+    assert!(marks[0].iter().zip(&marks[1]).all(|(a, b)| *a > 60 || a == b), "a mark never moves");
     std::fs::remove_dir_all(finals.dir()).ok();
 }
 
@@ -124,6 +135,7 @@ fn a_final_remade_from_a_restart_point_equals_one_made_in_one_go() {
     let (a, b) = (finals.take_dir(second.print), fresh.take_dir(whole.print));
     for s in 0..=4 {
         assert!(chunk_bytes(&a, s) == chunk_bytes(&b, s), "chunk {s} is the same");
+        assert!(wet_bytes(&a, s) == wet_bytes(&b, s), "chunk {s}'s wet marks are the same");
     }
     assert!(chunk_bytes(&a, 0) == chunk_bytes(&finals.take_dir(first.print), 0), "the first chunks are shared");
     assert!(chunk_bytes(&a, 3) != chunk_bytes(&finals.take_dir(first.print), 3), "the tail is remade");

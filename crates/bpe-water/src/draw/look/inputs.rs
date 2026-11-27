@@ -62,6 +62,28 @@ pub struct LiquidLook {
     pub outline_colour: [f32; 3],
     pub bands: u32,
     pub band_softness: f32,
+    /// Extras (part 6b), drawn from the moment: froth where it churns, its trapped air drawn as
+    /// bubbles and small bubbles rising in it, mist round fast lone drops, sparks behind fast ones.
+    pub foam: f32,
+    /// World px.
+    pub foam_size: f32,
+    pub foam_colour: [f32; 3],
+    pub bubbles: f32,
+    /// World px.
+    pub bubble_size: f32,
+    pub bubble_colour: [f32; 3],
+    /// Seconds a rising bubble lives.
+    pub bubbles_life: f32,
+    pub mist: f32,
+    /// World px.
+    pub mist_size: f32,
+    pub mist_colour: [f32; 3],
+    pub sparks: f32,
+    /// World px.
+    pub spark_size: f32,
+    pub spark_colour: [f32; 3],
+    /// A spark's trail, in seconds of its flight.
+    pub sparks_life: f32,
 }
 
 impl Default for LiquidLook {
@@ -90,6 +112,20 @@ impl Default for LiquidLook {
             outline_colour: [0.0; 3],
             bands: 0,
             band_softness: 0.2,
+            foam: 0.0,
+            foam_size: 6.0,
+            foam_colour: [1.0; 3],
+            bubbles: 0.0,
+            bubble_size: 6.0,
+            bubble_colour: [1.0; 3],
+            bubbles_life: 1.0,
+            mist: 0.0,
+            mist_size: 6.0,
+            mist_colour: [1.0; 3],
+            sparks: 0.0,
+            spark_size: 6.0,
+            spark_colour: srgb(0xff, 0xb0, 0x40),
+            sparks_life: 1.0,
         }
     }
 }

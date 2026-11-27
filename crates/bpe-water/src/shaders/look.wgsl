@@ -41,8 +41,17 @@ struct LiquidL {
     body: vec4<f32>,
     // its splat's radius (picture px), its peak weight, Streaks, Bands
     shape: vec4<f32>,
-    // Band softness, its splat's radius (cells), its light taken away per world px (largest), 0
+    // Band softness, its splat's radius (cells), 0, 0
     more: vec4<f32>,
+    // linear Foam colour, Foam; Bubble colour, Bubbles; Mist colour, Mist; Spark colour, Sparks
+    foam: vec4<f32>,
+    bubble: vec4<f32>,
+    mist: vec4<f32>,
+    spark: vec4<f32>,
+    // Foam size, Bubble size, Mist size, Spark size (world px)
+    sizes: vec4<f32>,
+    // Bubbles last, Sparks last (s), 0, 0
+    lives: vec4<f32>,
 };
 
 struct MaterialL {
@@ -83,7 +92,8 @@ struct LU {
     shot: vec4<f32>,
     // the spread light: its lo (world), its base texel (world px), its levels
     spread: vec4<f32>,
-    // water seconds, the largest Ripples, the paper's largest Depth (world px), 0
+    // water seconds, the largest Ripples, the paper's largest Depth (world px), the water frame
+    // drawn for the wet marks (below 0: none)
     time: vec4<f32>,
     liquids: array<LiquidL, 16>,
     lamps: array<LampL, 16>,
@@ -99,7 +109,7 @@ struct LB {
 };
 
 @group(0) @binding(10) var<uniform> lu: LU;
-// The look pictures: (Σ k |v|, Σ k |v|², Σ k air, Σ k) and (Σ k vx, Σ k vy, Σ k lone, 0), speeds in
+// The look pictures: (Σ k |v|, Σ k |v|², Σ k air, Σ k) and (Σ k vx, Σ k vy, 0, 0), speeds in
 // SPEED_UNIT; each liquid's Σ k in channel n % 4 of wt[n / 4].
 @group(0) @binding(11) var look0: texture_2d<f32>;
 @group(0) @binding(12) var look1: texture_2d<f32>;
@@ -109,7 +119,8 @@ struct LB {
 @group(0) @binding(16) var wt3: texture_2d<f32>;
 // Gradients: row n (64 linear samples) for liquid n, row 16 the back's.
 @group(0) @binding(17) var<storage, read> grads: array<vec4<f32>>;
-// The node fields with their mips: (Σ k σ rgb, Σ k), (Σ k glow rgb, Σ k), (Σ k colour rgb, Σ k).
+// The node fields with their mips: (Σ k σ rgb, Σ k), (Σ k glow rgb, Σ k), (Σ k colour rgb, Σ k); the
+// motion field is binding 35.
 @group(0) @binding(18) var dens: texture_2d<f32>;
 @group(0) @binding(19) var glows: texture_2d<f32>;
 @group(0) @binding(20) var tints: texture_2d<f32>;
@@ -132,6 +143,13 @@ struct LB {
 @group(0) @binding(32) var bounce_map: texture_2d<f32>;
 // The shot's light as if there were no liquid.
 @group(0) @binding(33) var lfree: texture_2d<f32>;
+// `fs_half`'s fourth source, and the motion node field with its mips: (Σ k vx, Σ k vy, Σ k |v|², Σ k),
+// speeds in SPEED_UNIT.
+@group(0) @binding(34) var half_m: texture_2d<f32>;
+@group(0) @binding(35) var motion: texture_2d<f32>;
+// The wet marks (draw/wet.rs): each node's water frame liquid first touched it (u32 max: never),
+// read against `lu.time.w`.
+@group(0) @binding(36) var<storage, read> wet_marks: array<u32>;
 
 // Speeds go into the half floats in thousands of world px a second.
 const SPEED_UNIT: f32 = 1000.0;
@@ -457,6 +475,8 @@ struct LookNodeOut {
     @location(1) @interpolate(flat) sigma: vec3<f32>,
     @location(2) @interpolate(flat) glow: vec3<f32>,
     @location(3) @interpolate(flat) colour: vec3<f32>,
+    // its speed (SPEED_UNIT): vx, vy, |v|²
+    @location(4) @interpolate(flat) motion: vec3<f32>,
 };
 
 // How fast liquid `l` takes light away, per world px, by colour: light through Clarity px of it keeps
@@ -487,10 +507,13 @@ fn vs_look_nodes(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32)
         out.sigma = vec3<f32>(0.0);
         out.glow = vec3<f32>(0.0);
         out.colour = vec3<f32>(0.0);
+        out.motion = vec3<f32>(0.0);
         return out;
     }
     let n = min(ids[i].x & 15u, max(lu.counts.x, 1u) - 1u);
     let l = lu.liquids[n];
+    let vel = xv[i].zw * u.grid.z / SPEED_UNIT;
+    out.motion = vec3<f32>(vel, dot(vel, vel));
     let t = g + 0.5 + c * u.depth.x;
     let size = vec2<f32>(f32(u.size.z), f32(u.size.w));
     out.pos = vec4<f32>(t.x / size.x * 2.0 - 1.0, 1.0 - t.y / size.y * 2.0, 0.0, 1.0);
@@ -504,6 +527,7 @@ struct NodeSums {
     @location(0) d: vec4<f32>,
     @location(1) g: vec4<f32>,
     @location(2) c: vec4<f32>,
+    @location(3) m: vec4<f32>,
 };
 
 @fragment
@@ -516,6 +540,7 @@ fn fs_look_nodes(in: LookNodeOut) -> NodeSums {
     out.d = vec4<f32>(in.sigma * k, k);
     out.g = vec4<f32>(in.glow * k, k);
     out.c = vec4<f32>(in.colour * k, k);
+    out.m = vec4<f32>(in.motion * k, k);
     return out;
 }
 
@@ -526,12 +551,14 @@ fn fs_half(in: FullOut) -> NodeSums {
     out.d = vec4<f32>(0.0);
     out.g = vec4<f32>(0.0);
     out.c = vec4<f32>(0.0);
+    out.m = vec4<f32>(0.0);
     for (var j = 0; j < 2; j++) {
         for (var i = 0; i < 2; i++) {
             let at = b + vec2<i32>(i, j);
             out.d += 0.25 * load0(half_d, at, 0);
             out.g += 0.25 * load0(half_g, at, 0);
             out.c += 0.25 * load0(half_c, at, 0);
+            out.m += 0.25 * load0(half_m, at, 0);
         }
     }
     return out;
@@ -1170,6 +1197,133 @@ fn air_share(g: vec2<f32>, k: i32) -> f32 {
     return clamp(v.x / max(v.y, 1e-4), 0.0, 1.0);
 }
 
+// ---- the extras in the liquid (6b): foam and bubbles ----
+
+// The speeds' spread that starts foam, and that makes the most (world px a second), over FOAM_REACH.
+const FOAM_REACH: f32 = 30.0;
+const FOAM_CHURN: vec2<f32> = vec2<f32>(60.0, 260.0);
+// The share of the mean speed the spread must top before foam starts: the half floats' rounding
+// reads up to about 6.5 % of it on an even stream.
+const FOAM_ROUNDING: f32 = 0.07;
+// The mean speed out through the surface that starts foam along a front, and that makes the most.
+const FOAM_FRONT: vec2<f32> = vec2<f32>(300.0, 900.0);
+// The flow map's cycle (s): foam's pattern is pushed by the water's mean speed for a cycle, two
+// copies half a cycle apart.
+const FOAM_CYCLE: f32 = 1.0;
+// How fast fizz rises (world px a second).
+const FIZZ_RISE: f32 = 120.0;
+// The share of fizz's spots that have a bubble at Bubbles 1 (more read as dots printed on it).
+const FIZZ_SHARE: f32 = 0.3;
+// The mean speed (world px a second, over FOAM_REACH) past which fizz fades out, and is gone: in
+// fast water the bubbles ride the flow, and a still lattice rising through it reads as printed.
+const FIZZ_STILL: vec2<f32> = vec2<f32>(250.0, 600.0);
+
+// The liquid's motion round world point `p`, over about `size` world px: its mean speed (world px a
+// second) and the spread of its speeds about that mean (world px a second, `E|v|² - |Ev|²` rooted),
+// from the motion field's levels.
+struct Churn {
+    mean: vec2<f32>,
+    spread: f32,
+};
+
+fn churn_at(p: vec2<f32>, size: f32) -> Churn {
+    let levels = i32(textureNumLevels(motion));
+    let level = clamp(log2(max(size / u.grid.z, 1.0)), 0.0, f32(levels - 1));
+    var m = vec4<f32>(0.0);
+    for (var k = 0; k < levels; k++) {
+        let s = level_share(level, k);
+        if s > 0.0 {
+            m += s * bilinear0(motion, node_t(p, k), k);
+        }
+    }
+    var out: Churn;
+    if m.w <= 1e-6 {
+        out.mean = vec2<f32>(0.0);
+        out.spread = 0.0;
+        return out;
+    }
+    let mean = m.xy / m.w;
+    out.mean = mean * SPEED_UNIT;
+    out.spread = sqrt(max(m.z / m.w - dot(mean, mean), 0.0)) * SPEED_UNIT;
+    return out;
+}
+
+// Foam's pattern at cell point `q` (0 to 1): the walls of a hashed cell grid, clumped by a slower
+// noise.
+fn foam_pattern(q: vec2<f32>) -> f32 {
+    let walls = 1.0 - smoothstep(0.0, 0.3, cell_edge(q));
+    return 0.55 * walls + 0.45 * vnoise(0.35 * q + vec2<f32>(5.3, 1.7));
+}
+
+// Foam's pattern at world point `p`, `size` world px a cell, moving with the water's mean speed
+// `mean` at water time `t`: a flow map, two copies of the pattern each pushed along for a cycle and
+// then started again somewhere else, half a cycle apart, each fading out as it starts again.
+fn foam_at(p: vec2<f32>, mean: vec2<f32>, size: f32, t: f32) -> f32 {
+    var sum = 0.0;
+    for (var c = 0; c < 2; c++) {
+        let at = t / FOAM_CYCLE + 0.5 * f32(c);
+        let cycle = i32(floor(at));
+        let f = at - floor(at);
+        let shift = 97.0 * vec2<f32>(hash2(vec2<i32>(cycle, c + 11)), hash2(vec2<i32>(c + 29, cycle)));
+        sum += (1.0 - abs(2.0 * f - 1.0)) * foam_pattern((p - mean * (f * FOAM_CYCLE)) / size + shift);
+    }
+    return sum;
+}
+
+// Fizz at world point `p`: small bubbles up to `size` world px across (each its own, from half of it)
+// rising at FIZZ_RISE from a lattice that rises with them (one spot a cell of 3 sizes), each living
+// `life` seconds, fading in and out, then born again somewhere else in its cell; `count` of the
+// spots have one. How much of the point
+// a bubble's rim takes and how much its inside (rim, inside), at water time `t`, `scale` picture px
+// a world px.
+fn fizz_at(p: vec2<f32>, size: f32, life: f32, count: f32, t: f32, scale: f32) -> vec2<f32> {
+    let spacing = 3.0 * size;
+    let q = vec2<f32>(p.x, p.y + FIZZ_RISE * t) / spacing;
+    let c = vec2<i32>(floor(q));
+    let aged = t / life + hash2(c + vec2<i32>(13, 71));
+    let born = i32(floor(aged));
+    let age = aged - floor(aged);
+    let h = c + vec2<i32>(born * 31, born * 17);
+    if hash2(h + vec2<i32>(3, 5)) >= count {
+        return vec2<f32>(0.0);
+    }
+    // (A bubble's radius is a sixth of its cell, so it is always inside it.)
+    let centre = vec2<f32>(c) + 1.0 / 6.0 + (2.0 / 3.0) * vec2<f32>(hash2(h), hash2(h + vec2<i32>(57, 11)));
+    let own = mix(0.5, 1.0, hash2(h + vec2<i32>(23, 7)));
+    let r_px = 0.5 * own * size * scale;
+    let d = 6.0 * length(q - centre) / own;
+    let aa = 1.0 / max(r_px, 1e-3);
+    let ring = max(0.3, 1.5 * aa);
+    let outer = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, d);
+    let inner = 1.0 - smoothstep(1.0 - ring - aa, 1.0 - ring + aa, d);
+    // (Bubbles smaller than a pixel fade rather than flicker.)
+    let shown = smoothstep(0.0, 0.2, age) * (1.0 - smoothstep(0.7, 1.0, age)) * min(r_px, 1.0);
+    return vec2<f32>(outer - inner, inner) * shown;
+}
+
+// ---- wet marks (6b) ----
+
+// How far in from its face a solid shows its wet marks (world px), and how much darker it is.
+const WET_REACH: f32 = 12.0;
+const WET_DARK: f32 = 0.5;
+
+// How wet world point `p` is by the frame drawn (0 to 1, between the nodes round it).
+fn wet_at(p: vec2<f32>) -> f32 {
+    let cols = u.size.z;
+    let rows = u.size.w;
+    let g = clamp((p - u.grid.xy) / u.grid.z, vec2<f32>(0.0), vec2<f32>(f32(cols) - 1.001, f32(rows) - 1.001));
+    let x = u32(floor(g.x));
+    let y = u32(floor(g.y));
+    let f = g - vec2<f32>(f32(x), f32(y));
+    let i = y * cols + x;
+    let now = lu.time.w;
+    let a = select(0.0, 1.0, f32(wet_marks[i]) <= now);
+    let b = select(0.0, 1.0, f32(wet_marks[i + 1u]) <= now);
+    let c = select(0.0, 1.0, f32(wet_marks[i + cols]) <= now);
+    let d = select(0.0, 1.0, f32(wet_marks[i + cols + 1u]) <= now);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 // Shades `x` (0 to 1) in `bands` flat steps, each step's edge softened by `softness`.
 fn banded(x: f32, bands: f32, softness: f32) -> f32 {
     let y = clamp(x, 0.0, 1.0) * bands;
@@ -1193,8 +1347,8 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
     var in_liquid = 0.0;
 
     let s0 = textureLoad(look0, px, 0);
-    // The liquid, where its splats or its outline reach.
-    if s0.a > 0.0 {
+    // The liquid, where its splats or its outline reach (or its trapped air's, drawn as bubbles).
+    if s0.a > 0.0 || s0.b > 0.0 {
         let share = shares(px);
         var l_colour = vec3<f32>(0.0);
         var deep = vec3<f32>(0.0);
@@ -1210,7 +1364,11 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         var radius = 0.0;
         var bands = 0.0;
         var band_soft = 0.0;
-        let speed = s0.r / s0.a * SPEED_UNIT;
+        var foam = vec4<f32>(0.0);
+        var bubble = vec4<f32>(0.0);
+        var sizes = vec4<f32>(0.0);
+        var lives = vec4<f32>(0.0);
+        let speed = select(0.0, s0.r / s0.a, s0.a > 0.0) * SPEED_UNIT;
         for (var n = 0u; n < 16u; n++) {
             let k = share[n];
             if k > 0.0 {
@@ -1229,6 +1387,10 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                 radius += k * l.more.y;
                 bands += k * l.shape.w;
                 band_soft += k * l.more.x;
+                foam += k * l.foam;
+                bubble += k * l.bubble;
+                sizes += k * l.sizes;
+                lives += k * l.lives;
             }
         }
         let r_world = max(radius * u.grid.z, LEAST_R_PX / scale);
@@ -1240,7 +1402,12 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         // How far inside the outline, picture px.
         let inside = select(select(-1e4, 1e4, a >= level), (a - level) / slope, slope > 1e-6);
         let outline_px = select(0.0, max(outline * scale, 1.0), outline > 0.0);
-        let alpha = clamp(0.5 + inside + 0.5 * outline_px, 0.0, 1.0);
+        let alpha_l = clamp(0.5 + inside + 0.5 * outline_px, 0.0, 1.0);
+        // Trapped air as bubbles (with Bubbles 0 it is the hole it is): its splats' amount at the
+        // liquid's level fills it with the liquid, lightened, its outline a thin bright rim.
+        let air = s0.b;
+        let pocket = bubble.w * smoothstep(0.5 * level, level, air) * (1.0 - alpha_l);
+        let alpha = max(alpha_l, pocket);
         if alpha > 0.0 {
             // The surface seen smoothly: air's share of the open part round the point, from the
             // depth ladder at about SMOOTH_SURFACE world px, its slope pointing out to the air.
@@ -1260,7 +1427,12 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             // amount's slope between the drops deep in a body would make up an outline at every pixel.
             let near = inside / scale;
             let past = smoothstep(r_world, 2.0 * r_world, near);
-            let inside_w = mix(near, max(smooth_in, 2.0 * r_world), past);
+            let inside_l = mix(near, max(smooth_in, 2.0 * r_world), past);
+            // (In a bubble the liquid is drawn as if deep in: flat and not bent.)
+            let round_w = max(ROUND, 1.5 / scale);
+            // (Outside its outline nothing reads how far out, so it is held near: a pocket's middle,
+            // with no outline near, would otherwise read as far outside.)
+            let inside_w = mix(max(inside_l, -round_w), max(inside_l, 2.0 * round_w), pocket);
             // The outward way: the amount's slope over 2 px near the outline, else the smooth one.
             let g2x = look_amount_at(px + vec2<i32>(2, 0), r_world) - look_amount_at(px - vec2<i32>(2, 0), r_world);
             let g2y = look_amount_at(px + vec2<i32>(0, 2), r_world) - look_amount_at(px - vec2<i32>(0, 2), r_world);
@@ -1286,7 +1458,6 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                 }
             }
             // The surface: rounded over ROUND in from its outline, tilted by the ripples near the top.
-            let round_w = max(ROUND, 1.5 / scale);
             let tilt = 1.0 - smoothstep(0.0, round_w, inside_w);
             var normal2 = out_way * tilt;
             var wave_shift = 0.0;
@@ -1349,6 +1520,46 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                 let film = 0.5 + 0.5 * cos(2.0 * PI * (t + vec3<f32>(0.0, 1.0 / 3.0, 2.0 / 3.0)));
                 body += surface.w * film * (vec3<f32>(ambient) + lamp_l) * (0.15 + 0.6 * turn);
             }
+            // Foam where it churns, where trapped air meets it and along a fast front, more near the
+            // surface than deep down, moving with the water.
+            let surface_lit = ambient + mix(lamp_l, free_light_at(w), 0.6) + spread_l;
+            if foam.w > 0.0 {
+                let churn = churn_at(w, FOAM_REACH);
+                // (The motion sums are added in half floats, so an even fast stream reads a
+                // spread that grows with its speed: foam starts higher there.)
+                let starts = max(FOAM_CHURN.x, FOAM_ROUNDING * length(churn.mean));
+                let churned = smoothstep(starts, starts + FOAM_CHURN.y - FOAM_CHURN.x, churn.spread);
+                let air_meets = smoothstep(0.05, 0.4, air / level);
+                let fast_front = smoothstep(FOAM_FRONT.x, FOAM_FRONT.y, dot(churn.mean, out_way))
+                    * (1.0 - smoothstep(0.0, 16.0, max(inside_w, 0.0)));
+                let near_top = mix(0.35, 1.0, exp(-max(inside_w, 0.0) / 40.0));
+                let f = foam.w * max(max(churned, air_meets), fast_front) * near_top;
+                if f > 0.0 {
+                    // (Pushed by the mean over a wider reach, so a churn's own swirls don't tear it.)
+                    let flow = churn_at(w, 4.0 * FOAM_REACH).mean;
+                    let pattern = foam_at(w, flow, max(sizes.x, 1.5 / scale), lu.time.x);
+                    let cover = smoothstep(1.0 - f, 1.3 - f, pattern);
+                    body = mix(body, foam.rgb * surface_lit, 0.9 * cover);
+                }
+            }
+            // Bubbles: the trapped air's, and fizz rising where it is deep enough to hold them.
+            if bubble.w > 0.0 {
+                let bubble_lit = bubble.rgb * surface_lit;
+                body = mix(body, 1.15 * body + 0.12 * bubble_lit, pocket);
+                let rim_px = max(1.0, 0.1 * sizes.y * scale);
+                let rim = (1.0 - smoothstep(0.5 * rim_px - 0.5, 0.5 * rim_px + 0.5, abs(inside)))
+                    * bubble.w * smoothstep(0.2 * level, 0.6 * level, air);
+                let size = max(sizes.y, 0.5);
+                var fizz = vec2<f32>(0.0);
+                let deep_enough = smoothstep(0.5 * size, size, inside_w) * (1.0 - pocket);
+                if deep_enough > 0.0 {
+                    let still = 1.0 - smoothstep(FIZZ_STILL.x, FIZZ_STILL.y, length(churn_at(w, FOAM_REACH).mean));
+                    let count = FIZZ_SHARE * bubble.w;
+                    fizz = fizz_at(w, size, max(lives.x, 0.05), count, lu.time.x, scale) * deep_enough * still;
+                }
+                body = mix(body, 1.1 * body + 0.08 * bubble_lit, fizz.y);
+                body = mix(body, bubble_lit, max(rim, 0.85 * fizz.x));
+            }
             // Shafts in the liquid, and its glow.
             body += lu.light.w * 0.6 * lamp_l * l_colour + glow;
             // The outline, centred on its edge.
@@ -1373,9 +1584,16 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         let mat = lu.materials[m];
         let kind = u32(mat.colour.w + 0.5);
         let depth = mat.shape.x;
-        let rough = mat.shape.y;
         let deep_in = max(-far, 0.0);
         let n = field_normal(w);
+        // Wet marks: near its face where the liquid has been by now, darker and a little glossier
+        // (read just outside the face, where the drops were).
+        var wet = 0.0;
+        if lu.time.w >= 0.0 && mat.shape.w > 0.0 && deep_in < WET_REACH {
+            wet = mat.shape.w * wet_at(w + n * (deep_in + 0.5 * u.grid.z))
+                * (1.0 - smoothstep(0.5 * WET_REACH, WET_REACH, deep_in));
+        }
+        let rough = mat.shape.y * (1.0 - 0.5 * wet);
         let spill = 2.0 * max(depth, 8.0);
         // (Falling off fast past the spill: the light on a face changes sharply where its own
         // shadow starts, and carried deep in it would draw lines out from the solid's middle.)
@@ -1390,7 +1608,7 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             normal = normalize(vec3<f32>(n * tilt, 1.0 - tilt + 0.15));
         }
         let facing = clamp(max(dot(normal, l3), 0.0) / max(l3.z, 0.3), 0.0, 2.0);
-        let albedo = material_albedo(m, w);
+        let albedo = material_albedo(m, w) * (1.0 - WET_DARK * wet);
         var solid_c = albedo * (ambient * (0.7 + 0.3 * normal.z) + lit * facing + spread_lit);
         if kind != 4u {
             let h = normalize(l3 + vec3<f32>(0.0, 0.0, 1.0));
@@ -1412,4 +1630,151 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         colour = mix(colour, solid_c, cover);
     }
     return vec4<f32>(max(colour, vec3<f32>(0.0)), 1.0);
+}
+
+// ---- 7. mist and sparks (6b), over the picture ----
+//
+// A sprite pass over the drops (`vs_extra`, two sprites a drop, the drops that don't qualify put
+// off the picture): lone drops moving fast draw soft dots of Mist with a faint haze round them
+// (premultiplied, over); lone drops, and drops leaving a body at its edge, moving faster draw
+// thin bright streaks behind them along their speed (added, HDR). Each is a function of the drop and the moment alone.
+
+// The speeds that start mist and sparks (world px a second; each fades in over 200 px/s round it).
+const MIST_SPEED: f32 = 600.0;
+const SPARK_SPEED: f32 = 900.0;
+// The longest spark (world px), and how bright its head is (times Spark colour).
+const SPARK_LONGEST: f32 = 160.0;
+const SPARK_BRIGHT: f32 = 3.0;
+// A mist dot's haze reaches this many times its radius.
+const MIST_HAZE: f32 = 4.0;
+// The largest sprite's size (world px).
+const MOST_SPRITE: f32 = 200.0;
+
+struct ExtraOut {
+    @builtin(position) pos: vec4<f32>,
+    // where in its sprite: a spark's along (0 its head, back is below 0) and across, picture px; a
+    // mist dot's, in its radii
+    @location(0) off: vec2<f32>,
+    // its colour (linear, HDR; mist's lit), and 1 for a spark
+    @location(1) @interpolate(flat) colour: vec4<f32>,
+    // its share; a spark's half width (picture px, at least SPARK_LEAST), its length (picture px),
+    // and its width's share of SPARK_LEAST's
+    @location(2) @interpolate(flat) more: vec4<f32>,
+};
+
+const SPARK_LEAST: f32 = 0.75;
+
+@vertex
+fn vs_extra(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> ExtraOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let c = corners[v % 6u];
+    var out: ExtraOut;
+    out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
+    out.off = vec2<f32>(0.0);
+    out.colour = vec4<f32>(0.0);
+    out.more = vec4<f32>(0.0);
+    if !drawn(i) {
+        return out;
+    }
+    let n = min(ids[i].x & 15u, max(lu.counts.x, 1u) - 1u);
+    let l = lu.liquids[n];
+    let spark = v >= 6u;
+    let amount = select(l.mist.w, l.spark.w, spark);
+    if amount <= 0.0 {
+        return out;
+    }
+    let vel = xv[i].zw * u.grid.z;
+    let speed = length(vel);
+    let world = u.grid.xy + place(i) * u.grid.z;
+    // How much liquid is round it, over about 4 cells (a body at rest 1, a lone drop about 1/64).
+    let k = min(2, i32(textureNumLevels(dens)) - 1);
+    let crowd = density_at(world, k).a;
+    let along = vel / max(speed, 1e-6);
+    var share: f32;
+    if spark {
+        // Lone drops spark, and drops at an edge that are leaving the body (moving out along the
+        // way its liquid thins): a drop at a stream's edge moves along it, and every one sparking
+        // would draw the stream's edges as a bright outline.
+        let h = 4.0 * u.grid.z;
+        let thins = -vec2<f32>(
+            density_at(world + vec2<f32>(h, 0.0), k).a - density_at(world - vec2<f32>(h, 0.0), k).a,
+            density_at(world + vec2<f32>(0.0, h), k).a - density_at(world - vec2<f32>(0.0, h), k).a,
+        );
+        let tl = length(thins);
+        let leaving = select(0.0, smoothstep(0.4, 0.8, dot(along, thins / max(tl, 1e-6))), tl > 1e-3);
+        let lone = 1.0 - smoothstep(0.08, 0.2, crowd);
+        let edge = (1.0 - smoothstep(0.35, 0.7, crowd)) * leaving;
+        share = amount * max(lone, edge) * smoothstep(SPARK_SPEED - 100.0, SPARK_SPEED + 100.0, speed);
+    } else {
+        share = amount * (1.0 - smoothstep(0.08, 0.2, crowd)) * smoothstep(MIST_SPEED - 100.0, MIST_SPEED + 100.0, speed);
+    }
+    // Near a solid, only drops leaving it (a splash off a wall): a thin sheet running along a wall
+    // is lone drops to the density, and drew a bright line down the wall.
+    let off_solid = smoothstep(1.5 * u.grid.z, 3.0 * u.grid.z, field_at(world));
+    share *= max(off_solid, smoothstep(0.3, 0.6, dot(along, field_normal(world))));
+    if share <= 0.0 {
+        return out;
+    }
+    let scale = u.view.z;
+    let head = (world - u.view.xy) * scale;
+    let across = vec2<f32>(-along.y, along.x);
+    var p: vec2<f32>;
+    if spark {
+        let trail = min(l.lives.y * speed, SPARK_LONGEST) * scale;
+        let half_w = 0.5 * min(l.sizes.w, MOST_SPRITE) * scale;
+        let hw = max(half_w, SPARK_LEAST);
+        // From a pixel past its tail's end to a pixel past its head, a pixel past each side.
+        let x = mix(-trail - hw - 1.0, hw + 1.0, 0.5 * (c.x + 1.0));
+        let y = c.y * (hw + 1.0);
+        p = head + along * x + across * y;
+        out.off = vec2<f32>(x, y);
+        out.colour = vec4<f32>(l.spark.rgb * SPARK_BRIGHT, 1.0);
+        out.more = vec4<f32>(share, hw, trail, half_w / hw);
+    } else {
+        let r = max(0.5 * min(l.sizes.z, MOST_SPRITE) * scale, 1.0);
+        p = head + c * (MIST_HAZE * r);
+        out.off = c * MIST_HAZE;
+        let lit = lu.light.x + light_at(world) + spread_at(world);
+        out.colour = vec4<f32>(l.mist.rgb * lit, 0.0);
+        out.more = vec4<f32>(share, r, 0.0, 0.0);
+    }
+    let size = vec2<f32>(f32(u.size.x), f32(u.size.y));
+    out.pos = vec4<f32>(p.x / size.x * 2.0 - 1.0, 1.0 - p.y / size.y * 2.0, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_extra(in: ExtraOut) -> @location(0) vec4<f32> {
+    // (Never over a solid.)
+    let open = 1.0 - rock_cover(field_at(world_of(in.pos.xy)));
+    if open <= 0.0 {
+        discard;
+    }
+    if in.colour.w > 0.5 {
+        // A spark: a line from its head back along its speed, brightest at its head.
+        let hw = in.more.y;
+        let trail = in.more.z;
+        let x = in.off.x;
+        let past = select(max(-x - trail, 0.0), x, x > 0.0);
+        let d = length(vec2<f32>(past, in.off.y));
+        let cover = clamp(hw + 0.5 - d, 0.0, 1.0);
+        let back = clamp(-x / max(trail, 1e-3), 0.0, 1.0);
+        let k = in.more.x * in.more.w * cover * (1.0 - back) * (1.0 - back) * open;
+        if k <= 0.0 {
+            discard;
+        }
+        return vec4<f32>(in.colour.rgb * k, 0.0);
+    }
+    // Mist: a soft dot and a faint haze round it.
+    let q2 = dot(in.off, in.off);
+    let h2 = q2 / (MIST_HAZE * MIST_HAZE);
+    if h2 >= 1.0 {
+        discard;
+    }
+    let dot_k = select(0.0, (1.0 - q2) * (1.0 - q2), q2 < 1.0);
+    let a = in.more.x * open * (0.7 * dot_k + 0.12 * (1.0 - h2) * (1.0 - h2));
+    return vec4<f32>(in.colour.rgb * a, a);
 }

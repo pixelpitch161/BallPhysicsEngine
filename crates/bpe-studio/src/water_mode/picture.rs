@@ -92,6 +92,7 @@ impl StagePicture {
                 rock: rock.version,
             };
             if self.drawn.as_ref() != Some(&want) {
+                live.look.set_wet(Some(&live.wet), live.water.frames());
                 live.look.draw(&live.water.drop_buffers(), &v, look);
                 self.notes = live.look.notes();
                 self.drawn = Some(want);

@@ -1,9 +1,12 @@
 //! The look drawing (`bpe_water::draw::look`, Water mode part 6): that it repeats, where it draws
 //! what, the lamps' light and shadows, light through the liquid, caustics, glow, the materials, the
-//! back, bend, shine, bands, that the light doesn't depend on the view, and Quality. From drops laid
+//! back, bend, shine, bands, that the light doesn't depend on the view, Quality, and the extras
+//! (bubbles, fizz, foam, mist, sparks). From drops laid
 //! out by hand (`draw::sets`), never physics; on the software card at 270 x 480 or less.
 
 use std::sync::Arc;
+
+use bpe_core::maths::Maths;
 
 use bpe_water::draw::look::{
     BackLook, BackPicture, Lamp, LampKind, LiquidLook, Look, MaterialKind, MaterialLook, Quality,
@@ -12,6 +15,12 @@ use bpe_water::draw::sets::{self, REST};
 use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
 use bpe_water::{Drop, Layout, Part, Solid, SolidField};
 use glam::Vec2;
+
+/// The unit way at angle `a` (radians).
+fn turn(a: f32) -> Vec2 {
+    let (s, c) = a.det_sin_cos();
+    Vec2::new(c, s)
+}
 
 fn card() -> Option<Arc<LookGpu>> {
     let (device, queue) = bpe_gfx::test_device().ok()?;
@@ -510,6 +519,251 @@ fn draft_and_good_differ_little() {
     let close = mean(&pics[0], &pics[1]);
     assert!(close < 6.0, "Draft is near Good: {close}");
     assert!(mean(&pics[0], &pics[2]) > 3.0 * close.max(0.5), "lamps change the picture");
+}
+
+// ---- the extras (6b) ----
+
+/// A pool in the screen's box from y 0 down, its drops at rest, no lamps: `liquid` drawn under
+/// Ambient 1 over a dark red back.
+fn extras_look(liquid: LiquidLook) -> Look {
+    let mut look = Look { liquids: vec![liquid], back: BackLook::Colour([0.3, 0.02, 0.02]), ..Look::default() };
+    look.light.ambient = 1.0;
+    look.light.bounce = 0.0;
+    look.light.quality = Quality::Draft;
+    look
+}
+
+/// An opaque blue liquid, so the back never shows through it.
+fn blue() -> LiquidLook {
+    LiquidLook { colour: [0.1, 0.4, 0.9], deep: [0.1, 0.4, 0.9], solid: 1.0, ..LiquidLook::default() }
+}
+
+/// How many pixels of `a` and `b` (the same size) differ by more than `by` in some channel, among
+/// those whose world point `keep` takes.
+fn changed(a: &Picture, b: &Picture, by: u8, keep: impl Fn(Vec2) -> bool) -> usize {
+    let mut n = 0;
+    for y in 0..a.height {
+        for x in 0..a.width {
+            let p = a.view.lo + (Vec2::new(x as f32, y as f32) + 0.5) / a.view.scale;
+            if keep(p) && apart(a.at(p), b.at(p)) > by {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Test 14: Trapped air is drawn as a bubble with Bubbles on (the liquid, a little lighter, inside
+/// a bright rim), and is the hole it is with Bubbles 0.
+#[test]
+fn trapped_air_draws_a_bubble_or_a_hole() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let (centre, r) = (Vec2::new(0.0, 300.0), 40.0);
+    let mut drops = sets::lattice(&field, Vec2::new(-500.0, 0.0), Vec2::new(500.0, 900.0), 0);
+    let layout = field.layout;
+    drops.retain(|d| (layout.to_world(Vec2::from(d.x)) - centre).length() > r);
+    let air = sets::lattice(&field, centre - Vec2::splat(r), centre + Vec2::splat(r), bpe_water::AIR);
+    drops.extend(air.into_iter().filter(|d| (layout.to_world(Vec2::from(d.x)) - centre).length() <= r));
+    let view = View { lo: Vec2::new(-100.0, -100.0), scale: 1.0, width: 200, height: 480 };
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    let hole = d.draw(view, &extras_look(LiquidLook { bubbles: 0.0, ..blue() }));
+    let bubble = d.draw(view, &extras_look(LiquidLook { bubbles: 1.0, ..blue() }));
+    let back = hole.at(Vec2::new(0.0, -50.0));
+    let body = hole.at(Vec2::new(70.0, 300.0));
+    assert!(apart(hole.at(centre), back) < 12, "a hole shows the back: {:?} and {back:?}", hole.at(centre));
+    let inside = bubble.at(centre);
+    assert!(apart(inside, back) > 60, "a bubble is filled: {inside:?} against the back {back:?}");
+    assert!(luma(inside) >= luma(body) && apart(inside, body) < 80, "a little lighter: {inside:?} and {body:?}");
+    let rim = (0..64)
+        .flat_map(|k| {
+            let a = k as f32 / 64.0 * std::f32::consts::TAU;
+            (0..10).map(move |j| centre + turn(a) * (32.0 + 2.0 * j as f32))
+        })
+        .map(|p| luma(bubble.at(p)))
+        .fold(0.0, f32::max);
+    assert!(rim > luma(inside) + 25.0 && rim > luma(body) + 40.0, "a bright rim: {rim} ({inside:?}, {body:?})");
+}
+
+/// The fizz in a still pool at water time `t`, with Bubbles `bubbles`.
+fn fizz_picture(d: &mut Drawn, bubbles: f32, t: f32) -> Picture {
+    let view = View { lo: Vec2::new(-100.0, -100.0), scale: 1.0, width: 200, height: 400 };
+    let mut look = extras_look(LiquidLook { bubbles, bubble_size: 6.0, ..blue() });
+    look.time = t;
+    d.draw(view, &look)
+}
+
+/// Test 15: Fizz shows inside a still pool and nowhere in the air, rises between two water times,
+/// and doesn't show in a pool running fast.
+#[test]
+fn fizz_rises_inside_still_water() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let drops = sets::lattice(&field, Vec2::new(-500.0, 0.0), Vec2::new(500.0, 900.0), 0);
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    let (plain, at, later) =
+        (fizz_picture(&mut d, 0.0, 1.0), fizz_picture(&mut d, 1.0, 1.0), fizz_picture(&mut d, 1.0, 1.1));
+    let deep = |p: Vec2| p.y > 30.0;
+    let pixels = 200 * 270;
+    let shown = changed(&plain, &at, 10, deep);
+    assert!(shown > pixels / 200, "fizz in the pool: {shown} pixels of {pixels}");
+    assert_eq!(changed(&plain, &at, 0, |p| p.y < -10.0), 0, "none in the air");
+    // Each bubble 12 px higher a tenth of a second on (a few born again or fading).
+    let fizz = |pic: &Picture, p: Vec2| apart(pic.at(p), plain.at(p)) > 10;
+    let score = |shift: f32| {
+        let mut n = 0;
+        for y in 40..260 {
+            for x in -95..95 {
+                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                if fizz(&later, p) && fizz(&at, p + Vec2::new(0.0, shift)) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let (up, still, down) = (score(12.0), score(0.0), score(-12.0));
+    assert!(up > 2 * still && up > 2 * down, "it rose: {up} against {still} still and {down} down");
+    // None where the pool runs fast (the bubbles would ride the flow).
+    let mut running = drops.clone();
+    for d in &mut running {
+        d.v = [900.0 / field.layout.cell, 0.0];
+    }
+    let mut d = Drawn::new(&gpu, &field, &running);
+    let (plain, at) = (fizz_picture(&mut d, 0.0, 1.0), fizz_picture(&mut d, 1.0, 1.0));
+    assert_eq!(changed(&plain, &at, 10, deep), 0, "no fizz in a fast pool");
+}
+
+/// The screen's pool from y 0 down with speeds of `most` world px a second spread every way (a fixed
+/// hash of each drop), or none.
+fn churning_pool(field: &SolidField, most: f32) -> Vec<Drop> {
+    let mut drops = sets::lattice(field, Vec2::new(-500.0, 0.0), Vec2::new(500.0, 900.0), 0);
+    for (k, d) in drops.iter_mut().enumerate() {
+        let h = (k as u32).wrapping_mul(0x9e37_79b9).rotate_left(13).wrapping_mul(0x85eb_ca6b);
+        let a = (h >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
+        d.v = (turn(a) * most / field.layout.cell).to_array();
+    }
+    drops
+}
+
+/// Test 16: Churning water (speeds spread every way) is drawn with foam, still water with none.
+#[test]
+fn churning_water_draws_foam_and_still_water_none() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let view = View { lo: Vec2::new(-135.0, -20.0), scale: 1.0, width: 270, height: 270 };
+    let liquid = LiquidLook { colour: [0.02, 0.05, 0.2], deep: [0.02, 0.05, 0.2], ..blue() };
+    let mut foamed = 0;
+    for (most, foam_seen) in [(600.0, true), (0.0, false)] {
+        let mut d = Drawn::new(&gpu, &field, &churning_pool(&field, most));
+        let none = d.draw(view, &extras_look(liquid.clone()));
+        let foam = d.draw(view, &extras_look(LiquidLook { foam: 1.0, foam_size: 8.0, ..liquid.clone() }));
+        let n = changed(&none, &foam, 20, |_| true);
+        if foam_seen {
+            assert!(n > 270 * 270 / 5, "foam on churning water: {n} pixels");
+            foamed = n;
+        } else {
+            assert_eq!(n, 0, "no foam on still water (churning drew {foamed})");
+        }
+    }
+}
+
+/// A few lone drops in the screen's box, 100 px apart, all at `speed` world px a second to the right.
+fn lone_drops(field: &SolidField, speed: f32) -> Vec<Drop> {
+    let l = field.layout;
+    (0..4)
+        .map(|k| {
+            let p = Vec2::new(-150.0 + 100.0 * k as f32, -300.0 + 7.0 * k as f32);
+            Drop::new(l.to_grid(p), Vec2::new(speed / l.cell, 0.0), 0, k, bpe_water::WATER)
+        })
+        .collect()
+}
+
+/// Test 17: Fast lone drops draw mist round them and sparks streaking behind them; slow ones draw
+/// neither, and nor do the edges of a fast band moving along itself.
+#[test]
+fn fast_lone_drops_draw_mist_and_sparks() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let view = View { lo: Vec2::new(-270.0, -400.0), scale: 1.0, width: 270, height: 200 };
+    let extras = |speed: f32, mist: f32, sparks: f32| {
+        let mut look = extras_look(LiquidLook { mist, sparks, ..blue() });
+        look.back = BackLook::Colour([0.01; 3]);
+        look.light.ambient = 0.5;
+        draw(&gpu, &field, &lone_drops(&field, speed), view, &look)
+    };
+    let fast_none = extras(1500.0, 0.0, 0.0);
+    let mist = extras(1500.0, 1.0, 0.0);
+    let sparks = extras(1500.0, 0.0, 1.0);
+    let head = Vec2::new(-50.0, -293.0);
+    let near = |p: Vec2| (p - head).length() < 6.0 && (p - head).length() > 2.5;
+    assert!(changed(&fast_none, &mist, 8, near) > 10, "mist round a fast lone drop");
+    let behind = head - Vec2::new(60.0, 0.0);
+    let lit = luma(sparks.at(behind)) - luma(fast_none.at(behind));
+    assert!(lit > 40.0, "a spark's trail 60 px behind: {lit} brighter");
+    assert!(luma(sparks.at(head + Vec2::new(40.0, 0.0))) < luma(fast_none.at(head)) + 10.0, "nothing ahead");
+    let (slow_none, slow) = (extras(100.0, 0.0, 0.0), extras(100.0, 1.0, 1.0));
+    assert!(slow_none.pixels == slow.pixels, "slow drops draw neither");
+    // A fast band's edges, whose drops move along it, don't spark.
+    let mut band = sets::lattice(&field, Vec2::new(-500.0, -330.0), Vec2::new(500.0, -270.0), 0);
+    for d in &mut band {
+        d.v = [1500.0 / field.layout.cell, 0.0];
+    }
+    let band_look = |sparks: f32| {
+        let mut look = extras_look(LiquidLook { sparks, ..blue() });
+        look.back = BackLook::Colour([0.01; 3]);
+        look.light.ambient = 0.5;
+        draw(&gpu, &field, &band, view, &look)
+    };
+    let edged = changed(&band_look(0.0), &band_look(1.0), 8, |_| true);
+    assert!(edged == 0, "a fast band's edges: {edged} pixels sparked");
+}
+
+/// Test 18: Every extra at once (a bubble, fizz, foam, mist and sparks) draws the same picture to
+/// the bit twice.
+#[test]
+fn the_extras_draw_the_same_twice() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let mut drops = churning_pool(&field, 600.0);
+    drops.extend(lone_drops(&field, 1500.0));
+    let liquid = LiquidLook { foam: 0.8, bubbles: 1.0, mist: 1.0, sparks: 1.0, ..blue() };
+    let mut look = extras_look(liquid);
+    look.time = 2.5;
+    let view = View::screen(0.25);
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    let (a, b) = (d.draw(view, &look), d.draw(view, &look));
+    assert!(a.pixels == b.pixels, "the same twice");
+}
+
+/// Test 19: Wet marks: rock just inside its face where the pool's drops have been is darker by the
+/// frame drawn with Wet marks 1, the same with Wet marks 0, and dry at a frame before the marks.
+#[test]
+fn wet_marks_darken_the_rock_the_water_has_touched() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let drops = sets::lattice(&field, Vec2::new(-500.0, 700.0), Vec2::new(500.0, 900.0), 0);
+    let mut d = Drawn::new(&gpu, &field, &drops);
+    let wet = bpe_water::draw::WetField::new(gpu.device(), gpu.queue(), field.layout);
+    wet.mark(&d.stored.buffers(), 3);
+    let view = View { lo: Vec2::new(-100.0, 880.0), scale: 2.0, width: 200, height: 100 };
+    let mut drawn = |marks: f32, frame: Option<u32>| {
+        let mut look = extras_look(blue());
+        look.rock.wet_marks = marks;
+        d.look.set_wet(frame.map(|_| &wet), frame.unwrap_or(0));
+        d.draw(view, &look)
+    };
+    let (dry, wet_now, before, none) =
+        (drawn(1.0, None), drawn(1.0, Some(10)), drawn(1.0, Some(1)), drawn(0.0, Some(10)));
+    // (The floor's face, from the field.)
+    let face = (0..400).map(|k| 880.0 + 0.1 * k as f32).find(|&y| field.at(Vec2::new(-50.0, y)) < 0.0).unwrap();
+    let p = Vec2::new(-50.0, face + 2.0);
+    assert!(luma(wet_now.at(p)) < 0.8 * luma(dry.at(p)), "darker: {:?} against {:?}", wet_now.at(p), dry.at(p));
+    let deep = Vec2::new(-50.0, face + 12.0);
+    assert!(wet_now.at(deep) == dry.at(deep), "only near the face");
+    assert!(before.pixels == dry.pixels, "dry at a frame before the marks");
+    let dry_none = drawn(0.0, None);
+    assert!(none.pixels == dry_none.pixels, "Wet marks 0 draws no marks");
 }
 
 /// The bench at 3 px under two warm Spots and a waved pool under a Sun, at full size, for looking at

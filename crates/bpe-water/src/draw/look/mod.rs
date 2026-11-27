@@ -76,12 +76,12 @@ struct Pictures {
     w_more: Option<[wgpu::TextureView; 3]>,
 }
 
-/// The course's node fields (density, glow, colour), each with its mips.
+/// The course's node fields (density, glow, colour, motion), each with its mips.
 struct Nodes {
     levels: u32,
-    all: [wgpu::TextureView; 3],
+    all: [wgpu::TextureView; 4],
     /// `by_level[k]` holds level k of each.
-    by_level: Vec<[wgpu::TextureView; 3]>,
+    by_level: Vec<[wgpu::TextureView; 4]>,
 }
 
 impl Nodes {
@@ -90,9 +90,10 @@ impl Nodes {
         let size = (cols.clamp(1, most), rows.clamp(1, most));
         let levels = NODE_LEVELS.min(32 - size.0.max(size.1).leading_zeros());
         let make = |label| texture(device, label, size, levels, wgpu::TextureUsages::empty());
-        let t = [make("water look density"), make("water look glow"), make("water look colour")];
-        let all = [0, 1, 2].map(|i| t[i].create_view(&Default::default()));
-        let by_level = (0..levels).map(|k| [0, 1, 2].map(|i| level_view(&t[i], k))).collect();
+        let t =
+            [make("water look density"), make("water look glow"), make("water look colour"), make("water look motion")];
+        let all = [0, 1, 2, 3].map(|i| t[i].create_view(&Default::default()));
+        let by_level = (0..levels).map(|k| [0, 1, 2, 3].map(|i| level_view(&t[i], k))).collect();
         Nodes { levels, all, by_level }
     }
 }
@@ -171,6 +172,10 @@ pub struct LookDraw {
     back: back::BackPicture,
     /// Too many lamps in the last look.
     too_many_lamps: bool,
+    /// Whether mist or sparks are drawn.
+    extras_on: bool,
+    /// The wet marks drawn and the water frame they are read against.
+    wet: Option<(wgpu::Buffer, u32)>,
 }
 
 impl std::fmt::Debug for LookDraw {
@@ -214,6 +219,8 @@ impl LookDraw {
             renderer: None,
             back: back::BackPicture::default(),
             too_many_lamps: false,
+            extras_on: false,
+            wet: None,
         }
     }
 
@@ -242,6 +249,11 @@ impl LookDraw {
 
     pub fn gpu(&self) -> &Arc<LookGpu> {
         &self.gpu
+    }
+
+    /// The layout it draws drops on.
+    pub fn layout(&self) -> crate::Layout {
+        self.plain.layout
     }
 
     /// What the stage should tell about the last look drawn (a back picture that can't be read, too
@@ -279,6 +291,12 @@ impl LookDraw {
             Some(r) => r.resize(device, width, height),
             None => self.renderer = Some(Renderer::new(device, width, height)),
         }
+    }
+
+    /// The wet marks the next pictures draw, read against water frame `frame` (`None`, or marks
+    /// on another layout: none).
+    pub fn set_wet(&mut self, wet: Option<&crate::draw::WetField>, frame: u32) {
+        self.wet = wet.filter(|w| w.layout() == self.plain.layout).map(|w| (w.buffer().clone(), frame));
     }
 
     /// Draws `drops` (in this drawing's layout's grid units) as `view` shows them, with `look`, and
@@ -349,6 +367,7 @@ impl LookDraw {
             let b = BoxU { lo: [grid.lo.x, grid.lo.y, grid.texel, 1.0], size: [grid.width, grid.height, 0, 0] };
             queue.write_buffer(&s.bounce.numbers, 0, bytemuck::bytes_of(&b));
         }
+        self.extras_on = numbers::extras(look);
         self.too_many_lamps = look.lamps.iter().filter(|l| l.brightness > 0.0).count() > MOST_LAMPS;
         let picture = self.back.picture_for(device, queue, &look.back, &layout);
         let placing = Placing {
@@ -357,7 +376,8 @@ impl LookDraw {
             spread: self.spread.as_ref().filter(|_| self.spread_on).map(|s| (s.grid, s.given_levels.len() as u32)),
             picture,
         };
-        let u = numbers::look_u(look, &layout, &placing);
+        let mut u = numbers::look_u(look, &layout, &placing);
+        u.time[3] = self.wet.as_ref().map_or(-1.0, |w| w.1 as f32);
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         queue.write_buffer(&self.grads, 0, bytemuck::cast_slice(&numbers::gradients(look)));
 
@@ -413,8 +433,12 @@ impl LookDraw {
         let targets = n.by_level[0].each_ref().map(attach);
         run_pass(encoder, "water look nodes", &targets, &gpu.nodes.pipeline, &nodes, 6, drops.count);
         for k in 1..n.levels as usize {
-            let [d, g, c] = &n.by_level[k - 1];
-            let half = group(&gpu.half, "water look half", &[entry(21, tex(d)), entry(22, tex(g)), entry(23, tex(c))]);
+            let [d, g, c, m] = &n.by_level[k - 1];
+            let half = group(
+                &gpu.half,
+                "water look half",
+                &[entry(21, tex(d)), entry(22, tex(g)), entry(23, tex(c)), entry(34, tex(m))],
+            );
             let targets = n.by_level[k].each_ref().map(attach);
             run_pass(encoder, "water look half", &targets, &gpu.half.pipeline, &half, 3, 1);
         }
@@ -506,10 +530,36 @@ impl LookDraw {
                 entry(28, tex(self.back.view().unwrap_or(black))),
                 entry(29, tex(spread_eo)),
                 entry(33, tex(lfree)),
+                entry(35, tex(&n.all[3])),
+                entry(36, self.wet.as_ref().map_or(&gpu.no_wet, |w| &w.0).as_entire_binding()),
             ],
         );
         let renderer = self.renderer.as_ref().expect("made with the pictures");
         run_pass(encoder, "water look", &[attach(renderer.hdr_target())], &gpu.compose.pipeline, &compose, 3, 1);
+        // 7. Mist and sparks over it.
+        if self.extras_on {
+            let extras = group(
+                &gpu.extras,
+                "water look extras",
+                &[
+                    entry(0, self.plain.uniform.as_entire_binding()),
+                    entry(1, drops.xv.as_entire_binding()),
+                    entry(2, drops.id.as_entire_binding()),
+                    entry(5, self.plain.field.as_entire_binding()),
+                    entry(10, self.uniform.as_entire_binding()),
+                    entry(18, tex(&n.all[0])),
+                    entry(24, tex(lmap)),
+                    entry(27, tex(spread_s)),
+                ],
+            );
+            let target = [Some(wgpu::RenderPassColorAttachment {
+                view: renderer.hdr_target(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })];
+            run_pass(encoder, "water look extras", &target, &gpu.extras.pipeline, &extras, 12, drops.count);
+        }
     }
 
     /// The last picture drawn (rgba8 holding sRGB), the renderer's output.

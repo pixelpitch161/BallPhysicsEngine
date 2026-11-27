@@ -914,7 +914,8 @@ and each liquid's Look card, finished by the same bloom, exposure and composite 
 - The Look, Light, Back and Lamp cards live in `modules/water/look.rs`; `plain_look` and **`look_of(scene, resolved,
   time) -> Look`** in `things/water/look.rs`. The kit's `build.rs` prints every file under its roots but those named
   `look.rs` or `looks.rs`, and bpe-water's prints `src/drops`, `src/take`, `src/drop.rs`, `src/solid.rs` and
-  `src/lib.rs` only, so a change to how water looks never makes a final again.
+  `src/lib.rs` only (and, since 6b, the wet marks a take keeps: `src/draw/wet.rs`, `src/shaders/wet.wgsl`), so a
+  change to how water looks never makes a final again.
 - `look_of` reads each enabled Liquid's Look (scene order, at most 16; a gradient as 64 linear samples, sent only when
   the colour is read from it), the Course's Rock and each enabled Piece's and Wall's Material (in the order the solid
   field numbers them), the Back, the Light card, every enabled Lamp (at its `transform.position`; Water things have no
@@ -981,3 +982,108 @@ and each liquid's Look card, finished by the same bloom, exposure and composite 
   The Final view and the export draw the same way; the export reads the renderer's output.
 - **Lamp markers**: a Spot's cone (120 points long), a Strip's line with a tick toward its Aim, a Sun's three arrows
   down from the course's top edge.
+
+## Part 6b: extras and wet marks (as built)
+
+The plan's decisions 32 to 37 (`docs/superpowers/plans/water-mode/part6-light-and-looks.md`, its "As built / 6b").
+Every extra is a function of the drops, the cards and the water time, never remembered: the same moment draws the
+same extras. Bubbles last is fizz's life and Sparks last a spark's trail in seconds of its flight. Wet marks are
+the one part of the look with a memory, so the water keeps them.
+
+### Foam, bubbles and fizz (`bpe-water draw/look/`, `shaders/look.wgsl`)
+
+- **A motion node field**, a fourth beside density, glow and colour: `(Σk vx, Σk vy, Σk|v|², Σk)` (speeds in
+  thousands of px/s), with mips (`fs_look_nodes`, `fs_half`). The nodes pass writes four rgba16f targets, which is
+  32 bytes a sample, the default limit. `churn_at(p, size)` reads the mean speed and the spread of the speeds
+  (`sqrt(E|v|² − |Ev|²)`) over `size` world px, through the level shares.
+- **Foam** shows where:
+  - the speeds spread by 60 to 260 px/s over 30 px (starting at no less than 7 % of the mean speed: the
+    motion sums are half floats, and an even stream at 3000 px/s reads a spread of up to about 195);
+  - trapped air's splats meet the liquid;
+  - a front moves out through the surface at 300 to 900 px/s (within 16 px of it).
+
+  It is weighted 0.35 deep down, rising to 1 over the top 40 px. Its pattern is the cell walls of a hashed grid of
+  Foam size, clumped by a slower noise. It is moved by a flow map: two copies on a 1 s cycle, half a cycle apart,
+  each pushed by the mean speed over 120 px and started again somewhere else. (The mean over 30 px tore it into
+  streaks in churning water.) It covers where the pattern tops `1 − amount`, lit as the surface is.
+- **Trapped air as bubbles**: where the air's splats (A0's third channel) reach the liquid's level, the hole is
+  filled with the body. It is drawn as if deep in (flat, not bent), 15 % lighter, with a bright rim of Bubble
+  colour on the outline (a tenth of Bubble size, at least 1 px). With Bubbles 0 the hole is drawn as before. The
+  liquid block now also runs where only air splats reach.
+- **Fizz**: a lattice of cells 3 Bubble sizes across that rises at 120 px/s with its bubbles.
+  - In each life a spot is lit with chance 0.3 × Bubbles (`FIZZ_SHARE`; at Bubbles 0.8 every spot read as
+    dots printed on the water), at a hashed place inside its cell, half to all of Bubble size. It lives
+    Bubbles last, fading in over its first fifth and out over its last 30 %.
+  - It shows only where the liquid is deeper than the bubble, not in a pocket, and where the water's mean
+    speed over 30 px is under 250 px/s, gone by 600 (`FIZZ_STILL`: a still lattice rising through a fast
+    stream read as printed on it).
+  - It is drawn as a ring and a lighter inside, fading out when smaller than a pixel.
+
+### Mist and sparks (`vs_extra`, `fs_extra`)
+
+- **A sprite pass** over the drops after the compose, two sprites a drop. Blending is premultiplied: mist is
+  drawn over, sparks are added (alpha 0). It is never drawn over a solid, and it runs only when a liquid has Mist
+  or Sparks.
+- **Lone and edge drops**: a drop is lone where the density field's level 2 holds under about 0.1 (a body at rest
+  is 1, a lone drop about 1/64), and at an edge under about 0.5. An edge drop is **leaving** when it moves out
+  along the way the liquid thins (the level's slope over 4 cells, within about 50°). Within 1.5 to 3 cells of a solid
+  neither is drawn unless the drop is leaving the solid (moving out from its face, within about 60°): a thin sheet
+  running along a wall is lone drops to the density, and drew a bright line down the wall.
+- **Mist**: lone drops over 600 px/s (fading in over 200). Each draws a soft dot of Mist size and a haze 4 times as
+  wide, lit by Ambient, the shot's light and the spread light at the drop.
+- **Sparks**: lone drops, and edge drops leaving the body, over 900 px/s. (Every edge drop sparked at first,
+  and a fast stream's drops move along its edges, so its edges were drawn as a bright outline.) Each draws a streak back along its speed, `Sparks last × speed`
+  long (at most 160 px) and half Spark size wide (at least 0.75 px, dimmer when thinner). It is Spark colour × 3
+  at its head, fading to the tail.
+
+### Wet marks (`bpe-water draw/wet.rs`, `shaders/wet.wgsl`)
+
+- **`WetField`** holds a `u32` a node: the water frame liquid first touched it (`DRY` is `u32::MAX`). `cs_wet`
+  marks the four nodes round each liquid drop (not air) with `atomicMin`, so the drops' order doesn't matter. It has
+  `upload`, `read` and `clear`. `HeldWet` puts marks read from a take on the card for a drawing, sending them again
+  only when they change.
+- **Drawn** (`LookDraw::set_wet(field, frame)`; marks on another layout draw none; the frame rides in `LU.time.w`,
+  below 0 for none). A solid within 12 px of its face is drawn wet where the nodes half a cell outside the face are
+  wet by the frame drawn. It is `Wet marks × 50 %` darker, its Roughness down by half the mark, fading over its
+  last 6 px. (At first 6 px and 45 %, which hardly showed at full size.)
+- **The draft** (`bpe-studio water_mode/draft.rs`): `Live.wet` is marked at a new body's start and after every
+  frame the thread plays. Going back keeps it, as the stage reads it against the playhead's frame. A new body starts
+  dry. The draft export marks its own (`bpe-cli water.rs`).
+- **The final** (`bpe-kit things/water/make.rs`):
+  - The make marks after every frame on its own card.
+  - At each chunk's end, and at the last frame (whose end may be a chunk of its own), it reads the marks back. It
+    sends them to the writer before any moment of the next chunk.
+  - The writer writes `wet-NNNNNN.bin` before the chunk is whole and counts its bytes with the chunk's.
+    `take::chunk::write_wet` writes a magic, then lz4 of a `u16` a node: frames since the take's start, 0xFFFF dry.
+  - A remake from a restart point starts from the marks of the chunk before it, with every node first wet there or
+    later made dry again (`dry_from`). `Finals::begin` shares the wet files along with the chunks.
+  - `TAKE_FORMAT` is 2, so every older take is made again.
+- **Reading** (`bpe-cli water.rs`, `TakeReader::wet`): the marks kept with the chunk of water time τ, read against
+  frame ⌊60τ⌋. A moment chosen from the next frame's start reads one frame early. The Final view's worker reads the
+  marks with the moment; the export and Preview final frame hand them to the drawing.
+
+### Tests
+
+- `bpe-water/tests/look.rs`:
+  - 14: trapped air draws a bubble, or a hole with Bubbles 0;
+  - 15: fizz rises inside still water, and never shows in the air or in a pool running fast;
+  - 16: churning water foams and still water doesn't;
+  - 17: fast lone drops draw mist and sparks, slow ones neither, and nor do a fast band's edges;
+  - 18: every extra draws the same twice;
+  - 19: wet marks darken the rock near its face, not with Wet marks 0, and not before the frame.
+- `tests/wet.rs`: the nodes round a drop, a later frame never moves a mark, air marks none, the drops' order doesn't
+  matter, upload.
+- `take::chunk`: wet marks read back as written.
+- `bpe-kit/tests/water_final.rs`: every chunk has its marks, they only grow, and a remake's marks equal those of a
+  make in one go.
+- `bpe-studio` draft tests: `the_draft_keeps_its_wet_marks_going_back`.
+
+### Known, left for later
+
+- A big air pocket's middle, where no liquid splat reaches, takes the first liquid's look (air drops carry no
+  liquid).
+- A cavity much wider than the physics' air reach (48 px) holds no air drops, so it stays a hole with Bubbles on
+  (the full-size check's pool: air in every small pocket, none in the two big ones).
+- Wet marks are on the course's grid, so a piece that moves would leave its marks where it was (pieces don't move
+  yet).
+- Mist and sparks are drawn over the liquid in front, and over each other in the drops' order.

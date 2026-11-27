@@ -12,6 +12,7 @@ use bpe_gfx::wgpu;
 use bpe_kit::things::water::draft::WaterSetup;
 use bpe_kit::things::water::finals::{Finals, Status};
 use bpe_water::SolidField;
+use bpe_water::draw::wet::HeldWet;
 use bpe_water::draw::{Look, LookDraw, LookGpu, StoredDrops};
 use bpe_water::take::TakeFrame;
 use eframe::egui::{self, Painter, Rect, pos2};
@@ -75,12 +76,13 @@ impl Asked {
     }
 }
 
-/// A moment read: the take it is of, the time asked for, and the drops with how far the time is
-/// past them (`None`: not there).
+/// A moment read: the take it is of, the time asked for, the drops with how far the time is
+/// past them (`None`: not there), and the wet marks by then with the frame to read them against.
 struct Got {
     take: u64,
     tau: f64,
     frame: Option<(TakeFrame, f64)>,
+    wet: Option<(Arc<Vec<u32>>, u32)>,
 }
 
 /// What the worker and the window share.
@@ -160,8 +162,9 @@ fn work(shared: &Shared, ctx: &egui::Context) {
             reader = TakeReader::open(&asked.finals, &asked.status).map(|r| (take, asked.status.good, r));
         }
         let frame = reader.as_mut().and_then(|r| r.2.near(asked.tau).ok().flatten());
+        let wet = reader.as_mut().and_then(|r| r.2.wet(asked.tau));
         if let Ok(mut got) = shared.got.lock() {
-            *got = Some(Got { take, tau: asked.tau, frame });
+            *got = Some(Got { take, tau: asked.tau, frame, wet });
         }
         ctx.request_repaint();
     }
@@ -187,6 +190,9 @@ pub struct FinalPicture {
     stored: Option<StoredDrops>,
     /// The drops on the card: the take and time they are for, and how far that is past them.
     holds: Option<(u64, f64, f32)>,
+    /// The wet marks by the moment held, and those on the card.
+    wet: Option<(Arc<Vec<u32>>, u32)>,
+    held_wet: HeldWet,
     texture: Option<(egui::TextureId, (u32, u32))>,
     drawn: Option<Drawn>,
 }
@@ -242,6 +248,7 @@ impl FinalPicture {
                         self.stored.get_or_insert_with(|| StoredDrops::new(&render.device, &render.queue, &[]));
                     stored.set(&render.device, &render.queue, &frame.xv, &frame.kinds);
                     self.holds = Some((got.take, got.tau, ahead as f32));
+                    self.wet = got.wet;
                 }
                 // (Not there, or not readable: the stage shows the draft rather than an old moment.)
                 None => (self.holds, self.drawn) = (None, None),
@@ -253,6 +260,8 @@ impl FinalPicture {
         {
             let want = Drawn { take, tau: at.to_bits(), size: (v.width, v.height), look: look.clone() };
             if self.drawn.as_ref() != Some(&want) {
+                let layout = drawing.layout();
+                self.held_wet.give(&render.device, &render.queue, layout, self.wet.as_ref(), drawing);
                 drawing.draw_at(&stored.buffers(), &v, look, ahead);
                 if let Some(output) = drawing.output() {
                     let output = output.create_view(&wgpu::TextureViewDescriptor::default());

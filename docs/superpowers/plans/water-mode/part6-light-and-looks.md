@@ -509,7 +509,7 @@ src/water.rs`, `crates/bpe-kit/tests/water_draft.rs`, `water_final.rs`.
   `LOOK_ONLY=water-look`, open every picture and its 1:1 crops: no jagged edges, light leaks, banding, seams, or
   anything that doesn't make sense. Fix and look again.
 - [x] `docs/notes/water.md` "Part 6a (as built)"; this plan's "As built" for 6a.
-- [ ] fmt, clippy, the focused tests; PR (draft), CI, one Opus review, fixes, merge.
+- [x] fmt, clippy, the focused tests; PR (draft), CI, one Opus review, fixes, merge.
 
 ## 6b: extras and wet marks
 
@@ -519,8 +519,8 @@ src/water.rs`, `crates/bpe-kit/tests/water_draft.rs`, `water_final.rs`.
 compose's bubbles and foam), `crates/bpe-kit/src/modules/water/look.rs` (Bubbles last's and Sparks last's help),
 `things/water/look.rs`.
 
-- [ ] Bubbles (decision 33), foam (34), mist (35), sparks (36).
-- [ ] Verify (`tests/look.rs`): trapped air draws a rim with Bubbles on and a hole with Bubbles 0; fizz shows inside a
+- [x] Bubbles (decision 33), foam (34), mist (35), sparks (36).
+- [x] Verify (`tests/look.rs`): trapped air draws a rim with Bubbles on and a hole with Bubbles 0; fizz shows inside a
   still pool and none in the air; churning water (a set with mixed speeds) gets foam and still water none; fast lone
   drops draw sparks and mist, slow ones don't; the same moment draws the same extras twice; fizz moves up between two
   water times.
@@ -532,15 +532,15 @@ compose's bubbles and foam), `crates/bpe-kit/src/modules/water/look.rs` (Bubbles
 {mod.rs, chunk.rs}` (`TAKE_FORMAT` + 1, wet files), `crates/bpe-kit/src/things/water/{make.rs, finals.rs}`,
 `crates/bpe-studio/src/water_mode/{draft.rs, final_view.rs}`, `crates/bpe-cli/src/water.rs` (`TakeReader::wet`).
 
-- [ ] Decision 37 for the draft, the make, partial remakes and drawing.
-- [ ] Verify: a drop marks its four nodes with its frame and a later frame never moves them; the field is the same
+- [x] Decision 37 for the draft, the make, partial remakes and drawing.
+- [x] Verify: a drop marks its four nodes with its frame and a later frame never moves them; the field is the same
   whatever order the drops are in; a take's wet file reads back as written; a partial remake's wet field equals a
   whole make's (with the make's existing "same as one go" test); the draft after going back draws marks only where
   the water had been by then; a wet solid is darker than a dry one with Wet marks 1 and the same with 0.
 
 ### Task 9: look at it, notes, review, merge
 
-- [ ] Full-size look check `water-extras-*` (a tap into a pool with foam, bubbles and mist; sparks on fast streams;
+- [x] Full-size look check `water-extras-*` (a tap into a pool with foam, bubbles and mist; sparks on fast streams;
   wet marks on a course the water has run down), notes "Part 6b (as built)", PR, CI, review, merge.
 
 ## 6c: the six looks and the shared finish
@@ -635,3 +635,42 @@ Built as planned (decisions 1 to 31), with these changes found while building ag
   stage's lamp markers read the lamp at the playhead.
 - **Known limits, left as they are**: Paper's cut-out shadow is offset by the largest Paper Depth in the scene, and the
   caustics' ripples use the largest Ripples of any liquid (the light map can't tell liquids apart).
+
+### 6b
+
+Built as planned (decisions 32 to 37), with these changes:
+
+- **A fourth node field, motion** (`(Σk vx, Σk vy, Σk|v|², Σk)` with mips), so the churn and the mean speed are read
+  over any reach through the level shares. The look pictures' own speed sums stay as they were.
+- **Foam's flow map is pushed by the mean over 120 px**, not over 30 px: in churning water the mean over 30 px
+  changes so much from pixel to pixel that a cycle's push tore the pattern into streaks. The churn (where foam
+  shows) is still read over 30 px.
+- **Trapped air's bubble is the liquid's body drawn as if deep in** (flat, unbent) and lightened, which keeps a
+  pocket's colour the body's own. A pocket's middle where no liquid splat reaches takes the first liquid's look.
+- **Sparks and mist are one sprite pass, two sprites a drop**, premultiplied (mist over, sparks added); lone is read
+  from the density field's level 2, as planned, with soft edges in both speed and crowding so a drop fades in and
+  out of them.
+- **Wet marks are marked on the card by the make itself** (after every frame) and read back once a chunk; the
+  marks for a chunk go to the writer before any moment of the next one. The last frame's end can be a chunk of its
+  own (a 2 s final has chunks 0, 1 and 2), so it gets the marks too.
+- **The frame a final's moment reads its marks against is ⌊60τ⌋**, its chunk's, so a moment taken from the next
+  frame's start reads one frame early.
+- Tests: `tests/look.rs` 14 to 19, `tests/wet.rs`, `take::chunk`'s wet test, `water_final`'s wet checks and the
+  draft's `the_draft_keeps_its_wet_marks_going_back`; the full-size look check `water-extras` (a fast tap thrown
+  at a pool's wall, from a made final; `LOOK_TAKES` keeps the final between runs).
+- **What the full-size check found, and the changes it made:**
+  - Fizz at Bubbles 0.8 lit nearly every spot, so it read as dots printed on the water, and rose through the
+    fast stream. Now 0.3 of the spots have a bubble, each its own size (half to all of Bubble size), and it fades
+    out where the mean speed is 250 to 600 px/s.
+  - Every edge drop sparked, so a fast stream's edges were a bright outline, and drops arriving at a wall drew a
+    burst there and a line down it. Now lone drops spark, and edge drops only when leaving the body (moving out
+    the way its liquid thins); near a solid, only drops leaving it.
+  - Wet marks 6 px deep and 45 % darker hardly showed: now 12 px and 50 %.
+  - A wide cavity the pour opens in the pool stays a hole with Bubbles on: the physics finds trapped air only
+    within 48 px of the water round it (part 2c's `air_reach`), so a cavity much wider than that holds none (the
+    probe picture of the moment showed air in every small pocket and none in the big ones). Left to the physics.
+- **What the review found:** the take's print left out the wet marks' code (`draw/wet.rs`, `shaders/wet.wgsl`),
+  so a change to how they are marked or packed would have kept old finals; they are printed now. And the motion
+  sums' half-float rounding reads a false spread on an even fast stream (about 6.5 % of its speed), so foam now
+  starts at no less than 7 % of the mean speed.
+

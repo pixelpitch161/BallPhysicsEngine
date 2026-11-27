@@ -97,13 +97,14 @@ pub struct WaterLook {
     pub foam_size: f32,
     #[setting(label = "Foam colour", when = "foam", keyframe, group = "Extras")]
     pub foam_colour: Color,
-    /// Bubbles rising inside it.
+    /// Its trapped air drawn as bubbles, and small bubbles rising inside it.
     #[setting(label = "Bubbles", range(0, 1), span(0, 1), keyframe, group = "Extras")]
     pub bubbles: f32,
     #[setting(label = "Bubble size", when = "bubbles", range(0.5, 1e9), span(1, 40), unit = "px", group = "Extras")]
     pub bubbles_size: f32,
     #[setting(label = "Bubble colour", when = "bubbles", keyframe, group = "Extras")]
     pub bubbles_colour: Color,
+    /// How long each small bubble rising in it lives, fading in and out.
     #[setting(label = "Bubbles last", when = "bubbles", range(0.05, 60), span(0.1, 5), unit = "s", group = "Extras")]
     pub bubbles_life: f32,
     /// Fine spray thrown up where it lands hard.
@@ -113,13 +114,14 @@ pub struct WaterLook {
     pub mist_size: f32,
     #[setting(label = "Mist colour", when = "mist", keyframe, group = "Extras")]
     pub mist_colour: Color,
-    /// Bright sparks thrown off where it is hot or fast.
+    /// Bright sparks streaking behind its fastest drops.
     #[setting(label = "Sparks", range(0, 1), span(0, 1), keyframe, group = "Extras")]
     pub sparks: f32,
     #[setting(label = "Spark size", when = "sparks", range(0.5, 1e9), span(1, 40), unit = "px", group = "Extras")]
     pub sparks_size: f32,
     #[setting(label = "Spark colour", when = "sparks", keyframe, group = "Extras")]
     pub sparks_colour: Color,
+    /// How long a spark's trail is, in seconds of its flight.
     #[setting(label = "Sparks last", when = "sparks", range(0.05, 60), span(0.1, 5), unit = "s", group = "Extras")]
     pub sparks_life: f32,
 }

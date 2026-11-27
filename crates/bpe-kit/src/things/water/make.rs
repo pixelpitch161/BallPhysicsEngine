@@ -1,7 +1,8 @@
 //! Make final (Water mode part 8): the scene's water worked out once at Final detail, from the
 //! start or from the restart point before its earliest change, frame by frame, keeping each frame's
 //! moments (more inside it where it plays in slow motion) and a restart point every 2 s, into the
-//! take the finals folder keeps. The card steps on while a writer thread packs and writes.
+//! take the finals folder keeps, with each chunk the wet marks by its end (part 6b, marked on the
+//! card after every frame). The card steps on while a writer thread packs and writes.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -10,6 +11,8 @@ use std::time::Instant;
 
 use anyhow::Context;
 use bpe_core::{Resolved, Scene};
+use bpe_water::draw::WetField;
+use bpe_water::draw::wet::dry_from;
 use bpe_water::drops::capture::{Capture, Captured};
 use bpe_water::take::{ChunkWriter, FrameCodec, chunk};
 use bpe_water::{SolidField, Water, WaterGpu};
@@ -176,6 +179,15 @@ impl MakeFinal {
         } else {
             self.setup.start(gpu.clone(), &field, self.most)
         };
+        let wet = WetField::new(gpu.device(), gpu.queue(), layout);
+        if from > 0 {
+            // (The marks by the restart point: the chunk before it's, with every node first wet
+            // there or later dry again, as the frames from it mark them again.)
+            let mut marks = chunk::read_wet(&take.dir, (from / 60).saturating_sub(1), layout.nodes())
+                .context("the wet marks don't read")?;
+            dry_from(&mut marks, from);
+            wet.upload(&marks);
+        }
         let take = Arc::new(Mutex::new(take));
         let (send, recv) = sync_channel::<Message>(3);
         let writer = {
@@ -187,7 +199,7 @@ impl MakeFinal {
                 .context("couldn't start the final's writer")?
         };
         progress.phase.store(1, Ordering::Release);
-        let played = self.play(gpu, &field, &mut water, &take, &send, progress, stop, from);
+        let played = self.play(gpu, &field, &mut water, &wet, &take, &send, progress, stop, from);
         let complete = played.is_ok() && !stop.load(Ordering::Acquire);
         let _ = send.send(Message::End { complete });
         drop(send);
@@ -207,6 +219,7 @@ impl MakeFinal {
         gpu: &Arc<WaterGpu>,
         field: &SolidField,
         water: &mut Water,
+        wet: &WetField,
         take: &Arc<Mutex<TakeDir>>,
         send: &SyncSender<Message>,
         progress: &MakeProgress,
@@ -218,6 +231,7 @@ impl MakeFinal {
         let mut timed = from;
         let mut mark = started;
         water.capture_now(&mut capture);
+        wet.mark(&water.drop_buffers(), water.frames());
         for k in from..self.frames {
             if stop.load(Ordering::Acquire) {
                 break;
@@ -230,6 +244,18 @@ impl MakeFinal {
             }
             self.setup.set_inputs(water, field, self.most);
             water.frame_keeping(self.speeds.keep_for(k), &mut capture);
+            let now = water.frames();
+            wet.mark(&water.drop_buffers(), now);
+            // (The marks by a chunk's end go to the writer before any moment of the next chunk; the
+            // last frame's end may be a chunk of its own.)
+            let ends = k + 1 == self.frames;
+            if now.is_multiple_of(60) || ends {
+                let marks = wet.read();
+                if ends && now / 60 != k / 60 {
+                    let _ = send.send(Message::Wet { second: now / 60, marks: marks.clone() });
+                }
+                let _ = send.send(Message::Wet { second: k / 60, marks });
+            }
             let ready = capture.take(gpu.device(), false);
             if !ready.is_empty() {
                 let frames = k + 1 - timed;
@@ -267,6 +293,11 @@ enum Message {
         seconds: f64,
         frames: u32,
     },
+    /// The wet marks by the end of chunk `second`.
+    Wet {
+        second: u32,
+        marks: Vec<u32>,
+    },
     /// The make is over: the last chunk is whole when `complete` (else it is let go).
     End {
         complete: bool,
@@ -274,13 +305,24 @@ enum Message {
 }
 
 /// The writer: packs each moment (several at once), writes them into their second's chunk, and
-/// tells the head when a chunk is whole.
+/// tells the head when a chunk is whole (its wet marks written first).
 fn write(recv: Receiver<Message>, take: Arc<Mutex<TakeDir>>, cells: u32) -> anyhow::Result<()> {
     let dir = take.lock().map_err(|_| anyhow::anyhow!("the take's lock broke"))?.dir.clone();
     let mut chunk: Option<ChunkWriter> = None;
     let (mut seconds, mut frames, mut most) = (0.0, 0u32, 0u32);
-    let finish = |w: ChunkWriter, seconds: &mut f64, frames: &mut u32, most: u32| -> anyhow::Result<()> {
-        let info = w.finish()?;
+    let mut wet: Vec<(u32, Vec<u32>)> = Vec::new();
+    let finish = |w: ChunkWriter,
+                  wet: &mut Vec<(u32, Vec<u32>)>,
+                  seconds: &mut f64,
+                  frames: &mut u32,
+                  most: u32|
+     -> anyhow::Result<()> {
+        let second = w.second();
+        let marks = wet.iter().position(|m| m.0 == second).map(|i| wet.remove(i).1);
+        let marks = marks.with_context(|| format!("the wet marks of second {second} never came"))?;
+        let wet_bytes = chunk::write_wet(&dir, second, &marks)?;
+        let mut info = w.finish()?;
+        info.bytes += wet_bytes;
         take.lock().map_err(|_| anyhow::anyhow!("the take's lock broke"))?.chunk_done(info, most, *seconds, *frames)?;
         *seconds = 0.0;
         *frames = 0;
@@ -302,7 +344,7 @@ fn write(recv: Receiver<Message>, take: Arc<Mutex<TakeDir>>, cells: u32) -> anyh
                         if chunk.as_ref().is_some_and(|w| w.second() != second)
                             && let Some(w) = chunk.take()
                         {
-                            finish(w, &mut seconds, &mut frames, most)?;
+                            finish(w, &mut wet, &mut seconds, &mut frames, most)?;
                         }
                         if chunk.is_none() {
                             chunk = Some(ChunkWriter::new(&dir, second)?);
@@ -312,10 +354,11 @@ fn write(recv: Receiver<Message>, take: Arc<Mutex<TakeDir>>, cells: u32) -> anyh
                         }
                     }
                 }
+                Message::Wet { second, marks } => wet.push((second, marks)),
                 Message::End { complete } => {
                     if let Some(w) = chunk.take() {
                         if complete {
-                            finish(w, &mut seconds, &mut frames, most)?;
+                            finish(w, &mut wet, &mut seconds, &mut frames, most)?;
                         } else {
                             w.abandon();
                         }

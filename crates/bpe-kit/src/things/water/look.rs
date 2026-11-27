@@ -151,6 +151,20 @@ fn liquid_look(l: &WaterLook) -> LiquidLook {
         outline_colour: srgb(l.outline_colour),
         bands: l.bands,
         band_softness: l.band_softness,
+        foam: l.foam,
+        foam_size: l.foam_size,
+        foam_colour: srgb(l.foam_colour),
+        bubbles: l.bubbles,
+        bubble_size: l.bubbles_size,
+        bubble_colour: srgb(l.bubbles_colour),
+        bubbles_life: l.bubbles_life,
+        mist: l.mist,
+        mist_size: l.mist_size,
+        mist_colour: srgb(l.mist_colour),
+        sparks: l.sparks,
+        spark_size: l.sparks_size,
+        spark_colour: srgb(l.sparks_colour),
+        sparks_life: l.sparks_life,
     }
 }
 

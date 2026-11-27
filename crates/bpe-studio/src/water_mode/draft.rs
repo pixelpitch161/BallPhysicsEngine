@@ -7,7 +7,8 @@
 //! frame the thread is on, and the thread lets it in before taking the next ([`DraftJob::body`]). Going back plays from the newest restart copy at or
 //! before the playhead (one at the start and one every [`COPY_EVERY`] frames reached), and a copy
 //! repeats exactly, so going back never changes the water. A new setup (a physics edit) builds a
-//! new body; an edit to a look never reaches here.
+//! new body; an edit to a look never reaches here. Each frame played marks the body's wet marks
+//! (part 6b); going back keeps them (read against the playhead's frame), a new body clears them.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
@@ -17,7 +18,7 @@ use std::time::Instant;
 
 use bpe_gfx::wgpu;
 use bpe_kit::things::water::draft::WaterSetup;
-use bpe_water::draw::{LookDraw, LookGpu};
+use bpe_water::draw::{LookDraw, LookGpu, WetField};
 use bpe_water::{SolidField, Water, WaterGpu};
 
 /// Frames between two restart copies (2 s).
@@ -100,6 +101,8 @@ pub struct Live {
     pub field: SolidField,
     /// Kept from body to body (its pictures and the renderer that finishes them).
     pub look: LookDraw,
+    /// Where the liquid has been: each node's first wet frame, as far as the body has played.
+    pub wet: WetField,
     /// Goes up with every new body (a new setup).
     pub generation: u64,
 }
@@ -346,6 +349,8 @@ impl Run {
             water.set_pours(if full { &[] } else { &inputs.pours });
             water.frame();
             let now = water.frames();
+            live.wet.mark(&live.water.drop_buffers(), now);
+            let water = &mut live.water;
             if now % COPY_EVERY == 0 && !self.copies.has(now) {
                 let size = copy_size(water);
                 self.copies.keep(now, size, water.copy());
@@ -364,6 +369,8 @@ impl Run {
     fn begin(&mut self, shared: &Shared, setup: Arc<WaterSetup>) {
         let field = setup.field();
         let water = setup.start(self.water_gpu.clone(), &field, self.most);
+        let wet = WetField::new(self.water_gpu.device(), self.water_gpu.queue(), field.layout);
+        wet.mark(&water.drop_buffers(), water.frames());
         self.copies = Copies::default();
         self.copies.keep(0, copy_size(&water), water.copy());
         self.generation += 1;
@@ -379,7 +386,7 @@ impl Run {
                 }
                 None => LookDraw::new(self.look_gpu.clone(), &field, rest),
             };
-            *live = Some(Live { water, field, look, generation });
+            *live = Some(Live { water, field, look, wet, generation });
         }
         if let Ok(mut ids) = shared.in_rock.lock() {
             *ids = in_rock;

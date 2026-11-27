@@ -15,6 +15,7 @@ use crate::drops::capture::Moment;
 
 const MAGIC: &[u8; 8] = b"BPECHNK1";
 const POINT_MAGIC: &[u8; 8] = b"BPEPNT01";
+const WET_MAGIC: &[u8; 8] = b"BPEWET01";
 
 /// What a take's head keeps of a whole chunk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -34,6 +35,12 @@ pub fn chunk_path(dir: &Path, second: u32) -> PathBuf {
 /// The restart point at water frame `frame` in `dir`.
 pub fn point_path(dir: &Path, frame: u32) -> PathBuf {
     dir.join(format!("point-{frame:06}.bin"))
+}
+
+/// The wet marks kept with chunk `second` in `dir` (part 6b): every node's first wet frame by the
+/// chunk's end.
+pub fn wet_path(dir: &Path, second: u32) -> PathBuf {
+    dir.join(format!("wet-{second:06}.bin"))
 }
 
 fn part(path: &Path) -> PathBuf {
@@ -177,6 +184,32 @@ pub fn write_point(dir: &Path, frame: u32, state: &WaterState) -> anyhow::Result
     Ok(bytes.len() as u64)
 }
 
+/// Writes `marks` (one a node, frames since the take's start, [`crate::draw::wet::DRY`] never) as
+/// chunk `second`'s wet marks in `dir`: one `u16` a node, compressed; returns its bytes.
+pub fn write_wet(dir: &Path, second: u32, marks: &[u32]) -> anyhow::Result<u64> {
+    let path = wet_path(dir, second);
+    let mut bytes = WET_MAGIC.to_vec();
+    bytes.extend_from_slice(&lz4_flex::compress_prepend_size(&crate::draw::wet::to_u16(marks)));
+    let mut file = File::create(part(&path)).with_context(|| format!("couldn't write {}", path.display()))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(part(&path), &path)?;
+    Ok(bytes.len() as u64)
+}
+
+/// Chunk `second`'s wet marks in `dir`, on a layout of `nodes` nodes.
+pub fn read_wet(dir: &Path, second: u32, nodes: usize) -> anyhow::Result<Vec<u32>> {
+    let path = wet_path(dir, second);
+    let bytes = std::fs::read(&path).with_context(|| format!("no {}", path.display()))?;
+    ensure!(bytes.starts_with(WET_MAGIC), "{} isn't wet marks", path.display());
+    let size = bytes.get(8..12).map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")) as usize);
+    ensure!(size == Some(nodes * 2), "{} is for another course", path.display());
+    let raw = lz4_flex::decompress_size_prepended(&bytes[8..]).context("the wet marks are broken")?;
+    ensure!(raw.len() == nodes * 2, "the wet marks are broken");
+    Ok(crate::draw::wet::from_u16(&raw))
+}
+
 /// The restart point at water frame `frame` in `dir`.
 pub fn read_point(dir: &Path, frame: u32) -> anyhow::Result<WaterState> {
     let path = point_path(dir, frame);
@@ -223,6 +256,18 @@ mod tests {
         let all = std::fs::read(&path).unwrap();
         std::fs::write(&path, &all[..all.len() - 1]).unwrap();
         assert!(Chunk::open(&d, 2).is_err(), "a chunk cut short is refused");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn wet_marks_read_back_as_written() {
+        use crate::draw::wet::DRY;
+        let d = dir("wet");
+        let marks = vec![DRY, 0, 7, 0xFFFE, DRY, 61];
+        write_wet(&d, 4, &marks).unwrap();
+        assert_eq!(read_wet(&d, 4, marks.len()).unwrap(), marks);
+        assert!(read_wet(&d, 4, marks.len() + 1).is_err(), "marks for another course are refused");
+        assert!(read_wet(&d, 5, marks.len()).is_err(), "no marks, no field");
         std::fs::remove_dir_all(&d).ok();
     }
 }

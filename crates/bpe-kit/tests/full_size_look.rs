@@ -18,7 +18,10 @@
 //! - `LOOK_FILE`: a saved scene file drawn as well (pictures named `file-...`), at `LOOK_TIMES` (a comma list of
 //!   seconds, default `1,3,5`). With `LOOK_ONLY=file` only it is drawn.
 //! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with the look drawing's pictures
-//!   (`LOOK_ONLY=water-look`) and a final made and drawn from its take (`LOOK_ONLY=water-final`).
+//!   (`LOOK_ONLY=water-look`), a final made and drawn from its take (`LOOK_ONLY=water-final`), and
+//!   the extras and wet marks on a final (`LOOK_ONLY=water-extras`).
+//! - `LOOK_TAKES`: a folder the extras' final is kept in, so a change to the look draws again without making it
+//!   again (about 20 minutes on the cloud's software card).
 
 use bpe_core::maths::Maths;
 use bpe_core::{Registry, Scene, Settings, SlotId, ThingId, Value};
@@ -1448,6 +1451,109 @@ fn water_final_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     out
 }
 
+/// Water mode part 6b's extras at full size (`LOOK_ONLY=water-extras`): a final made at Coarse
+/// detail (3 px) of one screen with a pool a quarter full and a fast tap thrown at its right wall,
+/// drawn from the take with its wet marks: foam, bubbles and mist on the pool under a Spot
+/// (`water-extras-pool`, and `water-extras-none` with them off), sparks on the fast stream over a
+/// dark back (`water-extras-sparks`) and the wet marks the stream leaves down the wall
+/// (`water-extras-wet`).
+fn water_extras_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_kit::things::water::finals::Finals;
+    use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
+    use bpe_kit::things::water::{LIQUID, POUR, StartingLook, course_of, new_water_scene};
+    use bpe_water::draw::look::{BackLook, Lamp, LampKind};
+    use bpe_water::draw::wet::HeldWet;
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
+    use bpe_water::take::{Chunk, FrameCodec, chunk};
+    if !wanted("water-extras", only) && !only.as_deref().is_some_and(|o| o.contains("water-extras")) {
+        return Vec::new();
+    }
+    let reg = kit().registry;
+    let mut scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
+    water.params.set("final_detail", Value::Choice("coarse".into()));
+    let course = course_of(&scene).unwrap();
+    let r = 540.0 - 24.0;
+    let chamber = bpe_core::Stroke {
+        points: vec![[0.0, -960.0 + 24.0 + r], [0.0, 960.0 - 24.0 - r]],
+        size: r,
+        strength: 1.0,
+        square: true,
+        ..Default::default()
+    };
+    let carved = Value::Strokes(bpe_core::Strokes { list: vec![chamber] });
+    scene.card_mut(course, SlotId::Form).unwrap().params.set("carved", carved);
+    bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+    let top = 936.0 - 1872.0 / 4.0;
+    let fill = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&fill).unwrap().transform.position = Vec2::new(0.0, 0.5 * (top + 936.0));
+    let main = &mut scene.card_mut(fill, SlotId::Main).unwrap().params;
+    main.set("kind", Value::Choice("fill_at_the_start".into()));
+    main.set("fill_size", Value::Vec2([2.0 * r, 936.0 - top]));
+    let tap = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&tap).unwrap().transform.position = Vec2::new(-300.0, -600.0);
+    let main = &mut scene.card_mut(tap, SlotId::Main).unwrap().params;
+    main.set("speed", Value::Number(1600.0));
+    main.set("aim", Value::Number(35.0));
+    main.set("rate", Value::Number(2.0));
+    main.set("width", Value::Number(40.0));
+    let resolved = bpe_core::resolve(&scene, &reg);
+    let make = MakeFinal::of(&scene, &resolved, 2.0);
+    // (LOOK_TAKES=<folder> keeps the final there, so a look change draws again without making it again.)
+    let kept = std::env::var_os("LOOK_TAKES").map(std::path::PathBuf::from);
+    let finals = Finals::at(
+        kept.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("bpe-look-extras-{}", std::process::id()))),
+    );
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
+    let water_gpu = bpe_water::WaterGpu::new(&gpu.device, &gpu.queue);
+    let head = make.make(&water_gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+    let dir = finals.take_dir(head.print);
+    let layout = head.layout();
+    let field = make.setup.field();
+    let mut drawing = LookDraw::new(LookGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
+    let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
+    let mut wet = HeldWet::default();
+    let base = bpe_kit::things::water::look::look_of(&scene, &resolved, 1.0);
+    let spot = Lamp { kind: LampKind::Spot, place: Vec2::new(100.0, -900.0), spread: 90.0, ..Lamp::default() };
+    let view = View::screen(1.0);
+    let mut out = Vec::new();
+    for (name, second) in
+        [("water-extras-none", 2), ("water-extras-pool", 2), ("water-extras-sparks", 1), ("water-extras-wet", 2)]
+    {
+        let mut c = Chunk::open(&dir, second).unwrap();
+        let frame = FrameCodec::new().decode(&c.bytes(0).unwrap(), &layout).unwrap();
+        stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds);
+        let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
+        let mut look = base.clone();
+        look.time = second as f32;
+        look.lamps = vec![spot.clone()];
+        look.light.ambient = 0.35;
+        let l = &mut look.liquids[0];
+        match name {
+            "water-extras-pool" => {
+                (l.foam, l.bubbles, l.mist, l.sparks) = (0.8, 0.8, 0.7, 0.0);
+            }
+            "water-extras-sparks" => {
+                (l.foam, l.bubbles, l.mist, l.sparks) = (0.0, 0.0, 0.0, 1.0);
+                look.back = BackLook::Colour([0.01, 0.01, 0.02]);
+                look.light.ambient = 0.15;
+            }
+            "water-extras-wet" => look.rock.wet_marks = 1.0,
+            _ => look.rock.wet_marks = 0.0,
+        }
+        wet.give(&gpu.device, &gpu.queue, layout, Some(&(marks, 60 * second)), &mut drawing);
+        drawing.draw(&stored.buffers(), &view, &look);
+        out.push((name.to_string(), drawing.read()));
+    }
+    eprintln!("water-extras: {} drops at {} px", head.drops, make.setup.cell);
+    if kept.is_none() {
+        std::fs::remove_dir_all(finals.dir()).ok();
+    }
+    out
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1502,7 +1608,8 @@ fn render_at_full_size() {
     }
     let mut thumbs = Vec::new();
     let water = water_pictures(&gpu, &only).into_iter().chain(water_look_pictures(&gpu, &only));
-    for (name, pixels) in water.chain(water_final_pictures(&gpu, &only)) {
+    let finals = water_final_pictures(&gpu, &only).into_iter().chain(water_extras_pictures(&gpu, &only));
+    for (name, pixels) in water.chain(finals) {
         thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
         count += 1;
     }
