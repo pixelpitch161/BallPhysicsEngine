@@ -1348,8 +1348,36 @@ fn banded(x: f32, bands: f32, softness: f32) -> f32 {
     return (floor(y) + smoothstep(0.5 - s, 0.5 + s, f)) / bands;
 }
 
+// What the compose makes at a pixel: its colour; the colour it would be under a light of 1 everywhere
+// (the picture before light that the Light only take reads, 6e); and who is seen there, for the
+// grade's Things masks (`fs_cover`): x the liquid's and the solid's cover (2 x 16 bits), y the
+// extras' share of the liquid's (foam and bubbles) and the first liquid's share of the two seen
+// most, z those two liquids' kinds (8 bits each) and the solid's owner (16 bits).
+struct Composed {
+    colour: vec4<f32>,
+    albedo: vec4<f32>,
+    who: vec4<u32>,
+}
+
 @fragment
 fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
+    return composed(in).colour;
+}
+
+struct ComposedAll {
+    @location(0) colour: vec4<f32>,
+    @location(1) albedo: vec4<f32>,
+    @location(2) who: vec4<u32>,
+}
+
+// The same, with the picture before light and who is seen (6e).
+@fragment
+fn fs_look_all(in: FullOut) -> ComposedAll {
+    let c = composed(in);
+    return ComposedAll(c.colour, c.albedo, c.who);
+}
+
+fn composed(in: FullOut) -> Composed {
     let px = vec2<i32>(floor(in.pos.xy));
     let at = vec2<f32>(px) + 0.5;
     let w = world_of(at);
@@ -1361,6 +1389,14 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
     let spread_l = spread_at(w);
     var colour = back_lit(w);
     var in_liquid = 0.0;
+    // Under a light of 1, and who is seen (`Composed`).
+    var alb = back_albedo(w);
+    var who_liquid = 0.0;
+    var who_extra = 0.0;
+    var who_kinds = vec2<u32>(0u);
+    var who_first = 1.0;
+    var who_solid = 0.0;
+    var who_owner = 0u;
 
     let s0 = textureLoad(look0, px, 0);
     // The liquid, where its splats or its outline reach (or its trapped air's, drawn as bubbles).
@@ -1385,8 +1421,16 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         var sizes = vec4<f32>(0.0);
         var lives = vec4<f32>(0.0);
         let speed = select(0.0, s0.r / s0.a, s0.a > 0.0) * SPEED_UNIT;
+        var most = vec2<f32>(0.0);
         for (var n = 0u; n < 16u; n++) {
             let k = share[n];
+            if k > most.x {
+                most = vec2<f32>(k, most.x);
+                who_kinds = vec2<u32>(n, who_kinds.x);
+            } else if k > most.y {
+                most.y = k;
+                who_kinds.y = n;
+            }
             if k > 0.0 {
                 let l = lu.liquids[n];
                 l_colour += k * l.colour.rgb;
@@ -1493,6 +1537,7 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             // (A glowing liquid isn't lit by its own glow.)
             let own_glow = 1.0 - smoothstep(0.0, 0.5, luma(glow));
             var body = albedo * (ambient + mix(lamp_l, front, solid) + spread_l * own_glow);
+            var body_alb = albedo;
             // See-through: what is behind, bent at its edge, tinted by its colour.
             let trans = select(0.0, (1.0 - solid) * exp(-TANK / clarity) * (1.0 - 0.5 * absorbed_share), clarity > 0.0);
             if trans > 0.0 {
@@ -1510,6 +1555,7 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                     behind = back_lit(w + shift);
                 }
                 body = mix(body, behind * tint, trans);
+                body_alb = mix(body_alb, back_albedo(w + shift) * tint, trans);
             }
             // Bands: the light on it in flat steps.
             if bands >= 1.0 {
@@ -1556,12 +1602,17 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                     let pattern = foam_at(w, flow, max(sizes.x, 1.5 / scale), lu.time.x);
                     let cover = smoothstep(1.0 - f, 1.3 - f, pattern);
                     body = mix(body, foam.rgb * surface_lit, 0.9 * cover);
+                    body_alb = mix(body_alb, foam.rgb, 0.9 * cover);
+                    who_extra = 0.9 * cover;
                 }
             }
             // Bubbles: the trapped air's, and fizz rising where it is deep enough to hold them.
             if bubble.w > 0.0 {
                 let bubble_lit = bubble.rgb * surface_lit;
                 body = mix(body, 1.15 * body + 0.12 * bubble_lit, pocket);
+                body_alb = mix(body_alb, 1.15 * body_alb + 0.12 * bubble.rgb, pocket);
+                // (Of the liquid's cover, the part only the bubble's.)
+                let bubble_part = max(pocket - alpha_l, 0.0) / alpha;
                 let rim_px = max(1.0, 0.1 * sizes.y * scale);
                 let rim = (1.0 - smoothstep(0.5 * rim_px - 0.5, 0.5 * rim_px + 0.5, abs(inside)))
                     * bubble.w * smoothstep(0.2 * level, 0.6 * level, air);
@@ -1575,6 +1626,9 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
                 }
                 body = mix(body, 1.1 * body + 0.08 * bubble_lit, fizz.y);
                 body = mix(body, bubble_lit, max(rim, 0.85 * fizz.x));
+                body_alb = mix(body_alb, 1.1 * body_alb + 0.08 * bubble.rgb, fizz.y);
+                body_alb = mix(body_alb, bubble.rgb, max(rim, 0.85 * fizz.x));
+                who_extra = 1.0 - (1.0 - who_extra) * (1.0 - bubble_part) * (1.0 - max(rim, 0.85 * fizz.x));
             }
             // Shafts in the liquid, and its glow.
             body += lu.light.w * 0.6 * lamp_l * l_colour + glow;
@@ -1582,9 +1636,17 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             if outline_px > 0.0 {
                 let on = 1.0 - smoothstep(0.5 * outline_px - 0.5, 0.5 * outline_px + 0.5, abs(inside));
                 body = mix(body, edge_colour, on);
+                body_alb = mix(body_alb, edge_colour, on);
+                who_extra *= 1.0 - on;
             }
             colour = mix(colour, body, alpha);
+            alb = mix(alb, body_alb, alpha);
             in_liquid = alpha;
+            who_liquid = alpha;
+            who_first = most.x / max(most.x + most.y, 1e-6);
+            if most.y <= 0.0 {
+                who_kinds.y = who_kinds.x;
+            }
         }
     }
 
@@ -1626,6 +1688,7 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
         let facing = clamp(max(dot(normal, l3), 0.0) / max(l3.z, 0.3), 0.0, 2.0);
         let albedo = material_albedo(m, w) * (1.0 - WET_DARK * wet);
         var solid_c = albedo * (ambient * (0.7 + 0.3 * normal.z) + lit * facing + spread_lit);
+        var solid_alb = albedo;
         if kind != 4u {
             let h = normalize(l3 + vec3<f32>(0.0, 0.0, 1.0));
             solid_c += (1.0 - rough) * pow(max(dot(normal, h), 0.0), mix(80.0, 4.0, rough)) * lit;
@@ -1636,16 +1699,27 @@ fn fs_look(in: FullOut) -> @location(0) vec4<f32> {
             let frosted = 0.25 * (back_lit(w + vec2<f32>(o, o)) + back_lit(w + vec2<f32>(-o, o))
                 + back_lit(w + vec2<f32>(o, -o)) + back_lit(w + vec2<f32>(-o, -o)));
             solid_c = mix(solid_c, frosted * mat.colour.rgb, 0.55);
+            solid_alb = mix(solid_alb, back_albedo(w) * mat.colour.rgb, 0.55);
             solid_c += 0.8 * lit * (1.0 - smoothstep(0.0, max(2.0, 1.5 / scale), deep_in));
         }
         let outline = mat.shape.z;
         if outline > 0.0 {
             let on = 1.0 - smoothstep(outline - 0.5 / scale, outline + 0.5 / scale, deep_in);
             solid_c = mix(solid_c, mat.edge.rgb, on);
+            solid_alb = mix(solid_alb, mat.edge.rgb, on);
         }
         colour = mix(colour, solid_c, cover);
+        alb = mix(alb, solid_alb, cover);
+        who_solid = cover;
+        who_owner = m;
     }
-    return vec4<f32>(max(colour, vec3<f32>(0.0)), 1.0);
+    let who = vec4<u32>(
+        pack2x16unorm(vec2<f32>(who_liquid, who_solid)),
+        pack2x16unorm(vec2<f32>(who_extra, who_first)),
+        who_kinds.x | (who_kinds.y << 8u) | (min(who_owner, 65535u) << 16u),
+        0u,
+    );
+    return Composed(vec4<f32>(max(colour, vec3<f32>(0.0)), 1.0), vec4<f32>(max(alb, vec3<f32>(0.0)), 1.0), who);
 }
 
 // ---- 7. mist and sparks (6b), over the picture ----
@@ -1764,6 +1838,25 @@ fn vs_extra(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> E
 
 @fragment
 fn fs_extra(in: ExtraOut) -> @location(0) vec4<f32> {
+    return extra_at(in);
+}
+
+struct ExtraAll {
+    @location(0) colour: vec4<f32>,
+    @location(1) cover: vec4<f32>,
+}
+
+// The same, and how much it covers (6e: the Things masks' Extras), laid over in the alpha.
+@fragment
+fn fs_extra_all(in: ExtraOut) -> ExtraAll {
+    let c = extra_at(in);
+    let spark = min(max(c.r, max(c.g, c.b)), 1.0);
+    let cover = select(c.a, spark, in.colour.w > 0.5);
+    return ExtraAll(c, vec4<f32>(cover, 0.0, 0.0, cover));
+}
+
+// A mist dot's or a spark's colour at its sprite's point (premultiplied: mist over, sparks added).
+fn extra_at(in: ExtraOut) -> vec4<f32> {
     // (Never over a solid.)
     let open = 1.0 - rock_cover(field_at(world_of(in.pos.xy)));
     if open <= 0.0 {
@@ -1793,4 +1886,51 @@ fn fs_extra(in: ExtraOut) -> @location(0) vec4<f32> {
     let dot_k = select(0.0, (1.0 - q2) * (1.0 - q2), q2 < 1.0);
     let a = in.more.x * open * (0.7 * dot_k + 0.12 * (1.0 - h2) * (1.0 - h2));
     return vec4<f32>(in.colour.rgb * a, a);
+}
+
+// ---- 8. the grade's Things masks (6e) ----
+//
+// One choice of things' coverage, from who the compose saw at each pixel (`Composed`) and the mist
+// and sparks over it: red the chosen things as seen, alpha every thing but the back, as the Balls
+// silhouettes are drawn (bpe-gfx `renderer/silhouettes.rs` floods it into the things field).
+
+struct CoverU {
+    // x bit n: liquid n is chosen; y: the extras (foam, bubbles, mist and sparks); z: every thing.
+    picks: vec4<u32>,
+    // Bit k % 32 of word k / 32: owner k is chosen (0 the course's rock).
+    owners: vec4<u32>,
+}
+
+@group(0) @binding(37) var<uniform> cu: CoverU;
+@group(0) @binding(38) var who_pic: texture_2d<u32>;
+@group(0) @binding(39) var extras_pic: texture_2d<f32>;
+
+fn liquid_picked(n: u32) -> f32 {
+    return select(0.0, 1.0, cu.picks.z != 0u || ((cu.picks.x >> n) & 1u) != 0u);
+}
+
+fn owner_picked(k: u32) -> f32 {
+    let bit = select(0u, (cu.owners[min(k / 32u, 3u)] >> (k % 32u)) & 1u, k < 128u);
+    return select(0.0, 1.0, cu.picks.z != 0u || bit != 0u);
+}
+
+@fragment
+fn fs_cover(in: FullOut) -> @location(0) vec4<f32> {
+    let px = vec2<i32>(floor(in.pos.xy));
+    let who = textureLoad(who_pic, px, 0);
+    let covers = unpack2x16unorm(who.x);
+    let shares = unpack2x16unorm(who.y);
+    let solid = covers.y;
+    let liquid = covers.x * (1.0 - solid);
+    let extra = shares.x;
+    let first = shares.y;
+    let extras = select(0.0, 1.0, cu.picks.z != 0u || cu.picks.y != 0u);
+    let kinds = first * liquid_picked(who.z & 255u) + (1.0 - first) * liquid_picked((who.z >> 8u) & 255u);
+    var chosen = solid * owner_picked(who.z >> 16u) + liquid * mix(kinds, extras, extra);
+    var any = solid + liquid;
+    let size = vec2<i32>(textureDimensions(extras_pic));
+    let over = textureLoad(extras_pic, min(px, size - 1), 0).a;
+    chosen = over * extras + (1.0 - over) * chosen;
+    any = over + (1.0 - over) * any;
+    return vec4<f32>(clamp(chosen, 0.0, 1.0), 0.0, 0.0, clamp(any, 0.0, 1.0));
 }

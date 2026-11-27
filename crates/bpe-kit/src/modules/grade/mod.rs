@@ -340,6 +340,15 @@ pub fn reset_order(scene: &mut Scene, reg: &Registry, mask: LayerId) -> bool {
 /// their shown parts and panels in order, every number at the frame's moment, gradients placed
 /// through `world`'s camera. Empty when the card is off or missing.
 pub fn stack(card: Option<&ResolvedSlot>, world: Option<&bpe_runtime::World>) -> bpe_gfx::GradeStack {
+    stack_in(card, world, None)
+}
+
+/// The same for a Water scene (`water`), whose Things parts name what the water's drawing draws.
+pub fn stack_in(
+    card: Option<&ResolvedSlot>,
+    world: Option<&bpe_runtime::World>,
+    water: Option<&bpe_core::Scene>,
+) -> bpe_gfx::GradeStack {
     let Some(card) = card.filter(|c| c.kind == GRADE) else { return bpe_gfx::GradeStack::default() };
     if !GradeCard::from_params(&card.params).on {
         return bpe_gfx::GradeStack::default();
@@ -356,7 +365,7 @@ pub fn stack(card: Option<&ResolvedSlot>, world: Option<&bpe_runtime::World>) ->
             }
             let s = MaskSettings::from_params(&card.layer_params(mask.id));
             let amount = if s.amount.is_finite() { (s.amount / 100.0).clamp(0.0, 1.0) } else { 0.0 };
-            let area = masks::area(card, mask.id, world, s.invert);
+            let area = masks::area(card, mask.id, world, water, s.invert);
             bpe_gfx::GradeMask { amount, area: Some(area), panels, overlay: false, id: mask.id.0 }
         })
         .collect();

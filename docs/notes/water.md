@@ -1240,8 +1240,8 @@ for water (decision 43) and the Light only and Glow only takes (decision 42's la
   stage is reset). The Split line, the compare switch, the corner pill and the colour pick are the ball preview's
   (`preview::{compare_switch, split_line, corner_pill, pick_colour}`; `pick_colour` now takes a reader). The
   masks' handles and brush get screen points per video pixel, as in the ball preview.
-- **No Things part in a Water scene yet** (`masks::offered`): Add mask and Add part leave it out until 6e gives
-  it the water's own kinds.
+- **No Things part in a Water scene yet** (`masks::offered`): Add mask and Add part left it out until 6e gave
+  it the water's own kinds (6e put both menus back as they were).
 - **Speed**: the zero thresholds cost nothing measurable on the owner's card (`water_final_speed`'s look a frame
   at 1080 x 1920 under two Spots, a tap's spray in it: 18.1 ms before, 17.6 ms after). Known: near many lone drops
   the march steps finely through each coarse texel holding one, so on a very tall course at Fine detail a ray
@@ -1256,6 +1256,59 @@ for water (decision 43) and the Light only and Glow only takes (decision 42's la
   without the video's size.
 - `bpe-kit`: `the_look_reads_every_card` (the finish's video size).
 - `bpe-studio`: `grade_mode_shows_the_shot_with_its_grade_as_grade_mode_compares_it`,
-  `a_water_scenes_masks_offer_no_things_part`, `a_water_scenes_toolbar_says_so_and_grade_mode_grades_the_shot`,
+  `a_water_scenes_masks_offer_no_things_part` (6e turned it round),
+  `a_water_scenes_toolbar_says_so_and_grade_mode_grades_the_shot`,
   `a_water_scenes_settings_show_its_own_cards_and_none_of_the_balls` (the Grade card now shows),
   `a_water_scene_cannot_go_in_a_video`.
+
+## Part 6e: Things masks on a Water scene, and the Light only take (as built)
+
+The last of part 6 (decision 43, decision 42's takes). A Water scene's grade has Things parts again, choosing
+what the water's drawing draws, and an effect on the Light only reads the water's light.
+
+### Things parts (`bpe-kit modules/grade/masks.rs`)
+
+- **Only** gains **Liquids**, **Solids** (the Course's rock and every Piece and Wall), **Back** and **Extras**
+  (foam, bubbles, mist and sparks). A Water scene's Only offers those and **One thing** (a Liquid, the Course, a
+  Piece or a Wall, or a tag or a kind of them); a Balls scene's offers Balls to Background and One thing as
+  before (`only_offered`, used by Grade mode's settings rows). A Things part added in a Water scene starts on
+  Liquids (`water_start`, in `add_mask` and `add_part`).
+- **`ThingsPart::water_things(scene)`** names them from the scene by thing codes (`bpe_gfx::thing_code`, as a
+  Balls part does from the world); Extras is `bpe_water::draw::look::EXTRAS` (`u32::MAX`); Back is Background's
+  "every thing, turned over". `grade::stack_in(card, world, water)` passes the scene to `masks::area`;
+  `finish_of` uses it. `masks::follow_note(.., water)` likewise, so a mask row's "Thing not found" looks in the
+  scene, not in the blank Balls world a Water scene plays beside.
+- **`FinishLook.things`** (`ThingCodes`) tells the drawing which code drew what: each liquid's by kind, the
+  course's (owner 0) and each Piece's and Wall's (owner k from 1, in the scene's order, as the draft's field
+  numbers them; `things_of` in `things/water/look.rs`).
+
+### The drawing (`bpe-water draw/look`, `shaders/look.wgsl` section 8)
+
+- The compose is now `composed()`, behind two entry points: `fs_look` (the colour alone, as before) and
+  `fs_look_all`, which also writes the **picture before light** (each part's colour under a light of 1: the back's
+  colour, the liquid's mixed with what shows through it, foam, bubbles and outline, the solid's, glass's frosted
+  back) and **who is seen** (`Rgba32Uint`: the liquid's and the solid's cover, the extras' share of the liquid's,
+  the two liquids seen most and the first's share, the solid's owner). The mist and sparks pass likewise has
+  `fs_extra_all`, which also lays their cover over a picture (sparks by their brightness).
+- **`fs_cover`** turns who is seen into one choice's coverage (`CoverU`: which liquid kinds, owners and the extras
+  it chooses, or every thing), red the chosen as seen and alpha every thing but the back, the layout the Balls
+  silhouettes use. `LookDraw` asks the renderer which choices the grade makes (`Renderer::selections`), runs
+  `fs_look_all` and the coverage passes only when there are some or an effect takes the light, and hands them over
+  in `GivenPicture { light, things }`.
+- **`Silhouettes::flood_given`** (bpe-gfx) floods each given coverage into the things field as a Balls
+  silhouette is (`Things::Given`), so Expand and Feather work in the video's pixels as in Balls.
+- **Light only**: `GivenPicture.light` is the picture before light as both the unlit picture and the lit share,
+  so the take reads the light as the picture over it (`bpe_light_of`: c = unlit · light) and puts what the effect
+  made back the same way. Glow only needed nothing. The effect row's "Light only doesn't reach a Water scene's
+  light yet" is gone.
+
+### Tests
+
+- `bpe-water/tests/look.rs` 24 (a Things mask grades only the Liquids, with Expand round them, the Solids, the
+  Back, or one block), 25 (one on the Extras grades a spark's trail and not the back), 26 (an effect making the
+  light 2 on the Light only keeps the back red and the pool blue, where on the whole picture it makes them white).
+  All three fail without the coverage and the picture before light.
+- `bpe-kit`: `a_water_scenes_things_parts_name_what_the_water_draws` (the codes in the draft's order, what each
+  Only covers, a new part on Liquids reaching the finish), `the_look_reads_every_card` (the course's code).
+- `bpe-studio`: `a_water_scenes_things_part_starts_on_liquids_and_offers_the_waters_things` (Grade mode's Only
+  menu), `a_water_scenes_things_part_offers_the_waters_things`.

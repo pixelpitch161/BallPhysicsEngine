@@ -262,6 +262,12 @@ pub(super) fn grid(
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let choices = TargetChoices::from_scene(scene, reg);
     let label_width = crate::widgets::label_width(ui.available_width());
+    // A Things part's Only offers the things of the scene's own kind (and One thing).
+    let water = scene.sim == bpe_core::SimKind::Water;
+    let offers = |d: &SettingDef, choice: &str| {
+        let things_only = matches!(&d.ty, bpe_core::ValueType::Choice(names) if *names == <bpe_kit::modules::grade::ThingsOnly as bpe_core::Choice>::NAMES);
+        !things_only || bpe_kit::modules::grade::masks::only_offered(water, choice)
+    };
     let cx = GridCx {
         choices: &choices,
         marks: &marks,
@@ -271,7 +277,7 @@ pub(super) fn grid(
         track: style::colour_of(scene, ThingId::ROOT),
         follow: Some(&follow),
         vary: None,
-        offers: None,
+        offers: Some(&offers),
         rails,
     };
     let out = settings_grid(ui, ("grade panel", id.0), defs, get, &cx);

@@ -311,6 +311,22 @@ pub struct FinishLook {
     /// the video's width wide), so a smaller picture (the editor's, or an export at a lower scale)
     /// looks like the video scaled down. `(0, 0)`: the picture's own.
     pub video: (u32, u32),
+    /// Who drew each part of the picture, as the grade's Things parts name them.
+    pub things: ThingCodes,
+}
+
+/// The code the grade's Things parts name the extras by (foam, bubbles, mist and sparks; 6e).
+pub const EXTRAS: u32 = u32::MAX;
+
+/// Which things drew each part of the picture, by the codes the grade's Things parts name them by
+/// (`bpe_gfx::thing_code`; 6e): each liquid's by kind (a kind past the list takes the list's last),
+/// the course's (owner 0 in the solid field) and each solid's (owner `k` from 1 is `solids[k - 1]`).
+/// The back is no thing; the extras are [`EXTRAS`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThingCodes {
+    pub liquids: Vec<u32>,
+    pub rock: Option<u32>,
+    pub solids: Vec<u32>,
 }
 
 impl Default for FinishLook {
@@ -321,6 +337,7 @@ impl Default for FinishLook {
             effects: Vec::new(),
             grade: bpe_gfx::GradeStack::default(),
             video: (0, 0),
+            things: ThingCodes::default(),
         }
     }
 }

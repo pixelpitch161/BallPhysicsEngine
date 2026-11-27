@@ -8,7 +8,7 @@ use super::GradeMode;
 use super::cx::{self, GradeCx, GradeEdit, full_key};
 use crate::app::Studio;
 use crate::style;
-use bpe_core::{Layer, LayerId, Params, Slot, Value};
+use bpe_core::{Layer, LayerId, Params, Scene, Slot, Value};
 use bpe_kit::modules::grade::{self, BRUSH, COLOUR_RANGE, LINEAR, LUMINANCE_RANGE, PART_KINDS, RADIAL, THINGS};
 use eframe::egui::{self, RichText, Sense, Stroke, Ui};
 
@@ -27,8 +27,9 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
         whole_row(ui, mode, &gx, shown == grade::whole_of(card), &mut edits);
         let masks = grade::masks_of(card);
         let mut rows = Vec::new();
+        let water = (gx.scene.sim == bpe_core::SimKind::Water).then_some(gx.scene);
         for (index, layer) in masks.iter().enumerate() {
-            let note = note_of(card, layer.id, playback.world());
+            let note = note_of(card, layer.id, playback.world(), water);
             let place = Place { index, count: masks.len() };
             let rect = mask_row(ui, mode, &gx, layer, place, shown == Some(layer.id), note, &mut edits);
             rows.push((layer.id, rect));
@@ -36,7 +37,7 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
         drop_line(ui, mode, &rows);
         mode.mask_rows = rows;
         ui.add_space(4.0);
-        add_mask(ui, offered(gx.scene), &mut edits);
+        add_mask(ui, &mut edits);
         ui.add_space(6.0);
         overlay_switch(ui, mode);
     }
@@ -242,16 +243,9 @@ pub fn part_name(kind: &str) -> &'static str {
     }
 }
 
-/// The part kinds a mask in `scene` can have: a Water scene has no Things part yet (its things are
-/// drawn by the water's own drawing, which makes no picture of where each is).
-pub fn offered(scene: &bpe_core::Scene) -> Vec<&'static str> {
-    let water = scene.sim == bpe_core::SimKind::Water;
-    PART_KINDS.iter().copied().filter(|k| !(water && *k == THINGS)).collect()
-}
-
-fn add_mask(ui: &mut Ui, kinds: Vec<&'static str>, edits: &mut Vec<GradeEdit>) {
+fn add_mask(ui: &mut Ui, edits: &mut Vec<GradeEdit>) {
     ui.menu_button("Add mask", |ui| {
-        for kind in kinds {
+        for kind in PART_KINDS {
             if ui.button(part_name(kind)).clicked() {
                 edits.push(GradeEdit::AddMask(kind));
                 ui.close();
@@ -329,10 +323,11 @@ pub fn layer_params(card: &Slot, id: LayerId) -> Params {
     )
 }
 
-/// What a mask's row says: the first of its gradients' notes ("Thing not found").
-fn note_of(card: &Slot, mask: LayerId, world: &bpe_runtime::World) -> Option<String> {
+/// What a mask's row says: the first of its gradients' notes ("Thing not found"). A Water scene
+/// (`water`) plays beside a blank Balls world, so its Things parts look in the scene.
+fn note_of(card: &Slot, mask: LayerId, world: &bpe_runtime::World, water: Option<&Scene>) -> Option<String> {
     grade::parts_of(card, mask)
         .iter()
         .filter(|p| p.enabled)
-        .find_map(|p| grade::masks::follow_note(world, &p.kind, &layer_params(card, p.id)))
+        .find_map(|p| grade::masks::follow_note(world, &p.kind, &layer_params(card, p.id), water))
 }

@@ -957,3 +957,122 @@ fn the_grade_measures_in_the_videos_pixels() {
         assert!(apart(after.at(below), before.at(below)) <= 1, "at {scale}, {video:?}: the block under it as it was");
     }
 }
+
+// ---- the grade's Things masks and the Light only take (6e) ----
+
+/// A Things mask choosing `things` (`None` every thing; `back` turned over), grown by `expand`
+/// video pixels, two thirds of a stop darker inside.
+fn things_mask(things: Option<Vec<u32>>, back: bool, expand: f32) -> bpe_gfx::GradeStack {
+    use bpe_gfx::{GradeArea, GradeBasic, GradeCombine, GradeMask, GradePanel, GradePart, GradeShape, GradeThings};
+    let things = GradeThings { things, background: back, expand, feather: 0.0 };
+    bpe_gfx::GradeStack {
+        masks: vec![GradeMask {
+            amount: 1.0,
+            area: Some(GradeArea {
+                parts: vec![GradePart {
+                    combine: GradeCombine::Add,
+                    invert: false,
+                    shape: GradeShape::Things(things),
+                    id: 0,
+                }],
+                invert: false,
+            }),
+            panels: vec![GradePanel::Basic(GradeBasic { exposure: -1.0, ..GradeBasic::default() })],
+            ..GradeMask::default()
+        }],
+        split: None,
+    }
+}
+
+/// Test 24: A Things mask grades only what it chooses: the Liquids (and round them, with Expand), the
+/// Solids (the course's rock and every piece), the Back, or one solid.
+#[test]
+fn a_things_mask_grades_only_the_things_it_chooses() {
+    use bpe_water::draw::look::ThingCodes;
+    let Some(gpu) = card() else { return };
+    let (field, mut look) = materials(&[MaterialKind::Flat]);
+    look.liquids = vec![blue()];
+    look.light.ambient = 0.8;
+    look.light.quality = Quality::Draft;
+    look.finish.video = (1080, 1920);
+    look.finish.things = ThingCodes { liquids: vec![101], rock: Some(1), solids: vec![11, 12, 13, 14, 15] };
+    let drops = sets::lattice(&field, Vec2::new(-500.0, 650.0), Vec2::new(500.0, 900.0), 0);
+    let plain = draw(&gpu, &field, &drops, View::screen(0.25), &look);
+    let v = Vec2::new;
+    let (pool, block, block_2, back, rock, near_pool) =
+        (v(0.0, 800.0), v(-250.0, -600.0), v(250.0, -600.0), v(0.0, -600.0), v(-522.0, 0.0), v(200.0, 590.0));
+    let graded = |things: Option<Vec<u32>>, back: bool, expand: f32| {
+        let mut l = look.clone();
+        l.finish.grade = things_mask(things, back, expand);
+        draw(&gpu, &field, &drops, View::screen(0.25), &l)
+    };
+    let darker = |p: &Picture, at: Vec2| luma(plain.at(at)) - luma(p.at(at)) > 12.0;
+    let same = |p: &Picture, at: Vec2| apart(plain.at(at), p.at(at)) <= 1;
+    let liquids = graded(Some(vec![101]), false, 0.0);
+    assert!(darker(&liquids, pool), "the liquid: {:?} from {:?}", liquids.at(pool), plain.at(pool));
+    for (name, at) in [("a block", block), ("the back", back), ("the rock", rock), ("beside the pool", near_pool)] {
+        assert!(same(&liquids, at), "Liquids leaves {name} as it was");
+    }
+    let grown = graded(Some(vec![101]), false, 100.0);
+    assert!(darker(&grown, near_pool) && same(&grown, back), "Expand grows it round the liquid");
+    let solids = graded(Some(vec![1, 11, 12, 13, 14, 15]), false, 0.0);
+    assert!(darker(&solids, block) && darker(&solids, rock), "Solids: the blocks and the rock");
+    assert!(same(&solids, pool) && same(&solids, back), "Solids leaves the liquid and the back");
+    let back_only = graded(None, true, 0.0);
+    assert!(darker(&back_only, back), "Back: the back");
+    assert!(same(&back_only, pool) && same(&back_only, block) && same(&back_only, rock), "Back only");
+    let one = graded(Some(vec![12]), false, 0.0);
+    assert!(darker(&one, block_2) && same(&one, block) && same(&one, pool), "one block");
+}
+
+/// Test 25: A Things mask on the Extras grades a spark's trail and not the back round it.
+#[test]
+fn a_things_mask_on_the_extras_grades_the_sparks() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let view = View { lo: Vec2::new(-270.0, -400.0), scale: 1.0, width: 270, height: 200 };
+    let mut look = extras_look(LiquidLook { sparks: 1.0, ..blue() });
+    look.back = BackLook::Colour([0.2; 3]);
+    look.light.ambient = 0.5;
+    look.finish.things.liquids = vec![101];
+    let drops = lone_drops(&field, 1500.0);
+    let plain = draw(&gpu, &field, &drops, view, &look);
+    look.finish.grade = things_mask(Some(vec![bpe_water::draw::look::EXTRAS]), false, 0.0);
+    let graded = draw(&gpu, &field, &drops, view, &look);
+    let behind = Vec2::new(-110.0, -293.0);
+    let (a, b) = (luma(graded.at(behind)), luma(plain.at(behind)));
+    assert!(b - a > 12.0, "a spark's trail is darker: {a} from {b}");
+    let open = Vec2::new(-250.0, -380.0);
+    assert!(apart(graded.at(open), plain.at(open)) <= 1, "the back away from the drops as it was");
+}
+
+/// Test 26: An effect on the Light only reads the water's light: one that makes the light 2
+/// everywhere lights the red back and the blue pool at 2 and keeps their colours, where on the
+/// whole picture it makes them white.
+#[test]
+fn an_effect_on_the_light_only_reads_the_waters_light() {
+    const TWO: &str = "// name: Two\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return vec3<f32>(2.0); }\n";
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let mut look = extras_look(blue());
+    look.light.ambient = 0.5;
+    let drops = sets::lattice(&field, Vec2::new(-500.0, 0.0), Vec2::new(500.0, 900.0), 0);
+    let plain = draw(&gpu, &field, &drops, View::screen(0.25), &look);
+    let with = |takes: bpe_gfx::Takes| {
+        let mut l = look.clone();
+        l.finish
+            .effects
+            .push(bpe_gfx::EffectCall { takes, ..bpe_gfx::EffectCall::new(1, TWO, bpe_gfx::Stage::Picture) });
+        draw(&gpu, &field, &drops, View::screen(0.25), &l)
+    };
+    let (light, whole) = (with(bpe_gfx::Takes::Light), with(bpe_gfx::Takes::Whole));
+    let (back, pool) = (Vec2::new(0.0, -600.0), Vec2::new(0.0, 600.0));
+    assert!(whole.at(back).iter().all(|c| *c > 240), "the whole picture made white: {:?}", whole.at(back));
+    let (lit, was) = (light.at(back), plain.at(back));
+    assert!(
+        lit[0] > was[0] + 40 && lit[1] < 100 && lit[2] < 100,
+        "the back lit at 2 and still red: {lit:?} from {was:?}"
+    );
+    let (lit, was) = (light.at(pool), plain.at(pool));
+    assert!(lit[2] > was[2] + 30 && lit[0] < lit[2], "the pool lit at 2 and still blue: {lit:?} from {was:?}");
+}

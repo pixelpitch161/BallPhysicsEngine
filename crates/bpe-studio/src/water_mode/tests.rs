@@ -580,11 +580,13 @@ fn grade_mode_shows_the_shot_with_its_grade_as_grade_mode_compares_it() {
 }
 
 #[test]
-fn a_water_scenes_masks_offer_no_things_part() {
-    use bpe_kit::modules::grade;
-    let water = water_studio();
-    let offered = crate::grade_mode::masks::offered(&water.scene);
-    assert!(!offered.contains(&grade::THINGS) && offered.contains(&grade::LINEAR) && offered.len() == 5);
-    let balls = Studio::headless();
-    assert!(crate::grade_mode::masks::offered(&balls.scene).contains(&grade::THINGS));
+fn a_water_scenes_things_part_offers_the_waters_things() {
+    use bpe_kit::modules::grade::masks::only_offered;
+    for choice in ["liquids", "solids", "back", "extras", "one_thing"] {
+        assert!(only_offered(true, choice), "{choice}");
+    }
+    for choice in ["balls", "shapes", "text", "particles", "background"] {
+        assert!(!only_offered(true, choice) && only_offered(false, choice), "{choice}");
+    }
+    assert!(!only_offered(false, "liquids") && only_offered(false, "one_thing"));
 }

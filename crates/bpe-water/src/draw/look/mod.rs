@@ -21,11 +21,11 @@ use glam::Vec2;
 
 pub use gpu::LookGpu;
 pub use inputs::{
-    BackLook, BackPicture, ColourFrom, FinishLook, GRADIENT_SAMPLES, GlowFrom, Lamp, LampKind, LightLook, LiquidLook,
-    Look, MOST_LAMPS, MaterialKind, MaterialLook, Quality,
+    BackLook, BackPicture, ColourFrom, EXTRAS, FinishLook, GRADIENT_SAMPLES, GlowFrom, Lamp, LampKind, LightLook,
+    LiquidLook, Look, MOST_LAMPS, MaterialKind, MaterialLook, Quality, ThingCodes,
 };
 
-use gpu::PICTURE;
+use gpu::{COVERAGE, PICTURE, WHO};
 use numbers::{BoxU, Grid, Placing};
 
 use crate::draw::plain::{Plain, PlainLook, View, attach, run_pass};
@@ -59,6 +59,72 @@ fn texture(
 
 fn view_of(device: &wgpu::Device, label: &str, size: (u32, u32)) -> wgpu::TextureView {
     texture(device, label, size, 1, wgpu::TextureUsages::empty()).create_view(&Default::default())
+}
+
+/// A picture-sized texture in `format`, drawn into and read texel by texel.
+fn view_in(
+    device: &wgpu::Device,
+    label: &str,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
+/// Bytes between two choices' numbers in the coverage pass's uniform (the offset alignment).
+const COVER_STRIDE: u64 = 256;
+
+/// What the grade's Things masks and the Light only take read (6e), at one picture size: the
+/// picture before light, who is seen at each pixel, the mist's and sparks' cover, and a coverage
+/// picture for each choice of things.
+struct Masks {
+    size: (u32, u32),
+    albedo: wgpu::TextureView,
+    who: wgpu::TextureView,
+    extras: wgpu::TextureView,
+    coverage: Vec<wgpu::TextureView>,
+}
+
+/// One choice's numbers for the coverage pass (`CoverU` in look.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct CoverU {
+    picks: [u32; 4],
+    owners: [u32; 4],
+}
+
+impl CoverU {
+    /// What `selection` chooses of the things `codes` names.
+    fn of(selection: &bpe_gfx::grade::Selection, codes: &ThingCodes) -> CoverU {
+        let Some(chosen) = &selection.things else { return CoverU { picks: [0, 0, 1, 0], owners: [0; 4] } };
+        let has = |code: u32| chosen.binary_search(&code).is_ok();
+        let mut u = CoverU::default();
+        for n in 0..MOST_LIQUIDS {
+            // (A kind past the list takes the list's last.)
+            if codes.liquids.get(n).or(codes.liquids.last()).is_some_and(|c| has(*c)) {
+                u.picks[0] |= 1 << n;
+            }
+        }
+        u.picks[1] = u32::from(has(EXTRAS));
+        let owners = std::iter::once(codes.rock).chain(codes.solids.iter().copied().map(Some));
+        for (k, code) in owners.enumerate().take(128) {
+            if code.is_some_and(has) {
+                u.owners[k / 32] |= 1 << (k % 32);
+            }
+        }
+        u
+    }
 }
 
 fn level_view(t: &wgpu::Texture, k: u32) -> wgpu::TextureView {
@@ -176,6 +242,11 @@ pub struct LookDraw {
     extras_on: bool,
     /// The wet marks drawn and the water frame they are read against.
     wet: Option<(wgpu::Buffer, u32)>,
+    /// What the grade's Things masks and the Light only take read, and how many choices of things
+    /// the next picture's grade makes coverage for (`None`: neither is wanted).
+    masks: Option<Masks>,
+    choices: Option<usize>,
+    cover_u: wgpu::Buffer,
 }
 
 impl std::fmt::Debug for LookDraw {
@@ -204,6 +275,12 @@ impl LookDraw {
             mapped_at_creation: false,
         });
         let nodes = Nodes::new(&device, field.layout.cols, field.layout.rows);
+        let cover_u = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("water look things"),
+            size: COVER_STRIDE * bpe_gfx::grade::MAX_SELECTIONS as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         LookDraw {
             gpu,
             plain,
@@ -221,6 +298,9 @@ impl LookDraw {
             too_many_lamps: false,
             extras_on: false,
             wet: None,
+            masks: None,
+            choices: None,
+            cover_u,
         }
     }
 
@@ -402,12 +482,56 @@ impl LookDraw {
             grade: look.finish.grade.clone(),
             ..bpe_gfx::Frame::default()
         };
+        // The grade's Things masks read each choice's coverage, and effects on the light only the
+        // picture before light (both made by the compose only when wanted).
+        let renderer = self.renderer.as_mut().expect("made with the pictures");
+        let selections = renderer.selections(device, queue, &frame.grade);
+        let takes_light = frame.effects.iter().any(|e| e.takes == bpe_gfx::Takes::Light && e.apply_to <= 0.5);
+        self.choices = (!selections.is_empty() || takes_light).then_some(selections.len());
+        if self.choices.is_some() {
+            self.masks_for((width, height), selections.len());
+            let mut numbers = vec![0u8; COVER_STRIDE as usize * selections.len()];
+            for (i, s) in selections.iter().enumerate() {
+                let u = CoverU::of(s, &look.finish.things);
+                let at = i * COVER_STRIDE as usize;
+                numbers[at..at + std::mem::size_of::<CoverU>()].copy_from_slice(bytemuck::bytes_of(&u));
+            }
+            if !numbers.is_empty() {
+                queue.write_buffer(&self.cover_u, 0, &numbers);
+            }
+        }
         for _ in 0..times.max(1) {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("water look") });
             self.record(&mut encoder, drops, liquids > 4);
+            let given = match (&self.masks, self.choices) {
+                (Some(m), Some(n)) => GivenPicture {
+                    light: takes_light.then(|| (m.albedo.clone(), m.albedo.clone())),
+                    things: (n > 0).then(|| m.coverage[..n].to_vec()),
+                },
+                _ => GivenPicture::default(),
+            };
             let renderer = self.renderer.as_mut().expect("made with the pictures");
-            renderer.finish_picture(device, queue, encoder, &frame, GivenPicture::default());
+            renderer.finish_picture(device, queue, encoder, &frame, given);
+        }
+    }
+
+    /// Makes the masks' pictures for a `size` picture and `choices` choices of things when they
+    /// don't fit.
+    fn masks_for(&mut self, size: (u32, u32), choices: usize) {
+        let device = self.gpu.device();
+        if self.masks.as_ref().is_none_or(|m| m.size != size) {
+            self.masks = Some(Masks {
+                size,
+                albedo: view_in(device, "water look before light", size, bpe_gfx::HDR_FORMAT),
+                who: view_in(device, "water look who", size, WHO),
+                extras: view_of(device, "water look extras cover", size),
+                coverage: Vec::new(),
+            });
+        }
+        let m = self.masks.as_mut().expect("just made");
+        while m.coverage.len() < choices {
+            m.coverage.push(view_in(device, "water look things coverage", size, COVERAGE));
         }
     }
 
@@ -547,8 +671,23 @@ impl LookDraw {
             ],
         );
         let renderer = self.renderer.as_ref().expect("made with the pictures");
-        run_pass(encoder, "water look", &[attach(renderer.hdr_target())], &gpu.compose.pipeline, &compose, 3, 1);
-        // 7. Mist and sparks over it.
+        let masks = self.masks.as_ref().filter(|_| self.choices.is_some());
+        match masks {
+            Some(m) => {
+                let targets = [attach(renderer.hdr_target()), attach(&m.albedo), attach(&m.who)];
+                run_pass(encoder, "water look and who", &targets, &gpu.compose_all.pipeline, &compose, 3, 1);
+            }
+            None => {
+                let target = [attach(renderer.hdr_target())];
+                run_pass(encoder, "water look", &target, &gpu.compose.pipeline, &compose, 3, 1);
+            }
+        }
+        // 7. Mist and sparks over it (and their cover: cleared, with none).
+        if let Some(m) = masks
+            && !self.extras_on
+        {
+            run_pass(encoder, "water look no extras", &[attach(&m.extras)], &gpu.cover.pipeline, &compose, 0, 0);
+        }
         if self.extras_on {
             let extras = group(
                 &gpu.extras,
@@ -564,13 +703,48 @@ impl LookDraw {
                     entry(27, tex(spread_s)),
                 ],
             );
-            let target = [Some(wgpu::RenderPassColorAttachment {
+            let over_picture = Some(wgpu::RenderPassColorAttachment {
                 view: renderer.hdr_target(),
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })];
-            run_pass(encoder, "water look extras", &target, &gpu.extras.pipeline, &extras, 12, drops.count);
+            });
+            match masks {
+                Some(m) => {
+                    let targets = [over_picture, attach(&m.extras)];
+                    let pipeline = &gpu.extras_all.pipeline;
+                    run_pass(encoder, "water look extras and cover", &targets, pipeline, &extras, 12, drops.count);
+                }
+                None => run_pass(
+                    encoder,
+                    "water look extras",
+                    &[over_picture],
+                    &gpu.extras.pipeline,
+                    &extras,
+                    12,
+                    drops.count,
+                ),
+            }
+        }
+        // 8. Each choice of things' coverage, for the grade's Things masks.
+        if let (Some(m), Some(n)) = (masks, self.choices) {
+            for (i, target) in m.coverage.iter().take(n).enumerate() {
+                let numbers = wgpu::BufferBinding {
+                    buffer: &self.cover_u,
+                    offset: i as u64 * COVER_STRIDE,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<CoverU>() as u64),
+                };
+                let cover = group(
+                    &gpu.cover,
+                    "water look things",
+                    &[
+                        entry(37, wgpu::BindingResource::Buffer(numbers)),
+                        entry(38, tex(&m.who)),
+                        entry(39, tex(&m.extras)),
+                    ],
+                );
+                run_pass(encoder, "water look things", &[attach(target)], &gpu.cover.pipeline, &cover, 3, 1);
+            }
         }
     }
 

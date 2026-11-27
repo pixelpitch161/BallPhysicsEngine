@@ -63,17 +63,11 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         }
         own_rows.push("code");
     }
-    let lit = cx.scene.card(ThingId::ROOT, SlotId::Lighting).is_some();
+    // (A Water scene's light is always there: its drawing gives the take the picture before light.)
+    let lit = cx.scene.card(ThingId::ROOT, SlotId::Lighting).is_some() || cx.scene.sim == bpe_core::SimKind::Water;
     let takes = get("takes").and_then(|v| <TakesChoice as bpe_core::SettingValue>::from_value(&v));
     if takes == Some(TakesChoice::LightOnly) && !lit {
-        let words = match cx.scene.sim {
-            bpe_core::SimKind::Water => {
-                "Light only doesn't reach a Water scene's light yet: this effect changes nothing."
-            }
-            bpe_core::SimKind::Balls => {
-                "Light only needs a Lighting card: until the scene has one, this effect changes nothing."
-            }
-        };
+        let words = "Light only needs a Lighting card: until the scene has one, this effect changes nothing.";
         ui.label(RichText::new(words).small().color(style::MUTED));
     }
     let defs: Vec<SettingDef> =

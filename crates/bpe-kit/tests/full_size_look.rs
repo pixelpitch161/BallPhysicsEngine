@@ -1653,6 +1653,28 @@ fn water_looks_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
         drawing.draw(&stored.buffers(), &view, &l);
         out.push((name, drawing.read()));
     }
+    // Part 6e: Glass lab with a Things mask on the Liquids grown round them, a stop and a half darker (the
+    // mask's edge, round the drops and the stream, at full size), and with one on the Back.
+    for (name, choice) in [("water-looks-masked-liquids", "liquids"), ("water-looks-masked-back", "back")] {
+        use bpe_kit::modules::grade;
+        if !wanted(name, only) {
+            continue;
+        }
+        let mut scene = scene.clone();
+        apply_look(&mut scene, &reg, ReadyLook::GlassLab, Keep::default());
+        let mask = grade::add_mask(&mut scene, &reg, grade::THINGS).unwrap();
+        let card = scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
+        let (part, basic) = (grade::parts_of(card, mask)[0].id, grade::panels_of(card, mask)[0].id);
+        let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params;
+        params.set(&bpe_core::layered_key(part, "only"), Value::Choice(choice.into()));
+        params.set(&bpe_core::layered_key(part, "expand"), Value::Number(24.0));
+        params.set(&bpe_core::layered_key(part, "feather"), Value::Number(24.0));
+        params.set(&bpe_core::layered_key(basic, "exposure"), Value::Number(-1.5));
+        let resolved = bpe_core::resolve(&scene, &reg);
+        let l = bpe_kit::things::water::look::look_of(&scene, &resolved, second as f64);
+        drawing.draw(&stored.buffers(), &view, &l);
+        out.push((name.to_string(), drawing.read()));
+    }
     eprintln!("water-looks: {} drops at {} px, take {}", head.drops, make.setup.cell, dir.display());
     if kept.is_none() {
         std::fs::remove_dir_all(finals.dir()).ok();

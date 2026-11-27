@@ -856,6 +856,29 @@ fn add_mask_offers_brush_and_things_and_a_things_part_shows_its_settings() {
     assert!(h.query_all_by_label("Only").next().is_some());
 }
 
+#[test]
+fn a_water_scenes_things_part_starts_on_liquids_and_offers_the_waters_things() {
+    let mut h = masks_harness(Studio::headless_water());
+    h.get_by_label("Add mask").click();
+    h.run();
+    pick(&mut h, "Things");
+    let studio = std::mem::replace(h.state_mut(), Studio::headless());
+    let mask = studio.grade.mask.unwrap();
+    let part = grade::parts_of(card(&studio.scene), mask)[0].id;
+    let only = card(&studio.scene).params.get(&bpe_core::layered_key(part, "only")).cloned();
+    assert_eq!(only, Some(Value::Choice("liquids".into())), "Balls is none of a Water scene's choices");
+    let mut h = harness_with(studio);
+    let only = h.query_all_by_label("Only").find(|n| n.accesskit_node().role() == Role::ComboBox);
+    only.expect("the Only picker").click();
+    h.run();
+    for offered in ["Solids", "Back", "Extras", "One thing"] {
+        assert!(h.query_all_by_label(offered).next().is_some(), "{offered}");
+    }
+    for not in ["Balls", "Shapes", "Background"] {
+        assert!(h.query_all_by_label(not).next().is_none(), "{not}");
+    }
+}
+
 // ---------- Part 6: scopes, clipping, the targeted tool, snapshots ----------
 
 fn scopes_harness(mode: GradeMode) -> Harness<'static, GradeMode> {

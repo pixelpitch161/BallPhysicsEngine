@@ -562,7 +562,7 @@ water/look.rs`, `modules/grade/masks.rs` (Water Only kinds), `crates/bpe-studio/
 offered, Grade mode opens, `a_water_scenes_toolbar_says_so_and_greys_grade` turned round), `water_mode/stage.rs`
 (Whole course | Shot).
 
-- [ ] Decisions 42 to 44. Verify: a water scene's Kaleidoscope mirrors the picture; a Grade's Whole picture panel
+- [x] Decisions 42 to 44. Verify: a water scene's Kaleidoscope mirrors the picture; a Grade's Whole picture panel
   changes it; a Things mask on Liquids changes only the liquid (and Expand grows it); Light only reads the water's
   light; the hidden effects aren't in a Water scene's Add effect menu; Grade mode opens and its scopes read the
   shot; the Balls goldens don't move (CI).
@@ -574,7 +574,7 @@ offered, Grade mode opens, `a_water_scenes_toolbar_says_so_and_greys_grade` turn
   (`golden-water-looks.txt`) through the "Refresh GPU pictures" workflow.
 - [x] Full-size look check `water-looks-*` (each look on a made final), looked at closely.
 - [ ] Notes "Part 6c (as built)", this plan's "As built", PR, CI, review, merge.
-- [ ] Aedan's ask: a still and a short render of each look (one demo course, a final, each look applied), into
+- [x] Aedan's ask: a still and a short render of each look (one demo course, a final, each look applied), into
   `/mnt/project-files/ballphysics/water-mode/part6-looks/`, sent in one message without waiting for him.
 - [ ] Hand-over for the next part (4, 5 and 4b side by side: which comes first is the coordinator's), memory, message
   the coordinator.
@@ -738,3 +738,21 @@ changes:
   scopes, the Alt clipping view and the targeted tool read a Draft picture; the lens cut off at 32 px left a faint
   line along a lamp-lit stream (now a fade); masks and their handles disagreed on a video that isn't 9:16 (the
   finish now measures across); and Grade mode's changes didn't show while the draft started over.
+
+### 6e
+
+The Things masks on a Water scene (decision 43) and the Light only take (decision 42's last sentence). Built as
+planned, with these changes:
+
+- **Coverage from who is seen, not one picture per selection from the compose**: the compose writes who is seen at
+  each pixel once (`Rgba32Uint`: the liquid's and solid's cover, the extras' share, the two liquids seen most, the
+  solid's owner), and a small pass per choice turns it into that choice's coverage (`fs_cover`), so eight choices
+  don't take eight composes. Where three or more liquids mix at one pixel only the two seen most are told apart.
+- **One picture before light for both of the take's pictures**: the compose writes each part's colour under a
+  light of 1, given as the unlit picture and the lit share alike, so the take's `bpe_light_of` reads the light as
+  the picture over it. Shine, glow and the shafts count as light, as a lit Balls ball's highlights do.
+- **Extras** are the foam and bubbles inside the liquid (their share of its cover) and the mist and sparks over it
+  (their own cover, from a second target on the extras pass).
+- **The renderer tells the drawing which choices its grade makes** (`Renderer::selections`) and floods coverage
+  drawn elsewhere (`GivenPicture::things`, `Silhouettes::flood_given`); a Balls frame's finish is unchanged.
+

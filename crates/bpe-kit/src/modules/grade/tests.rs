@@ -355,9 +355,9 @@ fn gradients_sit_on_a_ball_on_every_ball_or_in_the_world() {
     let mut p = bpe_core::Params::default();
     p.set("place", Value::Choice("on_every_ball".into()));
     p.set("target", Value::Target(gone));
-    assert_eq!(follow_note(&world, RADIAL, &p).as_deref(), Some("Thing not found"));
+    assert_eq!(follow_note(&world, RADIAL, &p, None).as_deref(), Some("Thing not found"));
     p.set("target", Value::Target(balls));
-    assert_eq!(follow_note(&world, RADIAL, &p), None);
+    assert_eq!(follow_note(&world, RADIAL, &p, None), None);
 }
 
 #[test]
@@ -424,9 +424,9 @@ fn a_things_part_names_its_things_by_their_codes() {
     let mut p = bpe_core::Params::default();
     p.set("only", Value::Choice("one_thing".into()));
     p.set("target", Value::Target(Target::Thing(ThingId(999))));
-    assert_eq!(follow_note(&world, THINGS, &p).as_deref(), Some("Thing not found"));
+    assert_eq!(follow_note(&world, THINGS, &p, None).as_deref(), Some("Thing not found"));
     p.set("target", Value::Target(Target::Thing(crate::testing::BALLS)));
-    assert_eq!(follow_note(&world, THINGS, &p), None);
+    assert_eq!(follow_note(&world, THINGS, &p, None), None);
 }
 
 #[test]
