@@ -32,7 +32,7 @@ pub mod slow;
 
 pub use course::{Form, SolidSetup};
 pub use inputs::{InputPart, WaterInputs};
-pub use movers::{DRIVEN_LATER, MOVING_CUTS, TOO_MANY_MOVERS};
+pub use movers::{DRIVEN_LATER, MOVING_CUTS, TOO_BIG_TO_MOVE, TOO_FAST, TOO_MANY_MOVERS};
 pub use slow::Speeds;
 
 pub use super::look::plain_look;
@@ -277,7 +277,7 @@ impl WaterSetup {
             .filter(|id| matches!(scene.things[*id].kind.as_str(), PIECE | WALL) && on(id))
             .filter_map(|id| SolidSetup::of(scene, resolved, *id))
             .collect();
-        let movers = movers::moving(&solids, &mut notes);
+        let movers = movers::moving(&solids, cell, &mut notes);
         for (k, s) in solids.iter().enumerate() {
             // (A moving part keyed small is as thin as its smallest.)
             let scale = if movers.contains(&k) { s.least_scale() } else { 1.0 };
@@ -314,7 +314,26 @@ impl WaterSetup {
             }
         }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, drains, solids, movers, notes, print, detail, world, rock }
+        let mut setup = WaterSetup {
+            size,
+            cell,
+            strokes,
+            liquids,
+            pours,
+            drains,
+            solids,
+            movers,
+            notes,
+            print,
+            detail,
+            world,
+            rock,
+        };
+        let root = resolved.things.get(&ThingId::ROOT);
+        let length = root.map_or(0.0, |r| <crate::SceneSettings as Settings>::from_params(&r.params).duration);
+        let fast = setup.fast_notes(f64::from(length));
+        setup.notes.extend(fast);
+        setup
     }
 
     /// The grid the water runs on.

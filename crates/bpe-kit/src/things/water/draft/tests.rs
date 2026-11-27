@@ -673,6 +673,41 @@ fn thin_and_moving_pieces_say_so() {
     assert_eq!(setup(&scene, &reg).note_for(wall), None);
 }
 
+/// A thin part keyed to move faster than the water's steps can hold it says so, a thick one as fast
+/// and a thin slow one don't, and a Keyframed part too big for the card stays where it is.
+#[test]
+fn a_part_too_fast_for_how_thin_it_is_or_too_big_says_so() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    carve(&mut scene, vec![hole([0.0, 0.0], 400.0)]);
+    let dash = |x: f32| [("offset", 0.0, Value::Vec2([0.0, 0.0])), ("offset", 0.05, Value::Vec2([x, 0.0]))];
+    let thin = add(&mut scene, &reg, WALL, Vec2::new(0.0, -200.0));
+    set(&mut scene, thin, SlotId::Form, "thickness", Value::Number(4.0));
+    keyframed(&mut scene, &reg, thin, &dash(1000.0));
+    let slow = add(&mut scene, &reg, WALL, Vec2::new(0.0, -100.0));
+    set(&mut scene, slow, SlotId::Form, "thickness", Value::Number(4.0));
+    keyframed(
+        &mut scene,
+        &reg,
+        slow,
+        &[("offset", 0.0, Value::Vec2([0.0, 0.0])), ("offset", 2.0, Value::Vec2([100.0, 0.0]))],
+    );
+    let thick = block(&mut scene, &reg, Vec2::new(0.0, 100.0), 100.0, 1.0);
+    keyframed(&mut scene, &reg, thick, &dash(1000.0));
+    let huge = block(&mut scene, &reg, Vec2::new(0.0, 300.0), 1e6, 1.0);
+    keyframed(&mut scene, &reg, huge, &dash(10.0));
+    let started = std::time::Instant::now();
+    let s = setup(&scene, &reg);
+    assert!(started.elapsed().as_secs_f32() < 1.0, "{:?}", started.elapsed());
+    let has = |id: ThingId, note: &str| s.notes.iter().any(|(i, n)| *i == id && *n == note);
+    assert!(has(thin, TOO_FAST), "1000 px in a twentieth of a second is past half its least thickness a step");
+    assert!(!has(slow, TOO_FAST) && !has(thick, TOO_FAST));
+    assert_eq!(s.note_for(huge), Some(TOO_BIG_TO_MOVE));
+    let k = |id: ThingId| s.solids.iter().position(|x| x.id == id).unwrap();
+    assert!(!s.movers.contains(&k(huge)) && s.movers.contains(&k(thin)), "{:?}", s.movers);
+    assert!(s.field().at(Vec2::new(0.0, 380.0)) < 0.0, "the huge one stays where it is, as rock");
+}
+
 #[test]
 fn a_piece_is_picked_by_its_body() {
     let reg = crate::registry();

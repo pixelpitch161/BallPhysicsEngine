@@ -561,5 +561,17 @@ Built as planned (decisions 1 to 18; `docs/notes/water.md` "Part 5a" has the det
   `Live.movers` / `Live::field_now` weren't needed (the body keeps its movers: `Water::movers()`, `poses()`).
 - **The stage path's colours**: the design system has no `TEXT_SOFT` or `ACCENT`, so the path is `MUTED` over
   `OUTLINE`, the key dots `TEXT_STRONG`, the part at its place `FAINT` and at the playhead `TEXT_STRONG`.
+- **From the review** (one Opus review of the whole branch):
+  - The plan's "thin walls made thick at the smallest Scale it is keyed to" (`least / least_scale` in the shape)
+    made a part keyed to Scale 0.1 ten cells thick at Scale 1, and a moved Scale key remade its shape. Now the shape
+    is sampled as a still part's is and the part is grown at a pose (`Movers::grow`, `mover_grow`: half of
+    `LEAST_WALL × cell − thinnest × scale`, never less than 0).
+  - A part too big for its grid (`MoverShape::fits`) was dropped by the card but kept in `WaterSetup.movers`, so
+    every later part took the wrong pose: it now stays, as rock, with `TOO_BIG_TO_MOVE`.
+  - Frames are capped at 32 steps, so a fast thin part could leak at any detail: the stage says `TOO_FAST`
+    (`fast_notes`), and it is in Known.
+  - The Final view didn't redraw when only a moment's parts moved (`drawn` kept); it now redraws after `set_posed`.
+  - `set_movers` checks the still field's layout is the body's (a debug assert, and nothing moves on a mismatch);
+    the stage path is drawn only for a part the water moves and in at most 1800 points.
 - **Timing**: `water_moving_speed` makes the one-screen chamber twice with a paddle, still and Keyframed, and prints
   the moving paddle's share of a scene second (its lines start `water final:`, so the card job's summary keeps them).

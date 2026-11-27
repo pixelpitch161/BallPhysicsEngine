@@ -9,17 +9,21 @@ use bpe_core::maths::Maths;
 use glam::{UVec2, Vec2};
 
 use super::{MoverShape, Pose};
+use crate::drops::LEAST_WALL;
 use crate::solid::{DEFAULT_WETTING, SolidField};
 
 /// One moving part: its shape, how wet its faces are, the owner number its faces are marked with
-/// for the drawing's colours (its place among the course's parts plus 1, as a still part's), and
-/// where it starts (its texture lies on it as it does there, and goes with it as it moves).
+/// for the drawing's colours (its place among the course's parts plus 1, as a still part's), where
+/// it starts (its texture lies on it as it does there, and goes with it as it moves), and its
+/// thinnest wall at Scale 1 as the water takes it (pixels; made smaller than the water can hold
+/// that wall, the whole part is grown by what the wall lacks: [`Movers::grow`]).
 #[derive(Clone, Debug)]
 pub struct Mover {
     pub shape: Arc<MoverShape>,
     pub wetting: f32,
     pub owner: u16,
     pub start: Pose,
+    pub thinnest: f32,
 }
 
 impl Mover {
@@ -52,6 +56,14 @@ impl Movers {
         poses.get(k).copied().unwrap_or_default().sane()
     }
 
+    /// How much `m` is grown (pixels, each side) at `scale` on `cell`-pixel cells: half of what its
+    /// thinnest wall then lacks of [`LEAST_WALL`] cells, so it is never thinner than that to the
+    /// water however small it is made, and at its own size or larger exactly as it is (the card's
+    /// `mover_grow`).
+    pub fn grow(m: &Mover, scale: f32, cell: f32) -> f32 {
+        (0.5 * (LEAST_WALL * cell - m.thinnest * scale)).max(0.0)
+    }
+
     /// The field with every moving part at its pose in `poses`: the still field, and each part's
     /// distance (its shape's, times its scale, at the node in its own frame) taken where it is nearer
     /// (the node is then the part's: its owner and Wetting) or where the node is inside it, as
@@ -71,7 +83,7 @@ impl Movers {
                     if own >= SolidField::FAR {
                         continue;
                     }
-                    let here = own * pose.scale;
+                    let here = own * pose.scale - Movers::grow(m, pose.scale, l.cell);
                     let d = field.distance[i];
                     if here < d || here < 0.0 {
                         field.owner[i] = m.owner;
@@ -177,7 +189,7 @@ mod tests {
         let shape = Arc::new(MoverShape::of(solids, still.layout.cell, 6.0, still.layout.origin - place).unwrap());
         Movers {
             still: Arc::new(still),
-            movers: vec![Mover { shape, wetting: 0.25, owner: 2, start: Pose::new(place, 0.0, 1.0) }],
+            movers: vec![Mover { shape, wetting: 0.25, owner: 2, start: Pose::new(place, 0.0, 1.0), thinnest: 6.0 }],
         }
     }
 
@@ -285,5 +297,33 @@ mod tests {
         let [(_, map)] = m.textures(&[start])[..] else { panic!("one part") };
         let want = [1.0, 0.0, 0.0, 0.0];
         assert!(map.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4), "{map:?}");
+    }
+
+    #[test]
+    fn a_part_made_small_is_grown_and_at_its_size_is_as_it_is() {
+        // (A 2 px wall at 8 px cells: 1.5 cells thick to the water at its own size, and still 1.5
+        // cells at a tenth of it or less; at twice its size twice as thick.)
+        let layout = Layout::cover(Vec2::new(-200.0, -200.0), Vec2::new(200.0, 200.0), 8.0);
+        let still = SolidField::build_least(layout, &[], 12.0);
+        let wall = [Solid::Polyline {
+            points: vec![Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)],
+            thickness: 2.0,
+            square: false,
+        }];
+        let shape = Arc::new(MoverShape::of(&wall, 8.0, 12.0, still.layout.origin).unwrap());
+        let start = Pose::default();
+        let m = Movers {
+            still: Arc::new(still),
+            movers: vec![Mover { shape, wetting: 1.0, owner: 1, start, thinnest: 12.0 }],
+        };
+        let middle = |m: &Movers, scale: f32| m.field_at(&[Pose::new(Vec2::ZERO, 0.0, scale)]).at(Vec2::ZERO);
+        assert!((middle(&m, 1.0) + 6.0).abs() < 0.5, "{}", middle(&m, 1.0));
+        for scale in [0.5, 0.1, 0.01] {
+            assert!(middle(&m, scale) <= -6.0 + 0.5, "at {scale}: {}", middle(&m, scale));
+        }
+        assert!((middle(&m, 2.0) + 12.0).abs() < 1.0, "{}", middle(&m, 2.0));
+        // (Keyed small somewhere, it is no thicker at its own size: a node a cell off is outside.)
+        let off = m.field_at(&[Pose::new(Vec2::ZERO, 0.0, 1.0)]).at(Vec2::new(0.0, 8.0));
+        assert!(off > 0.0, "{off}");
     }
 }

@@ -3,7 +3,7 @@
 // A step in which parts move starts by laying them over the still field at the step's end
 // (`cs_movers`, over the nodes the frame's moves can change): each node takes the still field's
 // distance and Wetting, and each part's distance (its own grid's, read in its own frame, times its
-// scale) where that is nearer or the node is inside it; it is then the part's (its Wetting, its
+// scale, less what it is grown by when made small: `mover_grow`) where that is nearer or the node is inside it; it is then the part's (its Wetting, its
 // number in the field's third section, for the face's speed). The deep water's solids by cell are
 // worked out again over those nodes and two more (`cs_deep_walls_moved`).
 
@@ -15,6 +15,14 @@
 
 // The furthest a field says (cells), as the host keeps it.
 const FAR_CELLS: f32 = 64.0;
+// The thinnest a wall is to the water (cells), as `drops::LEAST_WALL`.
+const LEAST_WALL: f32 = 1.5;
+
+// How much thicker part `m` is laid at `scale` (cells, each side): a part made smaller than its
+// thinnest wall can be to the water is grown by what that wall lacks (`Movers::grow`).
+fn mover_grow(m: Mover, scale: f32) -> f32 {
+    return max(0.5 * (LEAST_WALL - bitcast<f32>(m.h.w) * scale), 0.0);
+}
 
 // Part `m`'s distance (cells, in its own frame at scale 1) at `own` (its own frame, cells);
 // `FAR_CELLS` off its grid.
@@ -61,7 +69,7 @@ fn cs_movers(@builtin(global_invocation_id) id: vec3<u32>) {
         if own >= FAR_CELLS {
             continue;
         }
-        let here = own * scale;
+        let here = own * scale - mover_grow(m, scale);
         if here < d || here < 0.0 {
             who = j + 1u;
             wet = m.g.w;

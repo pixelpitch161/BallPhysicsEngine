@@ -349,7 +349,7 @@ fn a_moving_parts_texture_goes_with_it() {
     let shape = MoverShape::of(&block, l.cell, 12.0, l.origin - start.at).expect("a shape");
     let movers = Movers {
         still: Arc::new(still.clone()),
-        movers: vec![Mover { shape: Arc::new(shape), wetting: 1.0, owner: 1, start }],
+        movers: vec![Mover { shape: Arc::new(shape), wetting: 1.0, owner: 1, start, thinnest: 200.0 }],
     };
     let rock = MaterialLook {
         kind: MaterialKind::Rock,

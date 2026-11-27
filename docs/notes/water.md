@@ -1438,9 +1438,14 @@ frame. **Driven** parts are part 5b; buckets are 5c.
   screen) and its scale, with `to_world`, `to_own`, `lerp`, `sane` (scale kept to `SCALE_RANGE` 0.01 to 100),
   `speed_to` and `moved_on`. Its turn uses `det_sin_cos` (it is physics).
 - **`MoverShape`** (`shape.rs`): a moving part's solid sampled once on its own grid at the course's cell, aligned so
-  its nodes lie on the course's at its start (`align = layout.origin - start.at`), its thin walls made at least
-  `LEAST_WALL` cells thick at the smallest Scale it is keyed to (`least / least_scale`).
-- **`Mover { shape, wetting, owner, start }`** and **`Movers { still, movers }`** (`movers.rs`): the still field (the
+  its nodes lie on the course's at its start (`align = layout.origin - start.at`), its thin walls taken as at least
+  `LEAST_WALL` cells thick, as a still part's are. `MoverShape::fits` says whether a part's grid fits in
+  `MOST_NODES` (16 million nodes); one that doesn't stays where it is.
+- **Thin parts at a small Scale** are grown where they are, not in their shape: at Scale `s` a part whose thinnest
+  wall (`Mover.thinnest`, at least `LEAST_WALL` cells) times `s` is under `LEAST_WALL` cells has half the shortfall
+  taken off its distance (`Movers::grow`; `mover_grow` on the card, the same sum). So at every Scale the water sees
+  it at least as thick as a still part, and at Scale 1 it is its shape as it is (not turned, it matches a still one).
+- **`Mover { shape, wetting, owner, start, thinnest }`** and **`Movers { still, movers }`** (`movers.rs`): the still field (the
   carved rock and every part that stays) and each moving part. `field_at(poses)` composes the field on the processor
   as the card does (only the nodes round each part change; the nearer face wins, a node inside a part is the part's);
   `moved_box(from, to)` is the box the parts sweep; `fastest(from, to, seconds)` the fastest point's speed;
@@ -1478,7 +1483,14 @@ frame. **Driven** parts are part 5b; buckets are 5c.
 
 - `WaterSetup.movers`: the course's Pieces and Walls that move (each Keyframed one with something to it, at most 64,
   in order). A **Driven** one stays where it is and the stage says `DRIVEN_LATER`; a moving part with **Cuts** on
-  doesn't cut and says `MOVING_CUTS`; the 65th says `TOO_MANY_MOVERS`.
+  doesn't cut and says `MOVING_CUTS`; the 65th says `TOO_MANY_MOVERS`; one too big for its grid stays where it is,
+  as rock, and says `TOO_BIG_TO_MOVE` (it is left out of `movers`, so the list and the card's parts stay in step).
+- **`TOO_FAST`** (`WaterSetup::fast_notes(length)`, at the end of `setup_of`): a moving part whose fastest point
+  (its place's speed, plus its turn's speed times its reach, plus its Scale's speed times its reach, read every
+  frame of the scene's Length, at most `MOST_SPEED_SAMPLES` = 3600 times) goes further in one of the water's steps
+  (a frame over `most_steps`) than half its thinnest wall as the water takes it at its smallest Scale says "This
+  part moves too fast for how thin it is: water may get through it. Make it thicker or slower." (A frame takes at
+  most 32 steps, so `steps_now` can't always keep up with a fast thin part; see Known.)
 - `SolidSetup::pose_at(time)`: its place plus Position, its turn plus Turn, and Scale, at water time.
   `still_with(mask)`, `movers_on(still)`, `poses_at(time)`, `movers()`; `field()` is the still field with every part
   at its start pose (fills, taps' room and spouts are judged on it).
@@ -1507,8 +1519,8 @@ frame. **Driven** parts are part 5b; buckets are 5c.
 
 ### The stage path (`bpe-studio water_mode/solid_edit.rs`)
 
-- A picked moving part shows its **path** (`path_of`: where it is every 1/30 s over the scene's Length, at most ten
-  minutes' worth) as a thin `MUTED` line over `OUTLINE`, a `TEXT_STRONG` dot at each Position key
+- A picked moving part (one of the draft setup's `movers`) shows its **path** (`path_of`: where it is every 1/30 s
+  over the scene's Length, more coarsely past `MOST_PATH_STEPS` = 1800 points) as a thin `MUTED` line over `OUTLINE`, a `TEXT_STRONG` dot at each Position key
   (`SolidSetup::position_keys`), its outline at its place (where the handles are, dragging moves the whole path) in
   `FAINT`, and its outline where it is at the playhead (`outline_at`) in `TEXT_STRONG`. (The plan named
   `TEXT_SOFT` and `ACCENT`, which the design system doesn't have.)
@@ -1520,9 +1532,24 @@ frame. **Driven** parts are part 5b; buckets are 5c.
   moves, a paddle pushing a pool, a lifted gate, a fast turning bar, a plate pushed into the rock, a lid on a full
   cup, a moment inside a frame keeping the parts between, moving water repeating from the start and from a copy);
   `tests/look.rs` `a_moving_parts_texture_goes_with_it` (fails without the texture map); `take/frame.rs`
-  `a_frame_keeps_its_parts_poses`.
-- `bpe-kit`: the draft tests on which parts move and what the stage says, the print and inputs reading the keys, a
-  keyframed piece moving in the draft; `tests/water_final.rs` `a_final_with_a_moving_paddle_remakes_from_the_key_before`.
+  `a_frame_keeps_its_parts_poses`; `parts/movers.rs` `a_part_made_small_is_grown_and_at_its_size_is_as_it_is`;
+  `parts/shape.rs` `a_shape_takes_thin_walls_as_least_thick` (and a huge one doesn't fit).
+- `bpe-kit`: the draft tests on which parts move and what the stage says
+  (`a_part_too_fast_for_how_thin_it_is_or_too_big_says_so`), the print and inputs reading the keys, a keyframed
+  piece moving in the draft; `tests/water_final.rs` `a_final_with_a_moving_paddle_remakes_from_the_key_before`.
 - `bpe-cli`: `a_final_frame_draws_a_moving_part_where_it_was`.
 - `bpe-studio`: `a_keyframed_piece_moves_as_the_draft_plays_and_goes_back`, `a_picked_keyframed_piece_shows_its_path`,
   `a_piece_edit_restarts_the_draft_and_a_colour_edit_does_not` (a moving piece and each Position key restart it).
+
+### Known, left for later
+
+- **A fast thin part can let water through.** A frame takes at most 32 steps (more bend the skin and throw pours),
+  so a part whose point moves more than about half its wall a step leaks; the stage says `TOO_FAST` for it. A part
+  swept through the water at Final detail (finer cells, so thinner walls as the water takes them) needs to be
+  thicker than at Draft.
+- **Eased keys can dip below the smallest Scale key** (a custom curve can overshoot); `least_scale` reads the keys'
+  values, so `TOO_FAST` can miss the dip.
+- **The band round a part shrinks with its Scale**: far from a tiny part the field reads the still field's distance
+  (the water is never that near).
+- **A part keyed to a place that isn't a number** (`Pose::sane`) goes to the middle of the stage rather than staying
+  where it was.

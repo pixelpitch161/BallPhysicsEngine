@@ -87,7 +87,9 @@ impl Water {
     /// fresh body and one made from a restart point both start from the card's own field. With no
     /// parts, nothing changes.
     pub fn set_movers(&mut self, movers: Movers, poses: &[Pose]) {
-        if movers.is_empty() {
+        // (A field of another layout than the body's would be read as this one's.)
+        debug_assert_eq!(movers.still.layout, self.layout, "the moving parts are on the body's own course");
+        if movers.is_empty() || movers.still.layout != self.layout {
             return;
         }
         let mut movers = movers;
@@ -104,7 +106,8 @@ impl Water {
             let at = grids.len() as u32;
             grids.extend(s.distance.iter().map(|d| (d / cell).clamp(-FAR_CELLS, FAR_CELLS)));
             let origin: Vec2 = s.origin / cell;
-            shapes.push(([origin.x, origin.y, s.radius / cell, m.wet()], [s.cols, s.rows, at, 0]));
+            let thinnest = (m.thinnest / cell).to_bits();
+            shapes.push(([origin.x, origin.y, s.radius / cell, m.wet()], [s.cols, s.rows, at, thinnest]));
         }
         let device = &self.gpu.device;
         self.still_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

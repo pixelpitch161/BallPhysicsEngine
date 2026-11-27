@@ -33,7 +33,13 @@ fn mover_of(still: &SolidField, solids: &[Solid], place: Vec2) -> Movers {
     let shape = MoverShape::of(solids, l.cell, LEAST_WALL * l.cell, l.origin - place).expect("a shape");
     Movers {
         still: Arc::new(still.clone()),
-        movers: vec![Mover { shape: Arc::new(shape), wetting: 0.5, owner: 3, start: Pose::new(place, 0.0, 1.0) }],
+        movers: vec![Mover {
+            shape: Arc::new(shape),
+            wetting: 0.5,
+            owner: 3,
+            start: Pose::new(place, 0.0, 1.0),
+            thinnest: LEAST_WALL * l.cell,
+        }],
     }
 }
 

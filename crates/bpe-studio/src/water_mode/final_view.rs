@@ -272,6 +272,8 @@ impl FinalPicture {
                         && field.layout == drawing.layout()
                     {
                         drawing.set_posed(&field, textures);
+                        // (The parts moved on a moment already drawn: draw it again.)
+                        self.drawn = None;
                     }
                     self.holds = Some((got.take, got.tau, ahead as f32));
                     self.wet = got.wet;

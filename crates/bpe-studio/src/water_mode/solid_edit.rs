@@ -376,24 +376,32 @@ pub fn paint(ui: &Ui, studio: &Studio, view: &CourseView, room: Rect, with_handl
 /// The water time between two points of a moving part's path (seconds).
 const PATH_STEP: f64 = 1.0 / 30.0;
 
-/// Piece or Wall `id`'s path, when it moves (Keyframed, with something to it): where it is every
-/// [`PATH_STEP`] of water time over the scene's Length, and where its Position keys put it (world
-/// pixels).
+/// Piece or Wall `id`'s path, when the water moves it (Keyframed, among the draft's moving parts):
+/// where it is every [`PATH_STEP`] of water time over the scene's Length (more coarsely past
+/// [`MOST_PATH_STEPS`]), and where its Position keys put it (world pixels).
 pub fn path_of(studio: &Studio, id: ThingId) -> Option<(Vec<Vec2>, Vec<Vec2>)> {
+    // (Only a part the water moves: not a Driven one yet, nor one past the most it moves.)
+    let setup = studio.water_draft.setup.as_deref()?;
+    let k = setup.solids.iter().position(|s| s.id == id)?;
+    if !setup.movers.contains(&k) {
+        return None;
+    }
     let solid = solid_of(studio, id)?;
-    if solid.motion() != MovesKind::Keyframed || solid.moving_part().is_none() {
+    if solid.motion() != MovesKind::Keyframed {
         return None;
     }
     let root = studio.resolved.things.get(&ThingId::ROOT);
     let settings = root.map(|r| <bpe_kit::SceneSettings as bpe_core::Settings>::from_params(&r.params));
     let length = f64::from(settings.unwrap_or_default().duration.max(0.0));
-    let steps = (length / PATH_STEP).ceil().min(MOST_PATH_STEPS) as usize;
-    let path = (0..=steps).map(|i| solid.pose_at((i as f64 * PATH_STEP).min(length)).at).collect();
+    // (Every 1/30 s for a minute; a longer scene's path is drawn more coarsely.)
+    let steps = ((length / PATH_STEP).ceil() as usize).min(MOST_PATH_STEPS);
+    let step = if steps > 0 { length / steps as f64 } else { 0.0 };
+    let path = (0..=steps).map(|i| solid.pose_at((i as f64 * step).min(length)).at).collect();
     Some((path, solid.position_keys()))
 }
 
-/// The most steps a path is drawn in (ten minutes' worth).
-const MOST_PATH_STEPS: f64 = 18_000.0;
+/// The most steps a path is drawn in (a minute's worth at [`PATH_STEP`]).
+const MOST_PATH_STEPS: usize = 1800;
 
 /// The picked handles on screen, for tests: points, turn dot, size dot.
 #[cfg(test)]
