@@ -106,7 +106,7 @@ fn bright(c: [f32; 3]) -> f32 {
     0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 }
 
-/// 1. The same drops draw the same picture to the bit, twice and from a second drawing, with every
+/// Test 1: The same drops draw the same picture to the bit, twice and from a second drawing, with every
 /// pass on (lamps, glow, bounce, two liquids, ripples).
 #[test]
 fn the_same_drops_draw_the_same_picture() {
@@ -127,7 +127,7 @@ fn the_same_drops_draw_the_same_picture() {
     assert!(first.pixels == other.pixels, "a second drawing draws the same");
 }
 
-/// 2. With the plain inputs the pool is drawn where its drops are, the back and the rock where they
+/// Test 2: With the plain inputs the pool is drawn where its drops are, the back and the rock where they
 /// are, in their own colours (Ambient 1 shows every colour as it is).
 #[test]
 fn with_the_plain_inputs_everything_is_where_it_is() {
@@ -148,7 +148,7 @@ fn with_the_plain_inputs_everything_is_where_it_is() {
     assert!(apart(pic.at(Vec2::new(-300.0, 600.0)), back) <= 2, "no water beside the pool");
 }
 
-/// 3. A Spot lights open space in its cone and not outside it, and a wall between it and a point
+/// Test 3: A Spot lights open space in its cone and not outside it, and a wall between it and a point
 /// shadows the point (with Shadows on; with them off, the point is lit).
 #[test]
 fn a_spot_lights_its_cone_and_walls_shadow_it() {
@@ -173,7 +173,7 @@ fn a_spot_lights_its_cone_and_walls_shadow_it() {
     assert!(unshadowed > 0.5 * in_cone, "with Shadows off the wall doesn't stop it: {unshadowed}");
 }
 
-/// 4. A lamp's light under a deep pool is dimmer than over it, and bluer for blue water.
+/// Test 4: A lamp's light under a deep pool is dimmer than over it, and bluer for blue water.
 #[test]
 fn light_under_deep_water_is_dimmer_and_takes_its_colour() {
     let Some(gpu) = card() else { return };
@@ -200,7 +200,7 @@ fn floor_light(gpu: &Arc<LookGpu>, caustics: f32) -> Vec<f32> {
     (0..60).map(|k| bright(d.look.light_at(Vec2::new(-300.0 + 10.0 * k as f32, 880.0)).unwrap())).collect()
 }
 
-/// 5. Caustics: under a waved surface the floor's brightest light is well over its mean with
+/// Test 5: Caustics: under a waved surface the floor's brightest light is well over its mean with
 /// Caustics 2, and even with Caustics 0.
 #[test]
 fn a_waved_surface_throws_caustics_on_the_floor() {
@@ -216,7 +216,7 @@ fn a_waved_surface_throws_caustics_on_the_floor() {
     assert!(hi - lo < 0.1 * mean, "even with no caustics: {lo} to {hi} round {mean}");
 }
 
-/// 6. Glowing liquid lights the rock beside it; rock behind a closed wall stays at its ambient.
+/// Test 6: Glowing liquid lights the rock beside it; rock behind a closed wall stays at its ambient.
 #[test]
 fn glow_lights_the_rock_beside_it_and_not_behind_a_wall() {
     let Some(gpu) = card() else { return };
@@ -273,7 +273,7 @@ fn materials(kinds: &[MaterialKind]) -> (SolidField, Look) {
     (field, look)
 }
 
-/// 7. Each Material draws: Flat one colour across its inside, Rock and Paper vary, Glass shows the
+/// Test 7: Each Material draws: Flat one colour across its inside, Rock and Paper vary, Glass shows the
 /// back's gradient through it, and an Outline draws its colour along the face.
 #[test]
 fn each_material_draws_its_own_way() {
@@ -315,7 +315,7 @@ fn png_file(name: &str, w: u32, h: u32, pixels: &[[u8; 3]]) -> std::path::PathBu
     path
 }
 
-/// 8. The Back: a Colour, a Gradient along Direction 0, a Picture in its quarters, and a missing
+/// Test 8: The Back: a Colour, a Gradient along Direction 0, a Picture in its quarters, and a missing
 /// Picture drawn as Darker rock (and told).
 #[test]
 fn the_back_shows_what_its_card_says() {
@@ -352,7 +352,7 @@ fn the_back_shows_what_its_card_says() {
     assert_eq!(d.look.notes(), vec!["The back's picture can't be read".to_string()]);
 }
 
-/// 9. Bend moves a striped back seen through clear liquid; Bend 0 doesn't, and away from the
+/// Test 9: Bend moves a striped back seen through clear liquid; Bend 0 doesn't, and away from the
 /// liquid nothing moves.
 #[test]
 fn bend_moves_what_is_seen_through_the_liquid() {
@@ -392,7 +392,7 @@ fn bend_moves_what_is_seen_through_the_liquid() {
     assert_eq!(far, 0, "nothing moves away from the liquid");
 }
 
-/// 10. Shine: a lamp gives the surface facing it a highlight brighter than the body below it.
+/// Test 10: Shine: a lamp gives the surface facing it a highlight brighter than the body below it.
 #[test]
 fn shine_catches_the_lamp_on_the_surface() {
     let Some(gpu) = card() else { return };
@@ -409,7 +409,7 @@ fn shine_catches_the_lamp_on_the_surface() {
     assert!(top > below + 20.0, "a highlight at the surface: {top} over {below}");
 }
 
-/// 11. Bands 3 shades a lit body in a few flat steps where it is smooth with Bands 0.
+/// Test 11: Bands 3 shades a lit body in a few flat steps where it is smooth with Bands 0.
 #[test]
 fn bands_shade_in_flat_steps() {
     let Some(gpu) = card() else { return };
@@ -445,7 +445,7 @@ fn bands_shade_in_flat_steps() {
     assert!(smooth >= banded + 4, "smooth shading spans many more: {smooth} against {banded}");
 }
 
-/// 12. The light at a world point is the same whatever the view shows.
+/// Test 12: The light at a world point is the same whatever the view shows.
 #[test]
 fn the_light_does_not_depend_on_the_view() {
     let Some(gpu) = card() else { return };
@@ -461,7 +461,7 @@ fn the_light_does_not_depend_on_the_view() {
     assert!(bright(a) > 0.0);
 }
 
-/// 13. Draft and Good differ little, and both differ from no lamps.
+/// Test 13: Draft and Good differ little, and both differ from no lamps.
 #[test]
 fn draft_and_good_differ_little() {
     let Some(gpu) = card() else { return };

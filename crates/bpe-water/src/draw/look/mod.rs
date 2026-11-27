@@ -393,12 +393,12 @@ impl LookDraw {
         // 3. The node fields and their mips.
         let n = &self.nodes;
         let nodes = group(&gpu.nodes, "water look nodes", &drop_entries());
-        let targets = n.by_level[0].each_ref().map(|v| attach(v));
+        let targets = n.by_level[0].each_ref().map(attach);
         run_pass(encoder, "water look nodes", &targets, &gpu.nodes.pipeline, &nodes, 6, drops.count);
         for k in 1..n.levels as usize {
             let [d, g, c] = &n.by_level[k - 1];
             let half = group(&gpu.half, "water look half", &[entry(21, tex(d)), entry(22, tex(g)), entry(23, tex(c))]);
-            let targets = n.by_level[k].each_ref().map(|v| attach(v));
+            let targets = n.by_level[k].each_ref().map(attach);
             run_pass(encoder, "water look half", &targets, &gpu.half.pipeline, &half, 3, 1);
         }
         // 4. The light maps.
