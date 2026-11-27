@@ -695,6 +695,11 @@ impl Plain {
         self.pictures.as_ref().map(|p| &p.output)
     }
 
+    /// The last picture's own view (rgba8 holding sRGB), for a readback.
+    pub fn output_view(&self) -> Option<&wgpu::TextureView> {
+        self.pictures.as_ref().map(|p| &p.output_view)
+    }
+
     /// The last picture drawn, read back: rgba8, sRGB, rows packed (empty before any draw).
     pub fn read(&self) -> Vec<u8> {
         let Some(p) = self.pictures.as_ref() else { return Vec::new() };
