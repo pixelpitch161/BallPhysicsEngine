@@ -207,6 +207,16 @@ fn solid_at(q: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(g, d);
 }
 
+// Moving part `m`'s place (grid), turn and scale a share `t` through the frame: its end exactly at
+// 1 (a part laid at a frame's end and one laid there afresh, as from a restart point, are the same
+// to the bit).
+fn mover_pose(m: Mover, t: f32) -> vec4<f32> {
+    if t >= 1.0 {
+        return m.b;
+    }
+    return mix(m.a, m.b, t);
+}
+
 // How fast the solid's face nearest `q` moves (grid units a second): 0 for a still one, the point
 // speed of a moving part at `q` at the step's end (its place's speed, its turn's and its growth's).
 fn solid_speed(q: vec2<f32>) -> vec2<f32> {
@@ -219,9 +229,9 @@ fn solid_speed(q: vec2<f32>) -> vec2<f32> {
         return vec2<f32>(0.0);
     }
     let m = fr.movers[who - 1u];
-    let t = st.t.x;
-    let r = q - mix(m.a.xy, m.b.xy, t);
-    let scale = max(mix(m.a.w, m.b.w, t), 0.01);
+    let pose = mover_pose(m, st.t.x);
+    let r = q - pose.xy;
+    let scale = max(pose.w, 0.01);
     // (A clockwise turn, y down: a point `r` from the place moves along (-r.y, r.x).)
     return m.e.xy + m.e.z * vec2<f32>(-r.y, r.x) + (m.e.w / scale) * r;
 }

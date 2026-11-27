@@ -95,7 +95,7 @@ fn a_kept_moment_is_the_body_at_its_moment() {
         assert!((t - (30.0 + k as f64 / 4.0)).abs() < 0.05, "moment {k} at frame {t}");
     }
     let mut codec = FrameCodec::new();
-    let bytes = codec.encode(&moments[4].drops, cells);
+    let bytes = codec.encode(&moments[4].drops, cells, &moments[4].poses);
     let last = codec.decode(&bytes, &layout).unwrap();
     let mut body: Vec<[f32; 2]> = run.water.read().iter().map(|d| d.x).collect();
     let mut back: Vec<[f32; 2]> = last.xv.iter().map(|p| [p[0], p[1]]).collect();

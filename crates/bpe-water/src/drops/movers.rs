@@ -66,6 +66,12 @@ impl Moving {
     pub(super) fn fastest(&self) -> f32 {
         self.movers.fastest(&self.poses, &self.ends, FRAME)
     }
+    /// Each part's pose a share `t` of the way through the coming frame (where it was keyed at 1) and
+    /// its speed over the frame.
+    pub(super) fn at_share(&self, t: f32) -> Vec<(Pose, Pose)> {
+        let at = |a: Pose, b: Pose| if t >= 1.0 { b } else { Pose::lerp(a, b, t) };
+        self.poses.iter().zip(&self.ends).map(|(a, b)| (at(*a, *b), a.speed_to(*b, FRAME))).collect()
+    }
 }
 
 impl Water {
@@ -155,6 +161,12 @@ impl Water {
                 *end = ends.get(k).copied().map_or(m.poses[k], Pose::sane);
             }
         }
+    }
+
+    /// Each moving part's pose a share `t` through the coming frame and its speed over it (none
+    /// without parts).
+    pub(super) fn poses_at_share(&self, t: f32) -> Vec<(Pose, Pose)> {
+        self.moving.as_ref().map_or_else(Vec::new, |m| m.at_share(t))
     }
 
     /// Where each moving part is now (at the boundary the body is at).

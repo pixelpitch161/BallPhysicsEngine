@@ -46,19 +46,17 @@ fn cs_movers(@builtin(global_invocation_id) id: vec3<u32>) {
     var wet = still[n + k];
     var who = 0u;
     let p = vec2<f32>(f32(x), f32(y));
-    let t = st.t.x;
     for (var j = 0u; j < fr.mv.y; j = j + 1u) {
         let m = fr.movers[j];
-        let at = mix(m.a.xy, m.b.xy, t);
-        let scale = max(mix(m.a.w, m.b.w, t), 0.01);
-        let r = p - at;
+        let pose = mover_pose(m, st.t.x);
+        let scale = max(pose.w, 0.01);
+        let r = p - pose.xy;
         let reach = m.g.z * scale + 1.0;
         if dot(r, r) > reach * reach {
             continue;
         }
-        let turn = mix(m.a.z, m.b.z, t);
-        let c = cos(turn);
-        let s = sin(turn);
+        let c = cos(pose.z);
+        let s = sin(pose.z);
         let own = shape_at(m, vec2<f32>(r.x * c + r.y * s, -r.x * s + r.y * c) / scale);
         if own >= FAR_CELLS {
             continue;

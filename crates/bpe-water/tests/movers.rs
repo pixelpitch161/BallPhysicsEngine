@@ -4,8 +4,12 @@
 use std::sync::Arc;
 
 use bpe_water::drops::LEAST_WALL;
+use bpe_water::drops::capture::Capture;
+use bpe_water::drops::numbers::FRAME;
+use bpe_water::take::FrameCodec;
 use bpe_water::{
     Drop, Feel, Layout, Mover, MoverShape, Movers, Numbers, Pose, STOPS, Solid, SolidField, WATER, Water, WaterGpu,
+    WaterState,
 };
 use bpe_water::{fill_stacked, probe, scenes};
 use glam::Vec2;
@@ -294,4 +298,51 @@ fn moving_water_repeats() {
     let first = run(None);
     assert_eq!(first, run(None), "twice from the start");
     assert_eq!(first, run(Some(40)), "from a copy made at frame 40");
+    // From a restart point: a body made from the state, its parts set where the state says.
+    let mut water = body(&gpu, &movers, start, Vec2::new(-SIDE, FLOOR - 100.0), Vec2::new(SIDE, FLOOR));
+    play(&mut water, &keys, 40);
+    let state = WaterState::from_bytes(&water.state().to_bytes()).expect("the state reads back");
+    assert_eq!(state.poses, water.poses(), "the state keeps where the parts are");
+    let (numbers, feels) = (*water.numbers(), water.feels().to_vec());
+    let mut again = Water::from_state(gpu.clone(), &still, scenes::GRAVITY, numbers, &feels, &state).unwrap();
+    again.set_movers(movers.clone(), &state.poses);
+    play(&mut again, &keys, 60);
+    assert_eq!(first, probe::print_of(&again.read()), "from a restart point at frame 40");
+}
+
+/// The moments kept inside a frame know where the parts were then, and the take keeps it.
+#[test]
+fn a_moment_inside_a_frame_keeps_the_parts_between() {
+    let Some(gpu) = card() else { return };
+    let still = course();
+    let a = Pose::new(Vec2::new(-200.0, 110.0), 0.0, 1.0);
+    let movers = plate(&still, 20.0, 140.0, a.at);
+    let mut water = body(&gpu, &movers, a, Vec2::new(-SIDE, FLOOR - 100.0), Vec2::new(SIDE, FLOOR));
+    let b = Pose::new(a.at + Vec2::new(12.0, -3.0), 0.05, 1.1);
+    water.move_to(&[b]);
+    let mut capture = Capture::new();
+    water.frame_keeping(4, &mut capture);
+    let kept = capture.take(gpu.device(), true);
+    assert_eq!(kept.len(), 4);
+    let speed = a.speed_to(b, FRAME);
+    for c in &kept {
+        let t = if c.moment.steps == 0 { 1.0 } else { c.moment.steps as f32 / c.moment.of as f32 };
+        let want = Pose::lerp(a, b, t);
+        let (pose, fast) = c.poses[0];
+        assert!(
+            (pose.at - want.at).length() < 1e-3
+                && (pose.turn - want.turn).abs() < 1e-5
+                && (pose.scale - want.scale).abs() < 1e-5,
+            "at {t} the part is at {pose:?}, not {want:?}"
+        );
+        assert_eq!(fast, speed);
+    }
+    assert_eq!(kept[3].poses[0].0, b, "the frame's end is where it was keyed");
+    let l = water.layout();
+    let mut codec = FrameCodec::new();
+    let bytes = codec.encode(&kept[1].drops, (l.cols - 1) * (l.rows - 1), &kept[1].poses);
+    let back = codec.decode(&bytes, &l).unwrap();
+    assert_eq!(back.poses, kept[1].poses);
+    let ahead = back.poses_at(0.004);
+    assert_eq!(ahead, vec![kept[1].poses[0].0.moved_on(speed, 0.004)]);
 }

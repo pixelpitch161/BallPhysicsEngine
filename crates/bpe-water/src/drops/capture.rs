@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use super::Water;
 use super::buffers::STORE;
 use super::passes::{ENTRIES, P, STEP_ROOM};
+use crate::parts::Pose;
 
 /// The most moments a frame keeps (its end and seven inside it: 8 times the frames).
 pub const MOST_KEPT: u32 = 8;
@@ -34,12 +35,17 @@ impl Moment {
 }
 
 /// One moment's drops, each as `[cell | kind << 24, place and speed]` (all ones: not in the
-/// course), in the order the card holds them.
+/// course), in the order the card holds them, and each moving part's pose then and its speed over
+/// the frame ([`Pose::speed_to`]).
 #[derive(Clone, Debug)]
 pub struct Captured {
     pub moment: Moment,
     pub drops: Vec<[u32; 2]>,
+    pub poses: Vec<(Pose, Pose)>,
 }
+
+/// A moment on its way: when, how many drops it packs, and where the parts are then.
+pub(super) type Kept = (Moment, u32, Vec<(Pose, Pose)>);
 
 /// A moment's buffers: where the pass packs, and its copy for reading.
 struct Slot {
@@ -50,7 +56,7 @@ struct Slot {
 
 /// One frame's moments on their way back.
 struct Pending {
-    moments: Vec<(Moment, u32)>,
+    moments: Vec<Kept>,
     done: Option<wgpu::SubmissionIndex>,
     /// Its buffers not mapped yet.
     left: Arc<AtomicU32>,
@@ -58,9 +64,9 @@ struct Pending {
 
 impl Pending {
     /// Maps the first `n` moments' bytes of each of `slots` (as `moments` say).
-    fn map(slots: &[Slot], moments: Vec<(Moment, u32)>, done: wgpu::SubmissionIndex) -> Pending {
+    fn map(slots: &[Slot], moments: Vec<Kept>, done: wgpu::SubmissionIndex) -> Pending {
         let left = Arc::new(AtomicU32::new(moments.iter().filter(|m| m.1 > 0).count() as u32));
-        for (k, (_, n)) in moments.iter().enumerate() {
+        for (k, (_, n, _)) in moments.iter().enumerate() {
             if *n > 0 {
                 let left = left.clone();
                 slots[k].back.slice(..u64::from(*n) * 8).map_async(wgpu::MapMode::Read, move |_| {
@@ -117,7 +123,7 @@ impl Capture {
         if let Some(done) = &pending.done {
             let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(done.clone()), timeout: None });
         }
-        for (k, (moment, n)) in pending.moments.into_iter().enumerate() {
+        for (k, (moment, n, poses)) in pending.moments.into_iter().enumerate() {
             let drops = if n == 0 {
                 Vec::new()
             } else {
@@ -130,7 +136,7 @@ impl Capture {
                 back.unmap();
                 out
             };
-            self.ready.push_back(Captured { moment, drops });
+            self.ready.push_back(Captured { moment, drops, poses });
         }
         self.order.retain(|s| *s != set);
     }
@@ -173,9 +179,9 @@ impl Capture {
         set
     }
 
-    /// Frame moments that had no drops (nothing sent to the card).
-    pub(super) fn none(&mut self, moments: &[Moment]) {
-        self.ready.extend(moments.iter().map(|m| Captured { moment: *m, drops: Vec::new() }));
+    /// Frame moments that had no drops (nothing sent to the card), with where the parts were.
+    pub(super) fn none(&mut self, moments: Vec<(Moment, Vec<(Pose, Pose)>)>) {
+        self.ready.extend(moments.into_iter().map(|(moment, poses)| Captured { moment, drops: Vec::new(), poses }));
     }
 }
 
@@ -230,8 +236,11 @@ impl Water {
     /// point's).
     pub fn capture_now(&mut self, capture: &mut Capture) {
         let moment = Moment { frame: self.frames, steps: 0, of: 1 };
+        // (Where the parts are now, still: the coming frame's move isn't theirs yet.)
+        let poses: Vec<(Pose, Pose)> =
+            self.poses().iter().map(|p| (*p, Pose::new(glam::Vec2::ZERO, 0.0, 0.0))).collect();
         if self.count == 0 {
-            capture.none(&[moment]);
+            capture.none(vec![(moment, poses)]);
             return;
         }
         let device = self.gpu.device.clone();
@@ -255,7 +264,7 @@ impl Water {
         let bytes = u64::from(self.count) * 8;
         encoder.copy_buffer_to_buffer(&slot.pack, 0, &slot.back, 0, bytes);
         let done = self.gpu.queue.submit([encoder.finish()]);
-        capture.busy[set] = Some(Pending::map(&capture.sets[set], vec![(moment, self.count)], done));
+        capture.busy[set] = Some(Pending::map(&capture.sets[set], vec![(moment, self.count, poses)], done));
         capture.order.push_back(set);
     }
 }
@@ -315,7 +324,7 @@ impl Packing {
         }
     }
 
-    pub(super) fn sent(self, capture: &mut Capture, moments: Vec<(Moment, u32)>, done: wgpu::SubmissionIndex) {
+    pub(super) fn sent(self, capture: &mut Capture, moments: Vec<Kept>, done: wgpu::SubmissionIndex) {
         capture.busy[self.set] = Some(Pending::map(&capture.sets[self.set], moments, done));
         capture.order.push_back(self.set);
     }

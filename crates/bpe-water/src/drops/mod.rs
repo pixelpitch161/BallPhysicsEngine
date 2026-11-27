@@ -917,14 +917,15 @@ impl Water {
                 pass.dispatch_workgroups(end.div_ceil(WORKGROUP).max(1), 1, 1);
             }
             clock.copy_back(&mut encoder, k);
-            let moments: Vec<(capture::Moment, u32)> = packing
+            let moments: Vec<capture::Kept> = packing
                 .as_ref()
                 .map(|p| {
-                    let inside =
-                        p.cuts.iter().map(|&j| (capture::Moment { frame: k, steps: j + 1, of: n }, counts[j as usize]));
-                    inside
-                        .chain(std::iter::once((capture::Moment { frame: k + 1, steps: 0, of: 1 }, end + slots)))
-                        .collect()
+                    let inside = p.cuts.iter().map(|&j| {
+                        let moment = capture::Moment { frame: k, steps: j + 1, of: n };
+                        (moment, counts[j as usize], self.poses_at_share((j + 1) as f32 / n as f32))
+                    });
+                    let end_moment = capture::Moment { frame: k + 1, steps: 0, of: 1 };
+                    inside.chain(std::iter::once((end_moment, end + slots, self.poses_at_share(1.0)))).collect()
                 })
                 .unwrap_or_default();
             if let (Some(p), Some((c, _))) = (&packing, keep.as_ref()) {
@@ -943,10 +944,11 @@ impl Water {
         if done.is_none()
             && let Some((c, f)) = keep.as_mut()
         {
-            let inside = capture::cuts(n, *f).into_iter().map(|j| capture::Moment { frame: k, steps: j + 1, of: n });
-            let all: Vec<capture::Moment> =
-                inside.chain(std::iter::once(capture::Moment { frame: k + 1, steps: 0, of: 1 })).collect();
-            c.none(&all);
+            let inside = capture::cuts(n, *f).into_iter().map(|j| {
+                (capture::Moment { frame: k, steps: j + 1, of: n }, self.poses_at_share((j + 1) as f32 / n as f32))
+            });
+            let end_moment = (capture::Moment { frame: k + 1, steps: 0, of: 1 }, self.poses_at_share(1.0));
+            c.none(inside.chain(std::iter::once(end_moment)).collect());
         }
         let end = if done.is_some() { end + slots } else { end };
         if done.is_some() {

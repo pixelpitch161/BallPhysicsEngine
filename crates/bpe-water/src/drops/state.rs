@@ -8,9 +8,10 @@ use super::Water;
 use super::clock::ClockState;
 use crate::drop::{Pour, Poured};
 use crate::drops::numbers::{Feel, Numbers};
+use crate::parts::{MOST_MOVERS, Pose};
 use crate::solid::SolidField;
 
-const MAGIC: &[u8; 8] = b"BPESTAT1";
+const MAGIC: &[u8; 8] = b"BPESTAT2";
 
 /// A body's state at a frame boundary (before frame `frames` starts).
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +32,9 @@ pub struct WaterState {
     pub deep_hold: u32,
     pub deep_frames: u32,
     pub pours: Vec<(Pour, Poured)>,
+    /// Where each moving part is (part 5): a body made from the state is given its parts there
+    /// ([`Water::set_movers`]).
+    pub poses: Vec<Pose>,
     pub(super) clock: ClockState,
     /// The kept drops' buffers (`count` x 16 bytes each) and the deep water's kept cells (whole).
     pub xv: Vec<u8>,
@@ -115,6 +119,12 @@ impl WaterState {
             o.u32(s.born);
             o.f32(s.extra);
         }
+        o.u32(self.poses.len() as u32);
+        for p in &self.poses {
+            for v in [p.at.x, p.at.y, p.turn, p.scale] {
+                o.f32(v);
+            }
+        }
         self.clock.write(&mut o);
         for b in [&self.xv, &self.nf, &self.id, &self.cellp, &self.wallc, &self.dfa] {
             o.bytes(b);
@@ -156,6 +166,15 @@ impl WaterState {
             let state = Poured { owed: i.f32()?, born: i.u32()?, extra: i.f32()? };
             pours.push((pour, state));
         }
+        let n = i.u32()? as usize;
+        if n > MOST_MOVERS {
+            bail!("the state has too many moving parts");
+        }
+        let mut poses = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (x, y, turn, scale) = (i.f32()?, i.f32()?, i.f32()?, i.f32()?);
+            poses.push(Pose::new(glam::Vec2::new(x, y), turn, scale));
+        }
         let clock = ClockState::read(&mut i)?;
         let (xv, nf, id) = (i.bytes()?, i.bytes()?, i.bytes()?);
         let (cellp, wallc, dfa) = (i.bytes()?, i.bytes()?, i.bytes()?);
@@ -180,6 +199,7 @@ impl WaterState {
             deep_hold,
             deep_frames,
             pours,
+            poses,
             clock,
             xv,
             nf,
@@ -215,6 +235,7 @@ impl Water {
             deep_hold: self.deep_hold,
             deep_frames: self.deep_frames,
             pours: self.pours.clone(),
+            poses: self.poses().to_vec(),
             clock,
             xv: read(&self.by.xv, drops),
             nf: read(&self.by.nf, drops),
@@ -225,7 +246,8 @@ impl Water {
         }
     }
 
-    /// A body on `field` (the one the state's body was made on) that plays on exactly as the body
+    /// A body on `field` (the one the state's body was made on, its still field when parts move:
+    /// give it its parts at `state.poses` with [`Water::set_movers`]) that plays on exactly as the body
     /// whose state `state` is did, given the same inputs each frame. `gravity`, `numbers` and
     /// `feels` are as [`Water::new`] takes them (the frame's inputs set them again before it plays).
     pub fn from_state(
