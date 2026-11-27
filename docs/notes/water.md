@@ -954,6 +954,13 @@ and each liquid's Look card, finished by the same bloom, exposure and composite 
 - **Pitfall: a level worked out per pixel.** The cloud's software card (lavapipe) reads `textureDimensions(t, k)` and
   `textureLoad(t, .., k)` with a per-pixel `k` as one level for a block of pixels, so `look.wgsl` works out a level's
   size from level 0's (`size_at`) and reads across levels as a loop over the level numbers (`level_share`).
+- **Marches** take at most 320 steps, through open air half a level-4 texel at a time (a whole one where level 5 is
+  empty too), so a lamp several screens away still shadows at Final detail. The shot's light map reaches past the
+  view as far as a solid's face light and the bent back are read (`light_reach`), so the picture's edge is lit as the
+  stage's whole-course picture is.
+- **The Back's Picture** is the PNG the scene keeps under the card's name (the inspector's "…" keeps it and names it on
+  the Back card), or else the name read as a file's path. Paper's cut-out shadow uses the largest Paper Depth, and the
+  caustics' ripples the largest Ripples, of the scene.
 - **The surface rounding** (Shine, Edge sheen, Ripples' tilt) takes how far inside the outline a pixel is from the
   amount's slope within a splat of the outline, and from the smooth surface past two splats: deep in a body the
   amount's slope between the drops would make a grain under bright light.

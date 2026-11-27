@@ -626,3 +626,12 @@ Built as planned (decisions 1 to 31), with these changes found while building ag
     solid's own shadow starts; it now falls off as `exp(−(depth in / spill)²)`, so it lights the rim and fades before
     the lines show. (Taking it along the face over the depth was tried: it drew dotted lines where the nearest face
     changes.)
+- **What the review found** (fixed): a march to a lamp gave up after 160 steps of at most 8 cells, so at Final detail a
+  lamp over 1,300 to 2,500 px away cast no shadows (now 320 steps, 16 cells at a time where level 5 is empty too:
+  `a_far_lamp_still_casts_shadows`); the Back's Picture read only a file, not the picture the scene keeps (the
+  inspector's "…" now puts it on the Back card, and `BackLook::Picture` carries the kept bytes); its note stayed after
+  the Back stopped being a picture; a picture thinner than its scale-down step made a texture with no rows; the shot's
+  light map now reaches past the view as far as a solid's face light and the bent back are read (`light_reach`); the
+  stage's lamp markers read the lamp at the playhead.
+- **Known limits, left as they are**: Paper's cut-out shadow is offset by the largest Paper Depth in the scene, and the
+  caustics' ripples use the largest Ripples of any liquid (the light map can't tell liquids apart).

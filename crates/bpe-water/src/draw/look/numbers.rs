@@ -323,6 +323,18 @@ pub(crate) fn spreads(look: &Look) -> bool {
     glows || bounces
 }
 
+/// How far past the view the picture reads the shot's light (world px): a solid takes the light
+/// just outside its nearest face up to twice its spill (twice its Depth, at least 16 px) in, and the
+/// back is seen bent through the liquid by up to its Bend (and its ripples' and Rainbow split's
+/// share), so the light at the picture's edge is the same whatever the view.
+pub(crate) fn light_reach(look: &Look, texel: f32, cell: f32) -> f32 {
+    let size = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let spill =
+        std::iter::once(&look.rock).chain(&look.solids).map(|m| 2.0 * size(m.depth).max(8.0)).fold(16.0, f32::max);
+    let bend = look.liquids.iter().map(|l| 1.6 * size(l.bend)).fold(0.0, f32::max);
+    (2.0 * spill + 1.5 * texel.max(cell)).max(bend) + texel
+}
+
 /// Whether any lamp gives light.
 pub(crate) fn lit(look: &Look) -> bool {
     look.lamps.iter().any(|l| l.brightness > 0.0 && l.brightness.is_finite())

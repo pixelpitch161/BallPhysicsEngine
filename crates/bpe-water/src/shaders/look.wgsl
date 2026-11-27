@@ -138,7 +138,7 @@ const SPEED_UNIT: f32 = 1000.0;
 // A 2D lamp's gentle falloff: half its light this far away.
 const REACH: f32 = 600.0;
 // The most steps a march takes to a lamp.
-const MOST_STEPS: i32 = 160;
+const MOST_STEPS: i32 = 320;
 // The tank's depth into the screen (world px): clear liquid shows what is behind it through this.
 const TANK: f32 = 100.0;
 // The surface rounds over this far in from its outline (world px).
@@ -797,7 +797,10 @@ fn lamp_light(n: u32, p: vec2<f32>, texel: f32) -> LampLight {
             tau += sigma * s;
             stride = min(stride, s);
         } else {
-            stride = min(stride, max(8.0 * u.grid.z, texel));
+            // (Half a coarse texel at a time, a whole one where the level above is empty too: a far
+            // lamp's march through open air reaches it within MOST_STEPS even at a fine detail.)
+            let none_round = density_at(q, 5).a <= 1e-3;
+            stride = min(stride, max(select(8.0, 16.0, none_round) * u.grid.z, texel));
         }
         // Where the light came into the liquid: the first point out of it on the way to the lamp,
         // found exactly between it and the last point in it. (Into a coarse texel with none in it

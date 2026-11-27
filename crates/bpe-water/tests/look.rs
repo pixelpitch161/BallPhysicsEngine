@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use bpe_water::draw::look::{BackLook, Lamp, LampKind, LiquidLook, Look, MaterialKind, MaterialLook, Quality};
+use bpe_water::draw::look::{
+    BackLook, BackPicture, Lamp, LampKind, LiquidLook, Look, MaterialKind, MaterialLook, Quality,
+};
 use bpe_water::draw::sets::{self, REST};
 use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
 use bpe_water::{Drop, Layout, Part, Solid, SolidField};
@@ -173,6 +175,28 @@ fn a_spot_lights_its_cone_and_walls_shadow_it() {
     assert!(unshadowed > 0.5 * in_cone, "with Shadows off the wall doesn't stop it: {unshadowed}");
 }
 
+/// Test 3b: A lamp far up a tall course of fine nodes (1 px) still shadows a floor far below it with
+/// a ledge just under the lamp: the march through open air gets all the way to the lamp.
+#[test]
+fn a_far_lamp_still_casts_shadows() {
+    let Some(gpu) = card() else { return };
+    let layout = Layout::cover(Vec2::new(-100.0, -960.0), Vec2::new(100.0, 960.0), 1.0);
+    let mut solids = sets::carved(&[Solid::rect(Vec2::new(-80.0, -900.0), Vec2::new(80.0, 900.0), false, 0.0)], 12.0);
+    let ledge = Solid::rect(Vec2::new(-100.0, -720.0), Vec2::new(100.0, -690.0), true, 0.0);
+    let lamp = spot(Vec2::new(0.0, -880.0), 90.0, 60.0);
+    let light_at = |field: &SolidField, p: Vec2| {
+        let mut d = Drawn::new(&gpu, field, &[]);
+        d.draw(View::screen(0.25), &dark(vec![lamp.clone()], Quality::Draft));
+        bright(d.look.light_at(p).expect("in the light map"))
+    };
+    let floor = Vec2::new(0.0, 850.0);
+    let open = light_at(&SolidField::build_least(layout, &solids, 12.0), floor);
+    solids.push(ledge);
+    let shut = light_at(&SolidField::build_least(layout, &solids, 12.0), floor);
+    assert!(open > 0.05, "the floor is lit with no ledge: {open}");
+    assert!(shut < 0.05 * open, "the ledge 1,600 px up shadows it: {shut} against {open}");
+}
+
 /// Test 4: A lamp's light under a deep pool is dimmer than over it, and bluer for blue water.
 #[test]
 fn light_under_deep_water_is_dimmer_and_takes_its_colour() {
@@ -315,8 +339,9 @@ fn png_file(name: &str, w: u32, h: u32, pixels: &[[u8; 3]]) -> std::path::PathBu
     path
 }
 
-/// Test 8: The Back: a Colour, a Gradient along Direction 0, a Picture in its quarters, and a missing
-/// Picture drawn as Darker rock (and told).
+/// Test 8: The Back: a Colour, a Gradient along Direction 0, a Picture in its quarters (from a file,
+/// and from the bytes the scene keeps under a name that is no file), and a missing Picture drawn as
+/// Darker rock (and told, until the back is something else).
 #[test]
 fn the_back_shows_what_its_card_says() {
     let Some(gpu) = card() else { return };
@@ -332,8 +357,12 @@ fn the_back_shows_what_its_card_says() {
     let eight: Vec<[u8; 3]> = (0..64).map(|i| quarters[(i % 8 / 4) + 2 * (i / 32)]).collect();
     let path = png_file("quarters", 8, 8, &eight);
     let mut d = Drawn::new(&gpu, &field, &[]);
-    let pic = d.draw(view, &with(BackLook::Picture(path.to_string_lossy().into_owned())));
+    let pic = d.draw(view, &with(BackLook::Picture(BackPicture::file(path.to_string_lossy()))));
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
     let _ = std::fs::remove_file(&path);
+    let kept = BackPicture { name: "Quarters".into(), kept: Some(bytes) };
+    let from_scene = draw(&gpu, &field, &[], view, &with(BackLook::Picture(kept)));
+    assert!(from_scene.pixels == pic.pixels, "the picture the scene keeps shows as the file does");
     for (p, want) in [
         (Vec2::new(-400.0, -600.0), 0),
         (Vec2::new(400.0, -600.0), 1),
@@ -346,10 +375,12 @@ fn the_back_shows_what_its_card_says() {
     }
     assert!(d.look.notes().is_empty());
     let mut d = Drawn::new(&gpu, &field, &[]);
-    let missing = d.draw(view, &with(BackLook::Picture("/no/such/picture.png".into())));
+    let missing = d.draw(view, &with(BackLook::Picture(BackPicture::file("/no/such/picture.png"))));
     let darker = draw(&gpu, &field, &[], view, &with(BackLook::DarkerRock(0.5)));
     assert!(missing.pixels == darker.pixels, "a missing picture shows Darker rock");
     assert_eq!(d.look.notes(), vec!["The back's picture can't be read".to_string()]);
+    d.draw(view, &with(BackLook::Colour([0.2, 0.6, 0.3])));
+    assert!(d.look.notes().is_empty(), "nothing to tell once the back is a colour");
 }
 
 /// Test 9: Bend moves a striped back seen through clear liquid; Bend 0 doesn't, and away from the
@@ -365,7 +396,7 @@ fn bend_moves_what_is_seen_through_the_liquid() {
     let drops: Vec<Drop> = sets::lattice(&field, blob - Vec2::splat(150.0), blob + Vec2::splat(150.0), 0);
     let water = |bend: f32| Look {
         liquids: vec![LiquidLook { clarity: 4000.0, bend, colour: [0.9, 0.95, 1.0], ..LiquidLook::default() }],
-        back: BackLook::Picture(path.to_string_lossy().into_owned()),
+        back: BackLook::Picture(BackPicture::file(path.to_string_lossy())),
         ..Look::default()
     };
     let view = View::screen(0.25);

@@ -58,7 +58,8 @@ pub fn plain_look(scene: &Scene, resolved: &Resolved, time: f64) -> PlainLook {
 /// Liquid's Look (in the scene's order, at most [`MOST_LIQUIDS`]), the Course's Rock and each enabled
 /// Piece's and Wall's Material (in the order the solid field numbers them), the Back, the Light card,
 /// every enabled Lamp (the drawing lights with the first [`bpe_water::draw::look::MOST_LAMPS`]), and
-/// the scene's Bloom and Exposure. Reads no file: a Back picture is its path.
+/// the scene's Bloom and Exposure. Reads no file: a Back picture is the PNG the scene keeps under its
+/// name, or else its name as a path.
 pub fn look_of(scene: &Scene, resolved: &Resolved, time: f64) -> Look {
     let on = |id: &ThingId| resolved.things.contains_key(id);
     let of_kind = |kinds: &[&str]| -> Vec<ThingId> {
@@ -86,7 +87,7 @@ pub fn look_of(scene: &Scene, resolved: &Resolved, time: f64) -> Look {
         liquids,
         rock: material_look(&rock),
         solids,
-        back: back_look(&back),
+        back: back_look(scene, &back),
         light: LightLook {
             ambient: light.ambient,
             bounce: light.bounce,
@@ -173,13 +174,21 @@ fn material_look(m: &MaterialCard) -> MaterialLook {
     }
 }
 
-fn back_look(b: &BackCard) -> BackLook {
+fn back_look(scene: &Scene, b: &BackCard) -> BackLook {
     match b.shows {
         BackShows::DarkerRock => BackLook::DarkerRock(b.darker),
         BackShows::Colour => BackLook::Colour(srgb(b.colour)),
         BackShows::Gradient => BackLook::Gradient { samples: samples(&b.gradient), angle: b.angle },
-        BackShows::Picture => BackLook::Picture(b.picture.clone()),
+        BackShows::Picture => BackLook::Picture(look::BackPicture {
+            name: b.picture.clone(),
+            kept: scene.pictures.get(&b.picture).map(|p| p.bytes.clone()),
+        }),
     }
+}
+
+/// Lamp `id`'s card at water time `time` (with its keyframes), for the stage's markers.
+pub fn lamp_at(scene: &Scene, resolved: &Resolved, id: ThingId, time: f64) -> Option<LampCard> {
+    Keyed::of(scene, resolved, id, SlotId::Main).map(|k| k.card(time))
 }
 
 fn lamp_look(l: &LampCard, place: Vec2) -> Lamp {

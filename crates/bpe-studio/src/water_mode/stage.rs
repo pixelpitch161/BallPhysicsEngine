@@ -405,9 +405,9 @@ fn lamp_marks(
     place: Vec2,
     ink: egui::Color32,
 ) {
-    use bpe_kit::modules::water::look::{LampCard, LampKind};
-    let Some(card) = studio.resolved.things.get(&id).and_then(|t| t.slots.get(&SlotId::Main)) else { return };
-    let lamp = LampCard::from_params(&card.params);
+    use bpe_kit::modules::water::look::LampKind;
+    // (At the playhead, with its keyframes, as the light is drawn.)
+    let Some(lamp) = water::look::lamp_at(&studio.scene, &studio.resolved, id, studio.time) else { return };
     let line = Stroke::new(1.0, ink);
     let at = view.to_screen(place);
     let aim = lamp.aim.to_radians();

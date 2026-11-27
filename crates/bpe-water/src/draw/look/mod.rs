@@ -21,8 +21,8 @@ use glam::Vec2;
 
 pub use gpu::LookGpu;
 pub use inputs::{
-    BackLook, ColourFrom, FinishLook, GRADIENT_SAMPLES, GlowFrom, Lamp, LampKind, LightLook, LiquidLook, Look,
-    MOST_LAMPS, MaterialKind, MaterialLook, Quality,
+    BackLook, BackPicture, ColourFrom, FinishLook, GRADIENT_SAMPLES, GlowFrom, Lamp, LampKind, LightLook, LiquidLook,
+    Look, MOST_LAMPS, MaterialKind, MaterialLook, Quality,
 };
 
 use gpu::PICTURE;
@@ -322,7 +322,12 @@ impl LookDraw {
         let quality = look.light.quality;
         let lit = numbers::lit(look);
         let seen_hi = view.lo + Vec2::new(width as f32, height as f32) / view.scale.max(1e-6);
-        let shot = if lit { numbers::grid_over(&layout, view.lo, seen_hi, quality.light_texel(), most) } else { None };
+        let reach = Vec2::splat(numbers::light_reach(look, quality.light_texel(), layout.cell));
+        let shot = if lit {
+            numbers::grid_over(&layout, view.lo - reach, seen_hi + reach, quality.light_texel(), most)
+        } else {
+            None
+        };
         self.shot_on = shot.is_some();
         if let Some(grid) = shot {
             if !self.shot.as_ref().is_some_and(|m| m.fits(&grid)) {

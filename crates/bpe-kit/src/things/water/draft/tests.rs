@@ -839,8 +839,12 @@ fn the_look_reads_every_card() {
     scene.things.get_mut(&a).unwrap().enabled = false;
     let got = look_at(&scene, 0.0);
     assert_eq!((got.solids.len(), got.solids[0].outline, got.liquids.len()), (1, 3.0, 1));
-    // A picture behind is its path (the drawing reads it).
+    // A picture behind is its path (the drawing reads it), or the picture the scene keeps under its name.
     set(&mut scene, ThingId::ROOT, SlotId::Back, "shows", Value::Choice("picture".into()));
     set(&mut scene, ThingId::ROOT, SlotId::Back, "picture", Value::Text("C:/pictures/sky.png".into()));
-    assert_eq!(look_at(&scene, 0.0).back, BackLook::Picture("C:/pictures/sky.png".into()));
+    assert_eq!(look_at(&scene, 0.0).back, BackLook::Picture(look::BackPicture::file("C:/pictures/sky.png")));
+    let bytes: std::sync::Arc<[u8]> = vec![1, 2, 3].into();
+    let name = scene.add_picture("Sky", bytes.clone());
+    set(&mut scene, ThingId::ROOT, SlotId::Back, "picture", Value::Text(name.clone()));
+    assert_eq!(look_at(&scene, 0.0).back, BackLook::Picture(look::BackPicture { name, kept: Some(bytes) }));
 }

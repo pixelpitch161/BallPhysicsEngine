@@ -1218,7 +1218,8 @@ fn water_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
 /// waved pool lit by a Sun, and glow in the dark with bloom.
 fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
     use bpe_water::draw::look::{
-        BackLook, FinishLook, GlowFrom, Lamp, LampKind, LightLook, LiquidLook, Look, MaterialKind, MaterialLook,
+        BackLook, BackPicture, FinishLook, GlowFrom, Lamp, LampKind, LightLook, LiquidLook, Look, MaterialKind,
+        MaterialLook,
     };
     use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View, sets};
     // (`LOOK_ONLY=water-look-pieces` picks one of them.)
@@ -1358,7 +1359,7 @@ fn water_look_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>
         (
             "water-look-back-picture",
             Box::new(|| sets::bench(3.0)),
-            back(BackLook::Picture(picture.display().to_string())),
+            back(BackLook::Picture(BackPicture::file(picture.display().to_string()))),
         ),
         ("water-look-caustics", Box::new(|| sets::wavy_pool(3.0, 500.0, 14.0, 110.0)), sun),
         ("water-look-glow", Box::new(|| sets::bench(3.0)), glow),

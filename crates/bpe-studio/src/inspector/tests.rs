@@ -447,6 +447,23 @@ fn a_picture_chosen_for_particles_is_kept_in_the_scene() {
 }
 
 #[test]
+fn a_picture_chosen_for_a_water_back_goes_on_the_back_card() {
+    use bpe_kit::things::water::{StartingLook, new_water_scene};
+    let reg = bpe_kit::registry();
+    let scene = new_water_scene(&reg, StartingLook::Plain, "");
+    let mut h = harness_of(scene, Some(ThingId::ROOT));
+    let png: std::sync::Arc<[u8]> = b"\x89PNG\r\n\x1a\nsky".to_vec().into();
+    let ctx = h.ctx.clone();
+    crate::picture_picker::request(&ctx, crate::picture_picker::PictureRequest { name: "Sky".into(), bytes: png });
+    h.run();
+    let scene = &h.state().scene;
+    assert!(scene.pictures.contains_key("Sky"));
+    let back = scene.card(ThingId::ROOT, SlotId::Back).expect("a Water scene's Back");
+    assert_eq!(back.params.get("picture"), Some(&Value::Text("Sky".into())));
+    assert_eq!(scene.things[&ThingId::ROOT].params.get("picture"), None);
+}
+
+#[test]
 fn a_copied_value_pastes_into_another_things_setting() {
     let mut h = harness(Some(ThingId(2)));
     {

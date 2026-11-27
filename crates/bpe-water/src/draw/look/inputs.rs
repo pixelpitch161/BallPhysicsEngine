@@ -150,8 +150,24 @@ pub enum BackLook {
         samples: Vec<[f32; 3]>,
         angle: f32,
     },
-    /// A PNG file, cover-fitted to the course.
-    Picture(String),
+    /// A PNG, cover-fitted to the course: the one the scene keeps under the card's name, or else the
+    /// file the name is the path of.
+    Picture(BackPicture),
+}
+
+/// The Back's Picture: the name on the card, and the PNG's bytes when the scene keeps a picture
+/// under it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct BackPicture {
+    pub name: String,
+    pub kept: Option<std::sync::Arc<[u8]>>,
+}
+
+impl BackPicture {
+    /// A PNG file at `path`.
+    pub fn file(path: impl Into<String>) -> BackPicture {
+        BackPicture { name: path.into(), kept: None }
+    }
 }
 
 impl Default for BackLook {
