@@ -17,6 +17,7 @@ mod buffers;
 pub mod capture;
 mod clock;
 pub mod deep;
+pub mod forces;
 pub mod numbers;
 mod passes;
 pub mod state;
@@ -29,6 +30,8 @@ use buffers::{ByDrop, room_for, storage};
 use clock::Clock;
 pub use clock::{MOST_POURS, Report};
 use deep::{Deep, MOST_LEVELS, TICKS};
+pub use forces::{Force, MOST_FORCES, Push};
+use forces::ForceGpu;
 use numbers::{FRAME, Feel, FeelGpu, MOST_LIQUIDS, Numbers};
 use passes::{ENTRIES, P, Pipelines, STEP_ROOM};
 pub use state::WaterState;
@@ -83,6 +86,8 @@ struct FrameGpu {
     dgrid: [u32; 4],
     air: [f32; 4],
     lv: [[u32; 4]; MOST_LEVELS],
+    forces_n: [u32; 4],
+    forces: [ForceGpu; MOST_FORCES],
 }
 
 /// Where the deep water's pressure passes' numbers start among the step numbers' slots (after
@@ -136,6 +141,8 @@ pub struct Water {
     edges_shut: bool,
     /// The pours, and how far each is through its rows.
     pours: Vec<(Pour, Poured)>,
+    /// The forces (at most [`MOST_FORCES`], each [`Force::is_felt`]).
+    forces: Vec<Force>,
     count: u32,
     room: u32,
     /// The serial the next drop added is given.
@@ -229,6 +236,7 @@ impl Water {
             gravity,
             edges_shut: true,
             pours: Vec::new(),
+            forces: Vec::new(),
             count: 0,
             room,
             serial: 0,
@@ -485,6 +493,16 @@ impl Water {
         self.pours.iter().map(|(p, _)| p)
     }
 
+    /// The forces, from the next frame: the first [`MOST_FORCES`] that can be felt
+    /// ([`Force::is_felt`]), the rest left out.
+    pub fn set_forces(&mut self, forces: &[Force]) {
+        self.forces = forces.iter().filter(|f| f.is_felt()).take(MOST_FORCES).copied().collect();
+    }
+
+    pub fn forces(&self) -> &[Force] {
+        &self.forces
+    }
+
     /// Where the drops are on the card, for the drawing.
     pub fn drop_buffers(&self) -> DropBuffers<'_> {
         DropBuffers { xv: &self.by.xv, nf: &self.by.nf, id: &self.by.id[self.now], count: self.count }
@@ -565,6 +583,10 @@ impl Water {
             spouts[k / 2][2 * (k % 2) + 1] = g.y;
         }
         let (deep_d, deep_b, reach) = n.deep_window(cell);
+        let mut forces = [ForceGpu::default(); MOST_FORCES];
+        for (k, f) in self.forces.iter().take(MOST_FORCES).enumerate() {
+            forces[k] = f.gpu(&self.layout);
+        }
         FrameGpu {
             grid: [self.layout.cols, self.layout.rows, self.pours.len() as u32, u32::from(self.edges_shut)],
             cells: [self.cells.0, self.cells.1, self.cells.0 * self.cells.1, self.bins().div_ceil(BLOCK)],
@@ -596,6 +618,8 @@ impl Water {
                 if n.air_drag.is_finite() { n.air_drag.clamp(0.0, 1.0) } else { 1.0 },
             ],
             lv: self.deep.ladder(),
+            forces_n: [self.forces.len().min(MOST_FORCES) as u32, 0, 0, 0],
+            forces,
         }
     }
 
@@ -618,7 +642,9 @@ impl Water {
         }
         // (The strongest of the liquids' Gravity, and never less than the course's.)
         let pull = self.feels.iter().map(|f| f.gravity.abs()).filter(|g| g.is_finite()).fold(1.0f32, f32::max);
-        let fastest = fastest + self.gravity.length() * pull * 2.0 * FRAME;
+        // (And the forces' strongest pushes, as for gravity.)
+        let pushed: f32 = self.forces.iter().map(Force::strongest).sum();
+        let fastest = fastest + (self.gravity.length() * pull + pushed) * 2.0 * FRAME;
         self.numbers.steps_for(fastest, &self.feels, self.layout.cell).min(MOST_STEPS)
     }
 
@@ -962,6 +988,7 @@ impl Water {
         new.frames = self.frames;
         new.edges_shut = self.edges_shut;
         new.pours = self.pours.clone();
+        new.forces = self.forces.clone();
         new.deep_last = self.deep_last;
         new.deep_dt = self.deep_dt;
         new.prime_next = self.prime_next;

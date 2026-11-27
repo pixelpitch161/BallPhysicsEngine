@@ -337,7 +337,8 @@ fn cs_deep_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
     // water against a wall is as deep as the wall is high.
     let wet = liquid > 1e-4;
     let open = wallc[k].z < 0.5;
-    let full = (dense >= fr.deep.z && rho >= 0.5) || !open;
+    // (Inside a magnet's reach no cell the drops reach is full: that water is the drops' own.)
+    let full = (dense >= fr.deep.z && rho >= 0.5 && !in_magnet(q)) || !open;
     var edge = wet && !full;
     if !wet && open {
         edge = wet_open(x - 1, y) || wet_open(x + 1, y) || wet_open(x, y - 1) || wet_open(x, y + 1);

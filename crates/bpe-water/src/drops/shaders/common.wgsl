@@ -21,6 +21,17 @@ struct Feel {
     b: vec4<f32>,
 };
 
+// A force on the water (drops/forces.rs `ForceGpu`): its middle (grid units), its reach (cells), the
+// most it pushes a drop (cells a second squared); by kind: a magnet's pull (cells a second squared), its
+// spikes' pull, their aim and spread (radians), a whirlpool's speed (cells a second) and rate, a wind's
+// velocity (cells a second) and rate; its kind (1 magnet, 2 whirlpool, 3 wind), the liquids it moves
+// (bit k: liquid k), a magnet's spikes, 0.
+struct Force {
+    a: vec4<f32>,
+    b: vec4<f32>,
+    c: vec4<u32>,
+};
+
 // A frame's numbers: the same for each of its steps.
 struct Fr {
     // the layout's columns and rows of nodes, how many pours, bit 0 the course's edges are shut
@@ -72,6 +83,9 @@ struct Fr {
     air: vec4<f32>,
     // each level of the pressure: where it starts in `cellp` and `coef`, its columns, its rows, 0
     lv: array<vec4<u32>, 12>,
+    // the forces (forces.wgsl): how many, 0, 0, 0; then each force
+    forces_n: vec4<u32>,
+    forces: array<Force, 16>,
 };
 
 // A step's numbers (one for each step of the frame, at its own offset): the drops this step, the
