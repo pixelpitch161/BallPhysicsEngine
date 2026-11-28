@@ -1,4 +1,4 @@
-//! The ready-made looks (Water mode part 6c, decisions 38 to 41): one table, one row a look. A row
+//! The ready-made looks (Water mode part 6c, decisions 38 to 41; Ferrofluid part 4b): one table, one row a look. A row
 //! says how every Liquid's Look card, the Rock and every Material, the Back, the Light card, the
 //! Lamps and the scene's Bloom and Exposure are set; [`apply_look`] writes it into a scene as one
 //! edit. Plain is a row too (the cards' defaults), and adding a look is adding a row.
@@ -27,6 +27,7 @@ pub enum ReadyLook {
     PaintOnPaper,
     Molten,
     Cartoon,
+    Ferrofluid,
 }
 
 /// What [`apply_look`] leaves as it is.
@@ -70,7 +71,7 @@ fn rgb(hex: u32) -> Color {
 }
 
 impl ReadyLook {
-    pub const ALL: [ReadyLook; 7] = [
+    pub const ALL: [ReadyLook; 8] = [
         ReadyLook::Plain,
         ReadyLook::LampLitRock,
         ReadyLook::GlassLab,
@@ -78,6 +79,7 @@ impl ReadyLook {
         ReadyLook::PaintOnPaper,
         ReadyLook::Molten,
         ReadyLook::Cartoon,
+        ReadyLook::Ferrofluid,
     ];
 
     /// Its name, on its tile and in the Use a look menu.
@@ -90,6 +92,7 @@ impl ReadyLook {
             ReadyLook::PaintOnPaper => "Paint on paper",
             ReadyLook::Molten => "Molten",
             ReadyLook::Cartoon => "Cartoon",
+            ReadyLook::Ferrofluid => "Ferrofluid",
         }
     }
 
@@ -103,6 +106,7 @@ impl ReadyLook {
             ReadyLook::PaintOnPaper => "Thick glossy paint on paper cut-outs.",
             ReadyLook::Molten => "Lava that glows and throws sparks, lighting the dark rock round it.",
             ReadyLook::Cartoon => "Flat colours with outlines and banded shading.",
+            ReadyLook::Ferrofluid => "Black glossy ferrofluid on a pale plate, in soft even light.",
         }
     }
 
@@ -114,6 +118,7 @@ impl ReadyLook {
             ReadyLook::Neon => "Neon",
             ReadyLook::PaintOnPaper => "Paint",
             ReadyLook::Molten => "Lava",
+            ReadyLook::Ferrofluid => "Ferrofluid",
         }
     }
 
@@ -227,6 +232,18 @@ impl ReadyLook {
                     (MaterialKind::Flat, rgb(0xffd24a), 4.0, rgb(0x101018));
                 (b.shows, b.colour) = (BackShows::Colour, rgb(0x8fd3ff));
                 (light.ambient, light.caustics, light.shafts) = (1.0, 0.0, 0.0);
+            }
+            ReadyLook::Ferrofluid => {
+                // (Ink black and opaque, glossy from the soft light above it, and only a little sheen: a
+                // thin spike is all edge, and more greys it; little smoothing, so the spikes keep their
+                // points. No lamps: the liquid stops a lamp's light, so every drop on a ceiling or a stream
+                // threw a long shadow across the pale back.)
+                (l.colour, l.solid, l.clarity, l.bend, l.streaks) = (rgb(0x08080b), 1.0, 0.0, 0.0, 0.0);
+                (l.smoothing, l.shine, l.shine_size, l.edge_sheen) = (0.15, 1.0, 0.6, 0.12);
+                (m.material, m.colour) = (MaterialKind::Flat, rgb(0xe6e3dd));
+                (b.shows, b.colour) = (BackShows::Colour, rgb(0xd4d1cb));
+                (light.ambient, light.bounce, light.caustics, light.shafts) = (1.0, 0.2, 0.0, 0.0);
+                row.bloom = 0.1;
             }
         }
         row

@@ -143,6 +143,14 @@ impl WaterSetup {
                 p.card.describe(None, h)
             }));
         }
+        // (Forces are told apart by their place in the list too: whirlpools and winds draw the speed in
+        // the list's order.)
+        for (k, f) in self.forces.iter().enumerate() {
+            parts.push(part(format!("force:{k}"), 0.0, |h| {
+                (f.id, f.drain, f.liquids, f.place_at(0.0).x.to_bits(), f.place_at(0.0).y.to_bits()).hash(h);
+                f.card.describe(f.keys(), h)
+            }));
+        }
         WaterInputs { parts }
     }
 }

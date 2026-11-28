@@ -1,6 +1,7 @@
 //! A Water scene as the water engine's inputs (Water mode part 2b): the carved course and its
 //! Rock's Wetting, the Pieces and Walls laid over it (part 3, [`course`]), the Liquids' Feel, the
-//! Pours, Trapped air, gravity and Bubbles rise read once a frame from their keyframes, and a
+//! Pours, the Forces (part 4b, [`forces`]), Trapped air, gravity and Bubbles rise read once a frame
+//! from their keyframes, and a
 //! fingerprint of
 //! everything the physics reads ([`WaterSetup::print`]), so the editor's draft starts over for a
 //! physics edit and never for a look, a lamp or the camera.
@@ -14,8 +15,8 @@ use std::sync::Arc;
 
 use bpe_core::{Params, Resolved, Scene, Settings, SlotId, Strokes, Target, ThingId, Track};
 use bpe_water::{
-    Drain, Drop, Feel, Layout, LumpKind, Lumps, MOST_DRAINS, MixWhen, Numbers, Pour, STOPS, SolidField, Throw, Timed,
-    WATER, Water, WaterGpu,
+    Drain, Drop, Feel, Force, Layout, LumpKind, Lumps, MOST_DRAINS, MixWhen, Numbers, Pour, STOPS, SolidField, Throw,
+    Timed, WATER, Water, WaterGpu,
 };
 use glam::Vec2;
 
@@ -26,10 +27,12 @@ use crate::modules::water::{
 };
 
 pub mod course;
+pub mod forces;
 pub mod inputs;
 pub mod slow;
 
 pub use course::{Form, SolidSetup};
+pub use forces::{ForceSetup, force_card_at};
 pub use inputs::{InputPart, WaterInputs};
 pub use slow::Speeds;
 
@@ -169,6 +172,8 @@ pub struct FrameInputs {
     pub timed: Vec<Timed>,
     /// Every drain, in the setup's order.
     pub drains: Vec<Drain>,
+    /// Every force felt this frame, in the setup's order.
+    pub forces: Vec<Force>,
 }
 
 /// A Water scene as the water engine's inputs, at draft detail.
@@ -185,7 +190,10 @@ pub struct WaterSetup {
     pub drains: Vec<DrainSetup>,
     /// The enabled Pieces and Walls, in the scene's order: the order they are laid over the rock.
     pub solids: Vec<SolidSetup>,
-    /// What the stage says about a pour that can't pour, or a piece or wall that is not as it will be.
+    /// The enabled Forces and spinning Drains the water feels, in the scene's order.
+    pub forces: Vec<ForceSetup>,
+    /// What the stage says about a pour that can't pour, a piece or wall that is not as it will be, or
+    /// a force that isn't felt.
     pub notes: Vec<(ThingId, &'static str)>,
     /// Changes exactly when what the physics reads changes.
     pub print: u64,
@@ -292,6 +300,7 @@ impl WaterSetup {
                 notes.push((s.id, MOVES_LATER));
             }
         }
+        let forces = ForceSetup::all_of(scene, resolved, &liquid_ids, &mut notes);
         let mut h = DefaultHasher::new();
         let detail_key = match detail {
             Detail::Draft => "draft_detail",
@@ -321,8 +330,11 @@ impl WaterSetup {
             s.form.hash_into(None, &mut h);
             s.material.hash_into(Some(&["wetting"]), &mut h);
         }
+        for f in &forces {
+            f.hash_into(&mut h);
+        }
         let print = h.finish();
-        WaterSetup { size, cell, strokes, liquids, pours, drains, solids, notes, print, detail, world, rock }
+        WaterSetup { size, cell, strokes, liquids, pours, drains, solids, forces, notes, print, detail, world, rock }
     }
 
     /// The grid the water runs on.
@@ -380,7 +392,7 @@ impl WaterSetup {
         Numbers { air: u32::from(w.trapped_air), ..Numbers::for_cell(self.cell) }
     }
 
-    /// What the stage says about pour, piece or wall `id`, if anything.
+    /// What the stage says about pour, piece, wall or force `id`, if anything.
     pub fn note_for(&self, id: ThingId) -> Option<&'static str> {
         self.notes.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
@@ -438,7 +450,8 @@ impl WaterSetup {
             })
             .collect();
         let drains = self.drains.iter().map(|d| drain_of(d, d.card.card(time))).collect();
-        FrameInputs { gravity: w.gravity, air_lift: w.bubble_rise, feels, pours, timed: Vec::new(), drains }
+        let forces = self.forces.iter().filter_map(|f| f.force_at(time)).collect();
+        FrameInputs { gravity: w.gravity, air_lift: w.bubble_rise, feels, pours, timed: Vec::new(), drains, forces }
     }
 
     /// Pour `p`'s lumps as they are at `time` seconds, if it is a Rain, Drip or Burst with a Liquid
@@ -503,8 +516,8 @@ impl WaterSetup {
     }
 
     /// Sets `water`'s inputs for its next frame on `field` (this setup's): gravity, Bubbles rise,
-    /// the liquids' feel, the drains, and the taps and the rain, drips and bursts, none of those
-    /// while the body holds `most` liquid drops or more (by the liquid: trapped air comes and goes,
+    /// the liquids' feel, the drains, the forces, and the taps and the rain, drips and bursts, none of
+    /// those while the body holds `most` liquid drops or more (by the liquid: trapped air comes and goes,
     /// and would stop and start the pours). The draft, the final and a draft's export all play a
     /// frame this way.
     pub fn set_inputs(&self, water: &mut Water, field: &SolidField, most: u32) {
@@ -514,6 +527,7 @@ impl WaterSetup {
         if !inputs.feels.is_empty() {
             water.set_feels(&inputs.feels);
         }
+        water.set_forces(&inputs.forces);
         let full = water.liquid() >= most;
         water.set_pours(if full { &[] } else { &inputs.pours });
         water.set_timed(if full { &[] } else { &inputs.timed });
@@ -531,7 +545,9 @@ impl WaterSetup {
         let inputs = self.inputs_on(state.frames, field);
         let feels = if inputs.feels.is_empty() { vec![Feel::default()] } else { inputs.feels.clone() };
         let numbers = Numbers { air_lift: inputs.air_lift, ..self.numbers() };
-        Water::from_state(gpu, field, inputs.gravity, numbers, &feels, state)
+        let mut water = Water::from_state(gpu, field, inputs.gravity, numbers, &feels, state)?;
+        water.set_forces(&inputs.forces);
+        Ok(water)
     }
 
     /// About how many drops the final holds at most: its fills and what its taps pour in `seconds`
@@ -617,6 +633,7 @@ impl WaterSetup {
         water.set_pours(&inputs.pours);
         water.set_timed(&inputs.timed);
         water.set_drains(&inputs.drains);
+        water.set_forces(&inputs.forces);
         water
     }
 }

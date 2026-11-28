@@ -4,6 +4,7 @@
 /// The shader: its parts joined in order (common.wgsl declares what the rest use).
 pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/common.wgsl"),
+    include_str!("shaders/forces.wgsl"),
     include_str!("shaders/sort.wgsl"),
     include_str!("shaders/sweep.wgsl"),
     include_str!("shaders/finish.wgsl"),

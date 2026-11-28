@@ -1520,7 +1520,6 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
 - `bpe-kit`: `the_mixing_card_reaches_the_water` (and none with no Mixing card); `what_restarts_the_draft` counts the
   Mixing card's three.
 
-
 ## Part 4.3a: ready-made liquids (as built)
 
 Plan `docs/superpowers/plans/water-mode/part4-more-liquids.md` ("4.3a"), decision 23. No physics, setting or drawing
@@ -1652,3 +1651,110 @@ chose (b), a backwards stretch of the video, on 2026-11-28. No physics changed.
   frames, for every frame).
 - **Tests**: `draft/tests.rs` `un_mix_plays_its_stretch_backwards_then_forwards`; `bpe-studio`
   `un_mix_takes_the_finals_playhead_back_over_its_stretch`.
+
+## Part 4b: forces and ferrofluid (as built)
+
+The plan is `docs/superpowers/plans/water-mode/part4b-forces-and-ferrofluid.md` (its decisions and "As built and
+measured"). Wind, whirlpools and magnets push the water; a magnet stands its liquid up in spikes, and the eighth
+ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and Coolers wait for heat.
+
+### Forces in the engine (`bpe-water drops/forces.rs`, `shaders/forces.wgsl`)
+
+- **A force is an input, as gravity is**: `Water::set_forces(&[Force])` once a frame (at most `MOST_FORCES` 16,
+  those that can't be felt left out: not finite, no reach, no liquid, a magnet's pull 0, a rate 0), kept in
+  `Fr.forces` (48 bytes each: place, reach and the most push in cells; the kind's numbers; kind, the liquids'
+  bits, a magnet's spikes). Nothing of it is kept from frame to frame, so the take's format is as it was; a copy
+  carries the list. Every liquid drop the force names (not trapped air) takes its push in `fall()`, after gravity
+  and damping and before the speed cap: the magnets' pushes are added, then each whirlpool's and wind's draw on the
+  speed in the list's order. A push that isn't finite is left out, the drop kept.
+- **Magnet**: the slope of `Φ = −A·R·Ψ(u/s)`, `u = r/R`, `Ψ(v) = (1 − v²)³`, `A` = Strength × 4000 / 1.7173
+  (`PSI_SLOPE_MOST`: Strength gravities at most with no spikes). Its reach's share `s = 1 − depth·c(u)·(1 −
+  T(x))` dips between `spikes` teeth spread over `spread` round `aim`: `T = (1 − |x|)³` over a tooth's half width
+  (`SPIKE_WIDTH` 0.5 of the turn between two, so neighbouring teeth meet), its point rounded off within
+  `SPIKE_ROUND` 0.1 so the pull doesn't flip across a spike's middle, `c(u) = smoothstep(0.2, 0.45, u)` (round and
+  calm inside), the valleys' reach past the spread. Every level past `u` 0.45 is the same star, so the liquid's
+  skin stands in cones with sharp tips and round valleys, the same at every detail, and along every line out of
+  the middle the potential only rises, so the middle is the deepest place. The depth is held to `MOST_DEPTH` 0.9
+  and to `MOST_STEEP` 3.9 × a tooth's half width (radians), so narrow teeth are no steeper than 9 over 160° at
+  Spike size 1: uncapped, 9 over 30° at Strength 4 stirred at 205 to 260 px/s and 9 over 60° at 165 to 200,
+  capped 7 to 12 and 26 to 32 (20 over 360°: 40 to 55; 9 over 160°, not capped: 36 to 49). A push is held to
+  `MOST_PUSH` 256 gravities (a guard: held pushes are no longer down a slope, and the first magnet, which met its
+  guard, churned); its size and way are worked out apart, so a pull too big for a float still pushes at the most.
+  It pulls through rock (the field isn't blocked; the drops are still kept off the solids).
+- **Whirlpool**: the speed round its middle is drawn toward `speed·2x/(1 + x²)`, `x = r/(0.3R)`, at `rate` a
+  second faded over the last 30 % of its reach, by the exact `1 − e^(−rate·dt)`, so every step count gives the same
+  change a second. **Wind**: a drop's speed is drawn toward the wind's at `rate` times how much of it meets the air
+  (`1 − smoothstep(0.35, 0.75, fullness)`: a lone drop all of it, a flat open top a little, inside nothing). Wind
+  blows everywhere; solids don't shelter (Known).
+- **Inside a magnet's reach its liquids hold themselves up** (`in_magnet` in deep.wgsl's cells pass: no cell
+  there that holds one of the magnet's liquids is full, so depth is measured from it; the gather pass ORs each
+  cell's liquids into an eighth sum): the deep water rests no fuller than the drops just above it (C2), a magnet
+  presses them fuller, and the deep pressure stirred the mound at about 100 px/s. Without it the mound comes to
+  rest. The water there is a little more pressed than elsewhere (Known). Other liquids keep their deep part: with
+  the whole reach the drops' own, a deep tank of water over a magnet for another liquid sank 10 px and stirred at
+  13 to 29 px/s against 3 to 5 (`a_magnet_leaves_other_liquids_deep_water_alone`).
+- **Steps**: `steps_now` adds each force's push over two frames, as for gravity (`Force::headroom`: a magnet's pull
+  without its spikes, Strength gravities; a whirlpool's and a wind's draw on a drop at rest). Counting a spike's
+  sharper slopes took a 6 px frame to 32 steps, where the skin's bend (calm only at the trial's pace, C1) stirred a
+  Strength 4 mound; at the floor's steps it holds still. **Strong magnets** (`strong_spikes_measured`, Strength 4,
+  Spike size 1): at 6 px 16 steps, tips moving 0.65 px a second; at 3 px 32 steps, 0.27; no drop thrown past the
+  reach. So the skin calm at any step count was not needed here (still Known for fast water at fine detail).
+
+### Force cards (`bpe-kit modules/water/places.rs`, `things/water/draft/forces.rs`)
+
+- The **Force** card: Kind, **Liquid** (Any Liquid by default; a Liquid, a tag), Strength (keyed), Reach (not
+  Wind), Aim and **Gusts** (Wind), Spikes (9), **Spike size** (0.75, keyed), **Spikes point** (−90, up) and **Spike
+  spread** (180°) for a Magnet.
+- `ForceSetup::all_of` reads the enabled Forces and the Drains whose Whirlpool is above 0 (at the start or on a
+  key above 0) in the scene's order; a Drain past the 32 the water drains spins nothing either. Per frame,
+  `force_at(time)`: a Magnet's pull `S·FORCE_UNIT/1.7173`, depth `SPIKE_DEPTH` 0.6 × Spike size (0 with no spikes); a Whirlpool `S·SPIN_SPEED` (600 px/s), rate `SPIN_RATE` 4 ×
+  min(|S|, 1); a Wind `S·WIND_SPEED` (1000 px/s) × `1 + Gusts·gust(t)` along Aim, rate `WIND_RATE` 3 × min(|S|, 1),
+  so Strength 0 is no force; a Drain's whirlpool `Whirlpool·600`, rate 4 × min(Whirlpool, 1), reaching twice its
+  Radius, every liquid. `gust(t) = (sin 1.3t + sin(2.9t + 1) + sin(4.7t + 2))/3` (det maths). A force's place is
+  its position, read through `place_at(time)` for a later place track.
+- Notes: `HEAT_LATER` (Heater, Cooler), `NO_LIQUID_TO_MOVE` (its Liquid off, gone, past 16, or none),
+  `TOO_MANY_FORCES` (past 16), `TOO_MANY_SPINS` (a spinning Drain past 16 forces: it still drains, its whirlpool
+  doesn't spin).
+- **What restarts**: every Force card setting, a Force's place and turning it off restart the draft and mark the
+  final out of date (the print, and `force:{k}` parts of `WaterInputs` from 0, by place in the list: whirlpools and
+  winds draw in its order); a Drain's whirlpool is in its drain's print and parts already (part 4.1).
+  `set_inputs`, `start` and `resume` set the forces.
+- The stage's held setup takes a note that changes with no physics (`WaterRun::renote`): a Force turned into a
+  Heater with no Liquid in the scene said nothing before.
+
+### The stage (`bpe-studio water_mode/stage.rs`)
+
+- `force_marks`: a Magnet's and a Whirlpool's ring at its Reach (`LINE_SOFT`), a Magnet's spikes as ticks across
+  it, a Whirlpool's spin as an arrow head at the ring's top (to the right above 0), a Wind's three arrows along its
+  Aim, all at the playhead with keyframes.
+
+### The Ferrofluid look (`bpe-kit modules/water/looks.rs`)
+
+- The eighth `ReadyLook` (title "Ferrofluid", Liquid "Ferrofluid", "Black glossy ferrofluid on a pale plate, in soft
+  even light."): ink black (`#08080b`), Solid 1, Clarity 0, no Bend or Streaks, Smoothing 0.15 (spikes keep their
+  points), Shine 1 of size 0.6 (its gloss is the sky's highlight along the rims that face up), Edge sheen 0.12; a
+  pale Flat plate (`#e6e3dd`) on a pale Back (`#d4d1cb`); Ambient 1, Bounce 0.2, no caustics or shafts, no lamps;
+  Bloom 0.1.
+- Why no lamps: an opaque liquid stops a lamp's light, so it throws its shadow on the back. Spots placed by their
+  share of the shot sat in the rock above a carved chamber and lit nothing; two shadowless Suns from 55° and 125°
+  filled the valleys between the spikes with grey; from 72° and 108° the spikes were fine, but in the shared looks
+  scene every drop stuck on the ceiling, the tap's stream and the slope's film threw long stripes across the pale
+  back, with the light map's steps on their edges. With no lamps nothing throws a shadow. Why little sheen: a thin
+  spike is all edge to the surface rounding, and at Edge sheen 0.55 the spikes read grey.
+- Full-size look check: `LOOK_ONLY=water-ferrofluid` (a carved chamber 700 wide, a 380 x 70 pool on its floor, a
+  Magnet 40 px under the floor in the rock, Strength keyed 0 to 3 over 1.5 s, Spikes 9 over 160°; Normal detail,
+  4 s, about 33 000 drops, made in about 400 s on the cloud's software card): the whole screen at 3 s, the frame
+  after it, and the spikes at twice the size. Its final is kept with `LOOK_TAKES`.
+
+### Known (part 4b)
+
+- Wind blows everywhere in the course: solids don't shelter the water behind them. Forces don't move air drops,
+  and nothing moves a force (part 5's place keyframes are on Pieces and Walls only).
+- Inside a magnet's reach there is no deep part, so a deep pool there is a little more pressed than elsewhere.
+- A Magnet's two outer teeth, near the floor, fill to the edge of its Reach.
+- Heaters and Coolers wait for heat.
+- The look drawing's, seen in the Ferrofluid look check: a spike under about 50 px across is drawn tilted across
+  its whole width (the surface rounding reads the smooth surface at 24 px, which calls the spike all edge), with a
+  faint band and a dashed one-pixel highlight where it meets the body; the liquid's own shadow on the back has the
+  light map's steps on its edge at Good light (4 px), finer at Best.
+- The skin calm at any step count is still not built (C1, C2): not needed by forces, as measured above.

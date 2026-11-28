@@ -311,11 +311,20 @@ mod tests {
     }
 
     #[test]
-    fn the_looks_are_plain_and_the_six() {
+    fn the_looks_are_plain_and_the_seven() {
         let titles = ReadyLook::ALL.map(ReadyLook::title);
         assert_eq!(
             titles,
-            ["Plain", "Lamp-lit rock", "Glass lab", "Neon in the dark", "Paint on paper", "Molten", "Cartoon"]
+            [
+                "Plain",
+                "Lamp-lit rock",
+                "Glass lab",
+                "Neon in the dark",
+                "Paint on paper",
+                "Molten",
+                "Cartoon",
+                "Ferrofluid"
+            ]
         );
         assert_eq!(ReadyLook::default(), ReadyLook::Plain);
         for look in ReadyLook::ALL {

@@ -11,7 +11,7 @@ use std::time::Instant;
 use bpe_core::{Registry, Scene, SlotId, Stroke, Strokes, ThingId, Value};
 use bpe_kit::things::water::draft::{DRAFT_MOST, WaterSetup};
 use bpe_kit::things::water::look::look_of;
-use bpe_kit::things::water::{LIQUID, POUR, course_of, new_water_scene};
+use bpe_kit::things::water::{FORCE, LIQUID, POUR, course_of, new_water_scene};
 use bpe_water::draw::{LookDraw, LookGpu, View};
 use bpe_water::{Water, WaterGpu};
 use glam::Vec2;
@@ -98,6 +98,59 @@ fn drops_stay_out_of_the_rock() {
     let look = look_of(&scene, &bpe_core::resolve(&scene, &reg), 2.0);
     drawing.draw(&water.drop_buffers(), &View::screen(0.25), &look);
     assert_eq!(drawing.read().len(), 270 * 480 * 4);
+}
+
+/// A Force card moves the water as the draft plays it (each frame's inputs set by `set_inputs`), and a
+/// body resumed from a restart point feels it again (part 4b).
+#[test]
+fn a_force_card_moves_the_water() {
+    let reg = bpe_kit::registry();
+    let (device, queue) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    let gpu = WaterGpu::new(&device, &queue);
+    let mut scene = new_water_scene(&reg, "");
+    let course = course_of(&scene).unwrap();
+    let chamber = Stroke { points: vec![[0.0, 0.0]], size: 300.0, strength: 1.0, square: true, ..Default::default() };
+    set(&mut scene, course, SlotId::Form, "carved", Value::Strokes(Strokes { list: vec![chamber] }));
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let fill = add(&mut scene, &reg, POUR, Vec2::new(-150.0, 200.0));
+    set(&mut scene, fill, SlotId::Main, "kind", Value::Choice("fill_at_the_start".into()));
+    set(&mut scene, fill, SlotId::Main, "fill_size", Value::Vec2([200.0, 200.0]));
+    // A whirlpool to the pool's right, strong enough to swing it round.
+    let force = add(&mut scene, &reg, FORCE, Vec2::new(0.0, 150.0));
+    set(&mut scene, force, SlotId::Main, "kind", Value::Choice("whirlpool".into()));
+    set(&mut scene, force, SlotId::Main, "strength", Value::Number(2.0));
+    let middle = |water: &mut Water| {
+        water.wait();
+        let drops = water.read();
+        let layout = water.layout();
+        drops.iter().map(|d| layout.to_world(Vec2::from(d.x))).sum::<Vec2>() / drops.len() as f32
+    };
+    let run = |scene: &Scene, frames: u32| {
+        let s = setup(scene, &reg);
+        let field = s.field();
+        let mut water = s.start(gpu.clone(), &field, DRAFT_MOST);
+        while water.frames() < frames {
+            s.set_inputs(&mut water, &field, DRAFT_MOST);
+            water.frame();
+        }
+        (s, field, water)
+    };
+    let (s, field, mut spun) = run(&scene, 40);
+    let mut calm_scene = scene.clone();
+    calm_scene.things.get_mut(&force).unwrap().enabled = false;
+    let (_, _, mut calm) = run(&calm_scene, 40);
+    let (a, b) = (middle(&mut spun), middle(&mut calm));
+    assert!(a.distance(b) > 20.0, "the whirlpool moved the pool: {a} against {b}");
+    // Resumed at frame 20 from a restart point, it plays on as the straight run did.
+    let (_, _, mut half) = run(&scene, 20);
+    half.wait();
+    let mut resumed = s.resume(gpu.clone(), &field, &half.state()).unwrap();
+    assert_eq!(resumed.forces(), spun.forces(), "the resumed body feels the forces");
+    while resumed.frames() < 40 {
+        s.set_inputs(&mut resumed, &field, DRAFT_MOST);
+        resumed.frame();
+    }
+    assert_eq!(middle(&mut resumed), a, "resumed, the same water");
 }
 
 /// The 12 ms mark: a frame's physics and one stage-sized drawing together, leaving 4.7 ms of the

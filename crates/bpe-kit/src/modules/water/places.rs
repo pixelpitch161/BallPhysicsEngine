@@ -212,22 +212,28 @@ impl Default for DrainCard {
 /// What a Force does to the liquid near it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
 pub enum ForceKind {
-    /// Pulls liquid in (or pushes it away, below zero).
+    /// Pulls liquid in (or pushes it away, below zero), standing it up in spikes like ferrofluid.
     #[default]
     Magnet,
-    /// Spins liquid round it.
+    /// Spins liquid round it (below zero, the other way).
     Whirlpool,
-    /// Blows everywhere, one way.
+    /// Blows everywhere, one way: spray and drops more than a pool's top.
     Wind,
+    /// Arrives with heat, in a later part of Water mode.
     Heater,
+    /// Arrives with heat, in a later part of Water mode.
     Cooler,
 }
 
-/// A Force's card.
+/// A Force's card. Strength 1 is a gravity's pull for a Magnet, 600 px/s round a Whirlpool's core
+/// and a 1000 px/s wind.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ForceCard {
     #[setting(label = "Kind", simple, group = "Force")]
     pub kind: ForceKind,
+    /// Which Liquids it moves.
+    #[setting(label = "Liquid", group = "Force")]
+    pub liquid: Target,
     #[setting(label = "Strength", span(-4, 4), simple, keyframe, group = "Force")]
     pub strength: f32,
     /// How far from it the liquid feels it.
@@ -242,18 +248,60 @@ pub struct ForceCard {
         group = "Force"
     )]
     pub reach: f32,
-    /// Which way the wind blows.
+    /// Which way the wind blows: 0 is to the right, 90 straight down.
     #[setting(label = "Aim", when = "kind=wind", span(-180, 180), unit = "°", keyframe, group = "Force")]
     pub aim: f32,
+    /// How much the wind comes and goes.
+    #[setting(label = "Gusts", when = "kind=wind", range(0, 1), span(0, 1), keyframe, group = "Force")]
+    pub gusts: f32,
     /// How many spikes the liquid stands up in near the magnet (0: none).
     #[setting(label = "Spikes", when = "kind=magnet", range(0, 64), group = "Force")]
     pub spikes: u32,
-    #[setting(label = "Spike size", when = "kind=magnet and spikes", range(0, 1), span(0, 1), group = "Force")]
+    /// How deep the valleys between the spikes are.
+    #[setting(
+        label = "Spike size",
+        when = "kind=magnet and spikes",
+        range(0, 1),
+        span(0, 1),
+        keyframe,
+        group = "Force"
+    )]
     pub spike_size: f32,
+    /// Which way the middle of the spikes points: -90 is straight up.
+    #[setting(
+        label = "Spikes point",
+        when = "kind=magnet and spikes",
+        span(-180, 180),
+        unit = "°",
+        keyframe,
+        group = "Force"
+    )]
+    pub spike_aim: f32,
+    /// How far round the magnet the spikes stand (360: all round).
+    #[setting(
+        label = "Spike spread",
+        when = "kind=magnet and spikes",
+        range(0, 360),
+        span(0, 360),
+        unit = "°",
+        group = "Force"
+    )]
+    pub spike_spread: f32,
 }
 
 impl Default for ForceCard {
     fn default() -> Self {
-        Self { kind: ForceKind::Magnet, strength: 1.0, reach: 300.0, aim: 0.0, spikes: 0, spike_size: 0.5 }
+        Self {
+            kind: ForceKind::Magnet,
+            liquid: Target::Kind(crate::things::water::LIQUID.into()),
+            strength: 1.0,
+            reach: 300.0,
+            aim: 0.0,
+            gusts: 0.0,
+            spikes: 9,
+            spike_size: 0.75,
+            spike_aim: -90.0,
+            spike_spread: 180.0,
+        }
     }
 }

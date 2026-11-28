@@ -1,6 +1,6 @@
 //! The ready-made Water looks keep drawing the pictures they draw (Water mode part 6c): part 3's
 //! pieces course (`bpe_water::draw::sets::pieces`, drops laid out by hand, never physics) in a
-//! scene of two Liquids, set to each of the seven looks with `apply_look` and drawn by the look
+//! scene of two Liquids, set to each of the eight looks with `apply_look` and drawn by the look
 //! drawing at 270 x 480. The 10 x 10 pixel tile averages are in `tests/golden-water-looks.txt`,
 //! made on the owner's graphics card, named on the file's first line (`bpe_gfx::card_golden`).
 //! Each tile may move by at most 1/255 per channel. Another card draws a few bits differently, so

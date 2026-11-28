@@ -49,6 +49,9 @@ fn fall(i: u32, p: vec4<f32>, kind: u32) {
     let pull = select(feel.a.x, -fr.air.x, is_air(kind));
     var v = p.zw + vec2<f32>(fr.time.y, fr.time.z) * pull * dt;
     v = v * exp(-feel.b.x * dt);
+    if fr.forces_n.x > 0u && !is_air(kind) {
+        v = forced(i, p.xy, v, kind, dt);
+    }
     let speed = length(v);
     if speed > fr.time.w {
         v = v * (fr.time.w / speed);

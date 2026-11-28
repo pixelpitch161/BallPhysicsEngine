@@ -509,6 +509,38 @@ fn a_picked_pour_says_what_it_cannot_do() {
     assert!(h.query_by_label(NO_FEEDING_DRAIN).is_some(), "a fed tap with no drain feeding it says so");
 }
 
+/// Each kind of Force draws its marks (its reach, spikes, spin or wind) without trouble, and a
+/// Heater says it comes later (here with no Liquid in the scene: a note that changes with no
+/// physics still reaches the stage).
+#[test]
+fn every_force_kind_draws_its_marks() {
+    use bpe_kit::things::water::draft::forces::HEAT_LATER;
+    let mut h = harness(water_studio());
+    h.state_mut().water_stage.tool = Tool::Force;
+    h.run();
+    let v = view(&h);
+    let kinds = ["magnet", "whirlpool", "wind", "heater", "cooler"];
+    for (k, _) in kinds.iter().enumerate() {
+        h.state_mut().water_stage.tool = Tool::Force;
+        click_at(&mut h, v.to_screen(Vec2::new(-400.0 + 200.0 * k as f32, -300.0)));
+    }
+    let forces = of_kind(h.state(), water::FORCE);
+    assert_eq!(forces.len(), kinds.len());
+    let studio = h.state_mut();
+    for (id, kind) in forces.iter().zip(kinds) {
+        let card = studio.scene.things.get_mut(id).unwrap().slots.get_mut(&bpe_core::SlotId::Main).unwrap();
+        card.params.set("kind", bpe_core::Value::Choice(kind.into()));
+        card.params.set("strength", bpe_core::Value::Number(-1.5));
+    }
+    studio.scene_changed();
+    studio.selection.set(forces[0]);
+    h.run();
+    assert!(h.query_by_label(HEAT_LATER).is_none(), "a magnet has nothing to say");
+    h.state_mut().selection.set(forces[3]);
+    h.run();
+    assert!(h.query_by_label(HEAT_LATER).is_some(), "a picked heater says it comes later");
+}
+
 #[test]
 fn use_a_look_sets_the_scene_to_it_as_one_undo_step() {
     use bpe_core::{Settings, SlotId, ThingId};

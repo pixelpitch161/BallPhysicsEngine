@@ -18,9 +18,9 @@ const S_M: f32 = 1048576.0;
 const S_P: f32 = 4096.0;
 const LIMIT: f32 = 33554432.0;
 // Words a cell in `sums`: mass on its left face, momentum across, mass on its top face, momentum
-// down, volume at its middle, that volume times how full each drop in it was, and (when the liquids'
-// weights differ) mass at its middle.
-const SUMS: u32 = 7u;
+// down, volume at its middle, that volume times how full each drop in it was, (when the liquids'
+// weights differ) mass at its middle, and which liquids it holds (bits).
+const SUMS: u32 = 8u;
 // A drop's volume, in cells (four drops fill a cell).
 const VOL: f32 = 0.25;
 
@@ -198,6 +198,11 @@ fn cs_deep_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if by_mass {
                     atomicAdd(&sums[at + 6u], fixed(bilinear(f, a, c) * mass, S_M));
                 }
+                // (Which liquids it holds, bit k liquid k: a magnet's reach is the drops' own only
+                // where its liquids are.)
+                if !is_air(kind) && bilinear(f, a, c) > 0.0 {
+                    atomicOr(&sums[at + 7u], i32(1u << (kind & 15u)));
+                }
             }
         }
     }
@@ -346,7 +351,9 @@ fn cs_deep_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
     // water against a wall is as deep as the wall is high.
     let wet = liquid > 1e-4;
     let open = wallc[k].z < 0.5;
-    let full = (dense >= fr.deep.z && rho >= 0.5) || !open;
+    // (Inside a magnet's reach no cell that holds its liquids is full: that water is the drops' own.)
+    let held = bitcast<u32>(atomicLoad(&sums[SUMS * k + 7u]));
+    let full = (dense >= fr.deep.z && rho >= 0.5 && !in_magnet(q, held)) || !open;
     var edge = wet && !full;
     if !wet && open {
         edge = wet_open(x - 1, y) || wet_open(x + 1, y) || wet_open(x, y - 1) || wet_open(x, y + 1);
