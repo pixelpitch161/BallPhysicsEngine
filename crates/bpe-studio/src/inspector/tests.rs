@@ -1708,6 +1708,49 @@ fn a_liquid_shows_feel_look_and_mixing_and_heat_can_be_added_and_removed() {
 }
 
 #[test]
+fn use_a_liquid_sets_every_selected_liquid() {
+    use bpe_kit::modules::water::{FeelCard, ReadyLiquid, WaterLook};
+    use bpe_kit::things::water::{LIQUID, POUR};
+    let reg = bpe_kit::registry();
+    let mut scene = bpe_kit::things::water::new_water_scene(&reg, "");
+    let first = bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+    let second = bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+    let pour = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+    scene.things.get_mut(&second).unwrap().name = "River".into();
+    let pour_before = scene.things[&pour].clone();
+    let mut h = harness_of(scene, Some(first));
+    h.state_mut().selection.toggle(second);
+    h.state_mut().selection.toggle(pour);
+    h.run();
+    assert!(!h.state().inspector.own_step);
+    h.get_by_label("Use a liquid…").click();
+    h.run();
+    h.get_by_label("Honey").click();
+    h.run();
+    let s = h.state();
+    let honey = ReadyLiquid::Honey.row();
+    for id in [first, second] {
+        let card = |slot: SlotId| &s.resolved.things[&id].slots[&slot].params;
+        assert_eq!(FeelCard::from_params(card(SlotId::Feel)), honey.feel, "{id:?} flows like honey");
+        assert_eq!(WaterLook::from_params(card(SlotId::Look)).colour, honey.look.colour, "and is its colour");
+    }
+    assert_eq!(s.scene.things[&first].name, "Honey");
+    assert_eq!(s.scene.things[&second].name, "River", "a name the person typed stays");
+    assert_eq!(s.scene.things[&pour], pour_before, "a selected Pour is left alone");
+    assert!(s.inspector.own_step, "an undo step of its own");
+}
+
+#[test]
+fn only_a_liquid_offers_use_a_liquid() {
+    let h = water_harness(Some(bpe_kit::things::water::LIQUID));
+    assert!(shown(&h, "Use a liquid…"));
+    for kind in [Some(bpe_kit::things::water::POUR), Some(bpe_kit::things::water::COURSE), None] {
+        let h = water_harness(kind);
+        assert!(!shown(&h, "Use a liquid…"), "{kind:?}");
+    }
+}
+
+#[test]
 fn a_pour_has_a_place_and_a_turn_and_nothing_to_ride() {
     let h = water_harness(Some(bpe_kit::things::water::POUR));
     assert!(shown(&h, "Position") && shown(&h, "Rotation"));

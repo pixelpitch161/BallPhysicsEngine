@@ -13,6 +13,7 @@ pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/report.wgsl"),
     include_str!("shaders/pack.wgsl"),
     include_str!("shaders/mix.wgsl"),
+    include_str!("shaders/thick.wgsl"),
 );
 
 /// A pass.
@@ -48,6 +49,9 @@ pub(super) enum P {
     AirBorn,
     Mix,
     MixKeep,
+    ThickGrad,
+    ThickStage,
+    ThickTick,
     Report,
     Drained,
     Export,
@@ -65,7 +69,8 @@ pub(super) enum P {
 /// drops-only water just above the deep water is; for trapped air (air.wgsl) 27 each cell's spots,
 /// 28 the blocks' running sums and every spot; for a kept moment (pack.wgsl) 29 the drops packed; for
 /// the colour mixing (mix.wgsl) 30 each drop's new mix; 31 the deep cells' mass and volume (when the
-/// liquids' weights differ).
+/// liquids' weights differ). The thick stages (thick.wgsl) keep each drop's gradient in 13, their
+/// speeds in 6 and their number in 9, free once a step's Finish has run.
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_predict", &[0, 1, 2, 3, 4, 6, 7, 15, 16]),
     ("cs_sum_a", &[0, 1, 7, 8, 9]),
@@ -97,6 +102,9 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_air_born", &[0, 1, 2, 3, 5, 8, 27, 28]),
     ("cs_mix", &[0, 1, 2, 5, 8, 30]),
     ("cs_mix_keep", &[0, 1, 5, 30]),
+    ("cs_thick_grad", &[0, 1, 2, 5, 8, 9, 13]),
+    ("cs_thick_stage", &[0, 1, 2, 5, 6, 8, 9, 13, 15]),
+    ("cs_thick_tick", &[0, 1, 9]),
     ("cs_report", &[0, 1, 2, 5, 8, 15, 18, 25, 28]),
     ("cs_drained", &[0, 1, 2, 18]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
@@ -196,6 +204,8 @@ mod tests {
         assert_eq!(ENTRIES[P::Drained as usize].0, "cs_drained");
         assert_eq!(ENTRIES[P::Mix as usize].0, "cs_mix");
         assert_eq!(ENTRIES[P::MixKeep as usize].0, "cs_mix_keep");
+        assert_eq!(ENTRIES[P::ThickGrad as usize].0, "cs_thick_grad");
+        assert_eq!(ENTRIES[P::ThickTick as usize].0, "cs_thick_tick");
         for (name, bindings) in ENTRIES {
             let storage = bindings.iter().filter(|&&b| b > STEP).count();
             assert!(storage <= MOST_STORAGE, "{name} binds {storage} storage buffers");

@@ -120,6 +120,9 @@ pub struct WaterFinal {
     size: Option<(Instant, u64)>,
     /// The last estimate of the drops: what it was worked out from, and the drops.
     estimate: Option<(u64, u32)>,
+    /// While the Final plays a scene with Un-mix: the video's time on its clock and the water time
+    /// that gave the playhead (a playhead set anywhere else starts the clock again from it).
+    pub clock: Option<(f64, f64)>,
 }
 
 impl WaterFinal {
@@ -136,6 +139,7 @@ impl WaterFinal {
             problem: None,
             size: None,
             estimate: None,
+            clock: None,
         }
     }
 
@@ -292,9 +296,11 @@ impl WaterFinal {
         }
         let found = self.found.as_ref()?;
         let status = &found.status;
-        let slowed = (found.video_seconds - found.length).abs() > 1e-3;
-        let video =
-            if slowed { format!(" · video {} s in slow motion", trim(found.video_seconds)) } else { String::new() };
+        let longer = (found.video_seconds - found.length).abs() > 1e-3;
+        let video = match found.make.speeds.longer_words().filter(|_| longer) {
+            Some(how) => format!(" · video {} s {how}", trim(found.video_seconds)),
+            None => String::new(),
+        };
         Some((
             match (&status.take, status.own) {
                 (Some(take), true) => {

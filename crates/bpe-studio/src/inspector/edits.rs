@@ -77,6 +77,9 @@ pub(crate) enum Edit {
     /// A PNG the scene keeps, under the name given (or the next free one like it), which every
     /// selected thing's Picture then shows.
     LoadPicture(String, std::sync::Arc<[u8]>),
+    /// A ready-made liquid put on every selected Water Liquid, as an undo step of its own (Water
+    /// mode part 4.3a).
+    UseLiquid(bpe_kit::modules::water::ReadyLiquid),
 }
 
 /// Where thing `id`'s Picture setting is: `None` for its own, else the first of its cards that has
@@ -209,6 +212,14 @@ pub(super) fn apply(
                     set_or_key(scene, reg, &a, Value::Text(name.clone()), time, &mut inspector.keyed_edit);
                 }
                 true
+            }
+            Edit::UseLiquid(liquid) => {
+                let mut any = false;
+                for t in reached(scene, selected, id, None) {
+                    any |= bpe_kit::modules::water::apply_liquid(scene, reg, t, liquid);
+                }
+                inspector.own_step |= any;
+                any
             }
             Edit::SetOwnHere(key, value) => {
                 set_or_key(scene, reg, &Address::own(id, &key), value, time, &mut inspector.keyed_edit)

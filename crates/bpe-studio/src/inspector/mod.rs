@@ -117,6 +117,8 @@ mod slots;
 mod surface;
 #[cfg(test)]
 mod tests;
+/// A Water Liquid's Use a liquid menu.
+mod use_liquid;
 
 use edits::*;
 pub(crate) use edits::{Edit, clear_keys, set_or_key};
@@ -286,6 +288,9 @@ pub fn show(
                 .on_hover_text("Settings changed here apply to every selected thing that has them.");
         }
         header::show(ui, inspector, (id, &thing), kind, lw, &mut edits);
+        if thing.kind == bpe_kit::things::water::LIQUID {
+            use_liquid::menu(ui, &mut edits);
+        }
         ui.add_space(6.0);
 
         let own = |key: &str| Address { thing: id, slot: None, key: key.into() };

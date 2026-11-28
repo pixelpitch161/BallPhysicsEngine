@@ -19,7 +19,7 @@ p4-thick, p4-pours, p4-drains, loop-flow):
 
 Heat (freezing, melting), drying and stains, reactions and fizz are Later (checkpoint). Forces are part 4b.
 
-## Four pull requests
+## Five pull requests
 
 Each is its own pull request, merged by this thread once its checks are green and its review is done, in this order:
 
@@ -27,12 +27,18 @@ Each is its own pull request, merged by this thread once its checks are green an
 | --- | --- | --- |
 | **4.1** | Rain, drips and bursts; drains, leaks and the course's edge; drains that feed pours | `bpe-water drop.rs`, new `lumps.rs`, `drops/{mod,clock,state}.rs`, `finish.wgsl`, `report.wgsl`; kit `places.rs`, `draft.rs`; stage markers |
 | **4.2** | Weight (one liquid floats on another), Keeps apart (oil and water), colour mixing (Mix speed, Mixes when) | `sweep.wgsl`, `deep.wgsl`, `finish.wgsl`, a mix pass; the take's mix plane; the look's splats |
-| **4.3** | Thick liquids (honey, slime) and the ready-made liquids ("Use a liquid") | `finish.wgsl` (the evening of speeds), the clock; kit `liquids.rs` |
+| **4.3a** | The ready-made liquids ("Use a liquid") | kit `modules/water/liquids.rs`; the inspector's Liquid |
+| **4.3b** | Thick liquids (honey, slime, paste) | `finish.wgsl` and a new thick pass (the evening of speeds), `numbers.rs` |
 | **4.4** | Un-mix | decided before it is built (below) |
+
+Since 2026-11-27 23:59Z (Aedan: no merge and no full check run until a part's work is done), 4.3a, 4.3b and 4.4
+are built on the branch one after another and go to main as one pull request, with one review.
 
 Pours and drains come first: they touch the engine least (births on the host, one test in the finish) and give the
 most at once (a course that runs as long as the video). Weight and mixing change the pressure and the take, so they go
-second, on a settled base. Thick liquids reuse 4.2's pair rules. Un-mix is last because it rests on everything else.
+second, on a settled base. 4.3 is split in two (found when it started): the ready-made liquids touch only the kit and the editor and 4b's
+Ferrofluid row waits on their file, so they go first; thick liquids change the engine's step and are judged on films.
+Thick liquids reuse 4.2's pair rules. Un-mix is last because it rests on everything else.
 
 **Each later sub-part's tasks are written into this file (its own "Tasks" section) before its code is touched**, from
 the decisions below; the decisions here are what each must hold to.
@@ -191,6 +197,30 @@ the decisions below; the decisions here are what each must hold to.
     remembered frames backwards and then goes on from there; the draft keeps a ring of recent frames, the final reads its
     own take's frames), or (b) a backwards stretch in the video (the take played backwards, no new physics). (a) is what
     was promised; (b) is far cheaper. The choice is written here with its reasons when 4.4 starts.
+
+    **Chosen (2026-11-28): (b), a backwards stretch.** Aedan picked it on a decision card (00:48Z, recommended
+    there). Why: the un-mixing looks the same either way (it is the take's own frames played backwards);
+    (b) needs no new physics, no ring of frames and no restoring a body from a frame, so the take, its restart points,
+    finding an older take and Make final all stay as they are; it is a stretch of the video's clock, which slow motion
+    (part 8's `Speeds`) already is, so the export, the final view and the editor's playhead get it in one place.
+    What (a) adds is the water going on afresh from where it was played back to, with the pours where the timeline is;
+    that can come later on top of (b)'s clock if wanted.
+
+    - **Where**: the Water card, group *Un-mix* (it is what the video does, not what a liquid is): **Un-mix** (on or
+      off), **From** and **To** (water seconds). The Mixing card's old *Remember for Un-mix*, *Seconds* and
+      *Un-mixing* go (in Water mode they never did anything).
+    - **The clock** (`Speeds`): the video plays the water to To, then backwards from To to From, then forwards from
+      From again, on to the end: `water_time(t)` is part 8's up to To's video time, then mirrored, then shifted by
+      the two stretches. Each stretch plays at the Speed there, so a slowed stretch un-mixes slowly too. The video is
+      `2 (video_time(To) − video_time(From))` longer. `video_time(τ)` is where the video first shows τ. A stretch
+      with From ≥ To, or Un-mix off, changes nothing.
+    - **No physics change**: the take's print never hashes Un-mix (as it never hashes Speed), so turning it on, or
+      moving From and To, makes nothing again.
+    - **The editor**: while the Final shows, a Water scene's playhead runs on the video's clock
+      (`Studio.water_clock`): the water time is worked out from it each tick, and a scrub sets the clock where the
+      video first shows that water time, so playing shows the water going back over the stretch. The draft plays
+      forwards as before (going back in the draft plays again from its newest restart copy, so a stretch played
+      backwards there would play every frame again from a copy up to 120 frames back).
 
 ## Edge cases
 
@@ -470,6 +500,200 @@ is the share of one other liquid it carries (its colour, the dye in it; its moti
 - `docs/notes/water.md` "Part 4.2 (as built)"; this file's "As built: 4.2". One review, fix, merge when green, then
   4.3's tasks.
 
+## 4.3a: ready-made liquids
+
+Decision 23, built before 4.3b because it touches no physics and 4b adds its Ferrofluid row to the same table. Its
+Thickness values are today's; 4.3b moves Thickness onto a new scale and retunes the thick rows (Honey, Syrup, Slime,
+Paint) on films.
+
+### What is decided for 4.3a
+
+- **One table, one row a liquid** (`bpe-kit/src/modules/water/liquids.rs`, like `looks.rs`): `ReadyLiquid` is Water,
+  Oil, Honey, Syrup, Slime, Milk, Paint, Mercury (`ALL`), each with `title()`, `words()` (one line for the menu's
+  hover) and `row() -> LiquidRow { feel: FeelCard, mixing: MixingCard, look: WaterLook }`. 4b adds Ferrofluid as a
+  row (and whatever card of its own it needs, written by its own row code). Water's row is the cards' defaults.
+- **What a liquid writes** (`apply_liquid(scene, reg, id, liquid) -> bool`, false and nothing changed when `id` is
+  not a Water Liquid):
+  - its **Feel** card: all four settings (Thickness, Surface pull, Weight, Stickiness);
+  - its **Mixing** card's *Meeting other liquids* group (Keeps apart, Mix speed, Mixes when), never the *Un-mix*
+    group (Remember, Seconds, Un-mixing: that is what the video does, not what the liquid is);
+  - its **Look** card's *Its colour*, *Its body* and *Its surface* groups (what the stuff is: colour, clarity, deep
+    colour, solid, bend, rainbow split, smoothing, streaks, shine, edge sheen, ripples, thin film), never *Glow*,
+    *Drawn* or *Extras* (how the scene's ready-made look draws every liquid: outlines and bands in Cartoon, glow in
+    Neon, foam and bubbles), so a Cartoon scene's oil keeps its outline;
+  - never its Heat card (heat is Later and stays as the person set it).
+  A setting is written as the row's value, or removed where the row's value is the card's default (as a look does),
+  so one liquid after another never keeps what the first set. A card the Liquid lacks is added (it can't be removed
+  today, but a hand-made file may lack one). Keyframes on a setting stay (as with a look).
+- **The name**: a Liquid still called what it was given (Liquid, Liquid 2, Water, a ready look's liquid name, or
+  another ready liquid's title, each with or without a number after it) takes the liquid's title; one the person
+  named keeps its name.
+- **Groups by name**: the groups to write are matched on `SettingDef::group` (`"Meeting other liquids"`, `"Its
+  colour"`, `"Its body"`, `"Its surface"`), and a test fails if a card's group is renamed (every setting of the three
+  cards is either written or named as left).
+- **The writer**: `looks.rs`'s `write` and `write_card` take a filter (`Fn(&SettingDef) -> bool`, the settings to
+  write) instead of `keep_colours`; the looks pass theirs, so looks are unchanged. Both become `pub(super)`.
+- **The menu** (bpe-studio): a **Use a liquid…** menu button at the top of a Water Liquid's settings, under its
+  name and tags (`inspector/use_liquid.rs`, drawn from `inspector::show` after `header::show` for a thing of kind
+  `water::LIQUID`), listing the titles with their words on hover. Picking one pushes `Edit::UseLiquid(ReadyLiquid)`,
+  which `edits::apply` runs on every selected Liquid (`reached(.., None)`, so a selected Pour is left alone), sets
+  `inspector.own_step` (one undo step of its own) and returns true. The scene's physics print changes with the Feel
+  and Mixing cards, so the draft restarts on its own.
+- **The rows** (Thickness on today's scale; Weight 1 is water; Mercury is as heavy as the card allows):
+
+| | Thickness | Surface pull | Weight | Stickiness | Keeps apart | Mix speed | Look |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Water | 0.02 | 0.5 | 1 | 0 | 0 | 0.5 | the Look card's defaults |
+| Oil | 0.08 | 0.35 | 0.9 | 0.2 | 1 | 0 | clear gold, shiny, a thin film's rainbow |
+| Honey | 0.6 | 0.6 | 1.4 | 0.6 | 0.2 | 0.15 | deep amber, glossy, a little cloudy |
+| Syrup | 0.35 | 0.55 | 1.3 | 0.5 | 0.1 | 0.25 | dark red-brown, glossy |
+| Slime | 0.45 | 0.85 | 1.1 | 0.7 | 0.6 | 0.1 | bright green, half solid, very smooth |
+| Milk | 0.03 | 0.5 | 1.03 | 0.05 | 0 | 0.6 | white and solid, soft shine |
+| Paint | 0.25 | 0.45 | 1.2 | 0.4 | 0 | 0.8 | red, solid, glossy (Paint on paper's) |
+| Mercury | 0.01 | 1 | 10 | 0 | 1 | 0 | silver: solid, darkening with depth, the most shine and sheen |
+
+  The look values are tuned on one full-size still (below); the table above is where they start.
+
+### Edge cases (4.3a)
+
+- `id` of another kind (a Pour), or gone: `apply_liquid` returns false and changes nothing.
+- A selection of two Liquids and a Pour: both Liquids change, the Pour doesn't.
+- The same liquid twice: the second changes nothing but is still an undo step (harmless; the menu was used).
+- A Liquid with keyframes on Colour: the base colour is the row's, the keys still lead (as with a look).
+- A ready look after a ready liquid writes every Liquid's whole Look (6c), as before.
+
+### Not to do (4.3a)
+
+- No physics change, no new setting, no change to how anything is drawn; goldens and the take don't move.
+- No built-in or example scene (the look check's still is a test scene).
+- No linking: the liquid's settings are plain values it owns from then on.
+
+### Task 1: `bpe-kit`: the table and `apply_liquid` (`modules/water/liquids.rs`, `looks.rs`, `mod.rs`)
+
+`ReadyLiquid`, `LiquidRow`, `apply_liquid`, the name rule (`takes_title(name) -> bool`), exported from
+`modules::water`. `looks.rs`'s writer takes a filter. Tests in `liquids.rs`:
+`each_liquid_writes_its_row` (after another liquid first; resolve the scene and compare each card's written
+settings with the row's), `a_liquid_leaves_un_mix_heat_and_the_scenes_drawing` (set Remember, Seconds, a Heat card,
+Outline, Glow and Foam first; they stay), `every_setting_is_written_or_left_on_purpose` (the groups exist),
+`a_liquid_takes_its_title_unless_it_was_named` and `only_a_liquid_takes_one`. Passing: these and the existing
+`looks.rs` tests (`cargo test -p bpe-kit --lib modules::water`).
+
+### Task 2: `bpe-studio`: the menu (`inspector/use_liquid.rs`, `inspector/mod.rs`, `inspector/edits.rs`, tests)
+
+kittest in `inspector/tests.rs`: `use_a_liquid_sets_every_selected_liquid` (two Liquids and a Pour selected,
+Honey picked: both Liquids are named Honey with Honey's Thickness and colour, the Pour unchanged, `own_step` set) and
+`only_a_liquid_offers_use_a_liquid` (a Pour and the scene's settings don't show it). Passing: these and
+`a_liquid_shows_feel_look_and_mixing…` (`cargo test -p bpe-studio --lib inspector::tests`).
+
+### Task 3: one still (`full_size_look.rs`, `LOOK_ONLY=water-liquids`)
+
+A course of eight glass cells (two rows of four, Walls between them), each filled at the start with one ready
+liquid, made at Coarse detail for 2 s and drawn at 2 s in the Plain look (`water-liquids`). Looked at full size and
+in its crops; the rows' look values are tuned until each reads as what it is. Not a golden and not sent to Aedan.
+
+### Task 4: check, notes, review, merge
+
+fmt, clippy, the tests above; notes (`docs/notes/water.md` "Part 4.3a (as built)") and "### 4.3a" under "As
+built" here; one review; draft PR, ready, merge on green; message 4b's thread that `liquids.rs` is on main.
+
+## 4.3b: thick liquids
+
+Decision 22. Built on the branch after 4.3a; with Aedan's rule of 2026-11-27 (one full check run and one merge at
+the end of the part), 4.3a, 4.3b and 4.4 go to main in one pull request.
+
+### What was found (measured before planning)
+
+Thickness does nothing past about 0.1 today. The evening of speeds (`finish.wgsl`, an XSPH share of the neighbours'
+speeds) takes `ν dt 20 / reach²` a step, capped at 0.5 so it stays calm: at 3 px cells (reach 4.5 px, steps of
+about 1/480 s) the cap is about 240 px² a second, so water (150) is under it and everything from oil up spreads as
+one liquid of 240 does; Thickness 1, 5 and 30 spread alike at 6 and 3 px, barely slower than water. Honey that folds
+as it lands at the streams the videos draw (30 to 60 px wide) needs a gravity-viscous length (ν²/g)^(1/3) near the
+stream's width: with this scale's gravity (about 4,300 px a second squared), ν of 10⁴ to 10⁵ px² a second.
+
+A grid solve of the viscosity (Batty and Bridson's, the best for coiling) would take a new grid of the speeds, its
+own boundary at every surface and many more passes; the plain Laplacian form, solved implicitly on the drops, damps
+a blob's spin at its surface (its neighbourhood is one-sided there), and a falling thread then cannot buckle and
+coil. So the thick liquids take Peer, Cornelis and Teschner's way (2015, "An Implicit Viscosity Formulation for SPH
+Fluids"): each step, a target velocity gradient keeps each drop's spin and its spreading or squeezing and drops its
+shear, and the speeds are rebuilt from it, a few sweeps a step.
+
+### What is decided for 4.3b
+
+- **Thickness's scale** (`Numbers::evening`): ν = `visc_base` + `visc_thick` t + `visc_cube` (t − 0.1)³ for t past
+  0.1 (100 + 2,500 t + 140,000 (t − 0.1)³ px² a second): unchanged up to 0.1 (water is 0.02), syrup 0.35 about
+  3,200, slime 0.45 about 7,200, honey 0.6 about 19,000, paste 1 about 100,000. `visc_cube` is an engine number
+  with an override (`VISC_CUBE`), like the others.
+- **Who takes the thick passes**: a liquid whose ν is past what the evening's cap gives at this step's length
+  (`Numbers::thick_extra(feel, cell, dt)` = ν − 0.5 reach² / (20 dt), when positive). A frame with no such liquid
+  takes no thick pass and joins its steps as now, so water and every liquid of Thickness 0.1 or less move exactly
+  as before (the goldens and pinned pictures don't move).
+- **The passes**, after each step's Finish (`thick.wgsl`, new; on a thick frame the steps are not joined, so each
+  step's Finish keeps its drops in `xv` and the next step's Predict falls from there, as at a cut):
+  1. `cs_thick_grad`: each drop of a thick liquid works out its velocity gradient from its own liquid's neighbours
+     (no air, no other liquid), corrected so a straight-line field is read exactly even at a surface: G = A M⁻¹,
+     A = Σ (v_j − v_i) ⊗ ∇W_ij, M = Σ (x_j − x_i) ⊗ ∇W_ij (spiky kernel's gradient), M regularised by 5 % of its
+     trace where a thread is one drop wide. It keeps G's spin and its spreading and drops its shear: G* = R + D,
+     R = (G − Gᵀ)/2, D = tr(G)/2 I. G* is stored a drop (`thick_g`, binding 32, a vec4).
+  2. `cs_thick_a` and `cs_thick_b`, in pairs (`thick` sweeps a frame step, even): each thick drop's speed moves a
+     share α of the way to the rebuilt one, v' = Σ_j W_ij (v_j + ½ (G*_i + G*_j)(x_i − x_j)) / Σ_j W_ij over its
+     own liquid's neighbours and itself; `a` reads `xv`'s speeds and writes `thick_v` (binding 33), `b` reads
+     `thick_v` and writes `xv`'s speeds (only the z and w of its own drop: places are only read).
+  Inside the liquid this is the Laplacian's smoothing (a straight-line field, a turn included, is kept); at a
+  surface it keeps a turn and lets go of shear, which is what a free surface does.
+- **How many sweeps and how big a share** (`Numbers::thick_sweeps(feels, cell, dt)`): one sweep with share 1 smooths
+  as ν_sweep = σ² / (2 dt), σ² the kernel's second moment on the resting lattice (worked out like
+  `mix_at_rest`, `Numbers::thick_moment`); the sweeps are the most any liquid needs, ceil(ν_extra / ν_sweep), rounded
+  up to even, at most `MOST_THICK_SWEEPS` (32); each liquid's share α = ν_extra / (sweeps ν_sweep) ≤ 1 (FeelGpu's new
+  `d.x`). So ν is in px² a second, the same at every detail.
+- **FeelGpu** gains `d: [α, 0, 0, 0]` (WGSL `Feel.d`); the frame's `mixf.z` is the sweeps (0: none).
+- Air keeps its own motion (the evening's share couples it as now); a thick drop next to another liquid feels only
+  its own; drag at faces and Stickiness are as before.
+- **The rows** (4.3a's Honey, Syrup, Slime, Paint) are retuned on stills once this is built.
+
+### Edge cases (4.3b)
+
+- A lone thick drop (no neighbours of its liquid): G = 0, v' = v; nothing changes.
+- A thread one drop wide: M is near singular across it; the regularised inverse reads the gradient along it.
+- Thickness of a liquid keyframed across 0.1 mid-video: the frame it crosses starts or stops the thick passes and
+  the joining (the motion goes on smoothly; the take is still the same each time it is made).
+- A frame with thick liquid but no thick drops in the course (all drained or not poured yet): the passes run over
+  nothing (each drop checks its kind); cheap.
+- Restart points and copies: `thick_g` and `thick_v` live only inside a step; nothing is kept.
+
+### Not to do (4.3b)
+
+- No change to a frame with no thick liquid (joined steps, the evening, the passes all as now).
+- No grid viscosity, no new step count rule (the sweeps are stable at any share: each is an average).
+- No new binding on `cs_finish_predict`.
+
+### Task 1: `bpe-water`: the scale and the numbers (`numbers.rs`)
+
+`visc_cube`, `evening` with the cube, `thick_extra`, `thick_moment`, `thick_sweeps`, `FeelGpu.d`. Unit tests:
+`thickness_sets_the_evening` (extended: unchanged to 0.1, honey about 19,000), `only_thick_liquids_take_sweeps`
+(water, oil at 6 px none; honey some; more at 3 px than 6 px; the shares at most 1; paste capped).
+
+### Task 2: `bpe-water`: the passes (`thick.wgsl`, `common.wgsl`, `passes.rs`, `buffers.rs`, `mod.rs`)
+
+The three pipelines and bindings 32 and 33; the frame unjoined and the sweeps after each Finish on a thick frame.
+Tests (`tests/thick.rs`, on the card): `thicker_liquids_spread_slower` (a 120 px square lump on a floor, its width
+at 0.5 s for Thickness 0.02, 0.35, 0.6, 1: each narrower than the last, honey under 60 % of water's spread);
+`thickness_spreads_alike_at_6_and_3_px` (honey's width at 0.5 s within 15 %); `a_thick_blob_keeps_its_spin` (no
+gravity, a disc of honey turning rigidly keeps 80 % of its turn after a quarter second); `a_thick_blob_loses_its_
+shear` (no gravity, a disc sheared: honey's shear falls under 30 % in a tenth of a second where water's stays over
+70 %); `water_takes_no_thick_pass` (a water frame's passes unchanged: `steps_last_frame` and a copy's drops equal to
+a body of Thickness 0.1).
+
+### Task 3: judge and tune (`full_size_look.rs` `water-thick`)
+
+Stills in strips (a frame every tenth of a second) of honey poured onto a floor from a tap, a slab of honey off a
+ledge, and two blobs pulled apart, at Coarse detail in the container; tuned until honey folds as it lands, sags and
+stretches into strands. Then the 4.3a rows' Thickness retuned and the `water-liquids` still made again.
+
+### Task 4: notes
+
+`docs/notes/water.md` "Part 4.3b (as built)" and "### 4.3b" under "As built" here. (The full checks, the review and
+the merge come once, after 4.4.)
+
 ## As built
 
 ### 4.1
@@ -529,3 +753,61 @@ Built as planned, with these changes (the detail is in `docs/notes/water.md`, "P
 - `src/lumps.rs` joined the engine's print roots in `build.rs` (4.1 left it out, so an edit to it would not have
   changed the engine's print).
 - The probe's `picture` lost its tear colouring (`Drop.e`, the stretch, is now `Drop.mix`).
+
+### 4.3a
+
+Built as Tasks 1 to 4 say. Differences and findings:
+
+- The look check's first still dropped each lump about 100 px into its basin: the lumps threw jets at about four
+  times their landing speed (3,600 px a second against 900), up the walls and out of 300 px basins, onto the
+  ceiling and into the other basins, where they dyed the liquids (a dark lens of water on the paint, drawn in
+  water's deep colour under the paint's surface). Eight Water rows do the same, so it is the engine's flat-impact
+  jet, not a row's; the still stands its lumps on the floors instead. Worth judging against real water in a later
+  realism pass (a slab landing flat does throw fast jets, but these may be too fast).
+- Look values tuned on the still: Oil's thin film 0.35 to 0.12 (it read as dirty), Paint got a dark red deep colour
+  (its row had the default navy, which a blend with a clear liquid would show), Mercury went from a pale silver
+  (it read as milk) to a mid silver that darkens with depth (Clarity 40).
+- Ferrofluid's row added here (part 4b merges first; its thread gave the values): the Feel card's defaults, the
+  Look black, solid and glossy, and Keeps apart 1 (oil-based). The still is three rows of three.
+
+### 4.3b
+
+Built as Tasks 1 to 4 say, with these differences (each found on the card in the container, `tests/thick.rs` and
+scatter pictures of honey on 6 px cells):
+
+- **Who is thick, and the plain evening**: a liquid past Thickness 0.1 (`THICK_FROM`), not one past the evening's
+  cap (`thick_extra` would have given water stages on 1 px cells, where the cap is under 150). A thick liquid has no
+  plain evening at all, the stages take all of its ν (`thick_evening`): with the plain evening capped at 0.5 a step
+  and the stages on top, a spinning disc of honey lost half its spin in a quarter second (the plain evening pulls a
+  surface drop toward its neighbours' speeds, which wears a turn away; the stages then spread that through the
+  blob). Without it the disc keeps its spin (3 to 3.01 radians a second).
+- **Stages, not sweeps**: plain sweeps would have taken 59 a step for honey at 3 px (and hundreds for paste), so the
+  sweeps are RKL1 stages (super time stepping: `s` stages smooth as (s² + s) / 2 sweeps, each a sweep at the
+  liquid's share times `(2j − 1) / j` plus `(1 − j) / j` of the stage before last). They are a multiple of three
+  and rotate through `xv.zw`, `xp.xy` and `xp.zw`, the stage's number in `blocks[0]` (`cs_thick_tick`), the turn in
+  `lamb`: no bindings 32 and 33.
+- **Once a frame**, after the last step's Finish (as the colours mix), not after every step: the steps stay joined
+  and it costs far less (the stages grow as the square root of what a step wants). `thick_stages(feels, cell)`, at
+  most 180 (`MOST_THICK_STAGES`).
+- **Only the turn is kept**, not the spreading: kept as a spreading, a tap's stream (its rows parting as they speed
+  up) fanned out sideways into spray. M is held up only where it is near singular (its smaller eigenvalue to a tenth
+  of its trace): 5 % of the trace everywhere read every turn short, and the disc lost a quarter of its spin.
+- **Solid faces hold a thick liquid** (not in the plan): a face within reach counts in each stage as liquid at rest
+  behind it, so honey clings, sags off a ledge (before, it rolled off whole) and runs slowly down a wall (68 px in
+  a quarter second where water falls 125).
+- **The tests** measure at a quarter second (not half); `water_takes_no_thick_pass` is `only_thick_liquids_take_
+  stages` (no stages at any detail for Thickness 0.1 or less) and the unchanged goldens; `a_thick_liquid_clings_to_
+  a_wall` is new.
+- **Not reached**: strands, and one unbroken rope from a tap. The density solve only pushes, so a stretching thread
+  parts once it is a few drops thin; a tap's stream parts into lumps a little below the spout (water's does too at
+  slow taps), and the lumps pile and fold on the floor. Two blobs thrown apart part at once. Written up as what a
+  later part could add (a stream held at its spout's speed for its first reach; a pull inside a thick liquid).
+- **Rows**: Honey 0.6 to 0.8 (it read as runny at this scale's gravity: a 60 px layer of 0.6 slides off a wall at
+  about 270 px a second), Slime 0.45 to 0.6.
+
+### 4.4
+
+Built as decision 24's choice says. The draft plays forwards only (going back in it plays again from a restart
+copy), so the playhead runs on the video's clock only while the Final shows, and an exported draft leaves Un-mix
+out. The Mixing card's old Un-mix group went with it, and 4.3a's `LEFT` lost "Un-mix".
+

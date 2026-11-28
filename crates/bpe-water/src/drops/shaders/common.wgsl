@@ -22,6 +22,9 @@ struct Feel {
     // one over its weight, how much it keeps apart from other liquids, its colour mixing's root a
     // pass (mix.wgsl), when its colour mixes (0 always, 1 stirred, 2 on hits)
     c: vec4<f32>,
+    // the share of a plain sweep a thick stage takes (0: none; thick.wgsl), the plain evening's share
+    // air takes when this is liquid 0 (`b.z` unless the liquid is thick), 0, 0
+    d: vec4<f32>,
 };
 
 // A force on the water (drops/forces.rs `ForceGpu`): its middle (grid units), its reach (cells), the
@@ -93,7 +96,7 @@ struct Fr {
     // how many drains, the frame's code for the drops they take (`drained_y`), 0, 0
     dmeta: vec4<u32>,
     // bit 0 the liquids' weights differ (the pressure, the pairs' pulls and the deep push share by
-    // mass), bit 1 colours mix this frame; the mix passes; 0, 0
+    // mass), bit 1 colours mix this frame; the mix passes; the thick stages a frame (thick.wgsl); 0
     mixf: vec4<u32>,
     // Mixes when's speeds: stirred, on hits (cells a second); air's mass (the lightest liquid's) and
     // one over it

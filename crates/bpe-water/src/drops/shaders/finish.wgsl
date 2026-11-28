@@ -158,7 +158,9 @@ fn finish_at(i: u32, step: u32) -> Finished {
             bend = bend + (fr.deep2.w * wet * thin_w * 4.0 * seg) * me.zw;
         }
     }
-    var v = vi + feel.b.z * even / rho0;
+    // (Air takes the plain evening of liquid 0, its kind's, even when that liquid is thick and has
+    // none of its own: `d.y`, the same as `b.z` for a liquid that is not thick.)
+    var v = vi + select(feel.b.z, feel.d.y, air) * even / rho0;
     v = v + fr.deep2.y * meet / max(rho0 - weight(0.0), 1e-6);
     var a = vec2<f32>(0.0);
     if !air {
