@@ -13,7 +13,7 @@ pub const MOST_LEVELS: usize = 12;
 /// The pressure passes' numbers (two a level: twice the level, plus the colour).
 pub(super) const TICKS: u32 = 2 * MOST_LEVELS as u32;
 /// Words a cell in the sums (`SUMS` in deep.wgsl).
-const SUMS: u64 = 6;
+const SUMS: u64 = 7;
 
 /// The pressure's levels for a grid of `cols` x `rows` nodes: (where it starts, columns, rows, 0),
 /// each half the one before each way, down to a handful of cells.

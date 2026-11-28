@@ -9,9 +9,9 @@
 use std::hash::{DefaultHasher, Hash};
 
 use bpe_core::maths::Maths;
-use bpe_core::{Resolved, Scene, SlotId, Target, ThingId};
+use bpe_core::{Resolved, Scene, SlotId, Target, ThingId, Value};
 use bpe_water::drops::forces::PSI_SLOPE_MOST;
-use bpe_water::{Force, MOST_FORCES, Push};
+use bpe_water::{Force, MOST_DRAINS, MOST_FORCES, Push};
 use glam::Vec2;
 
 use super::{Keyed, MOST_LIQUIDS};
@@ -35,10 +35,12 @@ pub const SPIKE_DEPTH: f32 = 0.6;
 pub const HEAT_LATER: &str =
     "Heaters and coolers arrive with heat, in a later part of Water mode: this one does nothing yet.";
 /// What the stage says about a force that names no Liquid the water has.
-pub const NO_LIQUID_TO_MOVE: &str =
-    "This force has no Liquid to move: its Liquid is turned off, or past the 16 the water tells apart.";
+pub const NO_LIQUID_TO_MOVE: &str = "This force has no Liquid to move: the Liquid it names is turned off or gone, or past the 16 the water tells apart.";
 /// What the stage says about a force past the most the water feels at once.
 pub const TOO_MANY_FORCES: &str = "The water feels at most 16 forces at once: this one isn't felt.";
+/// What the stage says about a spinning Drain past the most forces the water feels at once.
+pub const TOO_MANY_SPINS: &str =
+    "The water feels at most 16 forces at once: this Drain still drains, but its whirlpool doesn't spin.";
 
 /// One Force, or a Drain's whirlpool, as the water sees it.
 #[derive(Clone, Debug)]
@@ -89,6 +91,9 @@ impl ForceSetup {
         notes: &mut Vec<(ThingId, &'static str)>,
     ) -> Vec<ForceSetup> {
         let mut out = Vec::new();
+        // (Drains with a card, as the draft counts them: one past the most drains takes nothing and
+        // spins nothing.)
+        let mut drains = 0;
         for id in scene.order.iter().copied().filter(|id| resolved.things.contains_key(id)) {
             let kind = scene.things[&id].kind.as_str();
             if kind != FORCE && kind != DRAIN {
@@ -115,9 +120,15 @@ impl ForceSetup {
                     place: scene.things[&id].transform.position,
                 }
             } else {
+                drains += 1;
+                if drains > MOST_DRAINS {
+                    continue;
+                }
                 // (A Drain spins the water only where its Whirlpool is above 0, at the start or on a key.)
                 let c: DrainCard = card.card(0.0);
-                let keyed = card.tracks.iter().any(|(k, _)| k == "whirlpool");
+                let keyed = card.tracks.iter().any(|(k, t)| {
+                    k == "whirlpool" && t.keys.iter().any(|key| matches!(key.value, Value::Number(n) if n > 0.0))
+                });
                 if c.kind != DrainKind::Drain || !(c.whirlpool > 0.0 || keyed) || liquids.is_empty() {
                     continue;
                 }
@@ -126,7 +137,7 @@ impl ForceSetup {
                 ForceSetup { id, kind: ForceKind::Whirlpool, drain: true, liquids, card, place }
             };
             if out.len() >= MOST_FORCES {
-                notes.push((id, TOO_MANY_FORCES));
+                notes.push((id, if setup.drain { TOO_MANY_SPINS } else { TOO_MANY_FORCES }));
                 continue;
             }
             out.push(setup);

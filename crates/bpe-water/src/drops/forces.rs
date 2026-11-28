@@ -45,6 +45,10 @@ pub const SPIKE_WIDTH: f32 = 0.5;
 pub const SPIKE_ROUND: f32 = 0.1;
 /// The deepest valleys between spikes: a magnet's `depth` is held to this.
 pub const MOST_DEPTH: f32 = 0.9;
+/// And to this times a tooth's half width (radians), so narrow teeth are no steeper than 9 over 160° at a
+/// depth of 0.6 (Spike size 1): 9 over 30° at 0.6 stirred a Strength 4 mound at 150 to 260 px/s, against
+/// 36 to 49 over 160° (`strong_spikes_measured`).
+pub const MOST_STEEP: f32 = 3.9;
 /// Where the teeth start and are whole, as shares of the reach (`c(u)`; the same in forces.wgsl).
 pub const SPIKE_FROM: f32 = 0.2;
 pub const SPIKE_WHOLE: f32 = 0.45;
@@ -156,7 +160,8 @@ impl Force {
     fn shape(&self, u: f32, x: f32) -> (f32, f32, f32) {
         let Push::Magnet { spikes, depth, spread, .. } = self.push else { return (1.0, 0.0, 0.0) };
         let spread = spread.clamp(0.0, std::f32::consts::TAU);
-        let depth = depth.clamp(0.0, MOST_DEPTH);
+        let w = SPIKE_WIDTH * spread / spikes.clamp(1, 64) as f32;
+        let depth = depth.clamp(0.0, MOST_DEPTH).min(MOST_STEEP * w);
         if spikes == 0 || depth <= 0.0 || spread <= 0.0 {
             return (1.0, 0.0, 0.0);
         }
@@ -167,7 +172,6 @@ impl Force {
         } else {
             0.0
         };
-        let w = SPIKE_WIDTH * spread / spikes.min(64) as f32;
         let soft = (x * x + SPIKE_ROUND * SPIKE_ROUND).sqrt();
         let whole = (1.0 + SPIKE_ROUND * SPIKE_ROUND).sqrt() - SPIKE_ROUND;
         let t = (1.0 - (soft - SPIKE_ROUND) / whole).max(0.0);
@@ -230,15 +234,17 @@ impl Force {
         let dpsi = -6.0 * v * q * q;
         let out = d / r;
         let shares = share * share;
-        let p = pull * dpsi * ((1.0 / share - u * along / shares) * out - (round / shares) * out.perp());
-        let big = p.length();
+        // (Its size and its way apart, so a huge pull holds at the most push instead of overflowing.)
+        let k = pull * dpsi;
+        let g = (1.0 / share - u * along / shares) * out - (round / shares) * out.perp();
+        let (size, way) = (g.length(), k.abs());
         let most = MOST_PUSH * GRAVITY_UNIT;
-        if !big.is_finite() {
+        if k.is_nan() || !(size > 0.0 && size.is_finite()) {
             Vec2::ZERO
-        } else if big > most {
-            p * (most / big)
+        } else if way * size > most {
+            g * (k.signum() * most / size)
         } else {
-            p
+            g * k
         }
     }
 
@@ -382,6 +388,10 @@ mod tests {
         let p = huge.magnet_push(at);
         assert!(p.is_finite() && p.length() <= MOST_PUSH * GRAVITY_UNIT * 1.0001, "{p}");
         assert!(huge.headroom() <= MOST_PUSH * GRAVITY_UNIT);
+        // (A pull so big its push overflows still pushes, at the most.)
+        let vast = Force { push: Push::Magnet { pull: 3e38, spikes: 9, depth: 0.6, aim: 0.0, spread: 3.0 }, ..huge };
+        let p = vast.magnet_push(at);
+        assert!((p.length() / (MOST_PUSH * GRAVITY_UNIT) - 1.0).abs() < 1e-4, "{p}");
     }
 
     #[test]

@@ -3,10 +3,12 @@
 const TAU: f32 = 6.28318531;
 // A spike's tooth is (1 - |x|) cubed, x the turn from its middle over its half width, a share
 // SPIKE_WIDTH of the turn between two spikes; its point is rounded off within SPIKE_ROUND of the
-// middle. A magnet's depth is held to MOST_DEPTH (forces.rs).
+// middle. A magnet's depth is held to MOST_DEPTH, and to MOST_STEEP times a tooth's half width
+// (radians), so narrow teeth are no steeper than wide ones (forces.rs).
 const SPIKE_WIDTH: f32 = 0.5;
 const SPIKE_ROUND: f32 = 0.1;
 const MOST_DEPTH: f32 = 0.9;
+const MOST_STEEP: f32 = 3.9;
 // The teeth start and are whole at these shares of the reach.
 const SPIKE_FROM: f32 = 0.2;
 const SPIKE_WHOLE: f32 = 0.45;
@@ -30,8 +32,8 @@ fn magnet_push(f: Force, d: vec2<f32>) -> vec2<f32> {
     var along = 0.0;
     var round_slope = 0.0;
     let n = min(f.c.z, 64u);
-    let depth = clamp(f.b.y, 0.0, MOST_DEPTH);
     let spread = clamp(f.b.w, 0.0, TAU);
+    let depth = min(clamp(f.b.y, 0.0, MOST_DEPTH), MOST_STEEP * SPIKE_WIDTH * spread / f32(max(n, 1u)));
     if n > 0u && depth > 0.0 && spread > 0.0 {
         let t0 = clamp((u - SPIKE_FROM) / (SPIKE_WHOLE - SPIKE_FROM), 0.0, 1.0);
         let c = t0 * t0 * (3.0 - 2.0 * t0);
@@ -68,15 +70,18 @@ fn magnet_push(f: Force, d: vec2<f32>) -> vec2<f32> {
     let out = d / r;
     let round = vec2<f32>(-out.y, out.x);
     let shares = share * share;
-    let p = f.b.x * dpsi * ((1.0 / share - u * along / shares) * out - (round_slope / shares) * round);
-    let big = length(p);
-    if !(big < 1e30) {
+    // (Its size and its way apart, so a huge pull holds at the most push instead of overflowing.)
+    let k = f.b.x * dpsi;
+    let g = (1.0 / share - u * along / shares) * out - (round_slope / shares) * round;
+    let size = length(g);
+    // (The card sends only magnets with finite numbers, so `k` is a number, if maybe a huge one.)
+    if !(size > 0.0 && size < 1e30) {
         return vec2<f32>(0.0);
     }
-    if big > f.a.w {
-        return p * (f.a.w / big);
+    if abs(k) * size > f.a.w {
+        return g * (sign(k) * f.a.w / size);
     }
-    return p;
+    return g * k;
 }
 
 // A whirlpool draws the speed `v` of a drop `d` from its middle round it toward its spin.
@@ -102,14 +107,16 @@ fn blow(f: Force, v: vec2<f32>, full: f32, dt: f32) -> vec2<f32> {
     return f.b.xy + (v - f.b.xy) * keep;
 }
 
-// Whether grid point `q` lies in a magnet's reach. There the water is the drops' own, not the deep
-// part's (deep.wgsl): the deep water rests no fuller than the drops just above it, and a magnet presses
-// them fuller than that, so its pressure stirred the mound.
-fn in_magnet(q: vec2<f32>) -> bool {
+// Whether grid point `q` lies in the reach of a magnet that moves any of `liquids` (bit k: liquid k).
+// There that water is the drops' own, not the deep part's (deep.wgsl): the deep water rests no fuller
+// than the drops just above it, and a magnet presses them fuller than that, so its pressure stirred the
+// mound. (Other liquids keep the deep part: a deep tank of water with a magnet for the ferrofluid on its
+// floor sank 10 px and stirred at 20 px/s when the whole reach was the drops' own.)
+fn in_magnet(q: vec2<f32>, liquids: u32) -> bool {
     let n = min(fr.forces_n.x, 16u);
     for (var k = 0u; k < n; k = k + 1u) {
         let f = fr.forces[k];
-        if f.c.x == 1u && length(q - f.a.xy) < f.a.z {
+        if f.c.x == 1u && (f.c.y & liquids) != 0u && length(q - f.a.xy) < f.a.z {
             return true;
         }
     }

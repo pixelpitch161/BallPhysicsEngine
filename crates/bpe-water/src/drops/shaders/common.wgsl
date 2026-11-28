@@ -23,7 +23,7 @@ struct Feel {
 
 // A force on the water (drops/forces.rs `ForceGpu`): its middle (grid units), its reach (cells), the
 // most it pushes a drop (cells a second squared); by kind: a magnet's pull (cells a second squared), its
-// spikes' pull, their aim and spread (radians), a whirlpool's speed (cells a second) and rate, a wind's
+// spikes' depth (a share of its reach), their aim and spread (radians), a whirlpool's speed (cells a second) and rate, a wind's
 // velocity (cells a second) and rate; its kind (1 magnet, 2 whirlpool, 3 wind), the liquids it moves
 // (bit k: liquid k), a magnet's spikes, 0.
 struct Force {

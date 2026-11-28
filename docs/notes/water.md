@@ -1447,18 +1447,25 @@ ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and
   `SPIKE_ROUND` 0.1 so the pull doesn't flip across a spike's middle, `c(u) = smoothstep(0.2, 0.45, u)` (round and
   calm inside), the valleys' reach past the spread. Every level past `u` 0.45 is the same star, so the liquid's
   skin stands in cones with sharp tips and round valleys, the same at every detail, and along every line out of
-  the middle the potential only rises, so the middle is the deepest place. A push is held to `MOST_PUSH` 256
-  gravities (a guard: held pushes are no longer down a slope, and the first magnet, which met its guard, churned).
+  the middle the potential only rises, so the middle is the deepest place. The depth is held to `MOST_DEPTH` 0.9
+  and to `MOST_STEEP` 3.9 × a tooth's half width (radians), so narrow teeth are no steeper than 9 over 160° at
+  Spike size 1: uncapped, 9 over 30° at Strength 4 stirred at 205 to 260 px/s and 9 over 60° at 165 to 200,
+  capped 7 to 12 and 26 to 32 (20 over 360°: 40 to 55; 9 over 160°, not capped: 36 to 49). A push is held to
+  `MOST_PUSH` 256 gravities (a guard: held pushes are no longer down a slope, and the first magnet, which met its
+  guard, churned); its size and way are worked out apart, so a pull too big for a float still pushes at the most.
   It pulls through rock (the field isn't blocked; the drops are still kept off the solids).
 - **Whirlpool**: the speed round its middle is drawn toward `speed·2x/(1 + x²)`, `x = r/(0.3R)`, at `rate` a
   second faded over the last 30 % of its reach, by the exact `1 − e^(−rate·dt)`, so every step count gives the same
   change a second. **Wind**: a drop's speed is drawn toward the wind's at `rate` times how much of it meets the air
   (`1 − smoothstep(0.35, 0.75, fullness)`: a lone drop all of it, a flat open top a little, inside nothing). Wind
   blows everywhere; solids don't shelter (Known).
-- **Inside a magnet's reach the water holds itself up** (`in_magnet` in deep.wgsl's cells pass: no cell there is
-  full, so depth is measured from it): the deep water rests no fuller than the drops just above it (C2), a magnet
+- **Inside a magnet's reach its liquids hold themselves up** (`in_magnet` in deep.wgsl's cells pass: no cell
+  there that holds one of the magnet's liquids is full, so depth is measured from it; the gather pass ORs each
+  cell's liquids into a seventh sum): the deep water rests no fuller than the drops just above it (C2), a magnet
   presses them fuller, and the deep pressure stirred the mound at about 100 px/s. Without it the mound comes to
-  rest. The water there is a little more pressed than elsewhere (Known).
+  rest. The water there is a little more pressed than elsewhere (Known). Other liquids keep their deep part: with
+  the whole reach the drops' own, a deep tank of water over a magnet for another liquid sank 10 px and stirred at
+  13 to 29 px/s against 3 to 5 (`a_magnet_leaves_other_liquids_deep_water_alone`).
 - **Steps**: `steps_now` adds each force's push over two frames, as for gravity (`Force::headroom`: a magnet's pull
   without its spikes, Strength gravities; a whirlpool's and a wind's draw on a drop at rest). Counting a spike's
   sharper slopes took a 6 px frame to 32 steps, where the skin's bend (calm only at the trial's pace, C1) stirred a
@@ -1472,14 +1479,15 @@ ready-made look, **Ferrofluid**, makes that liquid black and glossy. Heaters and
   Wind), Aim and **Gusts** (Wind), Spikes (9), **Spike size** (0.75, keyed), **Spikes point** (−90, up) and **Spike
   spread** (180°) for a Magnet.
 - `ForceSetup::all_of` reads the enabled Forces and the Drains whose Whirlpool is above 0 (at the start or on a
-  key) in the scene's order. Per frame, `force_at(time)`: a Magnet's pull `S·FORCE_UNIT/1.7173`, depth
+  key above 0) in the scene's order; a Drain past the 32 the water drains spins nothing either. Per frame, `force_at(time)`: a Magnet's pull `S·FORCE_UNIT/1.7173`, depth
   `SPIKE_DEPTH` 0.6 × Spike size (0 with no spikes); a Whirlpool `S·SPIN_SPEED` (600 px/s), rate `SPIN_RATE` 4 ×
   min(|S|, 1); a Wind `S·WIND_SPEED` (1000 px/s) × `1 + Gusts·gust(t)` along Aim, rate `WIND_RATE` 3 × min(|S|, 1),
   so Strength 0 is no force; a Drain's whirlpool `Whirlpool·600`, rate 4 × min(Whirlpool, 1), reaching twice its
   Radius, every liquid. `gust(t) = (sin 1.3t + sin(2.9t + 1) + sin(4.7t + 2))/3` (det maths). A force's place is
   its position, read through `place_at(time)` for a later place track.
-- Notes: `HEAT_LATER` (Heater, Cooler), `NO_LIQUID_TO_MOVE` (its Liquid off, past 16, or none), `TOO_MANY_FORCES`
-  (past 16).
+- Notes: `HEAT_LATER` (Heater, Cooler), `NO_LIQUID_TO_MOVE` (its Liquid off, gone, past 16, or none),
+  `TOO_MANY_FORCES` (past 16), `TOO_MANY_SPINS` (a spinning Drain past 16 forces: it still drains, its whirlpool
+  doesn't spin).
 - **What restarts**: every Force card setting, a Force's place and turning it off restart the draft and mark the
   final out of date (the print, and `force:{k}` parts of `WaterInputs` from 0, by place in the list: whirlpools and
   winds draw in its order); a Drain's whirlpool is in its drain's print and parts already (part 4.1).

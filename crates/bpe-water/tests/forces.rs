@@ -309,8 +309,8 @@ fn tips(drops: &[(Vec2, Vec2)], middle: Vec2, teeth: u32, spread: f32) -> Vec<f3
 }
 
 /// A measuring run for strong magnets (plan Task 6): `a_magnet_holds_its_mound_still`'s pool and magnet at
-/// Strength `S` (4) and Spike size `SIZE` (1), at `CELL` (6) px for `SECS` (4) s, its strength rising over the
-/// first second. Every half second it prints the steps a frame, the fastest drop, the drops' rms speed and the
+/// Strength `S` (4) and Spike size `SIZE` (1) with `N` (9) spikes over `SPREAD` (160) degrees, at `CELL` (6) px
+/// for `SECS` (4) s, its strength rising over the first second. Every half second it prints the steps a frame, the fastest drop, the drops' rms speed and the
 /// drops past the reach; at the end, each tip's height and how far the tips moved over the last second.
 /// `cargo test --release -p bpe-water --test forces -- --ignored --nocapture strong_spikes_measured`
 #[test]
@@ -320,6 +320,7 @@ fn strong_spikes_measured() {
     let gpu = WaterGpu::new(&device, &queue);
     let env = |key: &str, or: f32| std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
     let (cell, strength, size, secs) = (env("CELL", 6.0), env("S", 4.0), env("SIZE", 1.0), env("SECS", 4.0) as u32);
+    let (teeth, spread) = (env("N", 9.0) as u32, env("SPREAD", 160.0));
     let (layout, field) = open_box(cell);
     // (`BPE_WATER_MOST_STEPS` and the rest of `Numbers::from_env_for` try other numbers.)
     let mut water = Water::new(gpu, &field, GRAVITY, Numbers::from_env_for(cell), &[Feel::default()]);
@@ -327,7 +328,7 @@ fn strong_spikes_measured() {
     water.add(&pool);
     let middle = Vec2::new(0.0, 490.0);
     // (The kit's Spike size 1 is a depth of 0.6.)
-    let mut full = magnet(middle, strength, 9, 160.0, u32::MAX);
+    let mut full = magnet(middle, strength, teeth, spread, u32::MAX);
     if let Push::Magnet { depth, .. } = &mut full.push {
         *depth = 0.6 * size;
     }
@@ -362,11 +363,11 @@ fn strong_spikes_measured() {
                 started.elapsed().as_secs_f32()
             );
             if frame + 1 == (secs - 1) * 60 {
-                before = tips(&drops, middle, 9, 160.0);
+                before = tips(&drops, middle, teeth, spread);
             }
         }
     }
-    let after = tips(&read(&water), middle, 9, 160.0);
+    let after = tips(&read(&water), middle, teeth, spread);
     let moved: Vec<f32> = after.iter().zip(&before).map(|(a, b)| a - b).collect();
     let rms = (moved.iter().map(|m| m * m).sum::<f32>() / moved.len() as f32).sqrt();
     eprintln!("{} drops at {cell} px, at most {most_steps} steps a frame", pool.len());
@@ -375,4 +376,44 @@ fn strong_spikes_measured() {
         "tips moved over the last second: rms {rms:.2} px, at most {:.1} px",
         moved.iter().map(|m| m.abs()).fold(0.0, f32::max)
     );
+}
+
+/// A magnet for another liquid leaves a deep pool of water as it is: the water near the magnet keeps
+/// its deep part (before, a deep tank with a magnet for the ferrofluid on its floor sank 10 px and
+/// stirred at 13 to 29 px/s, against 3 to 5 with no magnet).
+#[test]
+fn a_magnet_leaves_other_liquids_deep_water_alone() {
+    let Some(gpu) = card() else { return };
+    let cell = 12.0;
+    let run = |with: bool| {
+        let (layout, field) = open_box(cell);
+        let numbers = Numbers { deep: 1, ..Numbers::for_cell(cell) };
+        let mut water = Water::new(gpu.clone(), &field, GRAVITY, numbers, &[Feel::default(), Feel::default()]);
+        let (from, to) = (Vec2::new(-298.0, -200.0), Vec2::new(298.0, 448.0));
+        water.add(&bpe_water::fill_stacked(&layout, &field, from, to, STOPS, 0.25));
+        let mut m = magnet(Vec2::new(0.0, 490.0), 3.0, 9, 160.0, 0b10);
+        if let Push::Magnet { depth, .. } = &mut m.push {
+            *depth = 0.45;
+        }
+        if with {
+            water.set_forces(&[m]);
+        }
+        play(&mut water, 120);
+        let drops = probe::liquid(&water.read()).into_owned();
+        let at: Vec<(Vec2, Vec2)> =
+            drops.iter().map(|d| (layout.to_world(Vec2::from(d.x)), Vec2::from(d.v) * cell)).collect();
+        let near: Vec<f32> = at
+            .iter()
+            .filter(|(p, _)| p.distance(Vec2::new(0.0, 490.0)) < 300.0)
+            .map(|(_, v)| v.length_squared())
+            .collect();
+        let rms = (near.iter().sum::<f32>() / near.len().max(1) as f32).sqrt();
+        let mut tops: Vec<f32> = at.iter().filter(|(p, _)| p.x.abs() < 60.0).map(|(p, _)| p.y).collect();
+        tops.sort_by(f32::total_cmp);
+        (tops.get(5).copied().unwrap_or(0.0), rms)
+    };
+    let (top, rms) = run(false);
+    let (top_with, rms_with) = run(true);
+    assert!((top_with - top).abs() < 2.0, "the pool keeps its level: {top_with:.1} against {top:.1}");
+    assert!(rms_with < rms + 3.0, "and stays as still: {rms_with:.1} px/s against {rms:.1}");
 }

@@ -139,7 +139,8 @@ every detail", Parts 4b). Hand-over: `/mnt/project-files/ballphysics/water-mode/
   f32, rate: f32 }, Wind { velocity: Vec2, rate: f32 } }` (px/s², px/s, 1/s, radians), `Clone, Copy, Debug,
   PartialEq`.
 - `pub struct Force { pub push: Push, pub place: Vec2, pub reach: f32, pub liquids: u32 }` (world px; bit k of
-  `liquids` = liquid k), with `fn most_push(&self) -> f32` (px/s², at most `MOST_PUSH`·4000).
+  `liquids` = liquid k), with `fn headroom(&self) -> f32` (px/s², the push the frame's steps make room for, at most
+  `MOST_PUSH`·4000; as built a magnet's pull without its spikes, Task 6).
 - `Water::set_forces(&mut self, forces: &[Force])` (from the next frame, at most 16), `Water::forces(&self) ->
   &[Force]`.
 - `ForceGpu { a: [f32; 4] /* place (grid), reach (cells), most push (cells/s²) */, b: [f32; 4] /* by kind */, c:
@@ -310,3 +311,13 @@ Coarse final 4 s; drawn in the Ferrofluid look at 1, 2.5 and 4 s: `water-ferrofl
   Strength 4 with Spike size 0.75 forced to 48 steps churned at 107 to 140 px/s. The drops flying past the reach in
   the first half second are the pool spreading to the box's corners, as it does with no magnet. The two outer teeth
   reach the reach's edge (a tooth lying near the floor fills to it).
+- **Review fixes.** (1) A magnet's reach is the drops' own only in cells holding its liquids (the deep gather ORs
+  each cell's liquids into a seventh sum): before, a deep tank of water over a magnet for another liquid sank 10 px
+  and stirred at 13 to 29 px/s against 3 to 5 (`a_magnet_leaves_other_liquids_deep_water_alone`, which fails on the
+  old shader at 17 px). (2) Narrow teeth: 9 over 30° or 60° at Strength 4, Spike size 1 stirred at 165 to 260
+  px/s (the round slope grows as depth over the tooth's width); the depth is now held to `MOST_STEEP` 3.9 × the
+  half width (radians), the steepness of 9 over 160° at 0.6, which leaves the card's defaults and the look check
+  as they were: 30° then stirs at 7 to 12 px/s, 60° at 26 to 32, 100° at 37, 20 over 360° at 40 to 55. (3) A
+  Drain past the 32 drains spins nothing, a Whirlpool keyed only at 0 isn't a force, and a spinning Drain past 16
+  forces says it still drains (`TOO_MANY_SPINS`). (4) A pull too big for a float holds at the most push instead
+  of none (size and way apart, on the card and the host).

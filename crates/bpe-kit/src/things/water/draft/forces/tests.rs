@@ -179,4 +179,34 @@ fn a_spinning_drain_is_a_whirlpool() {
     scene.set_key(&reg, &spin, 2.0, Value::Number(1.0)).unwrap();
     let s = setup(&scene, &reg);
     assert_eq!((s.forces.len(), s.inputs_at(30).forces.len(), s.inputs_at(120).forces.len()), (1, 0, 1));
+    // Keys that never rise above 0 spin nothing, and take no force's place.
+    scene.set_key(&reg, &spin, 2.0, Value::Number(0.0)).unwrap();
+    assert!(setup(&scene, &reg).forces.is_empty(), "keyed at 0 only: no spin");
+}
+
+/// A Drain past the most drains spins nothing (it takes nothing either), and a spinning Drain past the most
+/// forces says that it still drains.
+#[test]
+fn spinning_drains_past_the_most() {
+    let reg = crate::registry();
+    let mut scene = new_water_scene(&reg, "");
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    let drains: Vec<ThingId> =
+        (0..MOST_DRAINS + 1).map(|k| add(&mut scene, &reg, DRAIN, Vec2::new(k as f32, 0.0))).collect();
+    let last = drains[MOST_DRAINS];
+    set(&mut scene, last, "whirlpool", Value::Number(1.0));
+    let s = setup(&scene, &reg);
+    assert!(s.forces.is_empty(), "the 33rd drain doesn't spin");
+    assert_eq!(s.note_for(last), Some(crate::things::water::draft::TOO_MANY_DRAINS));
+    // Sixteen Forces first: the first drain's whirlpool is the 17th force.
+    let mut scene = new_water_scene(&reg, "");
+    add(&mut scene, &reg, LIQUID, Vec2::ZERO);
+    for k in 0..MOST_FORCES {
+        add(&mut scene, &reg, FORCE, Vec2::new(k as f32, 0.0));
+    }
+    let drain = add(&mut scene, &reg, DRAIN, Vec2::ZERO);
+    set(&mut scene, drain, "whirlpool", Value::Number(1.0));
+    let s = setup(&scene, &reg);
+    assert_eq!((s.forces.len(), s.drains.len()), (MOST_FORCES, 1));
+    assert_eq!(s.note_for(drain), Some(TOO_MANY_SPINS));
 }
