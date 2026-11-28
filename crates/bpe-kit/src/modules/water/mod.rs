@@ -6,6 +6,7 @@
 
 pub mod carve;
 pub mod liquid;
+pub mod liquids;
 pub mod look;
 pub mod looks;
 pub mod pieces;
@@ -15,6 +16,7 @@ pub mod solids;
 
 pub use carve::{CarveCard, CarveMask, CarvePaint, layout_for, mask_for};
 pub use liquid::{FeelCard, HeatCard, MixesWhen, MixingCard};
+pub use liquids::{ReadyLiquid, apply_liquid};
 pub use look::{
     BackCard, BackShows, ColourFrom, GlowFrom, LampCard, LampKind, LightQuality, WaterLightCard, WaterLook,
 };

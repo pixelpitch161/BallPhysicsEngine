@@ -8,7 +8,7 @@
 //! light's Quality (that is how long the picture takes, not how it looks), and a setting with
 //! keyframes keeps them.
 
-use bpe_core::{Color, Gradient, Params, Registry, Scene, Settings, SlotId, ThingId, Value, ValueType};
+use bpe_core::{Color, Gradient, Params, Registry, Scene, SettingDef, Settings, SlotId, ThingId, Value, ValueType};
 use glam::Vec2;
 
 use super::look::{BackCard, BackShows, ColourFrom, GlowFrom, LampCard, LampKind, WaterLightCard, WaterLook};
@@ -237,13 +237,19 @@ impl ReadyLook {
 /// stays one colour (Neon and Molten colour theirs by speed).
 const COLOUR_WAYS: [&str; 1] = ["colour_from"];
 
-/// Sets `params` to `card`: each of its settings to the card's value (left out where that is the
-/// default), but none in [`NEVER`], and no colour, gradient or [`COLOUR_WAYS`] when `keep_colours`.
-fn write<T: Settings>(params: &mut Params, card: &T, keep_colours: bool) {
+/// Whether a look writes `def`: none in [`NEVER`], and no colour, gradient or [`COLOUR_WAYS`] when
+/// `keep_colours`.
+fn a_look_writes(def: &SettingDef, keep_colours: bool) -> bool {
+    let colour = matches!(def.ty, ValueType::Color | ValueType::Gradient) || COLOUR_WAYS.contains(&def.key);
+    !NEVER.contains(&def.key) && !(keep_colours && colour)
+}
+
+/// Sets `params` to `card`: each of its settings that `takes` to the card's value (left out where
+/// that is the default).
+pub(super) fn write<T: Settings>(params: &mut Params, card: &T, takes: impl Fn(&SettingDef) -> bool) {
     let set = card.to_params();
     for def in T::defs() {
-        let colour = matches!(def.ty, ValueType::Color | ValueType::Gradient) || COLOUR_WAYS.contains(&def.key);
-        if NEVER.contains(&def.key) || (keep_colours && colour) {
+        if !takes(def) {
             continue;
         }
         match set.get(def.key) {
@@ -255,22 +261,23 @@ fn write<T: Settings>(params: &mut Params, card: &T, keep_colours: bool) {
     }
 }
 
-/// Writes `card` into `id`'s `slot`, adding the card (of kind `kind`) when the thing has none.
-fn write_card<T: Settings>(
+/// Writes `card`'s settings that `takes` into `id`'s `slot`, adding the card (of kind `kind`) when
+/// the thing has none.
+pub(super) fn write_card<T: Settings>(
     scene: &mut Scene,
     reg: &Registry,
     id: ThingId,
     slot: SlotId,
     kind: &str,
     card: &T,
-    keep_colours: bool,
+    takes: impl Fn(&SettingDef) -> bool,
 ) {
     let has = scene.things.get(&id).is_some_and(|t| t.slots.contains_key(&slot));
     if !has && scene.add_slot(reg, id, slot, kind).is_err() {
         return;
     }
     if let Some(s) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&slot)) {
-        write(&mut s.params, card, keep_colours);
+        write(&mut s.params, card, takes);
     }
 }
 
@@ -298,14 +305,15 @@ pub fn apply_look(scene: &mut Scene, reg: &Registry, look: ReadyLook, keep: Keep
     let of_kind = |scene: &Scene, kinds: &[&str]| -> Vec<ThingId> {
         scene.order.iter().copied().filter(|id| kinds.contains(&scene.things[id].kind.as_str())).collect()
     };
+    let takes = |d: &SettingDef| a_look_writes(d, keep.colours);
     for id in of_kind(scene, &[LIQUID]) {
-        write_card(scene, reg, id, SlotId::Look, LOOK, &row.liquid, keep.colours);
+        write_card(scene, reg, id, SlotId::Look, LOOK, &row.liquid, takes);
     }
     for id in of_kind(scene, &[COURSE, PIECE, WALL]) {
-        write_card(scene, reg, id, SlotId::Material, MATERIAL, &row.material, keep.colours);
+        write_card(scene, reg, id, SlotId::Material, MATERIAL, &row.material, takes);
     }
-    write_card(scene, reg, ThingId::ROOT, SlotId::Back, BACK, &row.back, keep.colours);
-    write_card(scene, reg, ThingId::ROOT, SlotId::WaterLight, LIGHT, &row.light, keep.colours);
+    write_card(scene, reg, ThingId::ROOT, SlotId::Back, BACK, &row.back, takes);
+    write_card(scene, reg, ThingId::ROOT, SlotId::WaterLight, LIGHT, &row.light, takes);
     if let Some(root) = scene.things.get_mut(&ThingId::ROOT) {
         root.params.set("bloom", Value::Number(f64::from(row.bloom)));
         root.params.set("exposure", Value::Number(f64::from(row.exposure)));
@@ -324,7 +332,7 @@ pub fn apply_look(scene: &mut Scene, reg: &Registry, look: ReadyLook, keep: Keep
         thing.transform.position = centre + lamp.share * size;
         // (A new lamp has no colours of its own to keep.)
         if let Some(s) = thing.slots.get_mut(&SlotId::Main) {
-            write(&mut s.params, &lamp.card, false);
+            write(&mut s.params, &lamp.card, |d| a_look_writes(d, false));
         }
     }
 }

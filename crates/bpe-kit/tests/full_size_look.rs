@@ -20,7 +20,8 @@
 //! - Water mode's plain drawing has its own group, `water` (`LOOK_ONLY=water`), with the look drawing's pictures
 //!   (`LOOK_ONLY=water-look`), a final made and drawn from its take (`LOOK_ONLY=water-final`), and
 //!   the extras and wet marks on a final (`LOOK_ONLY=water-extras`), and the seven ready-made looks on a final
-//!   (`LOOK_ONLY=water-looks`; `LOOK_SCENES=<folder>` saves each look's scene file there, to render).
+//!   (`LOOK_ONLY=water-looks`; `LOOK_SCENES=<folder>` saves each look's scene file there, to render), and the
+//!   ready-made liquids in nine basins (`LOOK_ONLY=water-liquids`).
 //! - `LOOK_TAKES`: a folder the extras' and the looks' finals are kept in, so a change to the look draws again
 //!   without making it again (about 20 minutes on the cloud's software card).
 
@@ -1685,6 +1686,83 @@ fn water_looks_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     out
 }
 
+/// Water mode part 4.3a's ready-made liquids at full size (`LOOK_ONLY=water-liquids`): nine Basins, three rows of
+/// three, each with a lump of one ready liquid standing in it at the start (Water, Oil, Honey; Syrup, Slime, Milk;
+/// Paint, Mercury, Ferrofluid), made at Coarse detail for 3 s and drawn at 2 s from its take in the Plain look.
+fn water_liquids_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8>)> {
+    use bpe_kit::modules::water::{ReadyLiquid, apply_liquid};
+    use bpe_kit::things::water::finals::Finals;
+    use bpe_kit::things::water::make::{MakeFinal, MakeProgress};
+    use bpe_kit::things::water::{LIQUID, PIECE, POUR, course_of, new_water_scene};
+    use bpe_water::draw::wet::HeldWet;
+    use bpe_water::draw::{LookDraw, LookGpu, StoredDrops, View};
+    use bpe_water::take::{Chunk, FrameCodec, chunk};
+    let name = "water-liquids";
+    if !wanted(name, only) {
+        return Vec::new();
+    }
+    let reg = kit().registry;
+    let mut scene = new_water_scene(&reg, "Liquids");
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("duration", Value::Number(3.0));
+    let water = scene.card_mut(ThingId::ROOT, SlotId::Water).unwrap();
+    water.params.set("final_detail", Value::Choice("coarse".into()));
+    let course = course_of(&scene).unwrap();
+    let r = 540.0 - 24.0;
+    let chamber = bpe_core::Stroke {
+        points: vec![[0.0, -960.0 + 24.0 + r], [0.0, 960.0 - 24.0 - r]],
+        size: r,
+        strength: 1.0,
+        square: true,
+        ..Default::default()
+    };
+    let carved = Value::Strokes(bpe_core::Strokes { list: vec![chamber] });
+    scene.card_mut(course, SlotId::Form).unwrap().params.set("carved", carved);
+    for (k, liquid) in ReadyLiquid::ALL.into_iter().enumerate() {
+        let at = Vec2::new(-330.0 + 330.0 * (k % 3) as f32, -600.0 + 600.0 * (k / 3) as f32);
+        let id = bpe_kit::add_thing(&mut scene, &reg, LIQUID, ThingId::ROOT).unwrap();
+        assert!(apply_liquid(&mut scene, &reg, id, liquid));
+        let basin = bpe_kit::add_thing(&mut scene, &reg, PIECE, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&basin).unwrap().transform.position = at;
+        let form = &mut scene.card_mut(basin, SlotId::Form).unwrap().params;
+        form.set("piece", Value::Choice("basin".into()));
+        form.set("size", Value::Vec2([240.0, 300.0]));
+        form.set("thickness", Value::Number(18.0));
+        // A lump standing on the basin's floor, narrower than the basin, that slumps out to its walls (one
+        // dropped from higher splashes out of the basins: a flat lump meeting a flat floor throws jets at several
+        // times the speed it lands at).
+        let lump = bpe_kit::add_thing(&mut scene, &reg, POUR, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&lump).unwrap().transform.position = at + Vec2::new(0.0, 150.0 - 18.0 - 60.0);
+        let main = &mut scene.card_mut(lump, SlotId::Main).unwrap().params;
+        main.set("kind", Value::Choice("fill_at_the_start".into()));
+        main.set("fill_size", Value::Vec2([140.0, 120.0]));
+        main.set("liquid", Value::Target(bpe_core::Target::Thing(id)));
+    }
+    let resolved = bpe_core::resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    let make = MakeFinal::of(&scene, &resolved, 3.0);
+    let finals = Finals::at(std::env::temp_dir().join(format!("bpe-look-liquids-{}", std::process::id())));
+    std::fs::remove_dir_all(finals.dir()).ok();
+    let water_gpu = bpe_water::WaterGpu::new(&gpu.device, &gpu.queue);
+    let head = make.make(&water_gpu, &finals, &MakeProgress::default(), &AtomicBool::new(false)).unwrap();
+    let dir = finals.take_dir(head.print);
+    let layout = head.layout();
+    let field = make.setup.field();
+    let mut drawing = LookDraw::new(LookGpu::new(&gpu.device, &gpu.queue), &field, make.setup.numbers().wall_off);
+    let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
+    let second = 2;
+    let mut c = Chunk::open(&dir, second).unwrap();
+    let frame = FrameCodec::new().decode(&c.bytes(0).unwrap(), &layout).unwrap();
+    stored.set(&gpu.device, &gpu.queue, &frame.xv, &frame.kinds, &frame.mixes);
+    let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
+    let mut wet = HeldWet::default();
+    wet.give(&gpu.device, &gpu.queue, layout, Some(&(marks, 60 * second)), &mut drawing);
+    let l = bpe_kit::things::water::look::look_of(&scene, &resolved, second as f64);
+    drawing.draw(&stored.buffers(), &View::screen(1.0), &l);
+    eprintln!("water-liquids: {} drops at {} px", head.drops, make.setup.cell);
+    std::fs::remove_dir_all(finals.dir()).ok();
+    vec![(name.to_string(), drawing.read())]
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1742,7 +1820,8 @@ fn render_at_full_size() {
     let finals = water_final_pictures(&gpu, &only)
         .into_iter()
         .chain(water_extras_pictures(&gpu, &only))
-        .chain(water_looks_pictures(&gpu, &only));
+        .chain(water_looks_pictures(&gpu, &only))
+        .chain(water_liquids_pictures(&gpu, &only));
     for (name, pixels) in water.chain(finals) {
         thumbs.push((name.clone(), save_all(&dir, &name, &pixels)));
         count += 1;

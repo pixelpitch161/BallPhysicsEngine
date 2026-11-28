@@ -1520,3 +1520,52 @@ run together where liquids meet, by Mix speed, the same in pixels at every detai
 - `bpe-kit`: `the_mixing_card_reaches_the_water` (and none with no Mixing card); `what_restarts_the_draft` counts the
   Mixing card's three.
 
+
+## Part 4.3a: ready-made liquids (as built)
+
+Plan `docs/superpowers/plans/water-mode/part4-more-liquids.md` ("4.3a"), decision 23. No physics, setting or drawing
+changed; goldens and the take don't move.
+
+- **The table** (`bpe-kit modules/water/liquids.rs`): `ReadyLiquid` (Water, Oil, Honey, Syrup, Slime, Milk, Paint,
+  Mercury, Ferrofluid; `ALL`, `title()`, `words()`, `row() -> LiquidRow { feel, mixing, look }`), like the looks'
+  table. Water's row is the cards' defaults. Adding a liquid is adding a row. Ferrofluid's row is part 4b's (water's feel, which
+  the Magnet's spikes are tuned with; black, solid, glossy), kept apart from water as an oil-based liquid is.
+- **`apply_liquid(scene, reg, id, liquid) -> bool`** writes the Feel card whole, the Mixing card's *Meeting other
+  liquids* and the Look card's *Its colour*, *Its body* and *Its surface* (`WRITTEN`), never the Mixing card's
+  *Un-mix* or the Look's *Glow*, *Drawn* and *Extras* (`LEFT`: how the scene's ready-made look draws every liquid,
+  so a Cartoon scene's oil keeps its outline), never Heat. A setting at the card's default is removed (as a look
+  does), keyframes stay. A Liquid still called what it was given (Liquid, Water, a look's or a liquid's name, with
+  or without a number, `takes_title`) takes the liquid's title. False, nothing changed, for anything but a Liquid.
+- **The writer**: `looks.rs`'s `write` and `write_card` take a filter (`Fn(&SettingDef) -> bool`) instead of
+  `keep_colours` (`a_look_writes` is the looks' own), and are `pub(super)`.
+- **The editor** (`bpe-studio inspector/use_liquid.rs`): a **Use a liquid…** menu under a Water Liquid's name and
+  tags; a pick is `Edit::UseLiquid`, put on every selected Liquid (`reached(.., None)`: a selected Pour is left
+  alone) as an undo step of its own (`own_step`). The Feel and Mixing cards are in the physics print, so the draft
+  restarts on its own.
+- **Rows** (Thickness on today's scale; 4.3b moves Thickness to a new scale and retunes the thick rows on films):
+
+| | Thickness | Surface pull | Weight | Stickiness | Keeps apart | Mix speed |
+| --- | --- | --- | --- | --- | --- | --- |
+| Water | 0.02 | 0.5 | 1 | 0 | 0 | 0.5 |
+| Oil | 0.08 | 0.35 | 0.9 | 0.2 | 1 | 0 |
+| Honey | 0.6 | 0.6 | 1.4 | 0.6 | 0.2 | 0.15 |
+| Syrup | 0.35 | 0.55 | 1.3 | 0.5 | 0.1 | 0.25 |
+| Slime | 0.45 | 0.85 | 1.1 | 0.7 | 0.6 | 0.1 |
+| Milk | 0.03 | 0.5 | 1.03 | 0.05 | 0 | 0.6 |
+| Paint | 0.25 | 0.45 | 1.2 | 0.4 | 0 | 0.8 |
+| Mercury | 0.01 | 1 | 10 | 0 | 1 | 0 |
+| Ferrofluid | 0.02 | 0.5 | 1 | 0 | 1 | 0 |
+
+  Looks: Oil clear gold with a faint thin film; Honey deep amber, glossy; Syrup dark red-brown; Slime bright green,
+  half solid, smooth; Milk cream white and solid; Paint red and solid (a dark red deep colour, so a blend with a
+  clear liquid darkens to red, not to the default navy); Mercury mid silver, solid, darkening to near black with
+  depth (Clarity 40) for a metal's gradient, the most shine and edge sheen (a pale silver read as milk).
+- **Look check**: `LOOK_ONLY=water-liquids`, nine Basins with one liquid each, a lump standing on each floor that
+  slumps to the walls, made at Coarse (3 px) and drawn at 2 s. Found with it: a lump dropped ~100 px into a basin
+  throws jets at about four times its landing speed (a flat lump meeting a flat floor; eight Water rows do the
+  same, so it is the engine's, not a row's), which leave 300 px basins and dye the other liquids where they land.
+  The still stands its lumps on the floors instead.
+- **Tests**: `liquids.rs` (`each_liquid_writes_its_row`, `a_liquid_leaves_un_mix_heat_and_the_scenes_drawing`,
+  `every_setting_is_written_or_left_on_purpose`, `a_liquid_takes_its_title_unless_it_was_named`,
+  `only_a_liquid_takes_one`, `the_liquids_say_what_they_are`); `bpe-studio` inspector
+  `use_a_liquid_sets_every_selected_liquid`, `only_a_liquid_offers_use_a_liquid`.
