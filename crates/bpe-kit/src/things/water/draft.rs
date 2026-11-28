@@ -127,7 +127,7 @@ impl Keyed {
 pub struct LiquidSetup {
     pub id: ThingId,
     feel: Keyed,
-    /// Its Mixing card (part 4.2: [`MIXING_KEYS`] reach the physics; Un-mix is part 4.4's). With
+    /// Its Mixing card (part 4.2: [`MIXING_KEYS`] reach the physics). With
     /// none, its colour mixes with nothing and it keeps nothing apart.
     mixing: Option<Keyed>,
 }

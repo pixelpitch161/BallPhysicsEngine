@@ -6,6 +6,7 @@
 
 pub mod carve;
 pub mod liquid;
+pub mod liquids;
 pub mod look;
 pub mod looks;
 pub mod pieces;
@@ -15,6 +16,7 @@ pub mod solids;
 
 pub use carve::{CarveCard, CarveMask, CarvePaint, layout_for, mask_for};
 pub use liquid::{FeelCard, HeatCard, MixesWhen, MixingCard};
+pub use liquids::{ReadyLiquid, apply_liquid};
 pub use look::{
     BackCard, BackShows, ColourFrom, GlowFrom, LampCard, LampKind, LightQuality, WaterLightCard, WaterLook,
 };
@@ -118,7 +120,7 @@ fn cards() -> [WaterCard; 16] {
         card(
             WORLD,
             "Water",
-            "The water itself: how finely it is worked out, which way it falls and how big the course is.",
+            "The water itself: how finely it is worked out, which way it falls, how big the course is, and how the video plays it (slow motion, Un-mix).",
             SlotId::Water,
             WaterWorld::defs,
             &["scene"],
@@ -198,7 +200,7 @@ fn cards() -> [WaterCard; 16] {
         card(
             MIXING,
             "Mixing",
-            "How its colours run together with other liquids, and Un-mix.",
+            "How its colours run together with other liquids.",
             SlotId::Mixing,
             MixingCard::defs,
             LIQUID,

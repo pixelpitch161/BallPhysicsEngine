@@ -62,7 +62,7 @@ impl WaterVideo {
         f64::from(self.settings.duration.max(0.0))
     }
 
-    /// The video's seconds (longer with slow motion).
+    /// The video's seconds (longer with slow motion and Un-mix).
     pub fn video_seconds(&self) -> f64 {
         self.speeds.video_length(self.length())
     }
@@ -305,7 +305,11 @@ fn export_water(
     making: &mut dyn FnMut(f32) -> bool,
     progress: &mut dyn FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<()> {
-    let video = WaterVideo::of(scene, kit)?;
+    let mut video = WaterVideo::of(scene, kit)?;
+    if options.water == WaterSource::Draft {
+        // (The draft plays forwards only: an exported draft leaves Un-mix out.)
+        video.speeds = video.speeds.without_unmix();
+    }
     let (width, height) = output_size(video.settings.width, video.settings.height, options.scale);
     let fps = video.settings.fps.max(1);
     let total = options.max_frames.map_or(video.frames(), |m| m.min(video.frames())).max(1);
@@ -323,8 +327,10 @@ fn export_water(
         WaterSource::Final | WaterSource::MakeFinal => {
             let make = options.water == WaterSource::MakeFinal;
             let status = final_status(device, queue, scene, &video, &finals, make, making)?;
-            // (The video's last frame shows the water at its water time.)
-            let last = video.speeds.water_time(f64::from(total - 1) / f64::from(fps));
+            // (The latest water time any frame shows: the last frame's, or Un-mix's To when the video
+            // stops inside its stretch.)
+            let last =
+                (0..total).map(|i| video.speeds.water_time(f64::from(i) / f64::from(fps))).fold(0.0f64, f64::max);
             if !status.good_at((last * 60.0).floor() as u32) {
                 anyhow::bail!(FINAL_MISSING);
             }

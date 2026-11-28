@@ -464,7 +464,6 @@ fn what_restarts_the_draft() {
             ["gravity", "screens_wide", "screens_tall", "draft_detail", "trapped_air", "bubble_rise"].contains(&key)
         }
         cards::MATERIAL => key == "wetting",
-        // (Un-mix is part 4.4's.)
         cards::MIXING => super::MIXING_KEYS.contains(&key),
         cards::CARVE | cards::FEEL | cards::POUR | cards::DRAIN | cards::SHAPE | cards::LINE => true,
         _ => false,
@@ -893,6 +892,51 @@ fn slow_motion_lengthens_the_video_and_keeps_more_moments() {
     for t in [0.0, 0.3, 1.0, 1.7, 2.5, 9.0] {
         let back = r.water_time(r.video_time(t));
         assert!((back - t).abs() < 1e-6, "water time {t} came back as {back}");
+    }
+}
+
+/// Un-mix (part 4.4): at To the video plays the water backwards to From, then forwards again, so it
+/// is twice the stretch longer; at half Speed the stretch plays at half speed too; a stretch that is
+/// off, the wrong way round or past the water's length changes nothing.
+#[test]
+fn un_mix_plays_its_stretch_backwards_then_forwards() {
+    let reg = crate::registry();
+    let mut scene = water_scene(&reg);
+    let speeds = |scene: &Scene| Speeds::of(scene, &bpe_core::resolve(scene, &reg), 10.0);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    for (key, v) in [("unmix_from", 2.0), ("unmix_to", 5.0)] {
+        set(&mut scene, ThingId::ROOT, SlotId::Water, key, Value::Number(v));
+    }
+    // (Off: nothing.)
+    let off = speeds(&scene);
+    assert_eq!((off.unmix(), off.longer_words()), (None, None));
+    assert!(near(off.video_length(10.0), 10.0));
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "unmix", Value::Bool(true));
+    let on = speeds(&scene);
+    assert_eq!((on.unmix(), on.longer_words()), (Some((2.0, 5.0)), Some("with Un-mix")));
+    assert!(near(on.video_length(10.0), 16.0), "{}", on.video_length(10.0));
+    // Forwards to To, backwards to From, forwards again, then on.
+    for (t, tau) in [(1.0, 1.0), (5.0, 5.0), (6.0, 4.0), (8.0, 2.0), (9.5, 3.5), (11.0, 5.0), (12.0, 6.0), (16.0, 10.0)]
+    {
+        assert!(near(on.water_time(t), tau), "video {t} s shows water {} s, not {tau} s", on.water_time(t));
+    }
+    // Where the video first shows a water time.
+    for (tau, t) in [(3.0, 3.0), (5.0, 5.0), (6.0, 12.0)] {
+        assert!(near(on.video_time(tau), t), "water {tau} s first shows at {} s", on.video_time(tau));
+    }
+    // At half Speed the stretch plays backwards at half speed: three water seconds take six each way.
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "speed", Value::Number(0.5));
+    let slow = speeds(&scene);
+    assert_eq!(slow.longer_words(), Some("in slow motion, with Un-mix"));
+    assert!(near(slow.video_length(10.0), 32.0), "{}", slow.video_length(10.0));
+    assert!(near(slow.water_time(13.0), 3.5), "{}", slow.water_time(13.0));
+    set(&mut scene, ThingId::ROOT, SlotId::Water, "speed", Value::Number(1.0));
+    // The wrong way round, or past the water's end: nothing.
+    for (from, to) in [(5.0, 2.0), (3.0, 3.0), (2.0, 12.0), (2.0, 10.0)] {
+        set(&mut scene, ThingId::ROOT, SlotId::Water, "unmix_from", Value::Number(from));
+        set(&mut scene, ThingId::ROOT, SlotId::Water, "unmix_to", Value::Number(to));
+        assert_eq!(speeds(&scene).unmix(), None, "From {from} s, To {to} s");
+        assert!(near(speeds(&scene).video_length(10.0), 10.0));
     }
 }
 

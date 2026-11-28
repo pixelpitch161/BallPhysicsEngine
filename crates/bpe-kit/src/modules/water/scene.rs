@@ -86,6 +86,16 @@ pub struct WaterWorld {
     /// to ramp into slow motion and out again. Slow motion makes the video longer.
     #[setting(label = "Speed", range(0.125, 4), span(0.125, 2), unit = "×", simple, keyframe, group = "Slow motion")]
     pub speed: f32,
+    /// When the video reaches To, it plays the water backwards to From, so the colours that ran
+    /// together come apart again, then forwards again from From and on to the end. Nothing is
+    /// worked out again: the video plays the final's own frames, and it is twice the stretch longer.
+    /// To must be before the scene's Length ends (else Un-mix does nothing); it shows in the final.
+    #[setting(label = "Un-mix", group = "Un-mix")]
+    pub unmix: bool,
+    #[setting(label = "From", when = "unmix", range(0, 600), span(0, 30), unit = "s", group = "Un-mix")]
+    pub unmix_from: f32,
+    #[setting(label = "To", when = "unmix", range(0, 600), span(0, 30), unit = "s", group = "Un-mix")]
+    pub unmix_to: f32,
 }
 
 impl Default for WaterWorld {
@@ -99,6 +109,9 @@ impl Default for WaterWorld {
             trapped_air: true,
             bubble_rise: 1.0,
             speed: 1.0,
+            unmix: false,
+            unmix_from: 2.0,
+            unmix_to: 5.0,
         }
     }
 }
