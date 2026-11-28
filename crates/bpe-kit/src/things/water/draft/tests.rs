@@ -932,7 +932,7 @@ fn un_mix_plays_its_stretch_backwards_then_forwards() {
     assert!(near(slow.water_time(13.0), 3.5), "{}", slow.water_time(13.0));
     set(&mut scene, ThingId::ROOT, SlotId::Water, "speed", Value::Number(1.0));
     // The wrong way round, or past the water's end: nothing.
-    for (from, to) in [(5.0, 2.0), (3.0, 3.0), (2.0, 12.0)] {
+    for (from, to) in [(5.0, 2.0), (3.0, 3.0), (2.0, 12.0), (2.0, 10.0)] {
         set(&mut scene, ThingId::ROOT, SlotId::Water, "unmix_from", Value::Number(from));
         set(&mut scene, ThingId::ROOT, SlotId::Water, "unmix_to", Value::Number(to));
         assert_eq!(speeds(&scene).unmix(), None, "From {from} s, To {to} s");

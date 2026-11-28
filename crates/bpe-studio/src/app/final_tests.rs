@@ -269,8 +269,12 @@ fn un_mix_takes_the_finals_playhead_back_over_its_stretch() {
         studio.tick();
     };
     studio.set_playing(true);
-    // The Final shows: past To the playhead goes back.
     studio.water_final.view = WaterView::Final;
+    // Not made yet (the stage shows the draft): forwards.
+    tick(&mut studio, 0.15);
+    assert!((studio.time - 0.2).abs() < 0.01, "the draft plays forwards: {}", studio.time);
+    // Made, the Final shows: past To the playhead goes back.
+    make(&mut studio);
     tick(&mut studio, 0.2);
     assert!((studio.time - 0.15).abs() < 0.01, "back over the stretch: {}", studio.time);
     // The draft plays forwards only.

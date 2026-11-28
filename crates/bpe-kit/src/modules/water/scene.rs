@@ -89,6 +89,7 @@ pub struct WaterWorld {
     /// When the video reaches To, it plays the water backwards to From, so the colours that ran
     /// together come apart again, then forwards again from From and on to the end. Nothing is
     /// worked out again: the video plays the final's own frames, and it is twice the stretch longer.
+    /// To must be before the scene's Length ends (else Un-mix does nothing); it shows in the final.
     #[setting(label = "Un-mix", group = "Un-mix")]
     pub unmix: bool,
     #[setting(label = "From", when = "unmix", range(0, 600), span(0, 30), unit = "s", group = "Un-mix")]

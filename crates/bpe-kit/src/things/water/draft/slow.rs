@@ -28,7 +28,7 @@ pub struct Speeds {
     /// The moments each water frame keeps ([`Speeds::keep_for`]), to the length asked for (one
     /// for every frame when Speed is not keyframed).
     keeps: Vec<u32>,
-    /// The Un-mix stretch, From and To (water seconds), when it is on and lies inside the length.
+    /// The Un-mix stretch, From and To (water seconds), when it is on and To is before the length's end.
     unmix: Option<(f64, f64)>,
 }
 
@@ -39,7 +39,8 @@ impl Speeds {
         let keyed = world.tracks.iter().any(|(k, _)| k == "speed");
         let card = world.card::<WaterWorld>(0.0);
         let (from, to) = (f64::from(card.unmix_from), f64::from(card.unmix_to));
-        let fits = from.is_finite() && to.is_finite() && from >= 0.0 && from < to && to <= length + 1e-9;
+        // (To at the very end would leave nothing after it to show: the stretch must end before it.)
+        let fits = from.is_finite() && to.is_finite() && from >= 0.0 && from < to && to < length;
         let unmix = (card.unmix && fits).then_some((from, to));
         let mut speeds = Speeds { world, keyed, table: Vec::new(), keeps: Vec::new(), unmix };
         speeds.table_to(length);

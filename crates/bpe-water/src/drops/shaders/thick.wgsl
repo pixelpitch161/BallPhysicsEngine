@@ -198,10 +198,11 @@ fn cs_thick_stage(@builtin(global_invocation_id) gid: vec3<u32>) {
             if j == i || !thick_same(own, id_nxt[j].x) {
                 continue;
             }
-            let q = xv[j];
-            let r = p.xy - q.xy;
+            // (Only the place: a stage that lands in `xv` writes its speeds.)
+            let q = xv[j].xy;
+            let r = p.xy - q;
             let r2 = dot(r, r);
-            if !(r2 < h * h) || !alive(q.xy) {
+            if !(r2 < h * h) || !alive(q) {
                 continue;
             }
             let w = weight(sqrt(r2));

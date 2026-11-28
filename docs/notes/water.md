@@ -1600,22 +1600,34 @@ goldens and the pinned pictures don't move.
   moment on the resting lattice, about 0.148 cells²) × cell² / (2 × frame); the fewest stages that give every
   liquid its ν at a share of at most 0.9 (`THICK_SHARE`), at most `MOST_THICK_STAGES` (180). Thickness 0.6 takes 66,
   51, 33, 18, 12 and 9 stages at 1.5, 2, 3, 6, 8 and 12 px, Honey's 0.8 about 105 at 1.5 px and 54 at 3 px; paste on 1 px cells and Thickness 4 at 3 px take all
-  180 (and are a little thinner there than they ask). `FeelGpu.d.x` is each liquid's share; `mixf.z` the stages.
+  180 and are thinner there than they ask (paste about 62 % of its thickness, Thickness 4 about 7 %). `FeelGpu.d.x`
+  is each liquid's share, `d.y` the plain evening's share air takes when the liquid is liquid 0 (so bubbles in a
+  honey-only scene still feel the honey; `b.z` for a liquid that is not thick); `mixf.z` the stages.
 - **Measured** (`tests/thick.rs`, lavapipe, 6 px): a 120 px lump on a floor is 356, 354, 351, 321, 242 and 148 px
   wide after a quarter second at Thickness 0.02, 0.1, 0.11, 0.35, 0.6 and 1 (smooth across 0.1); honey 0.6 is 242
   px wide at 6 px and 246 at 3 px; a disc of honey turning at 3 radians a second still turns at 3.01 after a
   quarter second; a sheared disc keeps 15 % of its shear in a tenth of a second (water 93 %); a 60 px block on a
   wall slides 68 px in a quarter second (water falls 125).
 - **What it can't do yet**: the drops have no pull holding a stretched thread together (the density solve only
-  pushes), so a thread thinner than a few drops parts. A tap's stream pulls apart into lumps a little below the
-  spout as it speeds up (water's does too at slow taps), so honey from a tap falls in lumps that pile up and fold
-  on the floor rather than one unbroken rope, and two blobs pulled apart part without a strand. Candidates: a thick
+  pushes), so a thread thinner than a few drops parts. A slow, narrow tap's stream at 6 px pulls apart into lumps a
+  little below the spout as it speeds up (water's does too at slow taps), so it falls in lumps that pile up and
+  fold rather than one unbroken rope (an 80 px tap at 400 px a second at 3 px holds together); two blobs pulled
+  apart part without a strand. Honey costs: at 1.5 px it takes about 105 stages a frame. Candidates: a thick
   stream held at its spout's speed for its first reach; a pull in the density solve inside a thick liquid.
 - **Rows**: Honey 0.6 → 0.8, Slime 0.45 → 0.6 (Syrup 0.35 and Paint 0.25 as they were).
 - **Tests**: `numbers.rs` `thickness_sets_the_evening`, `only_thick_liquids_take_stages`; `passes.rs` (the
   entries); `tests/thick.rs` `thicker_liquids_spread_slower`, `thickness_spreads_alike_at_6_and_3_px`,
   `a_thick_blob_keeps_its_spin`, `a_thick_blob_loses_its_shear`, `a_thick_liquid_clings_to_a_wall`.
-- **Look check**: `LOOK_ONLY=water-thick`. LOOK_CHECK_LINE
+- **Look check**: `LOOK_ONLY=water-thick` (`full_size_look.rs` `water_thick_pictures`: honey in three columns, a
+  tap at the left, a lump on a ledge in the middle, a burst thrown at a wall on the right; made at 3 px, 38,036
+  drops, 509 s on lavapipe; frames at 0.5, 1, 1.5 and 2 s). The tap's 80 px stream at 400 px a second holds
+  together at 3 px, lands and folds into a pile by 0.5 s; the lump sags over the ledge's end into a hanging drip by
+  2 s; the burst clings to the wall and creeps down it. Seen: once the pile reaches the spout a slot opens in the
+  stream there, and the stream's tail spatters a little as the tap stops. No jagged edges, seams or leaks in the
+  1:1 crops.
+- **Not checked**: slow motion of a thick liquid. The moments inside a frame are packed before the frame's thick
+  stages run, so in slow motion a thick liquid's in-between pictures may step slightly at each frame; look at a
+  slow-motion final of honey before relying on it.
 
 ## Part 4.4: Un-mix (as built)
 
@@ -1626,17 +1638,17 @@ chose (b), a backwards stretch of the video, on 2026-11-28. No physics changed.
   card's *Remember for Un-mix*, *Seconds* and *Un-mixing* are gone (in Water mode they never did anything).
 - **The clock** (`bpe-kit things/water/draft/slow.rs`, `Speeds`): when the video reaches To it plays the water
   backwards to From at the Speed there, then forwards from From again and on to the end. `unmix()` is the stretch
-  when it is on, From < To and To within the Length (else nothing changes); `water_time(t)` mirrors slow motion's
+  when it is on, From < To and To before the Length's end (else nothing changes); `water_time(t)` mirrors slow motion's
   clock over the stretch; `video_time(τ)` is where the video first shows τ (past To, after both passes); the video
   is twice the stretch's video seconds longer (`video_length`). `without_unmix()` is the same clock without it.
   `longer_words()` says "in slow motion", "with Un-mix" or both (the status line and the Export window).
 - **The take**: its print never reads Un-mix (as it never reads Speed), so turning it on or moving the stretch makes
   nothing again; `bpe-cli` exports the final over the new clock. An exported draft leaves Un-mix out (the draft only
-  plays forwards).
+  plays forwards), so it is shorter than the Length the Export window shows, which is the final's.
 - **The editor**: while the Final shows a scene with Un-mix, the playhead runs on the video's clock
   (`Studio::water_next`, `WaterFinal.clock`: the video time and the water time it gave; a playhead set anywhere
   else starts it again where the video first shows that time), so playing goes back over the stretch and forwards
-  again. The draft plays forwards (going back in the draft plays again from its newest restart copy, up to 120
+  again, where the final is made through To. The draft plays forwards (going back in the draft plays again from its newest restart copy, up to 120
   frames, for every frame).
 - **Tests**: `draft/tests.rs` `un_mix_plays_its_stretch_backwards_then_forwards`; `bpe-studio`
   `un_mix_takes_the_finals_playhead_back_over_its_stretch`.

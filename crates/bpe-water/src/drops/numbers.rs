@@ -627,20 +627,18 @@ impl Numbers {
         }
         let stick = feel.stickiness.max(0.0);
         let reach_px = self.reach * cell;
-        // (A thick liquid's evening is all the thick stages', `thick_evening`.)
-        let even = if feel.thickness > THICK_FROM {
-            0.0
-        } else {
-            (self.evening(feel) * dt * EVEN_SCALE / (reach_px * reach_px)).min(EVEN_MOST)
-        };
+        // (A thick liquid's evening is all the thick stages', `thick_evening`; air, which has liquid 0's
+        // kind, still takes the plain one, `d.y`.)
+        let plain = (self.evening(feel) * dt * EVEN_SCALE / (reach_px * reach_px)).min(EVEN_MOST);
+        let even = if feel.thickness > THICK_FROM { 0.0 } else { plain };
         let keep = if feel.keeps_apart.is_finite() { feel.keeps_apart.clamp(0.0, 1.0) } else { 0.0 };
         FeelGpu {
             a: [feel.gravity, skin, skin * self.curv, self.adh * stick * gravity * feel.gravity.abs()],
             b: [8.0 * feel.settles * feel.settles, self.drag + self.drag_stick * stick, even, feel.mass()],
             // (`c.z`, the mixing's root, is the frame's: it depends on how many passes it takes.)
             c: [1.0 / feel.mass(), keep, 0.0, feel.mixes_when.code()],
-            // (`d.x`, the thick sweeps' share, is the frame's: it depends on how many sweeps it takes.)
-            d: [0.0; 4],
+            // (`d.x`, the thick stages' share, is the frame's: it depends on how many stages it takes.)
+            d: [0.0, plain, 0.0, 0.0],
         }
     }
 
@@ -693,8 +691,8 @@ const MOST_THICKNESS: f32 = 4.0;
 const EVEN_SCALE: f32 = 20.0;
 const EVEN_MOST: f32 = 0.5;
 /// The most thick stages a frame (as much as 16,290 plain sweeps: on the finest cells, 1.5 px,
-/// Thickness 0.6 takes 66 and Honey's 0.8 about 105; paste, Thickness 1, takes them all on 1 px cells
-/// and is a little thinner there than it asks).
+/// Thickness 0.6 takes 66 and Honey's 0.8 about 105). Past them a liquid is thinner than it asks:
+/// paste, Thickness 1, gets about 62 % of its thickness on 1 px cells, Thickness 4 about 7 % at 3 px.
 pub const MOST_THICK_STAGES: u32 = 180;
 /// The most of a plain sweep a thick stage takes (a little under the most that stays calm).
 pub const THICK_SHARE: f32 = 0.9;
@@ -712,7 +710,8 @@ pub struct FeelGpu {
     /// one over its weight, how much it keeps apart from other liquids, its colour mixing's root a
     /// pass, when its colour mixes (0 always, 1 stirred, 2 on hits)
     pub c: [f32; 4],
-    /// the share of its rebuilt speed a thick sweep takes (0: it takes none; part 4.3b), 0, 0, 0
+    /// the share of a plain sweep a thick stage takes (0: it takes none; part 4.3b), the plain
+    /// evening's share air takes when this is liquid 0 (`b[2]` unless it is thick), 0, 0
     pub d: [f32; 4],
 }
 

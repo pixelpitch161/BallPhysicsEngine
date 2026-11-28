@@ -1848,10 +1848,11 @@ fn water_thick_pictures(gpu: &Gpu, only: &Option<String>) -> Vec<(String, Vec<u8
     let mut stored = StoredDrops::new(&gpu.device, &gpu.queue, &[]);
     let mut out = Vec::new();
     for frame in [30u32, 60, 90, 120] {
-        let (second, k) = (frame / 60, (frame % 60) as usize);
+        let second = frame / 60;
         let mut c = Chunk::open(&dir, second).unwrap();
-        assert_eq!(c.len(), 60, "a second's moments");
-        let at = FrameCodec::new().decode(&c.bytes(k).unwrap(), &layout).unwrap();
+        // (The frame's end: its last moment.)
+        let i = c.moments().enumerate().filter(|(_, m)| m.frame == frame).map(|(i, _)| i).last().unwrap();
+        let at = FrameCodec::new().decode(&c.bytes(i).unwrap(), &layout).unwrap();
         stored.set(&gpu.device, &gpu.queue, &at.xv, &at.kinds, &at.mixes);
         let marks = std::sync::Arc::new(chunk::read_wet(&dir, second, layout.nodes()).unwrap());
         let mut wet = HeldWet::default();

@@ -191,8 +191,13 @@ impl Studio {
     /// forwards again (the draft plays forwards only: going back in it plays again from a copy).
     pub(crate) fn water_next(&mut self, time: f64, dt: f64) -> f64 {
         let wf = &mut self.water_final;
+        // (Only where the final is made through To: else the stage shows the draft, which would play every
+        // frame of the stretch again from a copy.)
+        let made_to = |found: &super::final_job::Found| {
+            found.make.speeds.unmix().is_some_and(|(_, to)| found.status.good_at((to * 60.0).ceil() as u32))
+        };
         let speeds = match &wf.found {
-            Some(found) if wf.view == WaterView::Final && found.make.speeds.unmix().is_some() => &found.make.speeds,
+            Some(found) if wf.view == WaterView::Final && made_to(found) => &found.make.speeds,
             _ => {
                 wf.clock = None;
                 return time + dt * self.water_speed(time);

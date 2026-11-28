@@ -327,8 +327,10 @@ fn export_water(
         WaterSource::Final | WaterSource::MakeFinal => {
             let make = options.water == WaterSource::MakeFinal;
             let status = final_status(device, queue, scene, &video, &finals, make, making)?;
-            // (The video's last frame shows the water at its water time.)
-            let last = video.speeds.water_time(f64::from(total - 1) / f64::from(fps));
+            // (The latest water time any frame shows: the last frame's, or Un-mix's To when the video
+            // stops inside its stretch.)
+            let last =
+                (0..total).map(|i| video.speeds.water_time(f64::from(i) / f64::from(fps))).fold(0.0f64, f64::max);
             if !status.good_at((last * 60.0).floor() as u32) {
                 anyhow::bail!(FINAL_MISSING);
             }
