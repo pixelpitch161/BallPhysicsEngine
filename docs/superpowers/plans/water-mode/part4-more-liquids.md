@@ -198,6 +198,30 @@ the decisions below; the decisions here are what each must hold to.
     own take's frames), or (b) a backwards stretch in the video (the take played backwards, no new physics). (a) is what
     was promised; (b) is far cheaper. The choice is written here with its reasons when 4.4 starts.
 
+    **Chosen (2026-11-28): (b), a backwards stretch.** Aedan picked it on a decision card (00:48Z, recommended
+    there). Why: the un-mixing looks the same either way (it is the take's own frames played backwards);
+    (b) needs no new physics, no ring of frames and no restoring a body from a frame, so the take, its restart points,
+    finding an older take and Make final all stay as they are; it is a stretch of the video's clock, which slow motion
+    (part 8's `Speeds`) already is, so the export, the final view and the editor's playhead get it in one place.
+    What (a) adds is the water going on afresh from where it was played back to, with the pours where the timeline is;
+    that can come later on top of (b)'s clock if wanted.
+
+    - **Where**: the Water card, group *Un-mix* (it is what the video does, not what a liquid is): **Un-mix** (on or
+      off), **From** and **To** (water seconds). The Mixing card's old *Remember for Un-mix*, *Seconds* and
+      *Un-mixing* go (in Water mode they never did anything).
+    - **The clock** (`Speeds`): the video plays the water to To, then backwards from To to From, then forwards from
+      From again, on to the end: `water_time(t)` is part 8's up to To's video time, then mirrored, then shifted by
+      the two stretches. Each stretch plays at the Speed there, so a slowed stretch un-mixes slowly too. The video is
+      `2 (video_time(To) − video_time(From))` longer. `video_time(τ)` is where the video first shows τ. A stretch
+      with From ≥ To, or Un-mix off, changes nothing.
+    - **No physics change**: the take's print never hashes Un-mix (as it never hashes Speed), so turning it on, or
+      moving From and To, makes nothing again.
+    - **The editor**: while the Final shows, a Water scene's playhead runs on the video's clock
+      (`Studio.water_clock`): the water time is worked out from it each tick, and a scrub sets the clock where the
+      video first shows that water time, so playing shows the water going back over the stretch. The draft plays
+      forwards as before (going back in the draft plays again from its newest restart copy, so a stretch played
+      backwards there would play every frame again from a copy up to 120 frames back).
+
 ## Edge cases
 
 - A lump straddling the course's edge: drops past the edge are left out like those in rock.
@@ -745,4 +769,45 @@ Built as Tasks 1 to 4 say. Differences and findings:
   (it read as milk) to a mid silver that darkens with depth (Clarity 40).
 - Ferrofluid's row added here (part 4b merges first; its thread gave the values): the Feel card's defaults, the
   Look black, solid and glossy, and Keeps apart 1 (oil-based). The still is three rows of three.
+
+### 4.3b
+
+Built as Tasks 1 to 4 say, with these differences (each found on the card in the container, `tests/thick.rs` and
+scatter pictures of honey on 6 px cells):
+
+- **Who is thick, and the plain evening**: a liquid past Thickness 0.1 (`THICK_FROM`), not one past the evening's
+  cap (`thick_extra` would have given water stages on 1 px cells, where the cap is under 150). A thick liquid has no
+  plain evening at all, the stages take all of its ν (`thick_evening`): with the plain evening capped at 0.5 a step
+  and the stages on top, a spinning disc of honey lost half its spin in a quarter second (the plain evening pulls a
+  surface drop toward its neighbours' speeds, which wears a turn away; the stages then spread that through the
+  blob). Without it the disc keeps its spin (3 to 3.01 radians a second).
+- **Stages, not sweeps**: plain sweeps would have taken 59 a step for honey at 3 px (and hundreds for paste), so the
+  sweeps are RKL1 stages (super time stepping: `s` stages smooth as (s² + s) / 2 sweeps, each a sweep at the
+  liquid's share times `(2j − 1) / j` plus `(1 − j) / j` of the stage before last). They are a multiple of three
+  and rotate through `xv.zw`, `xp.xy` and `xp.zw`, the stage's number in `blocks[0]` (`cs_thick_tick`), the turn in
+  `lamb`: no bindings 32 and 33.
+- **Once a frame**, after the last step's Finish (as the colours mix), not after every step: the steps stay joined
+  and it costs far less (the stages grow as the square root of what a step wants). `thick_stages(feels, cell)`, at
+  most 180 (`MOST_THICK_STAGES`).
+- **Only the turn is kept**, not the spreading: kept as a spreading, a tap's stream (its rows parting as they speed
+  up) fanned out sideways into spray. M is held up only where it is near singular (its smaller eigenvalue to a tenth
+  of its trace): 5 % of the trace everywhere read every turn short, and the disc lost a quarter of its spin.
+- **Solid faces hold a thick liquid** (not in the plan): a face within reach counts in each stage as liquid at rest
+  behind it, so honey clings, sags off a ledge (before, it rolled off whole) and runs slowly down a wall (68 px in
+  a quarter second where water falls 125).
+- **The tests** measure at a quarter second (not half); `water_takes_no_thick_pass` is `only_thick_liquids_take_
+  stages` (no stages at any detail for Thickness 0.1 or less) and the unchanged goldens; `a_thick_liquid_clings_to_
+  a_wall` is new.
+- **Not reached**: strands, and one unbroken rope from a tap. The density solve only pushes, so a stretching thread
+  parts once it is a few drops thin; a tap's stream parts into lumps a little below the spout (water's does too at
+  slow taps), and the lumps pile and fold on the floor. Two blobs thrown apart part at once. Written up as what a
+  later part could add (a stream held at its spout's speed for its first reach; a pull inside a thick liquid).
+- **Rows**: Honey 0.6 to 0.8 (it read as runny at this scale's gravity: a 60 px layer of 0.6 slides off a wall at
+  about 270 px a second), Slime 0.45 to 0.6.
+
+### 4.4
+
+Built as decision 24's choice says. The draft plays forwards only (going back in it plays again from a restart
+copy), so the playhead runs on the video's clock only while the Final shows, and an exported draft leaves Un-mix
+out. The Mixing card's old Un-mix group went with it, and 4.3a's `LEFT` lost "Un-mix".
 

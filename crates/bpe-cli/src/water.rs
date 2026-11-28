@@ -62,7 +62,7 @@ impl WaterVideo {
         f64::from(self.settings.duration.max(0.0))
     }
 
-    /// The video's seconds (longer with slow motion).
+    /// The video's seconds (longer with slow motion and Un-mix).
     pub fn video_seconds(&self) -> f64 {
         self.speeds.video_length(self.length())
     }
@@ -305,7 +305,11 @@ fn export_water(
     making: &mut dyn FnMut(f32) -> bool,
     progress: &mut dyn FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<()> {
-    let video = WaterVideo::of(scene, kit)?;
+    let mut video = WaterVideo::of(scene, kit)?;
+    if options.water == WaterSource::Draft {
+        // (The draft plays forwards only: an exported draft leaves Un-mix out.)
+        video.speeds = video.speeds.without_unmix();
+    }
     let (width, height) = output_size(video.settings.width, video.settings.height, options.scale);
     let fps = video.settings.fps.max(1);
     let total = options.max_frames.map_or(video.frames(), |m| m.min(video.frames())).max(1);

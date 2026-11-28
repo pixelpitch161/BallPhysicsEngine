@@ -630,9 +630,11 @@ impl Water {
         let mixing = self.colours_mix();
         let passes = if mixing { n.mix_passes(&self.feels, cell) } else { 0 };
         let mut feels = [FeelGpu::default(); MOST_LIQUIDS];
+        let (thick, shares) = n.thick_stages(&self.feels, cell);
         for (k, f) in self.feels.iter().enumerate() {
             feels[k] = n.feel_gpu(f, cell, g.length(), dt, capped);
             feels[k].c[2] = if mixing { mix_root(f.mixing(), passes, cell) } else { 0.0 };
+            feels[k].d[0] = shares[k];
         }
         let mut spouts = [[0.0f32; 4]; MOST_POURS / 2];
         for (k, (p, _)) in self.pours.iter().enumerate() {
@@ -678,7 +680,7 @@ impl Water {
             drains,
             dedges,
             dmeta,
-            mixf: [u32::from(self.weights_differ()) | (u32::from(mixing) << 1), passes, 0, 0],
+            mixf: [u32::from(self.weights_differ()) | (u32::from(mixing) << 1), passes, thick, 0],
             mixs: [STIR / cell, HIT / cell, self.air_mass(), 1.0 / self.air_mass()],
         }
     }
@@ -931,6 +933,7 @@ impl Water {
             let by_block = self.bins().div_ceil(BLOCK);
             let by_cell = (self.layout.nodes() as u32).div_ceil(WORKGROUP);
             let iters = self.numbers.iters.clamp(1, 16) as usize;
+            let thick = frame.mixf[2];
             let joined = self.numbers.join != 0;
             let top = self.deep.levels.len() - 1;
             let tiles: Vec<(u32, u32)> = (0..=top).map(|l| self.deep.tiles(l)).collect();
@@ -1044,6 +1047,15 @@ impl Water {
                     // (A moment kept inside the frame: the drops as this step left them.)
                     if let Some(k) = packing.as_ref().and_then(|p| p.cuts.iter().position(|&c| c == j)) {
                         go!(P::Pack, k, 0, PACK_SLOT + k as u32, by_drop);
+                    }
+                    // (A thick liquid's gradients kept and its speeds rebuilt, stage by stage, once a
+                    // frame, on the drops as its last step left them.)
+                    if thick > 0 && j + 1 == n {
+                        go!(P::ThickGrad, now, 0, j, by_drop);
+                        for _ in 0..thick {
+                            go!(P::ThickStage, now, 0, j, by_drop);
+                            go!(P::ThickTick, now, 0, j, 1);
+                        }
                     }
                     // (The colours mix once a frame, on the drops as its last step left them.)
                     if j + 1 == n {

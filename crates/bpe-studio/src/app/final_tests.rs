@@ -253,6 +253,33 @@ fn slow_motion_moves_the_playhead_at_its_speed() {
 }
 
 #[test]
+fn un_mix_takes_the_finals_playhead_back_over_its_stretch() {
+    let mut studio = small("unmix");
+    let before = studio.scene.clone();
+    set(&mut studio, ThingId::ROOT, SlotId::Water, "unmix", Value::Bool(true));
+    set(&mut studio, ThingId::ROOT, SlotId::Water, "unmix_from", Value::Number(0.05));
+    set(&mut studio, ThingId::ROOT, SlotId::Water, "unmix_to", Value::Number(0.2));
+    studio.after_edit(before);
+    find(&mut studio);
+    let found = studio.water_final.found.as_ref().unwrap();
+    assert!((found.video_seconds - 0.55).abs() < 1e-6, "twice the stretch longer: {}", found.video_seconds);
+    let tick = |studio: &mut Studio, at: f64| {
+        studio.time = at;
+        studio.last_tick = Some(Instant::now() - std::time::Duration::from_millis(50));
+        studio.tick();
+    };
+    studio.set_playing(true);
+    // The Final shows: past To the playhead goes back.
+    studio.water_final.view = WaterView::Final;
+    tick(&mut studio, 0.2);
+    assert!((studio.time - 0.15).abs() < 0.01, "back over the stretch: {}", studio.time);
+    // The draft plays forwards only.
+    studio.water_final.view = WaterView::Draft;
+    tick(&mut studio, 0.1);
+    assert!((studio.time - 0.15).abs() < 0.01, "forwards in the draft: {}", studio.time);
+}
+
+#[test]
 fn the_finals_menu_clears_this_scenes_final() {
     let mut studio = small("clear");
     make(&mut studio);

@@ -4,9 +4,9 @@
 //! [`apply_liquid`] writes it as plain values the Liquid owns from then on. Water is a row too (the
 //! cards' defaults), and adding a liquid is adding a row (Ferrofluid is part 4b's).
 //!
-//! A liquid never writes the Mixing card's Un-mix (what the video does, not what the liquid is),
-//! the Look's Glow, Drawn and Extras (how the scene's ready-made look draws every liquid), or the
-//! Heat card. Like a look, it sets each setting it writes to the row's value (removed where that is
+//! A liquid never writes the Look's Glow, Drawn and Extras (how the scene's ready-made look draws
+//! every liquid) or the Heat card (Un-mix is the Water card's: what the video does, not what a liquid
+//! is). Like a look, it sets each setting it writes to the row's value (removed where that is
 //! the card's default), so one liquid after another never keeps what the first set, and a setting
 //! with keyframes keeps them.
 
@@ -44,7 +44,7 @@ pub struct LiquidRow {
 pub const WRITTEN: [&str; 4] = ["Meeting other liquids", "Its colour", "Its body", "Its surface"];
 
 /// The groups it leaves as they are.
-pub const LEFT: [&str; 4] = ["Un-mix", "Glow", "Drawn", "Extras"];
+pub const LEFT: [&str; 3] = ["Glow", "Drawn", "Extras"];
 
 fn rgb(hex: u32) -> Color {
     Color::rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
@@ -108,7 +108,7 @@ impl ReadyLiquid {
                 (l.smoothing, l.streaks) = (0.6, 0.6);
             }
             ReadyLiquid::Honey => {
-                (f.thickness, f.surface_pull, f.weight, f.stickiness) = (0.6, 0.6, 1.4, 0.6);
+                (f.thickness, f.surface_pull, f.weight, f.stickiness) = (0.8, 0.6, 1.4, 0.6);
                 (m.keeps_apart, m.mix_speed) = (0.2, 0.15);
                 (l.colour, l.deep, l.clarity, l.solid, l.bend) = (rgb(0xe8961c), rgb(0x7a3404), 90.0, 0.1, 16.0);
                 (l.shine, l.shine_size, l.edge_sheen) = (0.8, 0.25, 0.5);
@@ -122,7 +122,7 @@ impl ReadyLiquid {
                 (l.smoothing, l.streaks) = (0.75, 0.5);
             }
             ReadyLiquid::Slime => {
-                (f.thickness, f.surface_pull, f.weight, f.stickiness) = (0.45, 0.85, 1.1, 0.7);
+                (f.thickness, f.surface_pull, f.weight, f.stickiness) = (0.6, 0.85, 1.1, 0.7);
                 (m.keeps_apart, m.mix_speed) = (0.6, 0.1);
                 (l.colour, l.deep, l.clarity, l.solid, l.bend) = (rgb(0x7ee03a), rgb(0x1f6a10), 50.0, 0.35, 6.0);
                 (l.shine, l.shine_size, l.edge_sheen) = (0.7, 0.35, 0.6);
@@ -250,14 +250,12 @@ mod tests {
     }
 
     #[test]
-    fn a_liquid_leaves_un_mix_heat_and_the_scenes_drawing() {
+    fn a_liquid_leaves_heat_and_the_scenes_drawing() {
         let (mut scene, reg, id) = scene_with_liquid();
         scene.add_slot(&reg, id, SlotId::Heat, super::super::HEAT).unwrap();
         let set = |scene: &mut Scene, slot: SlotId, key: &str, v: Value| {
             scene.card_mut(id, slot).unwrap().params.set(key, v);
         };
-        set(&mut scene, SlotId::Mixing, "remember", Value::Bool(true));
-        set(&mut scene, SlotId::Mixing, "unmix_seconds", Value::Number(9.0));
         set(&mut scene, SlotId::Heat, "temperature", Value::Number(0.9));
         set(&mut scene, SlotId::Look, "outline", Value::Number(4.0));
         set(&mut scene, SlotId::Look, "glow", Value::Number(0.5));
@@ -266,8 +264,6 @@ mod tests {
         for liquid in ReadyLiquid::ALL {
             apply_liquid(&mut scene, &reg, id, liquid);
             let r = bpe_core::resolve(&scene, &reg);
-            let (m, was): (MixingCard, MixingCard) = (card(&r, id, SlotId::Mixing), card(&before, id, SlotId::Mixing));
-            assert_eq!(only(&m, Some(&LEFT)), only(&was, Some(&LEFT)), "{liquid:?} leaves Un-mix");
             let (l, was): (WaterLook, WaterLook) = (card(&r, id, SlotId::Look), card(&before, id, SlotId::Look));
             assert_eq!(only(&l, Some(&LEFT)), only(&was, Some(&LEFT)), "{liquid:?} leaves the drawing");
             let heat: HeatCard = card(&r, id, SlotId::Heat);

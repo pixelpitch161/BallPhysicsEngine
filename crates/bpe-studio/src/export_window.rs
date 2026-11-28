@@ -75,10 +75,12 @@ pub struct WaterExport {
     pub making_words: String,
     /// While a make for the export runs: how far it is (0 to 1) and about how long it has left.
     pub making: Option<(f32, Option<f32>)>,
-    /// The water seconds, and the video's seconds and frames with slow motion.
+    /// The water seconds, and the video's seconds and frames with slow motion and Un-mix, and how
+    /// it is longer in words ("in slow motion", "with Un-mix").
     pub water_seconds: f64,
     pub video_seconds: f64,
     pub frames: u32,
+    pub longer: Option<&'static str>,
 }
 
 pub struct ExportWindow {
@@ -506,10 +508,11 @@ impl ExportWindow {
             let fps = subject.picture().2;
             let length = match self.water.as_ref().filter(|_| !subject.is_video()) {
                 Some(w) if (w.video_seconds - w.water_seconds).abs() > 1e-3 => format!(
-                    "{} s at {fps} fps · {} frames ({} s of water, in slow motion)",
+                    "{} s at {fps} fps · {} frames ({} s of water, {})",
                     trim_seconds(w.video_seconds),
                     w.frames,
-                    trim_seconds(w.water_seconds)
+                    trim_seconds(w.water_seconds),
+                    w.longer.unwrap_or("in slow motion")
                 ),
                 Some(w) => format!("{} s at {fps} fps · {} frames", trim_seconds(w.video_seconds), w.frames),
                 None => format!("{} s at {fps} fps · {} frames", trim_seconds(subject.seconds()), subject.frames()),

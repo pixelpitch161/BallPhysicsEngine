@@ -132,9 +132,11 @@ pub struct Numbers {
     /// The furthest a sweep moves a drop, in cells.
     pub most_fix: f32,
     /// How fast neighbouring drops even out their speeds, pixels squared a second: `visc_base`
-    /// for every liquid, and `visc_thick` more for each unit of Thickness.
+    /// for every liquid, `visc_thick` more for each unit of Thickness, and past a Thickness of
+    /// [`THICK_FROM`] `visc_cube` times the cube of how far past (part 4.3b: syrup, honey, paste).
     pub visc_base: f32,
     pub visc_thick: f32,
+    pub visc_cube: f32,
     /// The skin of a liquid at Surface pull 1, in pixels cubed a second squared (its capillary
     /// length squared times the gravity: 4.0e5 is a 10 pixel length under the water's 4000).
     pub pull: f32,
@@ -253,6 +255,7 @@ impl Default for Numbers {
             most_fix: 0.25,
             visc_base: 100.0,
             visc_thick: 2500.0,
+            visc_cube: 1.4e5,
             pull: 4.0e5,
             coh: 2.0,
             curv: 0.25,
@@ -334,6 +337,7 @@ impl Numbers {
             most_fix: num("MOST_FIX", d.most_fix),
             visc_base: num("VISC_BASE", d.visc_base),
             visc_thick: num("VISC_THICK", d.visc_thick),
+            visc_cube: num("VISC_CUBE", d.visc_cube),
             pull: num("PULL", d.pull),
             coh: num("COH", d.coh),
             curv: num("CURV", d.curv),
@@ -529,7 +533,76 @@ impl Numbers {
 
     /// How fast `feel`'s neighbouring drops even out their speeds, pixels squared a second.
     pub fn evening(&self, feel: &Feel) -> f32 {
-        (self.visc_base + self.visc_thick * feel.thickness.max(0.0)).max(0.0)
+        let t = feel.thickness.max(0.0);
+        let even = self.visc_base + self.visc_thick * t;
+        // (Water's and every Thickness up to `THICK_FROM` as they were.)
+        let past = (t.min(MOST_THICKNESS) - THICK_FROM).max(0.0);
+        let even = if past > 0.0 { even + self.visc_cube * past * past * past } else { even };
+        even.max(0.0)
+    }
+
+    /// The evening of speeds (px² a second) the thick stages take for `feel`: all of it for a liquid
+    /// thicker than [`THICK_FROM`], none for one no thicker (water moves as it always has, at every
+    /// detail). A thick liquid has no plain evening (`feel_gpu`'s `b.z` is 0): the plain evening
+    /// pulls a surface drop toward its neighbours' speeds, which wears a turn away at a surface, and
+    /// the stages, which read each drop's turn and keep it, then carry that loss right through a
+    /// thick blob (a spinning disc of honey lost half its spin in a quarter of a second).
+    pub fn thick_evening(&self, feel: &Feel) -> f32 {
+        // (NaN is no thicker than water.)
+        if feel.thickness.is_nan() || feel.thickness <= THICK_FROM {
+            return 0.0;
+        }
+        let even = self.evening(feel);
+        if even.is_finite() { even } else { 0.0 }
+    }
+
+    /// The kernel's second moment along one way on the resting lattice (four drops a cell, the drop
+    /// itself counted), cells squared: a thick sweep with share 1 averages a drop's speed with its
+    /// neighbours' over this, so it evens speeds out by this over twice the frame, a frame.
+    pub fn thick_moment(&self) -> f32 {
+        let h = f64::from(self.reach);
+        let (mut w, mut wx) = (0.0f64, 0.0f64);
+        let n = (h / 0.5).ceil() as i32 + 1;
+        for j in -n..=n {
+            for i in -n..=n {
+                let (x, y) = (f64::from(i) * 0.5, f64::from(j) * 0.5);
+                let far = (x * x + y * y).sqrt();
+                if far >= h {
+                    continue;
+                }
+                let t = 1.0 - far / h;
+                w += t * t * t;
+                wx += t * t * t * x * x;
+            }
+        }
+        (wx / w) as f32
+    }
+
+    /// The thick stages a frame on `cell`-pixel cells takes for the liquids `feels` (0 when none is
+    /// thick; else a multiple of three, at most [`MOST_THICK_STAGES`]), and each liquid's share of a
+    /// plain sweep a stage takes. The stages run once a frame, after its last step (as the colours
+    /// mix): `s` stages of RKL1 (thick.wgsl) smooth as `(s^2 + s) / 2` plain sweeps of share 1 would,
+    /// and a plain sweep evens speeds out by [`Numbers::thick_moment`] cells squared over twice the
+    /// frame: the stages are the fewest that give every liquid its [`Numbers::thick_evening`] with a
+    /// share of at most [`THICK_SHARE`]. (Past the most stages, on fine cells for paste, a liquid
+    /// evens out by as much as they give.)
+    pub fn thick_stages(&self, feels: &[Feel], cell: f32) -> (u32, [f32; MOST_LIQUIDS]) {
+        let mut shares = [0.0f32; MOST_LIQUIDS];
+        let per = f64::from(self.thick_moment()) * f64::from(cell) * f64::from(cell) / (2.0 * f64::from(FRAME));
+        let wants: Vec<f64> = feels.iter().take(MOST_LIQUIDS).map(|f| f64::from(self.thick_evening(f)) / per).collect();
+        let most = wants.iter().copied().fold(0.0f64, f64::max);
+        if most.is_nan() || most <= 0.0 {
+            return (0, shares);
+        }
+        let mut stages = 3u32;
+        while stages < MOST_THICK_STAGES && f64::from(stages * stages + stages) / 2.0 * f64::from(THICK_SHARE) < most {
+            stages += 3;
+        }
+        let room = f64::from(stages * stages + stages) / 2.0;
+        for (k, want) in wants.iter().enumerate() {
+            shares[k] = (want / room).min(f64::from(THICK_SHARE)) as f32;
+        }
+        (stages, shares)
     }
 
     /// The steps a frame takes when its fastest drop moves at `fastest` pixels a second (with any
@@ -554,13 +627,20 @@ impl Numbers {
         }
         let stick = feel.stickiness.max(0.0);
         let reach_px = self.reach * cell;
-        let even = (self.evening(feel) * dt * 20.0 / (reach_px * reach_px)).min(0.5);
+        // (A thick liquid's evening is all the thick stages', `thick_evening`.)
+        let even = if feel.thickness > THICK_FROM {
+            0.0
+        } else {
+            (self.evening(feel) * dt * EVEN_SCALE / (reach_px * reach_px)).min(EVEN_MOST)
+        };
         let keep = if feel.keeps_apart.is_finite() { feel.keeps_apart.clamp(0.0, 1.0) } else { 0.0 };
         FeelGpu {
             a: [feel.gravity, skin, skin * self.curv, self.adh * stick * gravity * feel.gravity.abs()],
             b: [8.0 * feel.settles * feel.settles, self.drag + self.drag_stick * stick, even, feel.mass()],
             // (`c.z`, the mixing's root, is the frame's: it depends on how many passes it takes.)
             c: [1.0 / feel.mass(), keep, 0.0, feel.mixes_when.code()],
+            // (`d.x`, the thick sweeps' share, is the frame's: it depends on how many sweeps it takes.)
+            d: [0.0; 4],
         }
     }
 
@@ -604,6 +684,21 @@ pub fn mix_root(mixing: f32, passes: u32, cell: f32) -> f32 {
     (f64::from(mixing) * per_pass.sqrt() / f64::from(cell.max(1e-3))) as f32
 }
 
+/// Thickness past which the evening of speeds grows by a cube and is all the thick stages' (thick liquids).
+pub const THICK_FROM: f32 = 0.1;
+/// The most Thickness counts as (paste at 1 is far past what any video needs).
+const MOST_THICKNESS: f32 = 4.0;
+/// The evening of speeds' share a step: `EVEN_SCALE` px² of evening a reach squared a second, at most
+/// `EVEN_MOST` (so the step stays calm).
+const EVEN_SCALE: f32 = 20.0;
+const EVEN_MOST: f32 = 0.5;
+/// The most thick stages a frame (as much as 16,290 plain sweeps: on the finest cells, 1.5 px,
+/// Thickness 0.6 takes 66 and Honey's 0.8 about 105; paste, Thickness 1, takes them all on 1 px cells
+/// and is a little thinner there than it asks).
+pub const MOST_THICK_STAGES: u32 = 180;
+/// The most of a plain sweep a thick stage takes (a little under the most that stays calm).
+pub const THICK_SHARE: f32 = 0.9;
+
 /// A liquid's numbers on the card. Matches `Feel` in the engine's common.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -617,6 +712,8 @@ pub struct FeelGpu {
     /// one over its weight, how much it keeps apart from other liquids, its colour mixing's root a
     /// pass, when its colour mixes (0 always, 1 stirred, 2 on hits)
     pub c: [f32; 4],
+    /// the share of its rebuilt speed a thick sweep takes (0: it takes none; part 4.3b), 0, 0, 0
+    pub d: [f32; 4],
 }
 
 #[cfg(test)]
@@ -776,6 +873,57 @@ mod tests {
 
     #[test]
     fn thickness_sets_the_evening() {
-        assert!((Numbers::default().evening(&Feel::default()) - 150.0).abs() < 1e-3);
+        let n = Numbers::default();
+        let at = |t: f32| n.evening(&Feel { thickness: t, ..Feel::default() });
+        assert!((at(0.02) - 150.0).abs() < 1e-3);
+        // (Up to THICK_FROM as it always was; past it by the cube: honey about 19,000, paste 100,000.)
+        assert_eq!(at(0.1), n.visc_base + n.visc_thick * 0.1);
+        assert!((at(0.6) - 19_100.0).abs() < 1.0, "{}", at(0.6));
+        assert!((at(1.0) - 104_660.0).abs() < 10.0, "{}", at(1.0));
+        assert!(at(1e9).is_finite() && at(f32::NAN) == at(0.0));
+    }
+
+    #[test]
+    fn only_thick_liquids_take_stages() {
+        let n = Numbers::default();
+        let feel = |t: f32| Feel { thickness: t, ..Feel::default() };
+        let dt = FRAME / 8.0;
+        // Water and oil: the plain evening holds them.
+        assert_eq!(n.thick_stages(&[feel(0.02)], 6.0).0, 0);
+        assert_eq!(n.thick_stages(&[feel(0.02), feel(0.08)], 6.0).0, 0);
+        assert_eq!(n.thick_evening(&feel(0.1)), 0.0);
+        // A thick liquid's evening is all the stages': it has no plain evening, water has its own.
+        assert_eq!(n.thick_evening(&feel(0.6)), n.evening(&feel(0.6)));
+        assert_eq!(n.feel_gpu(&feel(0.6), 6.0, 700.0, dt, false).b[2], 0.0);
+        assert_eq!(n.feel_gpu(&feel(0.11), 6.0, 700.0, dt, false).b[2], 0.0);
+        let water = n.feel_gpu(&feel(0.02), 6.0, 700.0, dt, false).b[2];
+        assert!(water > 0.0 && water == n.feel_gpu(&feel(0.02), 6.0, 700.0, dt, false).b[2]);
+        // Honey takes stages, a multiple of three, more on finer cells; each share at most
+        // THICK_SHARE, water's none.
+        let (coarse, _) = n.thick_stages(&[feel(0.6)], 6.0);
+        let (fine, shares) = n.thick_stages(&[feel(0.02), feel(0.6), feel(0.35)], 3.0);
+        assert!(coarse >= 3 && coarse % 3 == 0, "{coarse}");
+        assert!(fine > coarse && fine % 3 == 0, "{fine} stages at 3 px, {coarse} at 6 px");
+        assert_eq!(shares[0], 0.0);
+        assert!(shares[1] > 0.0 && shares[1] <= THICK_SHARE && shares[2] > 0.0 && shares[2] < shares[1], "{shares:?}");
+        // The stages even out the whole evening: (s^2 + s) / 2 sweeps of the share.
+        let per = n.thick_moment() * 9.0 / (2.0 * FRAME);
+        let extra = n.thick_evening(&feel(0.6));
+        let given = (fine * fine + fine) as f32 / 2.0 * shares[1] * per;
+        assert!((given - extra).abs() < 0.01 * extra, "{fine} {shares:?} {per} {extra}");
+        // Far fewer passes than plain sweeps would take.
+        assert!(fine < (extra / per) as u32 / 3, "{fine} stages for {} sweeps", extra / per);
+        // Water and anything up to THICK_FROM never take one, at any detail.
+        for cell in [0.5, 1.0, 1.5, 2.0, 3.0, 6.0, 8.0, 12.0] {
+            assert_eq!(n.thick_stages(&[feel(0.0), feel(0.02), feel(THICK_FROM)], cell).0, 0);
+        }
+        // Honey on the finest cells is within the most; paste there and Thickness 4 at 3 px take
+        // them all.
+        assert!(n.thick_stages(&[feel(0.6)], 1.5).0 < MOST_THICK_STAGES);
+        assert_eq!(n.thick_stages(&[feel(1.0)], 1.0).0, MOST_THICK_STAGES);
+        assert_eq!(n.thick_stages(&[feel(4.0)], 3.0).0, MOST_THICK_STAGES);
+        eprintln!("honey's stages: {:?}", [1.5, 2.0, 3.0, 6.0, 8.0, 12.0].map(|c| n.thick_stages(&[feel(0.6)], c).0));
+        // The kernel's moment on the lattice: under the reach squared, over a spacing's.
+        assert!(n.thick_moment() > 0.05 && n.thick_moment() < n.reach * n.reach / 2.0, "{}", n.thick_moment());
     }
 }

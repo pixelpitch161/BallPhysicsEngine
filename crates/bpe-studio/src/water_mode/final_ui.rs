@@ -180,9 +180,31 @@ impl Studio {
                 water_seconds: found.length,
                 video_seconds: found.video_seconds,
                 frames: found.video_frames(settings.fps),
+                longer: found.make.speeds.longer_words(),
             }
         });
         self.panels.final_frame.finals = Some(wf.finals.dir().to_path_buf());
+    }
+
+    /// Where a Water scene's playhead is `dt` seconds after `time`: on at the Speed, or, while the
+    /// Final shows a scene with Un-mix, on the video's clock, so it goes back over the stretch and
+    /// forwards again (the draft plays forwards only: going back in it plays again from a copy).
+    pub(crate) fn water_next(&mut self, time: f64, dt: f64) -> f64 {
+        let wf = &mut self.water_final;
+        let speeds = match &wf.found {
+            Some(found) if wf.view == WaterView::Final && found.make.speeds.unmix().is_some() => &found.make.speeds,
+            _ => {
+                wf.clock = None;
+                return time + dt * self.water_speed(time);
+            }
+        };
+        let clock = match wf.clock {
+            Some((clock, at)) if at == time => clock,
+            _ => speeds.video_time(time),
+        };
+        let next = speeds.water_time(clock + dt);
+        wf.clock = Some((clock + dt, next));
+        next
     }
 
     /// The Speed the water plays at, at water time `time` (1 in a Balls scene).

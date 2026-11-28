@@ -47,26 +47,11 @@ pub struct MixingCard {
     pub mix_speed: f32,
     #[setting(label = "Mixes when", group = "Meeting other liquids")]
     pub mixes_when: MixesWhen,
-    /// Keep the last Seconds of the liquid so it can play backwards.
-    #[setting(label = "Remember for Un-mix", group = "Un-mix")]
-    pub remember: bool,
-    #[setting(label = "Seconds", when = "remember", range(0.1, 60), span(1, 20), unit = "s", group = "Un-mix")]
-    pub unmix_seconds: f32,
-    /// While on, the liquid plays its remembered seconds backwards (colours un-mix too).
-    #[setting(label = "Un-mixing", when = "remember", group = "Un-mix")]
-    pub unmixing: bool,
 }
 
 impl Default for MixingCard {
     fn default() -> Self {
-        Self {
-            keeps_apart: 0.0,
-            mix_speed: 0.5,
-            mixes_when: MixesWhen::Always,
-            remember: false,
-            unmix_seconds: 5.0,
-            unmixing: false,
-        }
+        Self { keeps_apart: 0.0, mix_speed: 0.5, mixes_when: MixesWhen::Always }
     }
 }
 
