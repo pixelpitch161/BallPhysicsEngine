@@ -1,7 +1,7 @@
 //! A Water scene's Liquid cards: **Feel**, **Mixing** and **Heat** (its **Look** is in [`super::look`]).
 //! Settings today's Liquid thing also has keep its names, ranges and spans.
 
-use bpe_core::{Choice, Color, Settings};
+use bpe_core::{Choice, Settings};
 
 /// How a Liquid flows.
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -13,7 +13,7 @@ pub struct FeelCard {
     #[setting(label = "Surface pull", range(0, 1e9), span(0, 1), keyframe, group = "How it flows")]
     pub surface_pull: f32,
     /// How heavy it is next to other liquids: a heavier one sinks under a lighter one.
-    #[setting(label = "Weight", range(0.05, 1e9), span(0.1, 10), simple, keyframe, group = "How it flows")]
+    #[setting(label = "Weight", range(0.1, 10), span(0.1, 10), simple, keyframe, group = "How it flows")]
     pub weight: f32,
     /// How much it clings to the course instead of running off.
     #[setting(label = "Stickiness", range(0, 1e9), span(0, 1), keyframe, group = "How it flows")]
@@ -35,19 +35,18 @@ pub enum MixesWhen {
     OnlyOnHits,
 }
 
-/// A Liquid's Mixing card.
+/// A Liquid's Mixing card: how it meets other liquids.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct MixingCard {
-    /// How fast colours run together where liquids meet: 0 never, 1 at once.
-    #[setting(label = "Mix speed", range(0, 1), span(0, 1), simple, group = "Colour mixing")]
+    /// How much it keeps apart from other liquids: 1 is oil and water (round drops, a sharp line, no
+    /// colours running across).
+    #[setting(label = "Keeps apart", range(0, 1), span(0, 1), simple, group = "Meeting other liquids")]
+    pub keeps_apart: f32,
+    /// How fast colours run together where liquids meet: 0 never, 1 fastest.
+    #[setting(label = "Mix speed", range(0, 1), span(0, 1), simple, group = "Meeting other liquids")]
     pub mix_speed: f32,
-    #[setting(label = "Mixes when", group = "Colour mixing")]
+    #[setting(label = "Mixes when", group = "Meeting other liquids")]
     pub mixes_when: MixesWhen,
-    /// How fast its colours drift to Fades to (0: never).
-    #[setting(label = "Fades", range(0, 1e9), span(0, 1), unit = "/s", group = "Colour mixing")]
-    pub fades: f32,
-    #[setting(label = "Fades to", when = "fades", group = "Colour mixing")]
-    pub fades_to: Color,
     /// Keep the last Seconds of the liquid so it can play backwards.
     #[setting(label = "Remember for Un-mix", group = "Un-mix")]
     pub remember: bool,
@@ -61,10 +60,9 @@ pub struct MixingCard {
 impl Default for MixingCard {
     fn default() -> Self {
         Self {
+            keeps_apart: 0.0,
             mix_speed: 0.5,
             mixes_when: MixesWhen::Always,
-            fades: 0.0,
-            fades_to: Color::WHITE,
             remember: false,
             unmix_seconds: 5.0,
             unmixing: false,

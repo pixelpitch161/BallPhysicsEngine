@@ -397,7 +397,7 @@ fn draw_moment(
     match source {
         Source::Final { reader } => {
             let (frame, ahead) = reader.near(tau)?.context(FRAME_NOT_MADE)?;
-            drawing.stored.set(device, queue, &frame.xv, &frame.kinds);
+            drawing.stored.set(device, queue, &frame.xv, &frame.kinds, &frame.mixes);
             let wet = reader.wet(tau);
             drawing.wet.give(device, queue, reader.layout(), wet.as_ref(), &mut drawing.look);
             drawing.look.draw_at(&drawing.stored.buffers(), &view, &look, ahead as f32);

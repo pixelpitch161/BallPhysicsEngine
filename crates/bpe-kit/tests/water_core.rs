@@ -483,7 +483,7 @@ fn report(
     }
     // The drops themselves as dots (`WATER_DOTS=<folder>`): what the physics did, without the look.
     if let Ok(dir) = std::env::var("WATER_DOTS") {
-        let (pixels, w, h) = probe::picture(drops, field, 1.0, f32::MAX);
+        let (pixels, w, h) = probe::picture(drops, field, 1.0);
         std::fs::create_dir_all(&dir).expect("the dots' folder");
         let file = format!("{name}-{detail:?}-{core}-{t}.png").to_lowercase();
         probe::save_png(&std::path::Path::new(&dir).join(file), &pixels, w, h).expect("a picture");

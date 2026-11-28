@@ -19,6 +19,9 @@ struct Feel {
     // damping (a second), drag along a face (a second), the share of the neighbours' mean speed
     // taken a step, weight
     b: vec4<f32>,
+    // one over its weight, how much it keeps apart from other liquids, its colour mixing's root a
+    // pass (mix.wgsl), when its colour mixes (0 always, 1 stirred, 2 on hits)
+    c: vec4<f32>,
 };
 
 // A force on the water (drops/forces.rs `ForceGpu`): its middle (grid units), its reach (cells), the
@@ -89,6 +92,12 @@ struct Fr {
     dedges: array<vec4<u32>, 8>,
     // how many drains, the frame's code for the drops they take (`drained_y`), 0, 0
     dmeta: vec4<u32>,
+    // bit 0 the liquids' weights differ (the pressure, the pairs' pulls and the deep push share by
+    // mass), bit 1 colours mix this frame; the mix passes; 0, 0
+    mixf: vec4<u32>,
+    // Mixes when's speeds: stirred, on hits (cells a second); air's mass (the lightest liquid's) and
+    // one over it
+    mixs: vec4<f32>,
     // the forces (forces.wgsl): how many, 0, 0, 0; then each force
     forces_n: vec4<u32>,
     forces: array<Force, 16>,
@@ -110,12 +119,12 @@ struct Born {
 };
 
 // A drop as `Drop` (drop.rs) lays it out: `c` is (how full its neighbourhood
-// is, 0, which way the liquid lies from it).
+// is, 0, which way the liquid lies from it), `mix` its colour mix (mix.wgsl).
 struct DropOut {
     x: vec2<f32>,
     v: vec2<f32>,
     c: vec4<f32>,
-    e: f32,
+    mix: u32,
     kind: u32,
     serial: u32,
     colour: u32,
@@ -135,7 +144,8 @@ const PI: f32 = 3.14159265;
 // lay from it, how full its neighbourhood was, 0.
 @group(0) @binding(2) var<storage, read_write> xv: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> nf: array<vec4<f32>>;
-// Per drop: kind, serial, colour, 0; as the last step sorted them (`id_cur`) and as this one does.
+// Per drop: kind, serial, colour, mix (mix.wgsl); as the last step sorted them (`id_cur`) and as
+// this one does.
 @group(0) @binding(4) var<storage, read_write> id_cur: array<vec4<u32>>;
 @group(0) @binding(5) var<storage, read_write> id_nxt: array<vec4<u32>>;
 // Per drop, unsorted: where it would be this step, and where it was.
@@ -238,6 +248,35 @@ fn keep_off(xin: vec2<f32>, vin: vec2<f32>, stops: bool) -> Kept {
 
 fn is_air(kind: u32) -> bool {
     return (kind & AIR) != 0u;
+}
+
+// Whether the liquids' weights differ (else every share by mass is 1).
+fn weighted() -> bool {
+    return (fr.mixf.x & 1u) != 0u;
+}
+
+// One over a drop's mass: its liquid's weight's (air's is the lightest liquid's, `mixs.w`: masses
+// count only against each other, so air in light liquids is no heavier than in water).
+fn inv_mass(kind: u32) -> f32 {
+    if is_air(kind) {
+        return fr.mixs.w;
+    }
+    return fr.feels[kind & 15u].c.x;
+}
+
+// The share of a pair's pull drop `i` takes, by the pair's masses (1 over each's mass `wi`, `wj`):
+// 2 m_j / (m_i + m_j), so the two change their momentum alike; 1 for two drops alike.
+fn pair_mass(wi: f32, wj: f32) -> f32 {
+    return 2.0 * wi / (wi + wj);
+}
+
+// How much two drops of kinds `a` and `b` keep apart: the larger of their liquids' Keeps apart when
+// both are liquid and their liquids differ, else 0.
+fn keep_of(a: u32, b: u32) -> f32 {
+    if is_air(a) || is_air(b) || (a & 15u) == (b & 15u) {
+        return 0.0;
+    }
+    return max(fr.feels[a & 15u].c.y, fr.feels[b & 15u].c.y);
 }
 
 fn stops_at_edge(kind: u32) -> bool {

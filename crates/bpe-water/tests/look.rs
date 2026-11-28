@@ -1076,3 +1076,28 @@ fn an_effect_on_the_light_only_reads_the_waters_light() {
     let (lit, was) = (light.at(pool), plain.at(pool));
     assert!(lit[2] > was[2] + 30 && lit[0] < lit[2], "the pool lit at 2 and still blue: {lit:?} from {was:?}");
 }
+
+/// A pool carrying half of another liquid's colour is drawn between the two liquids' pools (part
+/// 4.2): the look's per-liquid weights share each drop between its two liquids.
+#[test]
+fn a_mixed_drop_draws_between_its_liquids() {
+    let Some(gpu) = card() else { return };
+    let field = boxed(&[]);
+    let pool =
+        |x: f32, kind: u32| sets::lattice(&field, Vec2::new(x - 120.0, 500.0), Vec2::new(x + 120.0, 892.0), kind);
+    let mut drops = pool(-330.0, 0);
+    drops.extend(pool(330.0, 1));
+    drops.extend(pool(0.0, 0).into_iter().map(|d| d.with_mix(1, 0.5)));
+    let pic = draw(&gpu, &field, &drops, View::screen(0.25), &Look::plain(&sets::look()));
+    let at = |x: f32| pic.at(Vec2::new(x, 520.0));
+    let (water, orange, half) = (at(-330.0), at(330.0), at(0.0));
+    assert!(apart(water, orange) > 60, "the two liquids differ: {water:?} {orange:?}");
+    for k in 0..3 {
+        let (lo, hi) = (water[k].min(orange[k]), water[k].max(orange[k]));
+        let mid = (f32::from(lo) + f32::from(hi)) / 2.0;
+        assert!(
+            (f32::from(half[k]) - mid).abs() <= 0.25 * f32::from(hi - lo) + 3.0,
+            "channel {k}: the half mixed pool {half:?} is between {water:?} and {orange:?}"
+        );
+    }
+}

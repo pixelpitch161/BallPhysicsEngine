@@ -118,6 +118,12 @@ fn liquid_of(kind: u32) -> Liquid {
     return u.liquids[min(kind & 15u, n - 1u)];
 }
 
+// A drop's colour mix (its id's 4th word, the engine's mix.wgsl): the other liquid it carries a share
+// of, and that share (0 to 1).
+fn mix_of(w: u32) -> vec2<f32> {
+    return vec2<f32>(f32(w & 15u), f32(w >> 16u) / 65535.0);
+}
+
 // ---- 1. splats ----
 
 struct SplatOut {
@@ -153,6 +159,13 @@ fn vs_splat(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> S
     let l = liquid_of(ids[i].x);
     out.colour = l.colour.rgb;
     out.deep = vec4<f32>(l.deep.rgb, l.colour.w / CLARITY_SCALE);
+    // (A drop carrying another liquid's colour is drawn between the two, by its share.)
+    let m = mix_of(ids[i].w);
+    if m.y > 0.0 {
+        let o = liquid_of(u32(m.x));
+        out.colour = mix(out.colour, o.colour.rgb, m.y);
+        out.deep = mix(out.deep, vec4<f32>(o.deep.rgb, o.colour.w / CLARITY_SCALE), m.y);
+    }
     return out;
 }
 

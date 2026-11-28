@@ -375,6 +375,8 @@ struct LookSplatOut {
     @location(1) @interpolate(flat) peak: vec2<f32>,
     // its speed (SPEED_UNIT): vx, vy, |v|; its liquid
     @location(2) @interpolate(flat) v: vec4<f32>,
+    // the other liquid it carries a share of, and that share (its colour mix)
+    @location(3) @interpolate(flat) mixed: vec2<f32>,
 };
 
 @vertex
@@ -391,9 +393,12 @@ fn vs_look_splat(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32)
         out.pos = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
         out.peak = vec2<f32>(0.0);
         out.v = vec4<f32>(0.0);
+        out.mixed = vec2<f32>(0.0);
         return out;
     }
     let kind = ids[i].x;
+    let m = mix_of(ids[i].w);
+    out.mixed = vec2<f32>(f32(min(u32(m.x), max(lu.counts.x, 1u) - 1u)), select(m.y, 0.0, (kind & AIR) != 0u));
     let air = (kind & AIR) != 0u;
     let n = min(kind & 15u, max(lu.counts.x, 1u) - 1u);
     let l = lu.liquids[n];
@@ -449,7 +454,15 @@ fn fs_look_splat(in: LookSplatOut) -> LookSums {
     let n = u32(in.v.w + 0.5);
     out.a = vec4<f32>(k * in.v.z, k * in.v.z * in.v.z, 0.0, k);
     out.b = vec4<f32>(k * in.v.xy, 0.0, 0.0);
-    out.w = select(vec4<f32>(0.0), channel(n, k), n < 4u);
+    if in.mixed.y > 0.0 {
+        // (A drop carrying another liquid's colour weighs for both, by its share: every look setting
+        // of the two blends where it is.)
+        let o = u32(in.mixed.x + 0.5);
+        out.w = select(vec4<f32>(0.0), channel(n, k * (1.0 - in.mixed.y)), n < 4u)
+            + select(vec4<f32>(0.0), channel(o, k * in.mixed.y), o < 4u);
+    } else {
+        out.w = select(vec4<f32>(0.0), channel(n, k), n < 4u);
+    }
     return out;
 }
 
@@ -467,6 +480,17 @@ fn fs_look_weights(in: LookSplatOut) -> WeightSums {
     }
     let n = u32(in.v.w + 0.5);
     var out: WeightSums;
+    if in.mixed.y > 0.0 {
+        let o = u32(in.mixed.x + 0.5);
+        let kn = k * (1.0 - in.mixed.y);
+        let ko = k * in.mixed.y;
+        out.w1 = select(vec4<f32>(0.0), channel(n, kn), n >= 4u && n < 8u)
+            + select(vec4<f32>(0.0), channel(o, ko), o >= 4u && o < 8u);
+        out.w2 = select(vec4<f32>(0.0), channel(n, kn), n >= 8u && n < 12u)
+            + select(vec4<f32>(0.0), channel(o, ko), o >= 8u && o < 12u);
+        out.w3 = select(vec4<f32>(0.0), channel(n, kn), n >= 12u) + select(vec4<f32>(0.0), channel(o, ko), o >= 12u);
+        return out;
+    }
     out.w1 = select(vec4<f32>(0.0), channel(n, k), n >= 4u && n < 8u);
     out.w2 = select(vec4<f32>(0.0), channel(n, k), n >= 8u && n < 12u);
     out.w3 = select(vec4<f32>(0.0), channel(n, k), n >= 12u);
@@ -526,6 +550,14 @@ fn vs_look_nodes(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32)
     out.sigma = sigma_of(l);
     out.glow = glow_of(l, length(xv[i].zw) * u.grid.z);
     out.colour = l.colour.rgb;
+    // (A drop carrying another liquid's colour: between the two, by its share.)
+    let m = mix_of(ids[i].w);
+    if m.y > 0.0 {
+        let o = lu.liquids[min(u32(m.x), max(lu.counts.x, 1u) - 1u)];
+        out.sigma = mix(out.sigma, sigma_of(o), m.y);
+        out.glow = mix(out.glow, glow_of(o, length(xv[i].zw) * u.grid.z), m.y);
+        out.colour = mix(out.colour, o.colour.rgb, m.y);
+    }
     return out;
 }
 

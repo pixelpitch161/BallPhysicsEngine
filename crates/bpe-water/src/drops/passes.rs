@@ -12,6 +12,7 @@ pub(super) const SOURCE: &str = concat!(
     include_str!("shaders/air.wgsl"),
     include_str!("shaders/report.wgsl"),
     include_str!("shaders/pack.wgsl"),
+    include_str!("shaders/mix.wgsl"),
 );
 
 /// A pass.
@@ -45,6 +46,8 @@ pub(super) enum P {
     AirSumB,
     AirDead,
     AirBorn,
+    Mix,
+    MixKeep,
     Report,
     Drained,
     Export,
@@ -60,7 +63,9 @@ pub(super) enum P {
 /// pressure, 22 the faces' open shares, 23 how full each cell is and then its depth share, 24 how far
 /// down its column a cell that is not full is, 25 the cells deep at the frame's end, 26 how full the
 /// drops-only water just above the deep water is; for trapped air (air.wgsl) 27 each cell's spots,
-/// 28 the blocks' running sums and every spot; for a kept moment (pack.wgsl) 29 the drops packed.
+/// 28 the blocks' running sums and every spot; for a kept moment (pack.wgsl) 29 the drops packed; for
+/// the colour mixing (mix.wgsl) 30 each drop's new mix; 31 the deep cells' mass and volume (when the
+/// liquids' weights differ).
 pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_predict", &[0, 1, 2, 3, 4, 6, 7, 15, 16]),
     ("cs_sum_a", &[0, 1, 7, 8, 9]),
@@ -79,17 +84,19 @@ pub(super) const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_deep_gather", &[0, 1, 11, 14, 19]),
     ("cs_deep_cells", &[0, 1, 19, 20, 21, 22, 23, 26]),
     ("cs_deep_column", &[0, 1, 23, 24]),
-    ("cs_deep_across", &[0, 1, 19, 21, 23, 24, 25, 26]),
+    ("cs_deep_across", &[0, 1, 19, 21, 23, 24, 25, 26, 31]),
     ("cs_deep_want", &[0, 1, 21, 26]),
     ("cs_deep_sor", &[0, 1, 21, 22]),
     ("cs_deep_down", &[0, 1, 21, 22]),
     ("cs_deep_up", &[0, 1, 21]),
-    ("cs_deep_push", &[0, 1, 11, 14, 15, 21, 22, 23]),
+    ("cs_deep_push", &[0, 1, 11, 14, 15, 21, 22, 23, 31]),
     ("cs_air_find", &[0, 1, 8, 11, 15, 19, 20, 27]),
     ("cs_air_sum_a", &[0, 1, 27, 28]),
     ("cs_air_sum_b", &[0, 1, 28]),
     ("cs_air_dead", &[0, 1, 2, 3, 5, 8, 28]),
     ("cs_air_born", &[0, 1, 2, 3, 5, 8, 27, 28]),
+    ("cs_mix", &[0, 1, 2, 5, 8, 30]),
+    ("cs_mix_keep", &[0, 1, 5, 30]),
     ("cs_report", &[0, 1, 2, 5, 8, 15, 18, 25, 28]),
     ("cs_drained", &[0, 1, 2, 18]),
     ("cs_export", &[0, 1, 2, 3, 4, 17]),
@@ -187,6 +194,8 @@ mod tests {
         assert_eq!(ENTRIES[P::AirBorn as usize].0, "cs_air_born");
         assert_eq!(ENTRIES[P::Report as usize].0, "cs_report");
         assert_eq!(ENTRIES[P::Drained as usize].0, "cs_drained");
+        assert_eq!(ENTRIES[P::Mix as usize].0, "cs_mix");
+        assert_eq!(ENTRIES[P::MixKeep as usize].0, "cs_mix_keep");
         for (name, bindings) in ENTRIES {
             let storage = bindings.iter().filter(|&&b| b > STEP).count();
             assert!(storage <= MOST_STORAGE, "{name} binds {storage} storage buffers");

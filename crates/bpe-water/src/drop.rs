@@ -18,10 +18,11 @@ pub const AIR: u32 = 128;
 pub struct Drop {
     pub x: [f32; 2],
     pub v: [f32; 2],
-    /// The APIC matrix: xx, xy, yx, yy.
+    /// How full its neighbourhood is, 0, and which way the liquid lies from it (x, y).
     pub c: [f32; 4],
-    /// How stretched the liquid at it is (J - 1).
-    pub e: f32,
+    /// The share of one other liquid it carries, its colour mixed (part 4.2): bits 0 to 3 that
+    /// liquid, bits 16 to 31 its share of 65535; 0 unmixed. Its motion stays its own liquid's.
+    pub mix: u32,
     /// Bits 0 to 3 its liquid, bit 7 ([`AIR`]) it is air, bit 8 ([`STOPS`]) it stops at the
     /// course's edge.
     pub kind: u32,
@@ -32,7 +33,22 @@ pub struct Drop {
 
 impl Drop {
     pub fn new(x: Vec2, v: Vec2, kind: u32, serial: u32, colour: u32) -> Drop {
-        Drop { x: x.to_array(), v: v.to_array(), c: [0.0; 4], e: 0.0, kind, serial, colour }
+        Drop { x: x.to_array(), v: v.to_array(), c: [0.0; 4], mix: 0, kind, serial, colour }
+    }
+
+    /// The same drop carrying `share` (0 to 1) of liquid `other`.
+    pub fn with_mix(self, other: usize, share: f32) -> Drop {
+        Drop { mix: mix_word(other, share), ..self }
+    }
+
+    /// The share of another liquid it carries (0 to 1).
+    pub fn mix_share(&self) -> f32 {
+        f32::from((self.mix >> 16) as u16) / 65535.0
+    }
+
+    /// The other liquid it carries a share of (0 when unmixed).
+    pub fn mix_other(&self) -> usize {
+        (self.mix & 15) as usize
     }
 
     pub fn liquid(&self) -> usize {
@@ -43,6 +59,12 @@ impl Drop {
     pub fn is_air(&self) -> bool {
         self.kind & AIR != 0
     }
+}
+
+/// A drop's mix word carrying `share` (0 to 1) of liquid `other` (0 for none).
+pub fn mix_word(other: usize, share: f32) -> u32 {
+    let q = if share.is_finite() { (share.clamp(0.0, 1.0) * 65535.0).round() as u32 } else { 0 };
+    if q == 0 { 0 } else { (other as u32 & 15) | (q << 16) }
 }
 
 /// The colour drops are born with when nothing says otherwise (a water blue, linear rgba8).

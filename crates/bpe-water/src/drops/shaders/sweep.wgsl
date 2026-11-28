@@ -15,6 +15,11 @@ fn lambda_at(i: u32, first: bool) {
     // the liquid as a bubble does, and a pocket of it keeps its room. Its fullness counts every
     // drop.)
     let air = is_air(u32(velb[i].z));
+    // (By mass when the liquids' weights differ: each drop's share of a correction is one over its
+    // mass, Macklin and Mueller's with masses, so a heavy drop yields less and sinks. Liquids that
+    // weigh the same work it out as before.)
+    let by_mass = weighted();
+    let wi = inv_mass(u32(velb[i].z));
     var rho = 0.0;
     var all = 0.0;
     var sum = vec2<f32>(0.0);
@@ -51,7 +56,11 @@ fn lambda_at(i: u32, first: bool) {
                 g = any_way(i, j) * (-30.0 / (PI * h * h * h));
             }
             sum = sum + g;
-            sq = sq + dot(g, g);
+            if by_mass {
+                sq = sq + inv_mass(u32(velb[j].z)) * dot(g, g);
+            } else {
+                sq = sq + dot(g, g);
+            }
         }
     }
     let wall = wall_density(xi);
@@ -60,13 +69,19 @@ fn lambda_at(i: u32, first: bool) {
     sum = sum + wall.xy;
     let rho0 = fr.k.y;
     let over = rho / rho0 - 1.0;
-    let stiff = (dot(sum, sum) + sq) / (rho0 * rho0);
+    var own = dot(sum, sum);
+    var soft = fr.k.z;
+    if by_mass {
+        own = wi * own;
+        soft = soft * wi;
+    }
+    let stiff = (own + sq) / (rho0 * rho0);
     var was = 0.0;
     if !first {
         was = lamb[i].y;
     }
     // (Never above nothing: the liquid pushes apart where it is over-full and never pulls.)
-    var now = min(was - fr.k.w * over / (stiff + fr.k.z), 0.0);
+    var now = min(was - fr.k.w * over / (stiff + soft), 0.0);
     if !(abs(now) < 1e30) {
         now = 0.0;
     }
@@ -167,6 +182,9 @@ fn apply_at(i: u32, last: bool) {
         }
     }
     shift = (shift + mine * wall_density(xi).xy) / fr.k.y;
+    if weighted() {
+        shift = shift * inv_mass(u32(was.z));
+    }
     let far = length(shift);
     if far > fr.s.z {
         shift = shift * (fr.s.z / far);

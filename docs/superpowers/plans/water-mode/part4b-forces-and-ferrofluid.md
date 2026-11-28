@@ -312,7 +312,7 @@ Coarse final 4 s; drawn in the Ferrofluid look at 1, 2.5 and 4 s: `water-ferrofl
   the first half second are the pool spreading to the box's corners, as it does with no magnet. The two outer teeth
   reach the reach's edge (a tooth lying near the floor fills to it).
 - **Review fixes.** (1) A magnet's reach is the drops' own only in cells holding its liquids (the deep gather ORs
-  each cell's liquids into a seventh sum): before, a deep tank of water over a magnet for another liquid sank 10 px
+  each cell's liquids into an eighth sum): before, a deep tank of water over a magnet for another liquid sank 10 px
   and stirred at 13 to 29 px/s against 3 to 5 (`a_magnet_leaves_other_liquids_deep_water_alone`, which fails on the
   old shader at 17 px). (2) Narrow teeth: 9 over 30° or 60° at Strength 4, Spike size 1 stirred at 165 to 260
   px/s (the round slope grows as depth over the tooth's width); the depth is now held to `MOST_STEEP` 3.9 × the

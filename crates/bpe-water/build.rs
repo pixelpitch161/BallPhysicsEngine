@@ -8,8 +8,16 @@
 use std::path::{Path, PathBuf};
 
 /// The folders and files printed.
-const ROOTS: &[&str] =
-    &["src/drops", "src/take", "src/drop.rs", "src/solid.rs", "src/lib.rs", "src/draw/wet.rs", "src/shaders/wet.wgsl"];
+const ROOTS: &[&str] = &[
+    "src/drops",
+    "src/take",
+    "src/drop.rs",
+    "src/lumps.rs",
+    "src/solid.rs",
+    "src/lib.rs",
+    "src/draw/wet.rs",
+    "src/shaders/wet.wgsl",
+];
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     if dir.is_file() {
